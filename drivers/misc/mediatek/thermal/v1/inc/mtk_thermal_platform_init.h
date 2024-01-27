@@ -66,8 +66,10 @@ extern void mt6359dcxo_exit(void);
 extern void  mtkts_btsnrpa_exit(void);
 //for thermal cooler
 extern int ta_init(void);
+#if IS_ENABLED(CONFIG_MTK_THERMAL_PA_VIA_ATCMD)
 extern void mtk_cooler_mutt_exit(void);
 extern int mtk_cooler_mutt_init(void);
+#endif
 extern void mtk_cooler_bcct_exit(void);
 extern int mtk_cooler_bcct_init(void);
 #if IS_ENABLED(CONFIG_MTK_GAUGE_VERSION)

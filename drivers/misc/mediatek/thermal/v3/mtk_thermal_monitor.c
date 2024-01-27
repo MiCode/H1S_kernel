@@ -2099,7 +2099,9 @@ static int __init thermal_monitor_init(void)
 		mtk_cooler_bcct_init();
 		mtk_cooler_bcct_2nd_init();
 		mtk_cooler_cam_init();
+#if IS_ENABLED(CONFIG_MTK_THERMAL_PA_VIA_ATCMD)
 		mtk_cooler_mutt_init();
+#endif
 		mtk_cooler_sysrst_init();
 		mtk_cooler_VR_FPS_init();
 		ta_init();
@@ -2138,7 +2140,9 @@ static void __exit thermal_monitor_exit(void)
 	mtk_cooler_bcct_exit();
 	mtk_cooler_bcct_2nd_exit();
 	mtk_cooler_cam_exit();
+#if IS_ENABLED(CONFIG_MTK_THERMAL_PA_VIA_ATCMD)
 	mtk_cooler_mutt_exit();
+#endif
 	mtk_cooler_sysrst_exit();
 	mtk_cooler_VR_FPS_exit();
 #if defined(LVTS_CPU_PM_NTFY_CALLBACK)
