@@ -351,12 +351,11 @@ static void __init lpm_plat_bootmode_check_init(void)
 			       __func__, tag->size, tag->tag,
 			       tag->bootmode, tag->boottype);
 		}
+		if (tag->bootmode == 8)
+			is_kpoc = true;
+		lpm_smc_cpu_pm(BOOTMODE_TO_CPU_PM, MT_LPM_SMC_ACT_SET, is_kpoc, 0);
+		pr_info("%s(): set bootmode to cpu_pm, bootmode=%x\n", __func__, tag->bootmode);
 	}
-	if (tag->bootmode == 8)
-		is_kpoc = true;
-
-	lpm_smc_cpu_pm(BOOTMODE_TO_CPU_PM, MT_LPM_SMC_ACT_SET, is_kpoc, 0);
-	pr_info("%s(): set bootmode to cpu_pm, bootmode=%x\n", __func__, tag->bootmode);
 }
 
 static int __init lpm_plat_mcusys_ctrl_init(void)
