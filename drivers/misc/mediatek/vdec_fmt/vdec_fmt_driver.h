@@ -171,6 +171,7 @@ struct mtk_vdec_fmt {
 	bool is_entering_suspend;
 	struct mutex mux_fmt;
 	struct mutex *mux_gce_th[FMT_CORE_NUM];
+	struct mutex *mux_cmdq_pkt[FMT_CORE_NUM];
 	struct mutex mux_task;
 	struct gce_cmdq_task gce_task[FMT_INST_MAX];
 	atomic_t gce_task_wait_cnt[FMT_INST_MAX];
