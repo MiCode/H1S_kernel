@@ -197,7 +197,7 @@ static void msdc_dump_clock_sts_core(char **buff, unsigned long *size,
 	if (host->dvfsrc_vcore_power) {
 		n += scnprintf(&buf_ptr[n], sizeof(buffer) - n,
 			"[dvfs vcore] voltage: %d, req vcore: %d, autok_vcore : %d\n",
-			!in_interrupt() ? regulator_get_voltage(host->dvfsrc_vcore_power) : -1,
+			!(in_interrupt()||irqs_disabled()) ? regulator_get_voltage(host->dvfsrc_vcore_power) : -1,
 			host->req_vcore, host->autok_vcore);
 	}
 
@@ -495,7 +495,7 @@ int __msdc_dump_info(char **buff, unsigned long *size, struct seq_file *m,
 
 	msdc_dump_clock_sts(buff, size, m, host);
 
-	if(!in_interrupt())
+	if(!(in_interrupt()||irqs_disabled()))
 		msdc_dump_ldo_sts(buff, size, m, host);
 
 	/* prevent bad sdcard, print too much log */
