@@ -104,6 +104,7 @@ enum MT_CPU_PM_SMC_UID {
 	IRQ_REMAIN_IRQ_SUBMIT,
 	VALIDATE_PWR_STATE_CTRL,
 	CPU_PM_CTRL,
+	BOOTMODE_TO_CPU_PM,
 };
 
 #define lpm_smc_cpu_pm(_lp_id, _act, _val1, _val2) ({\

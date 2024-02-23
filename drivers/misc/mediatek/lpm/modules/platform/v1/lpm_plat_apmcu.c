@@ -324,6 +324,41 @@ static void __init lpm_plat_pwr_dev_init(void)
 	lpm_dev_get_cpus_online();
 }
 
+/* for mt6855 customer issue, need to check whether KPOC mode. */
+struct tag_bootmode {
+	u32 size;
+	u32 tag;
+	u32 bootmode;
+	u32 boottype;
+};
+static void __init lpm_plat_bootmode_check_init(void)
+{
+	struct device_node *boot_node = NULL;
+	struct tag_bootmode *tag = NULL;
+	bool is_kpoc = false;
+
+	boot_node = of_parse_phandle(of_find_compatible_node(NULL, NULL, "mediatek,mcusys-ctrl"),
+				     "bootmode", 0);
+	if (!boot_node)
+		pr_info("%s: failed to get boot mode phandle\n", __func__);
+	else {
+		tag = (struct tag_bootmode *)of_get_property(boot_node,
+							     "atag,boot", NULL);
+		if (!tag)
+			pr_info("%s: failed to get atag,boot\n", __func__);
+		else {
+			pr_info("%s: size:0x%x tag:0x%x bootmode:0x%x boottype:0x%x\n",
+			       __func__, tag->size, tag->tag,
+			       tag->bootmode, tag->boottype);
+		}
+	}
+	if (tag->bootmode == 8)
+		is_kpoc = true;
+
+	lpm_smc_cpu_pm(BOOTMODE_TO_CPU_PM, MT_LPM_SMC_ACT_SET, is_kpoc, 0);
+	pr_info("%s(): set bootmode to cpu_pm, bootmode=%x\n", __func__, tag->bootmode);
+}
+
 static int __init lpm_plat_mcusys_ctrl_init(void)
 {
 	struct device_node *node = NULL;
@@ -359,6 +394,7 @@ int __init lpm_plat_apmcu_init(void)
 		return 0;
 	}
 
+	lpm_plat_bootmode_check_init();
 	lpm_plat_pwr_dev_init();
 
 #if IS_ENABLED(CONFIG_MTK_LPM_MT6833)
