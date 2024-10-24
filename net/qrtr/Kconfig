@@ -1,0 +1,69 @@
+# Qualcomm IPC Router configuration
+#
+
+config QRTR
+	tristate "Qualcomm IPC Router support"
+	depends on ARCH_QCOM || COMPILE_TEST
+	---help---
+	  Say Y if you intend to use Qualcomm IPC router protocol.  The
+	  protocol is used to communicate with services provided by other
+	  hardware blocks in the system.
+
+	  In order to do service lookups, a userspace daemon is required to
+	  maintain a service listing.
+
+if QRTR
+
+config QRTR_WAKEUP_MS
+	int "QRTR Wakeup timeout"
+	default 0
+	help
+	  This option is used to configure the wakesource timeout that QRTR
+	  should take when a packet is received. The qrtr driver can guarantee
+	  that the packet gets queued to the socket but cannot guarantee the
+	  client process will get time to run if auto sleep is enabled. This
+	  config will help mitigate missed packets on systems where auto sleep
+	  is aggressive.
+
+config QRTR_SMD
+	tristate "SMD IPC Router channels"
+	depends on RPMSG || (COMPILE_TEST && RPMSG=n)
+	---help---
+	  Say Y here to support SMD based ipcrouter channels.  SMD is the
+	  most common transport for IPC Router.
+
+config QRTR_TUN
+	tristate "TUN device for Qualcomm IPC Router"
+	---help---
+	  Say Y here to expose a character device that allows user space to
+	  implement endpoints of QRTR, for purpose of tunneling data to other
+	  hosts or testing purposes.
+
+config QRTR_MHI
+	tristate "MHI IPC Router channels"
+	depends on MHI_BUS || (COMPILE_TEST && MHI_BUS=n)
+	help
+	  Say Y here to support MHI based ipcrouter channels.  MHI is the
+	  transport used for external modem connections for IPC Router. The
+	  MHI bus provides an asynchronous send mechanism, the QRTR MHI
+	  transport will wait for the uplink callback notification before
+	  returning to qrtr.
+
+config QRTR_USB
+	tristate "USB IPC Router channels"
+	depends on USB || (COMPILE_TEST && USB=n)
+	help
+	  Say Y here to support USB based ipcrouter channels. USB transport
+	  is used for connections with other sytems for IPC Router. The USB
+	  transport provides bulk endpoints to facilitate sending and receiving
+	  IPC Router data packets.
+
+config QRTR_FIFO
+	tristate "FIFO IPC Router channels"
+	help
+	Say Y here to support FIFO based ipcrouter channels. FIFO Transport
+	Layer enables IPC Router communication between two virtual machines.
+	The shared memory between virtual machines will be allocated by the
+	hypervisor and signal other VMs through virtualized interrupts.
+
+endif # QRTR
