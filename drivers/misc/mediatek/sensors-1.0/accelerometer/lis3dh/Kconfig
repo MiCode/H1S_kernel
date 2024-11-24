@@ -1,3 +1,0 @@
-
-config MTK_LIS3DH_NEW
-	bool "LIS3DH accelerometer for MediaTek package"
