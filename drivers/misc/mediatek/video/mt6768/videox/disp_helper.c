@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/delay.h>
 #include <linux/sched.h>
@@ -145,6 +137,9 @@ static struct {
 	{DISP_OPT_OVL_SBCH, 0, "DISP_OPT_OVL_SBCH"},
 	{DISP_OPT_GMO_OPTIMIZE, 0, "DISP_OPT_GMO_OPTIMIZE"},
 	{DISP_OPT_TUI_MODE, 0, "DISP_OPT_TUI_MODE"},
+	{DISP_OPT_LCM_HBM, 0, "DISP_OPT_LCM_HBM"},
+	/*DynFPS*/
+	{DISP_OPT_DYNAMIC_FPS, 0, "DISP_OPT_DYNAMIC_FPS"},
 };
 
 const char *disp_helper_option_spy(enum DISP_HELPER_OPT option)
@@ -414,18 +409,31 @@ void disp_helper_option_init(void)
 	disp_helper_set_option(DISP_OPT_ARR_PHASE_1, 0);
 	/* HW does not support this */
 	disp_helper_set_option(DISP_OPT_RSZ, 0);
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+	disp_helper_set_option(DISP_OPT_RPO, 0);
+#else
 	disp_helper_set_option(DISP_OPT_RPO, 1);
+#endif
 	disp_helper_set_option(DISP_OPT_DUAL_PIPE, 0);
 	disp_helper_set_option(DISP_OPT_SHARE_WDMA0, 1);
 	disp_helper_set_option(DISP_OPT_FRAME_QUEUE, 0);
 	disp_helper_set_option(DISP_OPT_ROUND_CORNER, 1);
 
 	/* OVL SBCH */
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+	disp_helper_set_option(DISP_OPT_OVL_SBCH, 0);
+#else
 	disp_helper_set_option(DISP_OPT_OVL_SBCH, 1);
+#endif
 	disp_helper_set_option(DISP_OPT_GMO_OPTIMIZE, 1);
 	disp_helper_set_option(DISP_OPT_DSI_UNDERRUN_AEE, 1);
 	disp_helper_set_option(DISP_OPT_RDMA_UNDERFLOW_AEE, 1);
 	disp_helper_set_option(DISP_OPT_TUI_MODE, 0);
+
+	/* HBM: High Backlight Mode */
+	disp_helper_set_option(DISP_OPT_LCM_HBM, 1);
+	/*DynFPS*/
+	disp_helper_set_option(DISP_OPT_DYNAMIC_FPS, 1);
 }
 
 int disp_helper_get_option_list(char *stringbuf, int buf_len)

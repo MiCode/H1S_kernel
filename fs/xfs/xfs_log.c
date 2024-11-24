@@ -1,19 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2000-2005 Silicon Graphics, Inc.
  * All Rights Reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it would be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write the Free Software Foundation,
- * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #include "xfs.h"
 #include "xfs_fs.h"
@@ -22,6 +10,7 @@
 #include "xfs_log_format.h"
 #include "xfs_trans_resv.h"
 #include "xfs_mount.h"
+#include "xfs_errortag.h"
 #include "xfs_error.h"
 #include "xfs_trans.h"
 #include "xfs_trans_priv.h"
@@ -421,7 +410,7 @@ out_error:
 }
 
 /*
- * Reserve log space and return a ticket corresponding the reservation.
+ * Reserve log space and return a ticket corresponding to the reservation.
  *
  * Each reservation is going to reserve extra space for a log record header.
  * When writes happen to the on-disk log, we don't subtract the length of the
@@ -559,7 +548,6 @@ xfs_log_done(
  */
 int
 xfs_log_notify(
-	struct xfs_mount	*mp,
 	struct xlog_in_core	*iclog,
 	xfs_log_callback_t	*cb)
 {
@@ -756,6 +744,7 @@ xfs_log_mount_finish(
 {
 	int	error = 0;
 	bool	readonly = (mp->m_flags & XFS_MOUNT_RDONLY);
+	bool	recovered = mp->m_log->l_flags & XLOG_RECOVERY_NEEDED;
 
 	if (mp->m_flags & XFS_MOUNT_NORECOVERY) {
 		ASSERT(mp->m_flags & XFS_MOUNT_RDONLY);
@@ -779,18 +768,33 @@ xfs_log_mount_finish(
 	 * something to an unlinked inode, the irele won't cause
 	 * premature truncation and freeing of the inode, which results
 	 * in log recovery failure.  We have to evict the unreferenced
-	 * lru inodes after clearing MS_ACTIVE because we don't
+	 * lru inodes after clearing SB_ACTIVE because we don't
 	 * otherwise clean up the lru if there's a subsequent failure in
 	 * xfs_mountfs, which leads to us leaking the inodes if nothing
 	 * else (e.g. quotacheck) references the inodes before the
 	 * mount failure occurs.
 	 */
-	mp->m_super->s_flags |= MS_ACTIVE;
+	mp->m_super->s_flags |= SB_ACTIVE;
 	error = xlog_recover_finish(mp->m_log);
 	if (!error)
 		xfs_log_work_queue(mp);
-	mp->m_super->s_flags &= ~MS_ACTIVE;
+	mp->m_super->s_flags &= ~SB_ACTIVE;
 	evict_inodes(mp->m_super);
+
+	/*
+	 * Drain the buffer LRU after log recovery. This is required for v4
+	 * filesystems to avoid leaving around buffers with NULL verifier ops,
+	 * but we do it unconditionally to make sure we're always in a clean
+	 * cache state after mount.
+	 *
+	 * Don't push in the error case because the AIL may have pending intents
+	 * that aren't removed until recovery is cancelled.
+	 */
+	if (!error && recovered) {
+		xfs_log_force(mp, XFS_LOG_SYNC);
+		xfs_ail_push_all_sync(mp->m_ail);
+	}
+	xfs_wait_buftarg(mp->m_ddev_targp);
 
 	if (readonly)
 		mp->m_flags |= XFS_MOUNT_RDONLY;
@@ -822,6 +826,88 @@ xfs_log_mount_cancel(
  * deallocation must not be done until source-end.
  */
 
+/* Actually write the unmount record to disk. */
+static void
+xfs_log_write_unmount_record(
+	struct xfs_mount	*mp)
+{
+	/* the data section must be 32 bit size aligned */
+	struct xfs_unmount_log_format magic = {
+		.magic = XLOG_UNMOUNT_TYPE,
+	};
+	struct xfs_log_iovec reg = {
+		.i_addr = &magic,
+		.i_len = sizeof(magic),
+		.i_type = XLOG_REG_TYPE_UNMOUNT,
+	};
+	struct xfs_log_vec vec = {
+		.lv_niovecs = 1,
+		.lv_iovecp = &reg,
+	};
+	struct xlog		*log = mp->m_log;
+	struct xlog_in_core	*iclog;
+	struct xlog_ticket	*tic = NULL;
+	xfs_lsn_t		lsn;
+	uint			flags = XLOG_UNMOUNT_TRANS;
+	int			error;
+
+	error = xfs_log_reserve(mp, 600, 1, &tic, XFS_LOG, 0);
+	if (error)
+		goto out_err;
+
+	/*
+	 * If we think the summary counters are bad, clear the unmount header
+	 * flag in the unmount record so that the summary counters will be
+	 * recalculated during log recovery at next mount.  Refer to
+	 * xlog_check_unmount_rec for more details.
+	 */
+	if (XFS_TEST_ERROR((mp->m_flags & XFS_MOUNT_BAD_SUMMARY), mp,
+			XFS_ERRTAG_FORCE_SUMMARY_RECALC)) {
+		xfs_alert(mp, "%s: will fix summary counters at next mount",
+				__func__);
+		flags &= ~XLOG_UNMOUNT_TRANS;
+	}
+
+	/* remove inited flag, and account for space used */
+	tic->t_flags = 0;
+	tic->t_curr_res -= sizeof(magic);
+	error = xlog_write(log, &vec, tic, &lsn, NULL, flags);
+	/*
+	 * At this point, we're umounting anyway, so there's no point in
+	 * transitioning log state to IOERROR. Just continue...
+	 */
+out_err:
+	if (error)
+		xfs_alert(mp, "%s: unmount record failed", __func__);
+
+	spin_lock(&log->l_icloglock);
+	iclog = log->l_iclog;
+	atomic_inc(&iclog->ic_refcnt);
+	xlog_state_want_sync(log, iclog);
+	spin_unlock(&log->l_icloglock);
+	error = xlog_state_release_iclog(log, iclog);
+
+	spin_lock(&log->l_icloglock);
+	switch (iclog->ic_state) {
+	default:
+		if (!XLOG_FORCED_SHUTDOWN(log)) {
+			xlog_wait(&iclog->ic_force_wait, &log->l_icloglock);
+			break;
+		}
+		/* fall through */
+	case XLOG_STATE_ACTIVE:
+	case XLOG_STATE_DIRTY:
+		spin_unlock(&log->l_icloglock);
+		break;
+	}
+
+	if (tic) {
+		trace_xfs_log_umount_write(log, tic);
+		xlog_ungrant_log_space(log, tic);
+		xfs_log_ticket_put(tic);
+	}
+}
+
 /*
  * Unmount record used to have a string "Unmount filesystem--" in the
  * data section where the "Un" was really a magic number (XLOG_UNMOUNT_TYPE).
@@ -838,8 +924,6 @@ xfs_log_unmount_write(xfs_mount_t *mp)
 #ifdef DEBUG
 	xlog_in_core_t	 *first_iclog;
 #endif
-	xlog_ticket_t	*tic = NULL;
-	xfs_lsn_t	 lsn;
 	int		 error;
 
 	/*
@@ -852,7 +936,7 @@ xfs_log_unmount_write(xfs_mount_t *mp)
 		return 0;
 	}
 
-	error = _xfs_log_force(mp, XFS_LOG_SYNC, NULL);
+	error = xfs_log_force(mp, XFS_LOG_SYNC);
 	ASSERT(error || !(XLOG_FORCED_SHUTDOWN(log)));
 
 #ifdef DEBUG
@@ -866,66 +950,7 @@ xfs_log_unmount_write(xfs_mount_t *mp)
 	} while (iclog != first_iclog);
 #endif
 	if (! (XLOG_FORCED_SHUTDOWN(log))) {
-		error = xfs_log_reserve(mp, 600, 1, &tic, XFS_LOG, 0);
-		if (!error) {
-			/* the data section must be 32 bit size aligned */
-			struct {
-			    uint16_t magic;
-			    uint16_t pad1;
-			    uint32_t pad2; /* may as well make it 64 bits */
-			} magic = {
-				.magic = XLOG_UNMOUNT_TYPE,
-			};
-			struct xfs_log_iovec reg = {
-				.i_addr = &magic,
-				.i_len = sizeof(magic),
-				.i_type = XLOG_REG_TYPE_UNMOUNT,
-			};
-			struct xfs_log_vec vec = {
-				.lv_niovecs = 1,
-				.lv_iovecp = &reg,
-			};
-
-			/* remove inited flag, and account for space used */
-			tic->t_flags = 0;
-			tic->t_curr_res -= sizeof(magic);
-			error = xlog_write(log, &vec, tic, &lsn,
-					   NULL, XLOG_UNMOUNT_TRANS);
-			/*
-			 * At this point, we're umounting anyway,
-			 * so there's no point in transitioning log state
-			 * to IOERROR. Just continue...
-			 */
-		}
-
-		if (error)
-			xfs_alert(mp, "%s: unmount record failed", __func__);
-
-
-		spin_lock(&log->l_icloglock);
-		iclog = log->l_iclog;
-		atomic_inc(&iclog->ic_refcnt);
-		xlog_state_want_sync(log, iclog);
-		spin_unlock(&log->l_icloglock);
-		error = xlog_state_release_iclog(log, iclog);
-
-		spin_lock(&log->l_icloglock);
-		if (!(iclog->ic_state == XLOG_STATE_ACTIVE ||
-		      iclog->ic_state == XLOG_STATE_DIRTY)) {
-			if (!XLOG_FORCED_SHUTDOWN(log)) {
-				xlog_wait(&iclog->ic_force_wait,
-							&log->l_icloglock);
-			} else {
-				spin_unlock(&log->l_icloglock);
-			}
-		} else {
-			spin_unlock(&log->l_icloglock);
-		}
-		if (tic) {
-			trace_xfs_log_umount_write(log, tic);
-			xlog_ungrant_log_space(log, tic);
-			xfs_log_ticket_put(tic);
-		}
+		xfs_log_write_unmount_record(mp);
 	} else {
 		/*
 		 * We're already in forced_shutdown mode, couldn't
@@ -1030,6 +1055,8 @@ xfs_log_item_init(
 
 	INIT_LIST_HEAD(&item->li_ail);
 	INIT_LIST_HEAD(&item->li_cil);
+	INIT_LIST_HEAD(&item->li_bio_list);
+	INIT_LIST_HEAD(&item->li_trans);
 }
 
 /*
@@ -1131,7 +1158,7 @@ xlog_assign_tail_lsn_locked(
 	struct xfs_log_item	*lip;
 	xfs_lsn_t		tail_lsn;
 
-	assert_spin_locked(&mp->m_ail->xa_lock);
+	assert_spin_locked(&mp->m_ail->ail_lock);
 
 	/*
 	 * To make sure we always have a valid LSN for the log tail we keep
@@ -1154,9 +1181,9 @@ xlog_assign_tail_lsn(
 {
 	xfs_lsn_t		tail_lsn;
 
-	spin_lock(&mp->m_ail->xa_lock);
+	spin_lock(&mp->m_ail->ail_lock);
 	tail_lsn = xlog_assign_tail_lsn_locked(mp);
-	spin_unlock(&mp->m_ail->xa_lock);
+	spin_unlock(&mp->m_ail->ail_lock);
 
 	return tail_lsn;
 }
@@ -1225,7 +1252,7 @@ xlog_space_left(
 static void
 xlog_iodone(xfs_buf_t *bp)
 {
-	struct xlog_in_core	*iclog = bp->b_fspriv;
+	struct xlog_in_core	*iclog = bp->b_log_item;
 	struct xlog		*l = iclog->ic_log;
 	int			aborted = 0;
 
@@ -1625,8 +1652,8 @@ xlog_grant_push_ail(
 	 * log, and 256 blocks.
 	 */
 	free_threshold = BTOBB(need_bytes);
-	free_threshold = MAX(free_threshold, (log->l_logBBsize >> 2));
-	free_threshold = MAX(free_threshold, 256);
+	free_threshold = max(free_threshold, (log->l_logBBsize >> 2));
+	free_threshold = max(free_threshold, 256);
 	if (free_blocks >= free_threshold)
 		return;
 
@@ -1758,7 +1785,7 @@ STATIC int
 xlog_bdstrat(
 	struct xfs_buf		*bp)
 {
-	struct xlog_in_core	*iclog = bp->b_fspriv;
+	struct xlog_in_core	*iclog = bp->b_log_item;
 
 	xfs_buf_lock(bp);
 	if (iclog->ic_state & XLOG_STATE_IOERROR) {
@@ -1904,7 +1931,7 @@ xlog_sync(
 	}
 
 	bp->b_io_length = BTOBB(count);
-	bp->b_fspriv = iclog;
+	bp->b_log_item = iclog;
 	bp->b_flags &= ~XBF_FLUSH;
 	bp->b_flags |= (XBF_ASYNC | XBF_SYNCIO | XBF_WRITE | XBF_FUA);
 
@@ -1943,7 +1970,7 @@ xlog_sync(
 		XFS_BUF_SET_ADDR(bp, 0);	     /* logical 0 */
 		xfs_buf_associate_memory(bp,
 				(char *)&iclog->ic_header + count, split);
-		bp->b_fspriv = iclog;
+		bp->b_log_item = iclog;
 		bp->b_flags &= ~XBF_FLUSH;
 		bp->b_flags |= (XBF_ASYNC | XBF_SYNCIO | XBF_WRITE | XBF_FUA);
 
@@ -2095,27 +2122,28 @@ xlog_print_tic_res(
  */
 void
 xlog_print_trans(
-	struct xfs_trans		*tp)
+	struct xfs_trans	*tp)
 {
-	struct xfs_mount		*mp = tp->t_mountp;
-	struct xfs_log_item_desc	*lidp;
+	struct xfs_mount	*mp = tp->t_mountp;
+	struct xfs_log_item	*lip;
 
 	/* dump core transaction and ticket info */
 	xfs_warn(mp, "transaction summary:");
-	xfs_warn(mp, "  flags	= 0x%x", tp->t_flags);
+	xfs_warn(mp, "  log res   = %d", tp->t_log_res);
+	xfs_warn(mp, "  log count = %d", tp->t_log_count);
+	xfs_warn(mp, "  flags     = 0x%x", tp->t_flags);
 
 	xlog_print_tic_res(mp, tp->t_ticket);
 
 	/* dump each log item */
-	list_for_each_entry(lidp, &tp->t_items, lid_trans) {
-		struct xfs_log_item	*lip = lidp->lid_item;
+	list_for_each_entry(lip, &tp->t_items, li_trans) {
 		struct xfs_log_vec	*lv = lip->li_lv;
 		struct xfs_log_iovec	*vec;
 		int			i;
 
 		xfs_warn(mp, "log item: ");
 		xfs_warn(mp, "  type	= 0x%x", lip->li_type);
-		xfs_warn(mp, "  flags	= 0x%x", lip->li_flags);
+		xfs_warn(mp, "  flags	= 0x%lx", lip->li_flags);
 		if (!lv)
 			continue;
 		xfs_warn(mp, "  niovecs	= %d", lv->lv_niovecs);
@@ -2227,7 +2255,7 @@ xlog_write_setup_ophdr(
 		break;
 	default:
 		xfs_warn(log->l_mp,
-			"Bad XFS transaction clientid 0x%x in ticket 0x%p",
+			"Bad XFS transaction clientid 0x%x in ticket "PTR_FMT,
 			ophdr->oh_clientid, ticket);
 		return NULL;
 	}
@@ -2684,7 +2712,6 @@ xlog_state_do_callback(
 	int		   funcdidcallbacks; /* flag: function did callbacks */
 	int		   repeats;	/* for issuing console warnings if
 					 * looping too many times */
-	int		   wake = 0;
 
 	spin_lock(&log->l_icloglock);
 	first_iclog = iclog = log->l_iclog;
@@ -2886,11 +2913,9 @@ xlog_state_do_callback(
 #endif
 
 	if (log->l_iclog->ic_state & (XLOG_STATE_ACTIVE|XLOG_STATE_IOERROR))
-		wake = 1;
-	spin_unlock(&log->l_icloglock);
-
-	if (wake)
 		wake_up_all(&log->l_flush_wait);
+
+	spin_unlock(&log->l_icloglock);
 }
 
 
@@ -3286,129 +3311,178 @@ xlog_state_switch_iclogs(
  *		not in the active nor dirty state.
  */
 int
-_xfs_log_force(
+xfs_log_force(
 	struct xfs_mount	*mp,
-	uint			flags,
-	int			*log_flushed)
+	uint			flags)
 {
 	struct xlog		*log = mp->m_log;
 	struct xlog_in_core	*iclog;
 	xfs_lsn_t		lsn;
 
 	XFS_STATS_INC(mp, xs_log_force);
+	trace_xfs_log_force(mp, 0, _RET_IP_);
 
 	xlog_cil_force(log);
 
 	spin_lock(&log->l_icloglock);
-
 	iclog = log->l_iclog;
-	if (iclog->ic_state & XLOG_STATE_IOERROR) {
-		spin_unlock(&log->l_icloglock);
-		return -EIO;
-	}
+	if (iclog->ic_state & XLOG_STATE_IOERROR)
+		goto out_error;
 
-	/* If the head iclog is not active nor dirty, we just attach
-	 * ourselves to the head and go to sleep.
-	 */
-	if (iclog->ic_state == XLOG_STATE_ACTIVE ||
-	    iclog->ic_state == XLOG_STATE_DIRTY) {
+	if (iclog->ic_state == XLOG_STATE_DIRTY ||
+	    (iclog->ic_state == XLOG_STATE_ACTIVE &&
+	     atomic_read(&iclog->ic_refcnt) == 0 && iclog->ic_offset == 0)) {
 		/*
-		 * If the head is dirty or (active and empty), then
-		 * we need to look at the previous iclog.  If the previous
-		 * iclog is active or dirty we are done.  There is nothing
-		 * to sync out.  Otherwise, we attach ourselves to the
+		 * If the head is dirty or (active and empty), then we need to
+		 * look at the previous iclog.
+		 *
+		 * If the previous iclog is active or dirty we are done.  There
+		 * is nothing to sync out. Otherwise, we attach ourselves to the
 		 * previous iclog and go to sleep.
 		 */
-		if (iclog->ic_state == XLOG_STATE_DIRTY ||
-		    (atomic_read(&iclog->ic_refcnt) == 0
-		     && iclog->ic_offset == 0)) {
-			iclog = iclog->ic_prev;
-			if (iclog->ic_state == XLOG_STATE_ACTIVE ||
-			    iclog->ic_state == XLOG_STATE_DIRTY)
-				goto no_sleep;
-			else
-				goto maybe_sleep;
-		} else {
-			if (atomic_read(&iclog->ic_refcnt) == 0) {
-				/* We are the only one with access to this
-				 * iclog.  Flush it out now.  There should
-				 * be a roundoff of zero to show that someone
-				 * has already taken care of the roundoff from
-				 * the previous sync.
-				 */
-				atomic_inc(&iclog->ic_refcnt);
-				lsn = be64_to_cpu(iclog->ic_header.h_lsn);
-				xlog_state_switch_iclogs(log, iclog, 0);
-				spin_unlock(&log->l_icloglock);
-
-				if (xlog_state_release_iclog(log, iclog))
-					return -EIO;
-
-				if (log_flushed)
-					*log_flushed = 1;
-				spin_lock(&log->l_icloglock);
-				if (be64_to_cpu(iclog->ic_header.h_lsn) == lsn &&
-				    iclog->ic_state != XLOG_STATE_DIRTY)
-					goto maybe_sleep;
-				else
-					goto no_sleep;
-			} else {
-				/* Someone else is writing to this iclog.
-				 * Use its call to flush out the data.  However,
-				 * the other thread may not force out this LR,
-				 * so we mark it WANT_SYNC.
-				 */
-				xlog_state_switch_iclogs(log, iclog, 0);
-				goto maybe_sleep;
-			}
-		}
-	}
-
-	/* By the time we come around again, the iclog could've been filled
-	 * which would give it another lsn.  If we have a new lsn, just
-	 * return because the relevant data has been flushed.
-	 */
-maybe_sleep:
-	if (flags & XFS_LOG_SYNC) {
-		/*
-		 * We must check if we're shutting down here, before
-		 * we wait, while we're holding the l_icloglock.
-		 * Then we check again after waking up, in case our
-		 * sleep was disturbed by a bad news.
-		 */
-		if (iclog->ic_state & XLOG_STATE_IOERROR) {
+		iclog = iclog->ic_prev;
+		if (iclog->ic_state == XLOG_STATE_ACTIVE ||
+		    iclog->ic_state == XLOG_STATE_DIRTY)
+			goto out_unlock;
+	} else if (iclog->ic_state == XLOG_STATE_ACTIVE) {
+		if (atomic_read(&iclog->ic_refcnt) == 0) {
+			/*
+			 * We are the only one with access to this iclog.
+			 *
+			 * Flush it out now.  There should be a roundoff of zero
+			 * to show that someone has already taken care of the
+			 * roundoff from the previous sync.
+			 */
+			atomic_inc(&iclog->ic_refcnt);
+			lsn = be64_to_cpu(iclog->ic_header.h_lsn);
+			xlog_state_switch_iclogs(log, iclog, 0);
 			spin_unlock(&log->l_icloglock);
-			return -EIO;
-		}
-		XFS_STATS_INC(mp, xs_log_force_sleep);
-		xlog_wait(&iclog->ic_force_wait, &log->l_icloglock);
-		/*
-		 * No need to grab the log lock here since we're
-		 * only deciding whether or not to return EIO
-		 * and the memory read should be atomic.
-		 */
-		if (iclog->ic_state & XLOG_STATE_IOERROR)
-			return -EIO;
-	} else {
 
-no_sleep:
-		spin_unlock(&log->l_icloglock);
+			if (xlog_state_release_iclog(log, iclog))
+				return -EIO;
+
+			spin_lock(&log->l_icloglock);
+			if (be64_to_cpu(iclog->ic_header.h_lsn) != lsn ||
+			    iclog->ic_state == XLOG_STATE_DIRTY)
+				goto out_unlock;
+		} else {
+			/*
+			 * Someone else is writing to this iclog.
+			 *
+			 * Use its call to flush out the data.  However, the
+			 * other thread may not force out this LR, so we mark
+			 * it WANT_SYNC.
+			 */
+			xlog_state_switch_iclogs(log, iclog, 0);
+		}
+	} else {
+		/*
+		 * If the head iclog is not active nor dirty, we just attach
+		 * ourselves to the head and go to sleep if necessary.
+		 */
+		;
 	}
+
+	if (!(flags & XFS_LOG_SYNC))
+		goto out_unlock;
+
+	if (iclog->ic_state & XLOG_STATE_IOERROR)
+		goto out_error;
+	XFS_STATS_INC(mp, xs_log_force_sleep);
+	xlog_wait(&iclog->ic_force_wait, &log->l_icloglock);
+	if (iclog->ic_state & XLOG_STATE_IOERROR)
+		return -EIO;
 	return 0;
+
+out_unlock:
+	spin_unlock(&log->l_icloglock);
+	return 0;
+out_error:
+	spin_unlock(&log->l_icloglock);
+	return -EIO;
 }
 
-/*
- * Wrapper for _xfs_log_force(), to be used when caller doesn't care
- * about errors or whether the log was flushed or not. This is the normal
- * interface to use when trying to unpin items or move the log forward.
- */
-void
-xfs_log_force(
-	xfs_mount_t	*mp,
-	uint		flags)
+static int
+__xfs_log_force_lsn(
+	struct xfs_mount	*mp,
+	xfs_lsn_t		lsn,
+	uint			flags,
+	int			*log_flushed,
+	bool			already_slept)
 {
-	trace_xfs_log_force(mp, 0, _RET_IP_);
-	_xfs_log_force(mp, flags, NULL);
+	struct xlog		*log = mp->m_log;
+	struct xlog_in_core	*iclog;
+
+	spin_lock(&log->l_icloglock);
+	iclog = log->l_iclog;
+	if (iclog->ic_state & XLOG_STATE_IOERROR)
+		goto out_error;
+
+	while (be64_to_cpu(iclog->ic_header.h_lsn) != lsn) {
+		iclog = iclog->ic_next;
+		if (iclog == log->l_iclog)
+			goto out_unlock;
+	}
+
+	if (iclog->ic_state == XLOG_STATE_DIRTY)
+		goto out_unlock;
+
+	if (iclog->ic_state == XLOG_STATE_ACTIVE) {
+		/*
+		 * We sleep here if we haven't already slept (e.g. this is the
+		 * first time we've looked at the correct iclog buf) and the
+		 * buffer before us is going to be sync'ed.  The reason for this
+		 * is that if we are doing sync transactions here, by waiting
+		 * for the previous I/O to complete, we can allow a few more
+		 * transactions into this iclog before we close it down.
+		 *
+		 * Otherwise, we mark the buffer WANT_SYNC, and bump up the
+		 * refcnt so we can release the log (which drops the ref count).
+		 * The state switch keeps new transaction commits from using
+		 * this buffer.  When the current commits finish writing into
+		 * the buffer, the refcount will drop to zero and the buffer
+		 * will go out then.
+		 */
+		if (!already_slept &&
+		    (iclog->ic_prev->ic_state &
+		     (XLOG_STATE_WANT_SYNC | XLOG_STATE_SYNCING))) {
+			ASSERT(!(iclog->ic_state & XLOG_STATE_IOERROR));
+
+			XFS_STATS_INC(mp, xs_log_force_sleep);
+
+			xlog_wait(&iclog->ic_prev->ic_write_wait,
+					&log->l_icloglock);
+			return -EAGAIN;
+		}
+		atomic_inc(&iclog->ic_refcnt);
+		xlog_state_switch_iclogs(log, iclog, 0);
+		spin_unlock(&log->l_icloglock);
+		if (xlog_state_release_iclog(log, iclog))
+			return -EIO;
+		if (log_flushed)
+			*log_flushed = 1;
+		spin_lock(&log->l_icloglock);
+	}
+
+	if (!(flags & XFS_LOG_SYNC) ||
+	    (iclog->ic_state & (XLOG_STATE_ACTIVE | XLOG_STATE_DIRTY)))
+		goto out_unlock;
+
+	if (iclog->ic_state & XLOG_STATE_IOERROR)
+		goto out_error;
+
+	XFS_STATS_INC(mp, xs_log_force_sleep);
+	xlog_wait(&iclog->ic_force_wait, &log->l_icloglock);
+	if (iclog->ic_state & XLOG_STATE_IOERROR)
+		return -EIO;
+	return 0;
+
+out_unlock:
+	spin_unlock(&log->l_icloglock);
+	return 0;
+out_error:
+	spin_unlock(&log->l_icloglock);
+	return -EIO;
 }
 
 /*
@@ -3420,135 +3494,32 @@ xfs_log_force(
  *		state and go to sleep or return.
  *	If it is in any other state, go to sleep or return.
  *
- * Synchronous forces are implemented with a signal variable. All callers
- * to force a given lsn to disk will wait on a the sv attached to the
- * specific in-core log.  When given in-core log finally completes its
- * write to disk, that thread will wake up all threads waiting on the
- * sv.
+ * Synchronous forces are implemented with a wait queue.  All callers trying
+ * to force a given lsn to disk must wait on the queue attached to the
+ * specific in-core log.  When given in-core log finally completes its write
+ * to disk, that thread will wake up all threads waiting on the queue.
  */
 int
-_xfs_log_force_lsn(
+xfs_log_force_lsn(
 	struct xfs_mount	*mp,
 	xfs_lsn_t		lsn,
 	uint			flags,
 	int			*log_flushed)
 {
-	struct xlog		*log = mp->m_log;
-	struct xlog_in_core	*iclog;
-	int			already_slept = 0;
-
+	int			ret;
 	ASSERT(lsn != 0);
 
 	XFS_STATS_INC(mp, xs_log_force);
+	trace_xfs_log_force(mp, lsn, _RET_IP_);
 
-	lsn = xlog_cil_force_lsn(log, lsn);
+	lsn = xlog_cil_force_lsn(mp->m_log, lsn);
 	if (lsn == NULLCOMMITLSN)
 		return 0;
 
-try_again:
-	spin_lock(&log->l_icloglock);
-	iclog = log->l_iclog;
-	if (iclog->ic_state & XLOG_STATE_IOERROR) {
-		spin_unlock(&log->l_icloglock);
-		return -EIO;
-	}
-
-	do {
-		if (be64_to_cpu(iclog->ic_header.h_lsn) != lsn) {
-			iclog = iclog->ic_next;
-			continue;
-		}
-
-		if (iclog->ic_state == XLOG_STATE_DIRTY) {
-			spin_unlock(&log->l_icloglock);
-			return 0;
-		}
-
-		if (iclog->ic_state == XLOG_STATE_ACTIVE) {
-			/*
-			 * We sleep here if we haven't already slept (e.g.
-			 * this is the first time we've looked at the correct
-			 * iclog buf) and the buffer before us is going to
-			 * be sync'ed. The reason for this is that if we
-			 * are doing sync transactions here, by waiting for
-			 * the previous I/O to complete, we can allow a few
-			 * more transactions into this iclog before we close
-			 * it down.
-			 *
-			 * Otherwise, we mark the buffer WANT_SYNC, and bump
-			 * up the refcnt so we can release the log (which
-			 * drops the ref count).  The state switch keeps new
-			 * transaction commits from using this buffer.  When
-			 * the current commits finish writing into the buffer,
-			 * the refcount will drop to zero and the buffer will
-			 * go out then.
-			 */
-			if (!already_slept &&
-			    (iclog->ic_prev->ic_state &
-			     (XLOG_STATE_WANT_SYNC | XLOG_STATE_SYNCING))) {
-				ASSERT(!(iclog->ic_state & XLOG_STATE_IOERROR));
-
-				XFS_STATS_INC(mp, xs_log_force_sleep);
-
-				xlog_wait(&iclog->ic_prev->ic_write_wait,
-							&log->l_icloglock);
-				already_slept = 1;
-				goto try_again;
-			}
-			atomic_inc(&iclog->ic_refcnt);
-			xlog_state_switch_iclogs(log, iclog, 0);
-			spin_unlock(&log->l_icloglock);
-			if (xlog_state_release_iclog(log, iclog))
-				return -EIO;
-			if (log_flushed)
-				*log_flushed = 1;
-			spin_lock(&log->l_icloglock);
-		}
-
-		if ((flags & XFS_LOG_SYNC) && /* sleep */
-		    !(iclog->ic_state &
-		      (XLOG_STATE_ACTIVE | XLOG_STATE_DIRTY))) {
-			/*
-			 * Don't wait on completion if we know that we've
-			 * gotten a log write error.
-			 */
-			if (iclog->ic_state & XLOG_STATE_IOERROR) {
-				spin_unlock(&log->l_icloglock);
-				return -EIO;
-			}
-			XFS_STATS_INC(mp, xs_log_force_sleep);
-			xlog_wait(&iclog->ic_force_wait, &log->l_icloglock);
-			/*
-			 * No need to grab the log lock here since we're
-			 * only deciding whether or not to return EIO
-			 * and the memory read should be atomic.
-			 */
-			if (iclog->ic_state & XLOG_STATE_IOERROR)
-				return -EIO;
-		} else {		/* just return */
-			spin_unlock(&log->l_icloglock);
-		}
-
-		return 0;
-	} while (iclog != log->l_iclog);
-
-	spin_unlock(&log->l_icloglock);
-	return 0;
-}
-
-/*
- * Wrapper for _xfs_log_force_lsn(), to be used when caller doesn't care
- * about errors or whether the log was flushed or not. This is the normal
- * interface to use when trying to unpin items or move the log forward.
- */
-void
-xfs_log_force_lsn(
-	xfs_mount_t	*mp,
-	xfs_lsn_t	lsn,
-	uint		flags)
-{
-	trace_xfs_log_force(mp, lsn, _RET_IP_);
-	_xfs_log_force_lsn(mp, lsn, flags, NULL);
+	ret = __xfs_log_force_lsn(mp, lsn, flags, log_flushed, false);
+	if (ret == -EAGAIN)
+		ret = __xfs_log_force_lsn(mp, lsn, flags, log_flushed, true);
+	return ret;
 }
 
 /*
@@ -3748,7 +3719,7 @@ xlog_ticket_alloc(
  * one of the iclogs.  This uses backup pointers stored in a different
  * part of the log in case we trash the log structure.
  */
-void
+STATIC void
 xlog_verify_dest_ptr(
 	struct xlog	*log,
 	void		*ptr)
@@ -3909,7 +3880,7 @@ xlog_verify_iclog(
 		}
 		if (clientid != XFS_TRANSACTION && clientid != XFS_LOG)
 			xfs_warn(log->l_mp,
-				"%s: invalid clientid %d op 0x%p offset 0x%lx",
+				"%s: invalid clientid %d op "PTR_FMT" offset 0x%lx",
 				__func__, clientid, ophead,
 				(unsigned long)field_offset);
 
@@ -4017,7 +3988,7 @@ xfs_log_force_umount(
 	 * to guarantee this.
 	 */
 	if (!logerror)
-		_xfs_log_force(mp, XFS_LOG_SYNC, NULL);
+		xfs_log_force(mp, XFS_LOG_SYNC);
 
 	/*
 	 * mark the filesystem and the as in a shutdown state and wake
@@ -4052,7 +4023,9 @@ xfs_log_force_umount(
 	 * item committed callback functions will do this again under lock to
 	 * avoid races.
 	 */
+	spin_lock(&log->l_cilp->xc_push_lock);
 	wake_up_all(&log->l_cilp->xc_commit_wait);
+	spin_unlock(&log->l_cilp->xc_push_lock);
 	xlog_state_do_callback(log, XFS_LI_ABORTED, NULL);
 
 #ifdef XFSERRORDEBUG
@@ -4131,4 +4104,13 @@ xfs_log_check_lsn(
 	}
 
 	return valid;
+}
+
+bool
+xfs_log_in_recovery(
+	struct xfs_mount	*mp)
+{
+	struct xlog		*log = mp->m_log;
+
+	return log->l_flags & XLOG_ACTIVE_RECOVERY;
 }

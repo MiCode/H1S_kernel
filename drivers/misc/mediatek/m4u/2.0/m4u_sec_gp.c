@@ -1,15 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 #include <linux/notifier.h>
 #include "m4u_priv.h"
 #include "m4u.h"
@@ -21,7 +14,7 @@
 
 static struct m4u_sec_gp_context m4u_gp_ta_ctx = {
 #if defined(CONFIG_MICROTRUST_TEE_SUPPORT) || \
-	defined(CONFIG_TRUSTONIC_TEE_SUPPORT)
+			defined(CONFIG_TRUSTONIC_TEE_SUPPORT)
 		.uuid = (struct TEEC_UUID)M4U_TA_UUID,
 #else
 		.uuid = (TEEC_UUID)M4U_TA_UUID,
@@ -44,17 +37,18 @@ static int m4u_exec_session(struct m4u_sec_context *ctx)
 	struct m4u_sec_gp_context *gp_ctx = ctx->imp;
 
 	if (!ctx->m4u_msg) {
-		M4UMSG("%s TCI/DCI error\n", __func__);
+		m4u_err("%s TCI/DCI error\n", __func__);
 		return -1;
 	}
 
-	M4ULOG_HIGH("%s, Notify 0x%x\n", __func__, ctx->m4u_msg->cmd);
+	m4u_high_info("%s, Notify 0x%x\n", __func__, ctx->m4u_msg->cmd);
 
 	memset(&m4u_operation, 0, sizeof(struct TEEC_Operation));
+
 #if defined(CONFIG_MICROTRUST_TEE_SUPPORT) || \
 	defined(CONFIG_TRUSTONIC_TEE_SUPPORT)
-	m4u_operation.paramTypes = TEEC_PARAM_TYPES(
-		TEEC_MEMREF_PARTIAL_INPUT, TEEC_NONE, TEEC_NONE, TEEC_NONE);
+	m4u_operation.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_PARTIAL_INPUT,
+				TEEC_NONE, TEEC_NONE, TEEC_NONE);
 #endif
 
 	m4u_operation.params[0].memref.parent = &gp_ctx->shared_mem;
@@ -65,11 +59,11 @@ static int m4u_exec_session(struct m4u_sec_context *ctx)
 				ctx->m4u_msg->cmd, &m4u_operation, NULL);
 
 	if (ret != TEEC_SUCCESS) {
-		m4u_aee_print("tz_m4u Notify failed: %d\n", ret);
+		m4u_aee_err("tz_m4u Notify failed: %d\n", ret);
 		goto exit;
 	}
 
-	M4ULOG_HIGH("%s, get_resp %x\n", __func__, ctx->m4u_msg->cmd);
+	m4u_high_info("%s, get_resp %x\n", __func__, ctx->m4u_msg->cmd);
 exit:
 	return ret;
 }
@@ -81,11 +75,11 @@ static int m4u_sec_gp_init(struct m4u_sec_context *ctx)
 
 	ret = TEEC_InitializeContext(TA_UUID, &gp_ctx->ctx);
 	if (ret != TEEC_SUCCESS) {
-		M4UMSG("teec_initialize_context failed: %x\n", ret);
+		m4u_err("teec_initialize_context failed: %x\n", ret);
 		return ret;
 	}
 
-	M4ULOG_HIGH("%s, ta teec_initialize_context\n", __func__);
+	m4u_high_info("%s, ta teec_initialize_context\n", __func__);
 
 
 	memset(&gp_ctx->shared_mem, 0, sizeof(struct TEEC_SharedMemory));
@@ -96,28 +90,28 @@ static int m4u_sec_gp_init(struct m4u_sec_context *ctx)
 	ret = TEEC_AllocateSharedMemory(&gp_ctx->ctx, &gp_ctx->shared_mem);
 	if (ret == TEEC_SUCCESS) {
 		ctx->m4u_msg = (struct m4u_msg *)gp_ctx->shared_mem.buffer;
-		M4ULOG_HIGH("teec_allocate_shared_memory buf: 0x%p\n",
-		gp_ctx->shared_mem.buffer);
+		m4u_high_info("teec_allocate_shared_memory buf: 0x%p\n",
+			      gp_ctx->shared_mem.buffer);
 	} else {
-		M4UMSG("teec_allocate_shared_memory failed: %d\n", ret);
+		m4u_err("teec_allocate_shared_memory failed: %d\n", ret);
 		goto exit_finalize;
 	}
 
 	if (!ctx->m4u_msg) {
-		M4UMSG("m4u msg is invalid\n");
+		m4u_err("m4u msg is invalid\n");
 		return -1;
 	}
 	if (!gp_ctx->init) {
 		ret = TEEC_OpenSession(&gp_ctx->ctx, &gp_ctx->session,
 			&gp_ctx->uuid, TEEC_LOGIN_PUBLIC, NULL, NULL, NULL);
 		if (ret != TEEC_SUCCESS) {
-			M4UMSG("teec_open_session failed: %x\n", ret);
+			m4u_err("teec_open_session failed: %x\n", ret);
 			goto exit_release;
 		}
 		gp_ctx->init = 1;
 	}
 
-	M4ULOG_HIGH("%s, open TCI session success\n", __func__);
+	m4u_high_info("%s, open TCI session success\n", __func__);
 	return ret;
 
 exit_release:
@@ -136,6 +130,7 @@ static int m4u_sec_gp_deinit(struct m4u_sec_context *ctx)
 	TEEC_FinalizeContext(&gp_ctx->ctx);
 	gp_ctx->init = 0;
 
+	m4u_err("%s done\n", __func__);
 	return 0;
 }
 
@@ -163,7 +158,7 @@ int m4u_sec_context_init(void)
 	if (ret)
 		return ret;
 
-	M4ULOG_HIGH("%s:ta open session success\n", __func__);
+	m4u_high_info("%s:ta open session success\n", __func__);
 
 	return 0;
 }
@@ -184,7 +179,7 @@ struct m4u_sec_context *m4u_sec_ctx_get(unsigned int cmd)
 	ctx = &m4u_ta_ctx;
 	gp_ctx = ctx->imp;
 	if (!gp_ctx->init) {
-		M4UERR("%s: before init\n", __func__);
+		M4UERR("%s before init\n", __func__);
 		return NULL;
 	}
 	mutex_lock(&gp_ctx->ctx_lock);
@@ -206,7 +201,7 @@ int m4u_exec_cmd(struct m4u_sec_context *ctx)
 	int ret;
 
 	if (ctx->m4u_msg == NULL) {
-		M4UMSG("%s TCI/DCI error\n", __func__);
+		m4u_err("%s TCI/DCI error\n", __func__);
 		return -1;
 	}
 	ret = m4u_exec_session(ctx);

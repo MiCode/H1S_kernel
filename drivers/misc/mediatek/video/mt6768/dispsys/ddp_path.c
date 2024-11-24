@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 
 #define LOG_TAG "ddp_path"
@@ -62,7 +54,11 @@ struct sel_s {
 unsigned int module_list_scenario[DDP_SCENARIO_MAX][DDP_ENING_NUM] = {
 	/* DDP_SCENARIO_PRIMARY_DISP */
 	{
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+		DISP_MODULE_OVL0,
+#else
 		DISP_MODULE_OVL0_2L, DISP_MODULE_RSZ0, DISP_MODULE_OVL0,
+#endif
 		DISP_MODULE_RDMA0,
 		DISP_MODULE_RSZ0_VIRT0, DISP_MODULE_RSZ0_VIRT1,
 #ifdef DISP_COLOR_ON
@@ -76,7 +72,11 @@ unsigned int module_list_scenario[DDP_SCENARIO_MAX][DDP_ENING_NUM] = {
 
 	/* DDP_SCENARIO_PRIMARY_BYPASS_PQ_DISP */
 	{
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+		DISP_MODULE_OVL0,
+#else
 		DISP_MODULE_OVL0_2L, DISP_MODULE_RSZ0, DISP_MODULE_OVL0,
+#endif
 		DISP_MODULE_RDMA0,
 		DISP_MODULE_RSZ0_VIRT0, DISP_MODULE_RSZ0_VIRT1,
 		DISP_MODULE_PWM0, DISP_MODULE_DSI0,
@@ -105,14 +105,22 @@ unsigned int module_list_scenario[DDP_SCENARIO_MAX][DDP_ENING_NUM] = {
 
 	/* DDP_SCENARIO_PRIMARY_OVL_MEMOUT */
 	{
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+		DISP_MODULE_OVL0,
+#else
 		DISP_MODULE_OVL0_2L, DISP_MODULE_RSZ0, DISP_MODULE_OVL0,
+#endif
 		DISP_MODULE_WDMA0,
 		-1,
 	},
 
 	/* DDP_SCENARIO_PRIMARY_ALL */
 	{
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+		DISP_MODULE_OVL0,
+#else
 		DISP_MODULE_OVL0_2L, DISP_MODULE_RSZ0, DISP_MODULE_OVL0,
+#endif
 		DISP_MODULE_WDMA0,
 		DISP_MODULE_RDMA0,
 		DISP_MODULE_RSZ0_VIRT0, DISP_MODULE_RSZ0_VIRT1,
@@ -853,10 +861,6 @@ int ddp_path_top_clock_on(void)
 	for (larb_idx = 0; larb_idx < DISP_LARB_COUNT; larb_idx++)
 		mtk_smi_larb_get(&iommu_dev->larb_pdev[larb_idx]->dev);
 #endif
-	/* enable_clock(MT_CG_DISP0_MUTEX_32K, "DDP_MUTEX"); */
-	DISPINFO("ddp CG0:%x, CG1:%x\n",
-		DISP_REG_GET(DISP_REG_CONFIG_MMSYS_CG_CON0),
-		DISP_REG_GET(DISP_REG_CONFIG_MMSYS_CG_CON1));
 
 	return 0;
 }

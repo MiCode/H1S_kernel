@@ -44,6 +44,7 @@ enum ds_type {
 	ds_3231,
 	m41t0,
 	m41t00,
+	m41t11,
 	mcp794xx,
 	rx_8025,
 	rx_8130,
@@ -114,7 +115,6 @@ enum ds_type {
 #	define RX8025_BIT_XST		0x20
 
 struct ds1307 {
-	struct nvmem_config	nvmem_cfg;
 	enum ds_type		type;
 	unsigned long		flags;
 #define HAS_NVRAM	0		/* bit 0 == sysfs file active */
@@ -202,6 +202,7 @@ static const struct chip_desc chips[last_ds_type] = {
 		.century_reg	= DS1307_REG_HOUR,
 		.century_enable_bit = DS1340_BIT_CENTURY_EN,
 		.century_bit	= DS1340_BIT_CENTURY,
+		.do_trickle_setup = &do_trickle_setup_ds1339,
 		.trickle_charger_reg = 0x08,
 	},
 	[ds_1341] = {
@@ -227,6 +228,11 @@ static const struct chip_desc chips[last_ds_type] = {
 		.irq_handler = rx8130_irq,
 		.rtc_ops = &rx8130_rtc_ops,
 	},
+	[m41t11] = {
+		/* this is battery backed SRAM */
+		.nvram_offset	= 8,
+		.nvram_size	= 56,
+	},
 	[mcp794xx] = {
 		.alarm		= 1,
 		/* this is battery backed SRAM */
@@ -249,6 +255,7 @@ static const struct i2c_device_id ds1307_id[] = {
 	{ "ds3231", ds_3231 },
 	{ "m41t0", m41t0 },
 	{ "m41t00", m41t00 },
+	{ "m41t11", m41t11 },
 	{ "mcp7940x", mcp794xx },
 	{ "mcp7941x", mcp794xx },
 	{ "pt7c4338", ds_1307 },
@@ -299,11 +306,15 @@ static const struct of_device_id ds1307_of_match[] = {
 	},
 	{
 		.compatible = "st,m41t0",
-		.data = (void *)m41t00
+		.data = (void *)m41t0
 	},
 	{
 		.compatible = "st,m41t00",
 		.data = (void *)m41t00
+	},
+	{
+		.compatible = "st,m41t11",
+		.data = (void *)m41t11
 	},
 	{
 		.compatible = "microchip,mcp7940x",
@@ -325,6 +336,10 @@ static const struct of_device_id ds1307_of_match[] = {
 		.compatible = "isil,isl12057",
 		.data = (void *)ds_1337
 	},
+	{
+		.compatible = "epson,rx8130",
+		.data = (void *)rx_8130
+	},
 	{ }
 };
 MODULE_DEVICE_TABLE(of, ds1307_of_match);
@@ -343,11 +358,13 @@ static const struct acpi_device_id ds1307_acpi_ids[] = {
 	{ .id = "DS3231", .driver_data = ds_3231 },
 	{ .id = "M41T0", .driver_data = m41t0 },
 	{ .id = "M41T00", .driver_data = m41t00 },
+	{ .id = "M41T11", .driver_data = m41t11 },
 	{ .id = "MCP7940X", .driver_data = mcp794xx },
 	{ .id = "MCP7941X", .driver_data = mcp794xx },
 	{ .id = "PT7C4338", .driver_data = ds_1307 },
 	{ .id = "RX8025", .driver_data = rx_8025 },
 	{ .id = "ISL12057", .driver_data = ds_1337 },
+	{ .id = "RX8130", .driver_data = rx_8130 },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, ds1307_acpi_ids);
@@ -417,7 +434,11 @@ static int ds1307_get_time(struct device *dev, struct rtc_time *t)
 	t->tm_min = bcd2bin(regs[DS1307_REG_MIN] & 0x7f);
 	tmp = regs[DS1307_REG_HOUR] & 0x3f;
 	t->tm_hour = bcd2bin(tmp);
-	t->tm_wday = bcd2bin(regs[DS1307_REG_WDAY] & 0x07) - 1;
+	/* rx8130 is bit position, not BCD */
+	if (ds1307->type == rx_8130)
+		t->tm_wday = fls(regs[DS1307_REG_WDAY] & 0x7f);
+	else
+		t->tm_wday = bcd2bin(regs[DS1307_REG_WDAY] & 0x07) - 1;
 	t->tm_mday = bcd2bin(regs[DS1307_REG_MDAY] & 0x3f);
 	tmp = regs[DS1307_REG_MONTH] & 0x1f;
 	t->tm_mon = bcd2bin(tmp) - 1;
@@ -433,8 +454,7 @@ static int ds1307_get_time(struct device *dev, struct rtc_time *t)
 		t->tm_hour, t->tm_mday,
 		t->tm_mon, t->tm_year, t->tm_wday);
 
-	/* initial clock setting can be undefined */
-	return rtc_valid_tm(t);
+	return 0;
 }
 
 static int ds1307_set_time(struct device *dev, struct rtc_time *t)
@@ -465,7 +485,11 @@ static int ds1307_set_time(struct device *dev, struct rtc_time *t)
 	regs[DS1307_REG_SECS] = bin2bcd(t->tm_sec);
 	regs[DS1307_REG_MIN] = bin2bcd(t->tm_min);
 	regs[DS1307_REG_HOUR] = bin2bcd(t->tm_hour);
-	regs[DS1307_REG_WDAY] = bin2bcd(t->tm_wday + 1);
+	/* rx8130 is bit position, not BCD */
+	if (ds1307->type == rx_8130)
+		regs[DS1307_REG_WDAY] = 1 << t->tm_wday;
+	else
+		regs[DS1307_REG_WDAY] = bin2bcd(t->tm_wday + 1);
 	regs[DS1307_REG_MDAY] = bin2bcd(t->tm_mday);
 	regs[DS1307_REG_MONTH] = bin2bcd(t->tm_mon + 1);
 
@@ -786,8 +810,6 @@ static int rx8130_alarm_irq_enable(struct device *dev, unsigned int enabled)
  * Alarm support for mcp794xx devices.
  */
 
-#define MCP794XX_REG_WEEKDAY		0x3
-#define MCP794XX_REG_WEEKDAY_WDAY_MASK	0x7
 #define MCP794XX_REG_CONTROL		0x07
 #	define MCP794XX_BIT_ALM0_EN	0x10
 #	define MCP794XX_BIT_ALM1_EN	0x20
@@ -876,14 +898,37 @@ static int mcp794xx_read_alarm(struct device *dev, struct rtc_wkalrm *t)
 	return 0;
 }
 
+/*
+ * We may have a random RTC weekday, therefore calculate alarm weekday based
+ * on current weekday we read from the RTC timekeeping regs
+ */
+static int mcp794xx_alm_weekday(struct device *dev, struct rtc_time *tm_alarm)
+{
+	struct rtc_time tm_now;
+	int days_now, days_alarm, ret;
+
+	ret = ds1307_get_time(dev, &tm_now);
+	if (ret)
+		return ret;
+
+	days_now = div_s64(rtc_tm_to_time64(&tm_now), 24 * 60 * 60);
+	days_alarm = div_s64(rtc_tm_to_time64(tm_alarm), 24 * 60 * 60);
+
+	return (tm_now.tm_wday + days_alarm - days_now) % 7 + 1;
+}
+
 static int mcp794xx_set_alarm(struct device *dev, struct rtc_wkalrm *t)
 {
 	struct ds1307 *ds1307 = dev_get_drvdata(dev);
 	unsigned char regs[10];
-	int ret;
+	int wday, ret;
 
 	if (!test_bit(HAS_ALARM, &ds1307->flags))
 		return -EINVAL;
+
+	wday = mcp794xx_alm_weekday(dev, &t->time);
+	if (wday < 0)
+		return wday;
 
 	dev_dbg(dev, "%s, sec=%d min=%d hour=%d wday=%d mday=%d mon=%d "
 		"enabled=%d pending=%d\n", __func__,
@@ -901,7 +946,7 @@ static int mcp794xx_set_alarm(struct device *dev, struct rtc_wkalrm *t)
 	regs[3] = bin2bcd(t->time.tm_sec);
 	regs[4] = bin2bcd(t->time.tm_min);
 	regs[5] = bin2bcd(t->time.tm_hour);
-	regs[6] = bin2bcd(t->time.tm_wday + 1);
+	regs[6] = wday;
 	regs[7] = bin2bcd(t->time.tm_mday);
 	regs[8] = bin2bcd(t->time.tm_mon + 1);
 
@@ -1004,7 +1049,7 @@ static u8 ds1307_trickle_init(struct ds1307 *ds1307,
 
 /*----------------------------------------------------------------------*/
 
-#ifdef CONFIG_RTC_DRV_DS1307_HWMON
+#if IS_REACHABLE(CONFIG_HWMON)
 
 /*
  * Temperature sensor support for ds3231 devices.
@@ -1353,14 +1398,12 @@ static int ds1307_probe(struct i2c_client *client,
 {
 	struct ds1307		*ds1307;
 	int			err = -ENODEV;
-	int			tmp, wday;
+	int			tmp;
 	const struct chip_desc	*chip;
 	bool			want_irq;
 	bool			ds1307_can_wakeup_device = false;
 	unsigned char		regs[8];
 	struct ds1307_platform_data *pdata = dev_get_platdata(&client->dev);
-	struct rtc_time		tm;
-	unsigned long		timestamp;
 	u8			trickle_charger_setup = 0;
 
 	ds1307 = devm_kzalloc(&client->dev, sizeof(struct ds1307), GFP_KERNEL);
@@ -1551,6 +1594,7 @@ read_rtc:
 	case ds_1307:
 	case m41t0:
 	case m41t00:
+	case m41t11:
 		/* clock halted?  turn it on, so clock can tick. */
 		if (tmp & DS1307_BIT_CH) {
 			regmap_write(ds1307->regmap, DS1307_REG_SECS, 0);
@@ -1616,6 +1660,7 @@ read_rtc:
 	case ds_1340:
 	case m41t0:
 	case m41t00:
+	case m41t11:
 		/*
 		 * NOTE: ignores century bits; fix before deploying
 		 * systems that will run through year 2100.
@@ -1639,25 +1684,6 @@ read_rtc:
 		regmap_write(ds1307->regmap, chip->offset + DS1307_REG_HOUR,
 			     bin2bcd(tmp));
 	}
-
-	/*
-	 * Some IPs have weekday reset value = 0x1 which might not correct
-	 * hence compute the wday using the current date/month/year values
-	 */
-	ds1307_get_time(ds1307->dev, &tm);
-	wday = tm.tm_wday;
-	timestamp = rtc_tm_to_time64(&tm);
-	rtc_time64_to_tm(timestamp, &tm);
-
-	/*
-	 * Check if reset wday is different from the computed wday
-	 * If different then set the wday which we computed using
-	 * timestamp
-	 */
-	if (wday != tm.tm_wday)
-		regmap_update_bits(ds1307->regmap, MCP794XX_REG_WEEKDAY,
-				   MCP794XX_REG_WEEKDAY_WDAY_MASK,
-				   tm.tm_wday + 1);
 
 	if (want_irq || ds1307_can_wakeup_device) {
 		device_set_wakeup_capable(ds1307->dev, true);
@@ -1690,23 +1716,25 @@ read_rtc:
 		}
 	}
 
-	if (chip->nvram_size) {
-		ds1307->nvmem_cfg.name = "ds1307_nvram";
-		ds1307->nvmem_cfg.word_size = 1;
-		ds1307->nvmem_cfg.stride = 1;
-		ds1307->nvmem_cfg.size = chip->nvram_size;
-		ds1307->nvmem_cfg.reg_read = ds1307_nvram_read;
-		ds1307->nvmem_cfg.reg_write = ds1307_nvram_write;
-		ds1307->nvmem_cfg.priv = ds1307;
-
-		ds1307->rtc->nvmem_config = &ds1307->nvmem_cfg;
-		ds1307->rtc->nvram_old_abi = true;
-	}
-
 	ds1307->rtc->ops = chip->rtc_ops ?: &ds13xx_rtc_ops;
 	err = rtc_register_device(ds1307->rtc);
 	if (err)
 		return err;
+
+	if (chip->nvram_size) {
+		struct nvmem_config nvmem_cfg = {
+			.name = "ds1307_nvram",
+			.word_size = 1,
+			.stride = 1,
+			.size = chip->nvram_size,
+			.reg_read = ds1307_nvram_read,
+			.reg_write = ds1307_nvram_write,
+			.priv = ds1307,
+		};
+
+		ds1307->rtc->nvram_old_abi = true;
+		rtc_nvmem_register(ds1307->rtc, &nvmem_cfg);
+	}
 
 	ds1307_hwmon_register(ds1307);
 	ds1307_clks_register(ds1307);

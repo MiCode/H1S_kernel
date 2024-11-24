@@ -19,9 +19,9 @@
 #include <linux/configfs.h>
 
 static struct config_group *iio_triggers_group;
-static struct config_item_type iio_trigger_type_group_type;
+static const struct config_item_type iio_trigger_type_group_type;
 
-static struct config_item_type iio_triggers_group_type = {
+static const struct config_item_type iio_triggers_group_type = {
 	.ct_owner = THIS_MODULE,
 };
 
@@ -61,8 +61,12 @@ int iio_register_sw_trigger_type(struct iio_sw_trigger_type *t)
 
 	t->group = configfs_register_default_group(iio_triggers_group, t->name,
 						&iio_trigger_type_group_type);
-	if (IS_ERR(t->group))
+	if (IS_ERR(t->group)) {
+		mutex_lock(&iio_trigger_types_lock);
+		list_del(&t->list);
+		mutex_unlock(&iio_trigger_types_lock);
 		ret = PTR_ERR(t->group);
+	}
 
 	return ret;
 }
@@ -156,7 +160,7 @@ static struct configfs_group_operations trigger_ops = {
 	.drop_item	= &trigger_drop_group,
 };
 
-static struct config_item_type iio_trigger_type_group_type = {
+static const struct config_item_type iio_trigger_type_group_type = {
 	.ct_group_ops = &trigger_ops,
 	.ct_owner       = THIS_MODULE,
 };

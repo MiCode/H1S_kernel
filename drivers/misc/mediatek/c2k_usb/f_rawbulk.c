@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
-
 
 #define DRIVER_AUTHOR   "jlguo <jlguo@via-telecom.com>"
 #define DRIVER_DESC     "Rawbulk Gadget - transport data from CP to Gadget"
@@ -285,7 +276,7 @@ static void do_activate(struct work_struct *data)
 
 		/* start rawbulk if enabled */
 		if (rawbulk_check_enable(fn)) {
-			__pm_stay_awake(&fn->keep_awake);
+			__pm_stay_awake(fn->keep_awake);
 			rc = rawbulk_start_transactions(fn->transfer_id,
 							fn->nups, fn->ndowns,
 							fn->upsz, fn->downsz);
@@ -312,7 +303,7 @@ static void do_activate(struct work_struct *data)
 			 * next time
 			 */
 			/* set_enable_state(fn, 0); */
-			__pm_relax(&fn->keep_awake);
+			__pm_relax(fn->keep_awake);
 		}
 
 

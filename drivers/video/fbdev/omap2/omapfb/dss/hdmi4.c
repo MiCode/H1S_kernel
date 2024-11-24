@@ -50,9 +50,10 @@ static int hdmi_runtime_get(void)
 	DSSDBG("hdmi_runtime_get\n");
 
 	r = pm_runtime_get_sync(&hdmi.pdev->dev);
-	WARN_ON(r < 0);
-	if (r < 0)
+	if (WARN_ON(r < 0)) {
+		pm_runtime_put_sync(&hdmi.pdev->dev);
 		return r;
+	}
 
 	return 0;
 }
@@ -673,10 +674,7 @@ static int hdmi_audio_register(struct device *dev)
 		dev, "omap-hdmi-audio", PLATFORM_DEVID_AUTO,
 		&pdata, sizeof(pdata));
 
-	if (IS_ERR(hdmi.audio_pdev))
-		return PTR_ERR(hdmi.audio_pdev);
-
-	return 0;
+	return PTR_ERR_OR_ZERO(hdmi.audio_pdev);
 }
 
 /* HDMI HW IP initialisation */

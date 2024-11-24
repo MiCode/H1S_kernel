@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __CCCI_DEBUG_H__
@@ -26,6 +18,7 @@
 #define SYS "sys"
 #define SMEM "shm"
 #define UDC "udc"
+#define MISC "misc"
 
 enum {
 	CCCI_LOG_ALL_UART = 1,
@@ -37,6 +30,8 @@ enum {
 
 extern unsigned int ccci_debug_enable; /* Exported by CCCI core */
 extern int ccci_log_write(const char *fmt, ...); /* Exported by CCCI Util */
+extern int ccci_dump_write(int md_id, int buf_type,
+	unsigned int flag, const char *fmt, ...);
 
 /*****************************************************************************
  ** CCCI dump log define start ****************
@@ -70,7 +65,7 @@ do { \
 do { \
 	ccci_dump_write(idx, CCCI_DUMP_INIT, CCCI_DUMP_TIME_FLAG, \
 		"[%d]" fmt, (idx+1), ##args); \
-	CCCI_LEGACY_DBG_LOG(idx, tag, fmt, ##args); \
+	CCCI_LEGACY_ALWAYS_LOG(idx, tag, fmt, ##args); \
 } while (0)
 
 /* This log is used for save runtime data */
@@ -80,14 +75,14 @@ do { \
 	ccci_dump_write(idx, CCCI_DUMP_BOOTUP, \
 		CCCI_DUMP_CURR_FLAG|CCCI_DUMP_TIME_FLAG, \
 			"[%d]" fmt, (idx+1), ##args); \
-	CCCI_LEGACY_DBG_LOG(idx, tag, fmt, ##args); \
+	CCCI_LEGACY_ALWAYS_LOG(idx, tag, fmt, ##args); \
 } while (0)
 
 #define CCCI_BOOTUP_DUMP_LOG(idx, tag, fmt, args...) \
 do { \
 	ccci_dump_write(idx, CCCI_DUMP_BOOTUP, 0, \
 		"[%d]" fmt, (idx+1), ##args); \
-	CCCI_LEGACY_DBG_LOG(idx, tag, fmt, ##args); \
+	CCCI_LEGACY_ALWAYS_LOG(idx, tag, fmt, ##args); \
 } while (0)
 
 /* This log is used for modem boot up log and event */
@@ -168,11 +163,7 @@ do { \
 
 /* #define CLDMA_TRACE */
 /* #define PORT_NET_TRACE */
-
-/* enable CCCI_SKB_TRACE will cause the datetime display error in Netlog, */
-/* so disable the CCCI_SKB_TRACE config */
-/* #define CCCI_SKB_TRACE */
-
+#define CCCI_SKB_TRACE
 /* #define CCCI_BM_TRACE */
 
 #endif				/* __CCCI_DEBUG_H__ */

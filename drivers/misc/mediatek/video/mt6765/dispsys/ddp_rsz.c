@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "RSZ"
@@ -42,10 +34,6 @@ int rsz_calc_tile_params(u32 frm_in_len, u32 frm_out_len,
 	u32 tile_in_len[2] = { 0 };
 	u32 tile_out_len = 0;
 
-	if (t == NULL) {
-		DDPMSG("rsz_tile_params pointer is NULL\n");
-		return -EINVAL;
-	}
 	if (tile_mode)
 		tile_loss = TILE_LOSS;
 
@@ -56,7 +44,6 @@ int rsz_calc_tile_params(u32 frm_in_len, u32 frm_out_len,
 	offset[0] = (step * (frm_out_len - 1) - UNIT * (frm_in_len - 1)) / 2;
 	init_phase = UNIT - offset[0];
 	sub_offset[0] = -offset[0];
-
 	if (sub_offset[0] < 0) {
 		int_offset[0]--;
 		sub_offset[0] = UNIT + sub_offset[0];

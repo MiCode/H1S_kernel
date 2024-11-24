@@ -118,6 +118,7 @@ static int mtk_lp_kernfs_seq_show(struct seq_file *sf, void *v)
 void mtk_lp_kernfs_seq_stop(struct seq_file *sf, void *v)
 {
 	kfree(v);
+	v = NULL;
 }
 
 static ssize_t mtk_lp_kernfs_write(struct kernfs_open_file *of, char *buf,
@@ -173,10 +174,10 @@ static struct kernfs_ops mtk_lp_kernfs_kfops_idiotype = {
 };
 
 int mtk_lp_kernfs_create_file(struct kernfs_node *parent,
-				struct kernfs_node **node,
-				unsigned int flag,
-				const char *name, umode_t mode,
-				void *attr)
+				  struct kernfs_node **node,
+				  unsigned int flag,
+				  const char *name, umode_t mode,
+				  void *attr)
 {
 	struct kernfs_node *kn;
 	struct kernfs_ops *ops;
@@ -187,6 +188,7 @@ int mtk_lp_kernfs_create_file(struct kernfs_node *parent,
 		ops = &mtk_lp_kernfs_kfops_rw;
 
 	kn = __kernfs_create_file(parent, name, mode & 0755,
+				GLOBAL_ROOT_UID, GLOBAL_ROOT_GID,
 				4096, ops, attr, NULL, NULL);
 
 	if (IS_ERR(kn))
@@ -197,32 +199,29 @@ int mtk_lp_kernfs_create_file(struct kernfs_node *parent,
 }
 EXPORT_SYMBOL(mtk_lp_kernfs_create_file);
 
-int mtk_lp_kernfs_remove_file(struct kernfs_node *parent,
-				  struct kernfs_node **node,
-				  unsigned int flag,
-				  const char *name, umode_t mode,
-				  void *attr)
+int mtk_lp_kernfs_remove_file(struct kernfs_node *node)
 {
+	kernfs_remove(node);
 	return 0;
 }
 EXPORT_SYMBOL(mtk_lp_kernfs_remove_file);
 
+
 struct kernfs_node *
 mtk_lp_kernfs_create_dir(struct kobject *kobj,
-				const char *name, umode_t mode)
+			      const char *name, umode_t mode)
 {
 	return kernfs_create_dir(kobj->sd, name, mode, kobj);
 }
 
 int mtk_lp_kernfs_create_group(struct kobject *kobj,
-					struct attribute_group *grp)
+				      struct attribute_group *grp)
 {
 	struct kernfs_node *kn;
 	struct attribute *const *attr;
 	int error = 0, i;
 
 	kn = mtk_lp_kernfs_create_dir(kobj, grp->name, 0755);
-
 
 	if (IS_ERR(kn))
 		return PTR_ERR(kn);
@@ -231,13 +230,14 @@ int mtk_lp_kernfs_create_group(struct kobject *kobj,
 	if (grp->attrs) {
 		for (i = 0, attr = grp->attrs; *attr && !error; i++, attr++)
 			mtk_lp_kernfs_create_file(kn, NULL, 0, (*attr)->name,
-							(*attr)->mode,
-							(void *)*attr);
+						  (*attr)->mode,
+						  (void *)*attr);
 	}
 	kernfs_put(kn);
 	return 0;
 }
 EXPORT_SYMBOL(mtk_lp_kernfs_create_group);
+
 size_t get_mtk_lp_kernfs_bufsz_max(void)
 {
 	return MTK_LP_SYSFS_POWER_BUFFER_SZ;

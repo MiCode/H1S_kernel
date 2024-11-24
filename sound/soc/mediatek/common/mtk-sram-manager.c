@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
-//
-// mtk-sram-manager.c  --  Mediatek afe sram manager
-//
-// Copyright (c) 2017 MediaTek Inc.
-// Author: Kai Chieh Chuang <kaichieh.chuang@mediatek.com>
+/*
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Kai Chieh Chuang <kaichieh.chuang@mediatek.com>
+ */
 
 #include <linux/module.h>
 #include <linux/dma-mapping.h>
@@ -187,6 +186,7 @@ of_error:
 	of_node_put(sram_node);
 	return -ENODEV;
 }
+EXPORT_SYMBOL_GPL(mtk_audio_sram_init);
 
 int mtk_audio_sram_allocate(struct mtk_audio_sram *sram,
 			    dma_addr_t *phys_addr, unsigned char **virt_addr,
@@ -266,6 +266,7 @@ int mtk_audio_sram_allocate(struct mtk_audio_sram *sram,
 	spin_unlock(&sram->lock);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(mtk_audio_sram_allocate);
 
 int mtk_audio_sram_free(struct mtk_audio_sram *sram, void *user)
 {
@@ -283,12 +284,13 @@ int mtk_audio_sram_free(struct mtk_audio_sram *sram, void *user)
 	spin_unlock(&sram->lock);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mtk_audio_sram_free);
 
 unsigned int mtk_audio_sram_get_size(struct mtk_audio_sram *sram, int mode)
 {
 	return sram->mode_size[mode];
 }
-
+EXPORT_SYMBOL_GPL(mtk_audio_sram_get_size);
 
 MODULE_DESCRIPTION("Mediatek sram manager");
 MODULE_AUTHOR("Kai Chieh Chuang <kaichieh.chuang@mediatek.com>");

@@ -26,12 +26,13 @@
 #include <linux/kobject.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
+#include <linux/seq_file.h>
 
 #include "mt-plat/mtk_thermal_monitor.h"
 #if (CONFIG_MTK_GAUGE_VERSION == 30)
-#include <mt-plat/charger_type.h>
-#include <mt-plat/mtk_charger.h>
-#include <mt-plat/mtk_battery.h>
+#include <mt-plat/v1/charger_type.h>
+#include <mt-plat/v1/mtk_charger.h>
+#include <mt-plat/v1/mtk_battery.h>
 #else
 #include <tmp_battery.h>
 #include <charging.h>

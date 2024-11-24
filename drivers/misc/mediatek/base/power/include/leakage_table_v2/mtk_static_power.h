@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2020 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #ifndef __MTK_STATIC_POWER_H__
@@ -19,6 +11,10 @@
 /* #define MTK_SPOWER_UT */
 #if defined(CONFIG_MACH_MT6759)
 #include "mtk_static_power_mt6759.h"
+#endif
+
+#if defined(CONFIG_MACH_MT6768)
+#include "mtk_static_power_mt6768.h"
 #endif
 
 #if defined(CONFIG_MACH_MT6763)
@@ -37,16 +33,24 @@
 #include "mtk_static_power_mt6765.h"
 #endif
 
+#if defined(CONFIG_MACH_MT6761)
+#include "mtk_static_power_mt6761.h"
+#endif
+
 #if defined(CONFIG_MACH_MT6771)
 #include "mtk_static_power_mt6771.h"
 #endif
 
-#if defined(CONFIG_MACH_MT6775)
-#include "mtk_static_power_mt6775.h"
+#if defined(CONFIG_MACH_MT3967)
+#include "mtk_static_power_mt3967.h"
 #endif
 
-#if defined(CONFIG_MACH_MT6768)
-#include "mtk_static_power_mt6768.h"
+#if defined(CONFIG_MACH_MT6779)
+#include "mtk_static_power_mt6779.h"
+#endif
+
+#if defined(CONFIG_MACH_MT6781)
+#include "mtk_static_power_mt6781.h"
 #endif
 
 #if defined(CONFIG_MACH_MT6785)
@@ -65,6 +69,16 @@
 #include "mtk_static_power_mt6893.h"
 #endif
 
+#if defined(CONFIG_MACH_MT6833)
+#include "mtk_static_power_mt6833.h"
+#endif
+#if defined(CONFIG_MACH_MT6877)
+#include "mtk_static_power_mt6877.h"
+#endif
+#if defined(CONFIG_MACH_MT6781)
+#include "mtk_static_power_mt6781.h"
+#endif
+
 #if defined(CONFIG_MACH_MT6873)
 #include "mtk_static_power_mt6873.h"
 #endif
@@ -73,17 +87,6 @@
 #include "mtk_static_power_mt6853.h"
 #endif
 
-#if defined(CONFIG_MACH_MT6833)
-#include "mtk_static_power_mt6833.h"
-#endif
-
-#if defined(CONFIG_MACH_MT8168)
-#include "mtk_static_power_mt8168.h"
-#endif
-
-/*
- * bit operation
- */
 #undef  BIT
 #define BIT(bit)	(1U << (bit))
 

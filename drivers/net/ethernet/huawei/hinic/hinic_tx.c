@@ -212,17 +212,28 @@ netdev_tx_t hinic_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 
 	sq_wqe = hinic_sq_get_wqe(txq->sq, wqe_size, &prod_idx);
 	if (!sq_wqe) {
-		tx_unmap_skb(nic_dev, skb, txq->sges);
-
 		netif_stop_subqueue(netdev, qp->q_id);
+
+		/* Check for the case free_tx_poll is called in another cpu
+		 * and we stopped the subqueue after free_tx_poll check.
+		 */
+		sq_wqe = hinic_sq_get_wqe(txq->sq, wqe_size, &prod_idx);
+		if (sq_wqe) {
+			netif_wake_subqueue(nic_dev->netdev, qp->q_id);
+			goto process_sq_wqe;
+		}
+
+		tx_unmap_skb(nic_dev, skb, txq->sges);
 
 		u64_stats_update_begin(&txq->txq_stats.syncp);
 		txq->txq_stats.tx_busy++;
 		u64_stats_update_end(&txq->txq_stats.syncp);
 		err = NETDEV_TX_BUSY;
+		wqe_size = 0;
 		goto flush_skbs;
 	}
 
+process_sq_wqe:
 	hinic_sq_prepare_wqe(txq->sq, prod_idx, sq_wqe, txq->sges, nr_sges);
 
 	hinic_sq_write_wqe(txq->sq, prod_idx, sq_wqe, skb, wqe_size);
@@ -272,7 +283,11 @@ static void free_all_tx_skbs(struct hinic_txq *txq)
 	int nr_sges;
 	u16 ci;
 
-	while ((sq_wqe = hinic_sq_read_wqe(sq, &skb, &wqe_size, &ci))) {
+	while ((sq_wqe = hinic_sq_read_wqebb(sq, &skb, &wqe_size, &ci))) {
+		sq_wqe = hinic_sq_read_wqe(sq, &skb, wqe_size, &ci);
+		if (!sq_wqe)
+			break;
+
 		nr_sges = skb_shinfo(skb)->nr_frags + 1;
 
 		hinic_sq_get_sges(sq_wqe, txq->free_sges, nr_sges);
@@ -308,10 +323,20 @@ static int free_tx_poll(struct napi_struct *napi, int budget)
 	do {
 		hw_ci = HW_CONS_IDX(sq) & wq->mask;
 
-		sq_wqe = hinic_sq_read_wqe(sq, &skb, &wqe_size, &sw_ci);
+		/* Reading a WQEBB to get real WQE size and consumer index. */
+		sq_wqe = hinic_sq_read_wqebb(sq, &skb, &wqe_size, &sw_ci);
 		if ((!sq_wqe) ||
 		    (((hw_ci - sw_ci) & wq->mask) * wq->wqebb_size < wqe_size))
 			break;
+
+		/* If this WQE have multiple WQEBBs, we will read again to get
+		 * full size WQE.
+		 */
+		if (wqe_size > wq->wqebb_size) {
+			sq_wqe = hinic_sq_read_wqe(sq, &skb, wqe_size, &sw_ci);
+			if (unlikely(!sq_wqe))
+				break;
+		}
 
 		tx_bytes += skb->len;
 		pkts++;

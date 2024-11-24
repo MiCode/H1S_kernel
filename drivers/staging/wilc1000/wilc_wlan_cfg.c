@@ -1,24 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
-/* ////////////////////////////////////////////////////////////////////////// */
-/*  */
-/* Copyright (c) Atmel Corporation.  All rights reserved. */
-/*  */
-/* Module Name:  wilc_wlan_cfg.c */
-/*  */
-/*  */
-/* ///////////////////////////////////////////////////////////////////////// */
+/*
+ * Copyright (c) 2012 - 2018 Microchip Technology Inc., and its subsidiaries.
+ * All rights reserved.
+ */
 
-#include <linux/string.h>
 #include "wilc_wlan_if.h"
 #include "wilc_wlan.h"
 #include "wilc_wlan_cfg.h"
 #include "coreconfigurator.h"
 
-/********************************************
- *
- *      Global Data
- *
- ********************************************/
 enum cfg_cmd_type {
 	CFG_BYTE_CMD	= 0,
 	CFG_HWORD_CMD	= 1,
@@ -221,7 +211,8 @@ static int wilc_wlan_cfg_set_word(u8 *frame, u32 offset, u16 id, u32 val32)
 	return 8;
 }
 
-static int wilc_wlan_cfg_set_str(u8 *frame, u32 offset, u16 id, u8 *str, u32 size)
+static int wilc_wlan_cfg_set_str(u8 *frame, u32 offset, u16 id, u8 *str,
+				 u32 size)
 {
 	u8 *buf;
 
@@ -235,7 +226,7 @@ static int wilc_wlan_cfg_set_str(u8 *frame, u32 offset, u16 id, u8 *str, u32 siz
 	buf[2] = (u8)size;
 	buf[3] = (u8)(size >> 8);
 
-	if ((str) && (size != 0))
+	if (str && size != 0)
 		memcpy(&buf[4], str, size);
 
 	return (size + 4);
@@ -256,7 +247,7 @@ static int wilc_wlan_cfg_set_bin(u8 *frame, u32 offset, u16 id, u8 *b, u32 size)
 	buf[2] = (u8)size;
 	buf[3] = (u8)(size >> 8);
 
-	if ((b) && (size != 0)) {
+	if ((b) && size != 0) {
 		memcpy(&buf[4], b, size);
 		for (i = 0; i < size; i++)
 			checksum += buf[i + 4];
@@ -273,16 +264,17 @@ static int wilc_wlan_cfg_set_bin(u8 *frame, u32 offset, u16 id, u8 *b, u32 size)
  *
  ********************************************/
 
+#define GET_WID_TYPE(wid)		(((wid) >> 12) & 0x7)
 static void wilc_wlan_parse_response_frame(u8 *info, int size)
 {
-	u32 wid, len = 0, i = 0;
+	u16 wid;
+	u32 len = 0, i = 0;
 
 	while (size > 0) {
 		i = 0;
 		wid = info[0] | (info[1] << 8);
-		wid = cpu_to_le32(wid);
 
-		switch ((wid >> 12) & 0x7) {
+		switch (GET_WID_TYPE(wid)) {
 		case WID_CHAR:
 			do {
 				if (g_cfg_byte[i].id == WID_NIL)
@@ -303,9 +295,8 @@ static void wilc_wlan_parse_response_frame(u8 *info, int size)
 					break;
 
 				if (g_cfg_hword[i].id == wid) {
-					g_cfg_hword[i].val =
-						cpu_to_le16(info[4] |
-							    (info[5] << 8));
+					g_cfg_hword[i].val = (info[4] |
+							      (info[5] << 8));
 					break;
 				}
 				i++;
@@ -319,11 +310,10 @@ static void wilc_wlan_parse_response_frame(u8 *info, int size)
 					break;
 
 				if (g_cfg_word[i].id == wid) {
-					g_cfg_word[i].val =
-						cpu_to_le32(info[4] |
-							    (info[5] << 8) |
-							    (info[6] << 16) |
-							    (info[7] << 24));
+					g_cfg_word[i].val = (info[4] |
+							     (info[5] << 8) |
+							     (info[6] << 16) |
+							     (info[7] << 24));
 					break;
 				}
 				i++;
@@ -370,7 +360,7 @@ static int wilc_wlan_parse_info_frame(u8 *info, int size)
 
 	len = info[2];
 
-	if ((len == 1) && (wid == WID_STATUS)) {
+	if (len == 1 && wid == WID_STATUS) {
 		pd->mac_status = info[3];
 		type = WILC_CFG_RSP_STATUS;
 	}
@@ -483,20 +473,21 @@ int wilc_wlan_cfg_get_wid_value(u16 wid, u8 *buffer, u32 buffer_size)
 		} while (1);
 	} else if (type == CFG_STR_CMD) {
 		do {
-			if (g_cfg_str[i].id == WID_NIL)
+			u32 id = g_cfg_str[i].id;
+
+			if (id == WID_NIL)
 				break;
 
-			if (g_cfg_str[i].id == wid) {
+			if (id == wid) {
 				u32 size = g_cfg_str[i].str[0] |
 						(g_cfg_str[i].str[1] << 8);
 
 				if (buffer_size >= size) {
-					if (g_cfg_str[i].id == WID_SITE_SURVEY_RESULTS)	{
+					if (id == WID_SITE_SURVEY_RESULTS) {
 						static int toggle;
 
 						i += toggle;
 						toggle ^= 1;
-
 					}
 					memcpy(buffer,  &g_cfg_str[i].str[2],
 					       size);
@@ -523,9 +514,12 @@ int wilc_wlan_cfg_indicate_rx(struct wilc *wilc, u8 *frame, int size,
 	frame += 4;
 	size -= 4;
 
-	/**
-	 *      The  valid types of response messages are 'R' (Response), 'I' (Information), and 'N' (Network Information)
-	 **/
+	/*
+	 * The valid types of response messages are
+	 * 'R' (Response),
+	 * 'I' (Information), and
+	 * 'N' (Network Information)
+	 */
 
 	switch (msg_type) {
 	case 'R':

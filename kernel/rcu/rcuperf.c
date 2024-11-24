@@ -19,6 +19,9 @@
  *
  * Authors: Paul E. McKenney <paulmck@us.ibm.com>
  */
+
+#define pr_fmt(fmt) fmt
+
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -61,15 +64,34 @@ MODULE_AUTHOR("Paul E. McKenney <paulmck@linux.vnet.ibm.com>");
 #define VERBOSE_PERFOUT_ERRSTRING(s) \
 	do { if (verbose) pr_alert("%s" PERF_FLAG "!!! %s\n", perf_type, s); } while (0)
 
+/*
+ * The intended use cases for the nreaders and nwriters module parameters
+ * are as follows:
+ *
+ * 1.	Specify only the nr_cpus kernel boot parameter.  This will
+ *	set both nreaders and nwriters to the value specified by
+ *	nr_cpus for a mixed reader/writer test.
+ *
+ * 2.	Specify the nr_cpus kernel boot parameter, but set
+ *	rcuperf.nreaders to zero.  This will set nwriters to the
+ *	value specified by nr_cpus for an update-only test.
+ *
+ * 3.	Specify the nr_cpus kernel boot parameter, but set
+ *	rcuperf.nwriters to zero.  This will set nreaders to the
+ *	value specified by nr_cpus for a read-only test.
+ *
+ * Various other use cases may of course be specified.
+ */
+
 torture_param(bool, gp_async, false, "Use asynchronous GP wait primitives");
 torture_param(int, gp_async_max, 1000, "Max # outstanding waits per reader");
 torture_param(bool, gp_exp, false, "Use expedited GP wait primitives");
 torture_param(int, holdoff, 10, "Holdoff time before test start (s)");
-torture_param(int, nreaders, 0, "Number of RCU reader threads");
+torture_param(int, nreaders, -1, "Number of RCU reader threads");
 torture_param(int, nwriters, -1, "Number of RCU updater threads");
 torture_param(bool, shutdown, !IS_ENABLED(MODULE),
 	      "Shutdown at end of performance tests.");
-torture_param(bool, verbose, true, "Enable verbose debugging printk()s");
+torture_param(int, verbose, 1, "Enable verbose debugging printk()s");
 torture_param(int, writer_holdoff, 0, "Holdoff (us) between GPs, zero to disable");
 
 static char *perf_type = "rcu";
@@ -106,10 +128,6 @@ static int rcu_perf_writer_state;
 #define MAX_MEAS 10000
 #define MIN_MEAS 100
 
-static int perf_runnable = IS_ENABLED(MODULE);
-module_param(perf_runnable, int, 0444);
-MODULE_PARM_DESC(perf_runnable, "Start rcuperf at boot");
-
 /*
  * Operations vector for selecting different types of tests.
  */
@@ -120,8 +138,8 @@ struct rcu_perf_ops {
 	void (*cleanup)(void);
 	int (*readlock)(void);
 	void (*readunlock)(int idx);
-	unsigned long (*started)(void);
-	unsigned long (*completed)(void);
+	unsigned long (*get_gp_seq)(void);
+	unsigned long (*gp_diff)(unsigned long new, unsigned long old);
 	unsigned long (*exp_completed)(void);
 	void (*async)(struct rcu_head *head, rcu_callback_t func);
 	void (*gp_barrier)(void);
@@ -161,8 +179,8 @@ static struct rcu_perf_ops rcu_ops = {
 	.init		= rcu_sync_perf_init,
 	.readlock	= rcu_perf_read_lock,
 	.readunlock	= rcu_perf_read_unlock,
-	.started	= rcu_batches_started,
-	.completed	= rcu_batches_completed,
+	.get_gp_seq	= rcu_get_gp_seq,
+	.gp_diff	= rcu_seq_diff,
 	.exp_completed	= rcu_exp_batches_completed,
 	.async		= call_rcu,
 	.gp_barrier	= rcu_barrier,
@@ -191,8 +209,8 @@ static struct rcu_perf_ops rcu_bh_ops = {
 	.init		= rcu_sync_perf_init,
 	.readlock	= rcu_bh_perf_read_lock,
 	.readunlock	= rcu_bh_perf_read_unlock,
-	.started	= rcu_batches_started_bh,
-	.completed	= rcu_batches_completed_bh,
+	.get_gp_seq	= rcu_bh_get_gp_seq,
+	.gp_diff	= rcu_seq_diff,
 	.exp_completed	= rcu_exp_batches_completed_sched,
 	.async		= call_rcu_bh,
 	.gp_barrier	= rcu_barrier_bh,
@@ -248,8 +266,8 @@ static struct rcu_perf_ops srcu_ops = {
 	.init		= rcu_sync_perf_init,
 	.readlock	= srcu_perf_read_lock,
 	.readunlock	= srcu_perf_read_unlock,
-	.started	= NULL,
-	.completed	= srcu_perf_completed,
+	.get_gp_seq	= srcu_perf_completed,
+	.gp_diff	= rcu_seq_diff,
 	.exp_completed	= srcu_perf_completed,
 	.async		= srcu_call_rcu,
 	.gp_barrier	= srcu_rcu_barrier,
@@ -277,8 +295,8 @@ static struct rcu_perf_ops srcud_ops = {
 	.cleanup	= srcu_sync_perf_cleanup,
 	.readlock	= srcu_perf_read_lock,
 	.readunlock	= srcu_perf_read_unlock,
-	.started	= NULL,
-	.completed	= srcu_perf_completed,
+	.get_gp_seq	= srcu_perf_completed,
+	.gp_diff	= rcu_seq_diff,
 	.exp_completed	= srcu_perf_completed,
 	.async		= srcu_call_rcu,
 	.gp_barrier	= srcu_rcu_barrier,
@@ -307,8 +325,8 @@ static struct rcu_perf_ops sched_ops = {
 	.init		= rcu_sync_perf_init,
 	.readlock	= sched_perf_read_lock,
 	.readunlock	= sched_perf_read_unlock,
-	.started	= rcu_batches_started_sched,
-	.completed	= rcu_batches_completed_sched,
+	.get_gp_seq	= rcu_sched_get_gp_seq,
+	.gp_diff	= rcu_seq_diff,
 	.exp_completed	= rcu_exp_batches_completed_sched,
 	.async		= call_rcu_sched,
 	.gp_barrier	= rcu_barrier_sched,
@@ -335,8 +353,8 @@ static struct rcu_perf_ops tasks_ops = {
 	.init		= rcu_sync_perf_init,
 	.readlock	= tasks_perf_read_lock,
 	.readunlock	= tasks_perf_read_unlock,
-	.started	= rcu_no_completed,
-	.completed	= rcu_no_completed,
+	.get_gp_seq	= rcu_no_completed,
+	.gp_diff	= rcu_seq_diff,
 	.async		= call_rcu_tasks,
 	.gp_barrier	= rcu_barrier_tasks,
 	.sync		= synchronize_rcu_tasks,
@@ -344,9 +362,11 @@ static struct rcu_perf_ops tasks_ops = {
 	.name		= "tasks"
 };
 
-static bool __maybe_unused torturing_tasks(void)
+static unsigned long rcuperf_seq_diff(unsigned long new, unsigned long old)
 {
-	return cur_ops == &tasks_ops;
+	if (!cur_ops->gp_diff)
+		return new - old;
+	return cur_ops->gp_diff(new, old);
 }
 
 /*
@@ -354,7 +374,7 @@ static bool __maybe_unused torturing_tasks(void)
  */
 static void rcu_perf_wait_shutdown(void)
 {
-	cond_resched_rcu_qs();
+	cond_resched_tasks_rcu_qs();
 	if (atomic_read(&n_rcu_perf_writer_finished) < nrealwriters)
 		return;
 	while (!torture_must_stop())
@@ -429,8 +449,7 @@ rcu_perf_writer(void *arg)
 			b_rcu_perf_writer_started =
 				cur_ops->exp_completed() / 2;
 		} else {
-			b_rcu_perf_writer_started =
-				cur_ops->completed();
+			b_rcu_perf_writer_started = cur_ops->get_gp_seq();
 		}
 	}
 
@@ -487,7 +506,7 @@ retry:
 						cur_ops->exp_completed() / 2;
 				} else {
 					b_rcu_perf_writer_finished =
-						cur_ops->completed();
+						cur_ops->get_gp_seq();
 				}
 				if (shutdown) {
 					smp_mb(); /* Assign before wake. */
@@ -512,7 +531,7 @@ retry:
 	return 0;
 }
 
-static inline void
+static void
 rcu_perf_print_module_parms(struct rcu_perf_ops *cur_ops, const char *tag)
 {
 	pr_alert("%s" PERF_FLAG
@@ -571,8 +590,8 @@ rcu_perf_cleanup(void)
 			 t_rcu_perf_writer_finished -
 			 t_rcu_perf_writer_started,
 			 ngps,
-			 b_rcu_perf_writer_finished -
-			 b_rcu_perf_writer_started);
+			 rcuperf_seq_diff(b_rcu_perf_writer_finished,
+					  b_rcu_perf_writer_started));
 		for (i = 0; i < nrealwriters; i++) {
 			if (!writer_durations)
 				break;
@@ -650,7 +669,7 @@ rcu_perf_init(void)
 		&tasks_ops,
 	};
 
-	if (!torture_init_begin(perf_type, verbose, &perf_runnable))
+	if (!torture_init_begin(perf_type, verbose))
 		return -EBUSY;
 
 	/* Process args and tell the world that the perf'er is on the job. */
@@ -660,12 +679,11 @@ rcu_perf_init(void)
 			break;
 	}
 	if (i == ARRAY_SIZE(perf_ops)) {
-		pr_alert("rcu-perf: invalid perf type: \"%s\"\n",
-			 perf_type);
+		pr_alert("rcu-perf: invalid perf type: \"%s\"\n", perf_type);
 		pr_alert("rcu-perf types:");
 		for (i = 0; i < ARRAY_SIZE(perf_ops); i++)
-			pr_alert(" %s", perf_ops[i]->name);
-		pr_alert("\n");
+			pr_cont(" %s", perf_ops[i]->name);
+		pr_cont("\n");
 		firsterr = -EINVAL;
 		cur_ops = NULL;
 		goto unwind;

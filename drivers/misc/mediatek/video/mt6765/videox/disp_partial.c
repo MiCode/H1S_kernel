@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/types.h>
@@ -27,7 +19,6 @@
 static void _convert_picture_to_ovl_dirty(struct disp_input_config *src,
 		struct disp_rect *in, struct disp_rect *out)
 {
-	int ret = 0;
 	struct disp_rect layer_roi = {0, 0, 0, 0};
 	struct disp_rect pic_roi = {0, 0, 0, 0};
 	struct disp_rect result = {0, 0, 0, 0};
@@ -42,9 +33,7 @@ static void _convert_picture_to_ovl_dirty(struct disp_input_config *src,
 	pic_roi.width = in->width;
 	pic_roi.height = in->height;
 
-	ret = rect_intersect(&layer_roi, &pic_roi, &result);
-	if (!ret)
-		DISPDBG("x,y,width and height in result are zero\n");
+	rect_intersect(&layer_roi, &pic_roi, &result);
 
 	out->x = result.x - layer_roi.x + src->tgt_offset_x;
 	out->y = result.y - layer_roi.y + src->tgt_offset_y;

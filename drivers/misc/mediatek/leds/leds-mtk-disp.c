@@ -170,10 +170,6 @@ static int led_level_disp_set(struct mtk_led_data *s_led,
 	if (brightness == s_led->conf.level)
 		return 0;
 
-#ifdef MET_USER_EVENT_SUPPORT
-	if (enable_met_backlight_tag())
-		output_met_backlight_tag(brightness);
-#endif
 #ifdef CONFIG_DRM_MEDIATEK
 	mtkfb_set_backlight_level(brightness);
 	s_led->conf.level = brightness;
@@ -187,7 +183,7 @@ static int led_level_disp_set(struct mtk_led_data *s_led,
  * add API for temperature control
  ***************************************************************************/
 
-int setMaxBrightness(char *name, int percent, bool enable)
+int mt_leds_max_brightness_set(char *name, int percent, bool enable)
 {
 	struct mtk_led_data *led_dat;
 		int max_l = 0, index = -1, limit_l = 0, cur_l = 0;
@@ -222,7 +218,7 @@ int setMaxBrightness(char *name, int percent, bool enable)
 	return 0;
 
 }
-EXPORT_SYMBOL(setMaxBrightness);
+EXPORT_SYMBOL(mt_leds_max_brightness_set);
 
 
 int mt_leds_brightness_set(char *name, int level)
@@ -273,13 +269,21 @@ static int led_level_set(struct led_classdev *led_cdev,
 		output_met_backlight_tag(brightness);
 #endif
 
-led_dat->brightness = brightness;
+	led_dat->brightness = brightness;
 #ifdef CONFIG_LEDS_BRIGHTNESS_CHANGED
 	call_notifier(1, led_dat);
 #endif
 #ifdef CONFIG_MTK_AAL_SUPPORT
 	disp_pq_notify_backlight_changed(trans_level);
 #else
+#ifdef CONFIG_MTK_SLD_SUPPORT
+	trans_level = disp_ccorr_change_backlight(trans_level);
+	brightness = (
+		(((1 << led_dat->conf.led_bits) - 1) * trans_level
+		+ (((1 << led_dat->conf.trans_bits) - 1) / 2))
+		/ ((1 << led_dat->conf.trans_bits) - 1));
+	led_dat->brightness = brightness;
+#endif
 	led_level_disp_set(led_dat, brightness);
 	led_dat->last_level = brightness;
 #endif
@@ -319,7 +323,7 @@ static int mtk_leds_parse_dt(struct device *dev,
 {
 	struct device_node *leds_np, *child;
 	struct mtk_led_data *s_led;
-	int ret = 0, num = 0, level = 102;
+	int ret = 0, num = 0, level = 0;
 	const char *state;
 
 	leds_np = of_find_node_by_name(dev->of_node, "backlight");
@@ -368,7 +372,9 @@ static int mtk_leds_parse_dt(struct device *dev,
 				level = s_led->conf.cdev.max_brightness;
 			else
 				level = 0;
-		};
+		} else {
+			level = s_led->conf.cdev.max_brightness;
+		}
 		pr_info("parse %d leds dt: %s, %d, %d",
 			num, s_led->conf.cdev.name,
 			s_led->conf.max_level,

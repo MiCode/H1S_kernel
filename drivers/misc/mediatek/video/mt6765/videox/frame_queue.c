@@ -1,26 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /* #include <../drivers/staging/android/sw_sync.h> */
 #include <linux/slab.h>
 #include <linux/kthread.h>
-#include <uapi/linux/sched/types.h>
 
 #include "disp_drv_platform.h"
 #include "frame_queue.h"
 #include "disp_drv_log.h"
 #include "mtkfb_fence.h"
 #include "mtk_disp_mgr.h"
+#include <uapi/linux/sched/types.h>
 
 
 static struct frame_queue_head_t frame_q_head[MAX_SESSION_COUNT];
@@ -171,7 +163,7 @@ static int frame_wait_all_fence(struct disp_frame_cfg_t *cfg)
 static int fence_wait_worker_func(void *data);
 
 static int frame_queue_head_init(struct frame_queue_head_t *head,
-	unsigned int session_id)
+	int session_id)
 {
 	WARN_ON(head->inited);
 
@@ -179,7 +171,6 @@ static int frame_queue_head_init(struct frame_queue_head_t *head,
 	mutex_init(&head->lock);
 	head->session_id = session_id;
 	init_waitqueue_head(&head->wq);
-	head->worker = NULL;
 
 	/* create fence wait worker thread */
 	head->worker = kthread_run(fence_wait_worker_func,
@@ -208,7 +199,8 @@ struct frame_queue_head_t *get_frame_queue_head(int session_id)
 	mutex_lock(&frame_q_head_lock);
 
 	for (i = 0; i < ARRAY_SIZE(frame_q_head); i++) {
-		if (frame_q_head[i].session_id == session_id) {
+		if (frame_q_head[i].session_id == session_id &&
+				frame_q_head[i].inited == 1) {
 			head = &frame_q_head[i];
 			break;
 		}
@@ -259,7 +251,7 @@ static int frame_queue_size(struct frame_queue_head_t *head)
 
 struct frame_queue_t *frame_queue_node_create(void)
 {
-	struct frame_queue_t *node = NULL;
+	struct frame_queue_t *node;
 
 	node = kzalloc(sizeof(struct frame_queue_t), GFP_KERNEL);
 	if (IS_ERR_OR_NULL(node)) {

@@ -10,34 +10,47 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 #
-
+subdir-ccflags-y += -Wno-error
 ################################################################################
 # FrameBuffer Driver for Display
 #
 #
 ################################################################################
+ifeq ($(CONFIG_MTK_PLATFORM), "mt6761")
+	MTK_PLATFORM := mt6765
+else
+	MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+endif
+
+# remove this after k79 config CONFIG_MACH_MT6779 & CONFIG_MTK_PLATFORM in defconfig
+ifeq ($(CONFIG_MTK_DISP_PLATFORM), "mt6779")
+	CONFIG_MACH_MT6779 := y
+	MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_DISP_PLATFORM))
+endif
+
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/include
 
 ifneq ($(CONFIG_MTK_LCM), y)
 	obj-y += mtdummy/
 else
 	######################################
-# separate mt6833 from family mt6853
-ifeq (y, $(filter y, $(CONFIG_MACH_MT6833)))
-	obj-$(CONFIG_MTK_FB) += mt6833/
-else
-	obj-$(CONFIG_MTK_FB) += $(subst ",,$(CONFIG_MTK_PLATFORM))/
-endif
-	obj-$(CONFIG_MACH_MT6771) += common/
+	obj-$(CONFIG_MTK_FB) += $(subst ",,$(MTK_PLATFORM))/
+	obj-$(CONFIG_MACH_MT6763) += common/
+	obj-$(CONFIG_MACH_MT6755) += common/
+	obj-$(CONFIG_MACH_MT6797) += common/
+	obj-$(CONFIG_MACH_MT6757) += common/
+	obj-$(CONFIG_MACH_KIBOPLUS) += common/
+	obj-$(CONFIG_MACH_ELBRUS) += common/
 	obj-$(CONFIG_MACH_MT6768) += common/
 	obj-$(CONFIG_MACH_MT8167) += common/
-	obj-$(CONFIG_MACH_MT8168) += common/
+	obj-$(CONFIG_MACH_MT6799) += common/
+	obj-$(CONFIG_MACH_MT6759) += common/
+	obj-$(CONFIG_MACH_MT6758) += common/
 	obj-$(CONFIG_MACH_MT6739) += common/
 	obj-$(CONFIG_MACH_MT6785) += common/
-	obj-$(CONFIG_MACH_MT6885) += common/
 	obj-$(CONFIG_MACH_MT6765) += common/
-	obj-$(CONFIG_MACH_MT6873) += common/
-	obj-$(CONFIG_MACH_MT6853) += common/
-	obj-$(CONFIG_MACH_MT6893) += common/
-	obj-$(CONFIG_MACH_MT6833) += common/
+	obj-$(CONFIG_MACH_MT6761) += common/
+	obj-$(CONFIG_MACH_MT3967) += common/
+	obj-$(CONFIG_MACH_MT6779) += common/
+	obj-$(CONFIG_MACH_MT6771) += common/
 endif
-

@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/device.h>
@@ -16,7 +9,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/pm_qos.h>
+#include <linux/soc/mediatek/mtk-pm-qos.h>
 #include <linux/sched.h>
 #include <linux/mutex.h>
 #include <mt-plat/upmu_common.h>
@@ -883,7 +876,7 @@ static int commit_data(int type, int data)
 
 	switch (type) {
 
-	case PM_QOS_VVPU_OPP:
+	case MTK_PM_QOS_VVPU_OPP:
 		mutex_lock(&vpu_opp_lock);
 		if (get_vvpu_DVFS_is_paused_by_ptpod()) {
 			LOG_INF("PM_QOS_VVPU_OPP paused by ptpod %d\n", data);
@@ -960,8 +953,8 @@ static int commit_data(int type, int data)
 static void get_pm_qos_info(char *p)
 {
 	p += sprintf(p, "%-24s: 0x%x\n",
-			"PM_QOS_VVPU_OPP",
-			pm_qos_request(PM_QOS_VVPU_OPP));
+			"MTK_PM_QOS_VVPU_OPP",
+			mtk_pm_qos_request(MTK_PM_QOS_VVPU_OPP));
 
 }
 
@@ -981,7 +974,7 @@ char *apu_dvfs_dump_reg(char *ptr)
 static int pm_qos_vvpu_opp_notify(struct notifier_block *b,
 		unsigned long l, void *v)
 {
-	commit_data(PM_QOS_VVPU_OPP, l);
+	commit_data(MTK_PM_QOS_VVPU_OPP, l);
 
 	return NOTIFY_OK;
 }
@@ -993,7 +986,7 @@ static void pm_qos_notifier_register(void)
 
 	dvfs->pm_qos_vvpu_opp_nb.notifier_call =
 		pm_qos_vvpu_opp_notify;
-	pm_qos_add_notifier(PM_QOS_VVPU_OPP,
+	mtk_pm_qos_add_notifier(MTK_PM_QOS_VVPU_OPP,
 			&dvfs->pm_qos_vvpu_opp_nb);
 }
 

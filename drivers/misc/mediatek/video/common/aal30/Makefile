@@ -11,9 +11,17 @@
 # GNU General Public License for more details.
 #
 
-# separate mt6833 from family mt6853
-ifeq (y, $(filter y, $(CONFIG_MACH_MT6833)))
-	MTK_PLATFORM := mt6833
+CMDQ_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+ifeq ($(CONFIG_MTK_PLATFORM), "mt6761")
+	MTK_PLATFORM := mt6765
+else
+	MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+endif
+
+# remove this after k79 config CONFIG_MACH_MT6779 & CONFIG_MTK_PLATFORM in defconfig
+ifeq ($(CONFIG_MTK_DISP_PLATFORM), "mt6779")
+	CONFIG_MACH_MT6779 := y
+	MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_DISP_PLATFORM))
 endif
 
 obj-y += ddp_aal.o
@@ -28,45 +36,26 @@ ccflags-y += \
 				-I$(srctree)/drivers/misc/mediatek/lcm/inc/ \
 				-I$(srctree)/drivers/misc/mediatek/leds/
 
-ifeq (y, $(filter y, $(CONFIG_MACH_MT6765) $(CONFIG_MACH_MT6761)))
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/leds/mt6765
-else
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/leds/$(MTK_PLATFORM)
-endif
 
 
 ifeq (y, $(filter y, $(CONFIG_MACH_MT6799) $(CONFIG_MACH_MT6759) $(CONFIG_MACH_MT6758) \
 					 $(CONFIG_MACH_MT6763) $(CONFIG_MACH_MT6739) $(CONFIG_MACH_MT6765) \
-					 $(CONFIG_MACH_MT6761) $(CONFIG_MACH_MT6771) $(CONFIG_MACH_MT3967) \
-					 $(CONFIG_MACH_MT8168) $(CONFIG_MACH_MT6768) $(CONFIG_MACH_MT6885) \
-					 $(CONFIG_MACH_MT6785) $(CONFIG_MACH_MT6873) $(CONFIG_MACH_MT6853) \
-					 $(CONFIG_MACH_MT6893)))
-
+					 $(CONFIG_MACH_MT6761) $(CONFIG_MACH_MT3967) $(CONFIG_MACH_MT6779) \
+					 $(CONFIG_MACH_MT6768) $(CONFIG_MACH_MT6771) $(CONFIG_MACH_MT6785)))
 ccflags-y += \
 				-I$(srctree)/drivers/misc/mediatek/cmdq/v3/
 
-ifeq ($(CONFIG_MACH_MT6761),y)
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/mt6765/
-else
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/$(MTK_PLATFORM)/
-endif
-else
-ifeq (y, $(filter y, $(CONFIG_MACH_MT6833)))
-ccflags-y += \
-                 -I$(srctree)/drivers/misc/mediatek/video/$(MTK_PLATFORM)/cmdq/v3/ \
-                 -I$(srctree)/drivers/misc/mediatek/video/$(MTK_PLATFORM)/cmdq/v3/$(MTK_PLATFORM)/
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/$(CMDQ_PLATFORM)/
+
 else
 ccflags-y += \
 				-I$(srctree)/drivers/misc/mediatek/cmdq/v2/ \
 				-I$(srctree)/drivers/misc/mediatek/cmdq/v2/$(MTK_PLATFORM)/
 endif
-endif
 
 ifeq (y, $(filter y, $(CONFIG_MACH_MT6763) $(CONFIG_MACH_MT6758) $(CONFIG_MACH_MT6739) \
-					 $(CONFIG_MACH_MT6765) $(CONFIG_MACH_MT6761) $(CONFIG_MACH_MT6771) \
-					 $(CONFIG_MACH_MT3967) $(CONFIG_MACH_MT8168) $(CONFIG_MACH_MT6768) \
-					 $(CONFIG_MACH_MT6785) $(CONFIG_MACH_MT6885) $(CONFIG_MACH_MT6873) \
-					 $(CONFIG_MACH_MT6853) $(CONFIG_MACH_MT6893) $(CONFIG_MACH_MT6833)))
+					 $(CONFIG_MACH_MT6765) $(CONFIG_MACH_MT6761) $(CONFIG_MACH_MT3967) $(CONFIG_MACH_MT6779) $(CONFIG_MACH_MT6768) $(CONFIG_MACH_MT6771) $(CONFIG_MACH_MT6785)))
     ccflags-y += -DNOT_SUPPORT_CABC_HW
 endif
 
@@ -74,7 +63,7 @@ ifeq (y, $(filter y, $(CONFIG_MACH_MT6757) $(CONFIG_MACH_MT6771)))
     ccflags-y += -DLOAD_AAL_SUPPORT_FROM_DTS
 endif
 
-ifeq (y, $(filter y, $(CONFIG_MACH_MT6765) $(CONFIG_MACH_MT6761) $(CONFIG_MACH_MT8168)))
+ifeq (y, $(filter y, $(CONFIG_MACH_MT6765) $(CONFIG_MACH_MT6761)))
     ccflags-y += -DAMS_AAL_SUPPORT_KERNEL_API
 endif
 
@@ -86,6 +75,6 @@ ifeq (y, $(filter y, $(CONFIG_MACH_MT6779) $(CONFIG_MACH_MT6785)))
     ccflags-y += -DAAL_HAS_DRE3
 endif
 
-ifneq ($(CONFIG_MACH_MT8167),y)
-ccflags-y += -DAAL_SUPPORT_KERNEL_API
+ifeq ($(CONFIG_MACH_MT6779), y)
+    ccflags-y += -DCONFIG_MACH_MT6779
 endif

@@ -26,26 +26,7 @@
 
 unsigned long profile_pc(struct pt_regs *regs)
 {
-	unsigned long pc = instruction_pointer(regs);
-
-	if (!user_mode(regs) && in_lock_functions(pc)) {
-#ifdef CONFIG_FRAME_POINTER
-		return *(unsigned long *)(regs->bp + sizeof(long));
-#else
-		unsigned long *sp =
-			(unsigned long *)kernel_stack_pointer(regs);
-		/*
-		 * Return address is either directly at stack pointer
-		 * or above a saved flags. Eflags has bits 22-31 zero,
-		 * kernel addresses don't.
-		 */
-		if (sp[0] >> 22)
-			return sp[0];
-		if (sp[1] >> 22)
-			return sp[1];
-#endif
-	}
-	return pc;
+	return instruction_pointer(regs);
 }
 EXPORT_SYMBOL(profile_pc);
 
@@ -66,9 +47,12 @@ static struct irqaction irq0  = {
 
 static void __init setup_default_timer_irq(void)
 {
-	if (!nr_legacy_irqs())
-		return;
-	setup_irq(0, &irq0);
+	/*
+	 * Unconditionally register the legacy timer; even without legacy
+	 * PIC/PIT we need this for the HPET0 in legacy replacement mode.
+	 */
+	if (setup_irq(0, &irq0))
+		pr_info("Failed to register legacy timer interrupt\n");
 }
 
 /* Default timer init function */
@@ -82,6 +66,11 @@ void __init hpet_time_init(void)
 static __init void x86_late_time_init(void)
 {
 	x86_init.timers.timer_init();
+	/*
+	 * After PIT/HPET timers init, select and setup
+	 * the final interrupt mode for delivering IRQs.
+	 */
+	x86_init.irqs.intr_mode_init();
 	tsc_init();
 }
 

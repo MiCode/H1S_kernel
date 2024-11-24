@@ -15,7 +15,7 @@ config MTK_FINGERPRINT_SUPPORT
 
 config MTK_FINGERPRINT_SELECT
 	string "sensor type"
-	default "NA"
+	default "GF318M"
 
 config FPC_FINGERPRINT
 	bool "FPC Fingerprint"

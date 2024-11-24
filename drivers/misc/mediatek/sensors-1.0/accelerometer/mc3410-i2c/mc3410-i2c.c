@@ -1,42 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright(C)2014 MediaTek Inc.
- * Modification based on code covered by the below mentioned copyright
- * and/or permission notice(S).
+ * Copyright (c) 2020 MediaTek Inc.
  */
-
-/*****************************************************************************
- *
- * Copyright (c) 2014 mCube, Inc.  All rights reserved.
- *
- * This source is subject to the mCube Software License.
- * This software is protected by Copyright and the information and source code
- * contained herein is confidential. The software including the source code
- * may not be copied and the information contained herein may not be used or
- * disclosed except with the written permission of mCube Inc.
- *
- * All other rights reserved.
- *
- * This code and information are provided "as is" without warranty of any
- * kind, either expressed or implied, including but not limited to the
- * implied warranties of merchantability and/or fitness for a
- * particular purpose.
- *
- * The following software/firmware and/or related documentation ("mCube
- *Software")
- * have been modified by mCube Inc. All revisions are subject to any receiver's
- * applicable license agreements with mCube Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
- *****************************************************************************/
 
 /*****************************************************************************
  *** HEADER FILES
@@ -83,6 +48,10 @@
 #define MC3XXX_REGMAP_LENGTH (64)
 #define DEBUG_SWITCH 1
 #define C_I2C_FIFO_SIZE 8
+
+#define DRIVER_ATTR(_name, _mode, _show, _store) \
+        struct driver_attribute driver_attr_##_name = \
+        __ATTR(_name, _mode, _show, _store)
 
 static struct GSENSOR_VECTOR3D gsensor_gain;
 
@@ -1363,6 +1332,7 @@ static int MC3XXX_Init(struct i2c_client *client, int reset_cali)
 static int MC3XXX_ReadChipInfo(struct i2c_client *client, char *buf,
 			       int bufsize)
 {
+	int ret = 0;
 	if ((buf == NULL) || (bufsize <= 30))
 		return -1;
 
@@ -1371,7 +1341,9 @@ static int MC3XXX_ReadChipInfo(struct i2c_client *client, char *buf,
 		return -2;
 	}
 
-	sprintf(buf, "MC3XXX Chip");
+	ret = sprintf(buf, "MC3XXX Chip");
+	if (ret < 0)
+		pr_debug("%s:Chipname sprintf fail:%d\n", __func__, ret);
 	return 0;
 }
 
@@ -1469,15 +1441,16 @@ static int MC3XXX_ReadRawData(struct i2c_client *client, char *buf)
 #else
 	{
 		s16 sensor_data[3] = { 0 };
-
 		res = MC3XXX_ReadData(client, sensor_data);
 		if (res) {
 			pr_err_ratelimited("[Gsensor]%s:I2C error: ret value=%d",
 				__func__, res);
 			return -EIO;
 		}
-		sprintf(buf, "%04x %04x %04x", sensor_data[MC3XXX_AXIS_X],
+		res = sprintf(buf, "%04x %04x %04x", sensor_data[MC3XXX_AXIS_X],
 			sensor_data[MC3XXX_AXIS_Y], sensor_data[MC3XXX_AXIS_Z]);
+		if (res < 0)
+			pr_debug("%s: sprintf failed: %d\n", __func__, res);
 	}
 #endif
 
@@ -1719,6 +1692,8 @@ static ssize_t show_power_status(struct device_driver *ddri, char *buf)
 	MC3XXX_i2c_read_block(obj->client, MC3XXX_REG_MODE_FEATURE, &uData, 1);
 
 	res = snprintf(buf, PAGE_SIZE, "0x%04X\n", uData);
+	if (res < 0)
+		pr_debug("%s: snprintf failed: %d\n", __func__, res);
 	return res;
 }
 

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/slab.h>
 #include <linux/interrupt.h>
@@ -448,7 +440,7 @@ int mau_dump_status(unsigned int m4u_id, unsigned int m4u_slave_id)
 	return 0;
 }
 
-int __m4u_dump_reg(unsigned int m4u_index, unsigned int start, unsigned int end)
+int m4u_dump_reg(int m4u_index, unsigned int start, unsigned int end)
 {
 	int i = 0;
 	unsigned long m4u_base;
@@ -470,11 +462,12 @@ int __m4u_dump_reg(unsigned int m4u_index, unsigned int start, unsigned int end)
 
 	return 0;
 }
-
+/*
 int m4u_dump_reg(int m4u_index, unsigned int start)
 {
-	return __m4u_dump_reg(0, 0, 400);
-}
+	//return __m4u_dump_reg(0, 0, 400);
+	return 0;
+}*/
 
 unsigned int m4u_get_main_descriptor(unsigned int m4u_id,
 	unsigned int m4u_slave_id, int idx)
@@ -1457,8 +1450,7 @@ int m4u_invalid_seq_range_by_id(unsigned int port, int seq_id)
 	return ret;
 }
 
-static int _m4u_config_port(unsigned int port,
-	int virt, int sec, int dis, int dir)
+static int _m4u_config_port(int port, int virt, int sec, int dis, int dir)
 {
 	unsigned int m4u_index = m4u_port_2_m4u_id(port);
 	/*  unsigned long m4u_base = gM4UBaseAddr[m4u_index]; */
@@ -1586,8 +1578,8 @@ static inline void _m4u_port_clock_toggle(
 		MMPROFILE_FLAG_END, 0, 0);
 }
 
-int m4u_config_port(
-	struct M4U_PORT_STRUCT *pM4uPort)	/* native */
+/* native */
+int m4u_config_port(struct m4u_port_config_struct *pM4uPort)
 {
 	unsigned int PortID = (pM4uPort->ePortID);
 	unsigned int m4u_index = m4u_port_2_m4u_id(PortID);
@@ -1639,8 +1631,7 @@ int m4u_config_port(
 	return 0;
 }
 
-int m4u_config_port_ext(
-	struct M4U_PORT_STRUCT *pM4uPort)
+int m4u_config_port_ext(struct m4u_port_config_struct *pM4uPort)
 {
 	int ret = m4u_config_port(pM4uPort);
 
@@ -2441,7 +2432,7 @@ int m4u_unregister_fault_callback(int port)
 	return 0;
 }
 
-int m4u_enable_tf(unsigned int port, bool fgenable)
+int m4u_enable_tf(int port, bool fgenable)
 {
 	if (port < 0 || port >= M4U_PORT_UNKNOWN) {
 		M4UMSG("%s fail,m port=%d\n", __func__, port);
@@ -2454,7 +2445,7 @@ int m4u_enable_tf(unsigned int port, bool fgenable)
 /* =============== */
 static struct timer_list m4u_isr_pause_timer;
 
-static void m4u_isr_restart(unsigned long unused)
+static void m4u_isr_restart(struct timer_list *unused)
 {
 	M4UMSG("restart m4u irq\n");
 	m4u_intr_modify_all(1);
@@ -2462,8 +2453,7 @@ static void m4u_isr_restart(unsigned long unused)
 
 static int m4u_isr_pause_timer_init(void)
 {
-	init_timer(&m4u_isr_pause_timer);
-	m4u_isr_pause_timer.function = m4u_isr_restart;
+	timer_setup(&m4u_isr_pause_timer, m4u_isr_restart, 0);
 	return 0;
 }
 
@@ -3026,7 +3016,7 @@ int m4u_hw_init(struct m4u_device *m4u_dev, unsigned int m4u_id)
 
 	/* config MDP related port default use M4U */
 	if (m4u_id == 0) {
-		struct M4U_PORT_STRUCT port;
+		struct m4u_port_config_struct port;
 
 		port.Direction = 0;
 		port.Distance = 1;
@@ -3062,24 +3052,23 @@ int m4u_dump_reg_for_smi_hang_issue(void)
 	/*NOTES: m4u_monitor_start() must be called before using m4u */
 	/*please check m4u_hw_init() to ensure that */
 
-	M4UMSG("====== dump m4u reg start =======>\n");
+	m4u_err("====== dump m4u reg start =======>\n");
 
 	if (gM4UBaseAddr[0] == 0) {
-		M4UMSG("gM4UBaseAddr[0] is NULL\n");
+		m4u_err("gM4UBaseAddr[0] is NULL\n");
 		return 0;
 	}
-	M4UMSG("0x44 = 0x%x\n", M4U_ReadReg32(gM4UBaseAddr[0], 0x44));
-	__m4u_dump_reg(0, 0, 400);
-	__m4u_dump_reg(0, 0x500, 0x5fc);
-	__m4u_dump_reg(0, 0xb00, 0xb0c);
-	__m4u_dump_reg(0, 0xc00, 0xc0c);
-	__m4u_dump_reg(0, 0x380, 0x3fc);
-	__m4u_dump_reg(0, 0x680, 0x6fc);
+	m4u_err("0x44 = 0x%x\n", M4U_ReadReg32(gM4UBaseAddr[0], 0x44));
+	m4u_dump_reg(0, 0, 400);
+	m4u_dump_reg(0, 0x500, 0x5fc);
+	m4u_dump_reg(0, 0xb00, 0xb0c);
+	m4u_dump_reg(0, 0xc00, 0xc0c);
+	m4u_dump_reg(0, 0x380, 0x3fc);
+	m4u_dump_reg(0, 0x680, 0x6fc);
 
 	m4u_print_perf_counter(0, 0, "m4u");
 	m4u_dump_rs_info(0, 0);
-
-	M4UMSG("====== dump m4u reg end =======>\n");
+	m4u_err("====== dump m4u reg end =======>\n");
 
 	return 0;
 }

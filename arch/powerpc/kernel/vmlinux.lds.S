@@ -89,7 +89,7 @@ SECTIONS
 	 */
 	.text BLOCK(0) : AT(ADDR(.text) - LOAD_OFFSET) {
 #ifdef CONFIG_LD_HEAD_STUB_CATCH
-		*(.linker_stub_catch);
+		KEEP(*(.linker_stub_catch));
 		. = . ;
 #endif
 
@@ -98,7 +98,8 @@ SECTIONS
 		ALIGN_FUNCTION();
 #endif
 		/* careful! __ftr_alt_* sections need to be close to .text */
-		*(.text.hot .text .text.fixup .text.unlikely .fixup __ftr_alt_* .ref.text);
+		*(.text.hot TEXT_MAIN .text.fixup .text.unlikely .fixup __ftr_alt_* .ref.text);
+		NOINSTR_TEXT
 		SCHED_TEXT
 		CPUIDLE_TEXT
 		LOCK_TEXT
@@ -138,6 +139,20 @@ SECTIONS
 		__start___stf_entry_barrier_fixup = .;
 		*(__stf_entry_barrier_fixup)
 		__stop___stf_entry_barrier_fixup = .;
+	}
+
+	. = ALIGN(8);
+	__uaccess_flush_fixup : AT(ADDR(__uaccess_flush_fixup) - LOAD_OFFSET) {
+		__start___uaccess_flush_fixup = .;
+		*(__uaccess_flush_fixup)
+		__stop___uaccess_flush_fixup = .;
+	}
+
+	. = ALIGN(8);
+	__entry_flush_fixup : AT(ADDR(__entry_flush_fixup) - LOAD_OFFSET) {
+		__start___entry_flush_fixup = .;
+		*(__entry_flush_fixup)
+		__stop___entry_flush_fixup = .;
 	}
 
 	. = ALIGN(8);
@@ -201,10 +216,10 @@ SECTIONS
 	.init.data : AT(ADDR(.init.data) - LOAD_OFFSET) {
 		INIT_DATA
 		__vtop_table_begin = .;
-		*(.vtop_fixup);
+		KEEP(*(.vtop_fixup));
 		__vtop_table_end = .;
 		__ptov_table_begin = .;
-		*(.ptov_fixup);
+		KEEP(*(.ptov_fixup));
 		__ptov_table_end = .;
 	}
 
@@ -225,26 +240,26 @@ SECTIONS
 	. = ALIGN(8);
 	__ftr_fixup : AT(ADDR(__ftr_fixup) - LOAD_OFFSET) {
 		__start___ftr_fixup = .;
-		*(__ftr_fixup)
+		KEEP(*(__ftr_fixup))
 		__stop___ftr_fixup = .;
 	}
 	. = ALIGN(8);
 	__mmu_ftr_fixup : AT(ADDR(__mmu_ftr_fixup) - LOAD_OFFSET) {
 		__start___mmu_ftr_fixup = .;
-		*(__mmu_ftr_fixup)
+		KEEP(*(__mmu_ftr_fixup))
 		__stop___mmu_ftr_fixup = .;
 	}
 	. = ALIGN(8);
 	__lwsync_fixup : AT(ADDR(__lwsync_fixup) - LOAD_OFFSET) {
 		__start___lwsync_fixup = .;
-		*(__lwsync_fixup)
+		KEEP(*(__lwsync_fixup))
 		__stop___lwsync_fixup = .;
 	}
 #ifdef CONFIG_PPC64
 	. = ALIGN(8);
 	__fw_ftr_fixup : AT(ADDR(__fw_ftr_fixup) - LOAD_OFFSET) {
 		__start___fw_ftr_fixup = .;
-		*(__fw_ftr_fixup)
+		KEEP(*(__fw_ftr_fixup))
 		__stop___fw_ftr_fixup = .;
 	}
 #endif
@@ -257,7 +272,7 @@ SECTIONS
 	. = ALIGN(8);
 	.machine.desc : AT(ADDR(.machine.desc) - LOAD_OFFSET) {
 		__machine_desc_start = . ;
-		*(.machine.desc)
+		KEEP(*(.machine.desc))
 		__machine_desc_end = . ;
 	}
 #ifdef CONFIG_RELOCATABLE
@@ -304,10 +319,16 @@ SECTIONS
 #ifdef CONFIG_PPC32
 	.data : AT(ADDR(.data) - LOAD_OFFSET) {
 		DATA_DATA
-		*(.sdata)
+#ifdef CONFIG_UBSAN
+		*(.data..Lubsan_data*)
+		*(.data..Lubsan_type*)
+#endif
+		*(.data.rel*)
+		*(SDATA_MAIN)
 		*(.sdata2)
 		*(.got.plt) *(.got)
 		*(.plt)
+		*(.branch_lt)
 	}
 #else
 	.data : AT(ADDR(.data) - LOAD_OFFSET) {
@@ -324,7 +345,9 @@ SECTIONS
 #endif
 
 	.opd : AT(ADDR(.opd) - LOAD_OFFSET) {
-		*(.opd)
+		__start_opd = .;
+		KEEP(*(.opd))
+		__end_opd = .;
 	}
 
 	. = ALIGN(256);

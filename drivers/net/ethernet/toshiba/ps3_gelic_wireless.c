@@ -1232,7 +1232,7 @@ static int gelic_wl_set_encodeext(struct net_device *netdev,
 		key_index = wl->current_key;
 
 	if (!enc->length && (ext->ext_flags & IW_ENCODE_EXT_SET_TX_KEY)) {
-		/* reques to change default key index */
+		/* request to change default key index */
 		pr_debug("%s: request to change default key to %d\n",
 			 __func__, key_index);
 		wl->current_key = key_index;
@@ -2320,8 +2320,9 @@ static struct net_device *gelic_wl_alloc(struct gelic_card *card)
 	pr_debug("%s: wl=%p port=%p\n", __func__, wl, port);
 
 	/* allocate scan list */
-	wl->networks = kzalloc(sizeof(struct gelic_wl_scan_info) *
-			       GELIC_WL_BSS_MAX_ENT, GFP_KERNEL);
+	wl->networks = kcalloc(GELIC_WL_BSS_MAX_ENT,
+			       sizeof(struct gelic_wl_scan_info),
+			       GFP_KERNEL);
 
 	if (!wl->networks)
 		goto fail_bss;

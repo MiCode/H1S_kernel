@@ -20,7 +20,11 @@ ccflags-y += \
 ifeq ($(CONFIG_MTK_TINYSYS_SSPM_SUPPORT), y)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/v2/
+ifneq ($(CONFIG_MTK_TINYSYS_SSPM_VERSION),"")
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/$(CONFIG_MTK_TINYSYS_SSPM_VERSION)/
+else
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/$(CONFIG_MTK_PLATFORM)/
+endif
 endif
 ifeq ($(CONFIG_MTK_GPU_SWPM_SUPPORT), y)
 MTK_GPU_VERSION = $(subst ",,$(CONFIG_MTK_GPU_VERSION))
@@ -37,6 +41,10 @@ else ifeq ($(CONFIG_MACH_MT6893), y)
 ccflags-y += \
 	-I$(srctree)/drivers/misc/mediatek/base/power/swpm_v1/mt6893/
 	obj-y += $(subst ",,mt6893)/
+else ifeq ($(CONFIG_MACH_MT6877), y)
+ccflags-y += \
+	-I$(srctree)/drivers/misc/mediatek/base/power/swpm_v1/mt6877/
+	obj-y += $(subst ",,mt6877)/
 else
 ccflags-y += \
 	-I$(srctree)/drivers/misc/mediatek/base/power/swpm_v1/$(CONFIG_MTK_PLATFORM)/

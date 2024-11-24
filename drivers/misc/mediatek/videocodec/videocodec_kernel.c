@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #include <linux/uaccess.h>
@@ -58,21 +50,26 @@ unsigned long pmem_user_v2p_video(unsigned long va)
 		return 0;
 	}
 
+	spin_lock(&current->mm->page_table_lock);
+
 	pgd = pgd_offset(current->mm, va);  /* what is tsk->mm */
 	if (pgd_none(*pgd) || pgd_bad(*pgd)) {
 		pr_info("[ERROR] v2p, va=0x%lx, pgd invalid!\n", va);
+		spin_unlock(&current->mm->page_table_lock);
 		return 0;
 	}
 
 	pud = pud_offset(pgd, va);
 	if (pud_none(*pud) || pud_bad(*pud)) {
 		pr_info("[ERROR] v2p, va=0x%lx, pud invalid!\n", va);
+		spin_unlock(&current->mm->page_table_lock);
 		return 0;
 	}
 
 	pmd = pmd_offset(pud, va);
 	if (pmd_none(*pmd) || pmd_bad(*pmd)) {
 		pr_info("[ERROR] v2p(), va=0x%lx, pmd invalid!\n", va);
+		spin_unlock(&current->mm->page_table_lock);
 		return 0;
 	}
 
@@ -80,10 +77,13 @@ unsigned long pmem_user_v2p_video(unsigned long va)
 	if (pte_present(*pte)) {
 		pa = (pte_val(*pte) & PHYS_MASK & (PAGE_MASK)) | pageOffset;
 		pte_unmap(pte);
+		spin_unlock(&current->mm->page_table_lock);
 		return pa;
 	}
 
+	pte_unmap(pte);
 	pr_info("[ERROR] v2p, va=0x%lx, pte invalid!\n", va);
+	spin_unlock(&current->mm->page_table_lock);
 	return 0;
 }
 EXPORT_SYMBOL(pmem_user_v2p_video);

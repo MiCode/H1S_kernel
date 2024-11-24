@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/module.h>  /* Needed by all modules */
@@ -145,6 +137,10 @@ static void reviser_power_on_cb(void *para)
 	}
 	if (reviser_set_default_iova(g_reviser_device)) {
 		LOG_ERR("Set Default IOVA Fail\n");
+		return;
+	}
+	if (reviser_init_ip()) {
+		LOG_ERR("Init IP Fail\n");
 		return;
 	}
 
@@ -508,6 +504,8 @@ static long reviser_ioctl(struct file *filp, unsigned int cmd,
 
 	if (!g_ioctl_enable)
 		return -EINVAL;
+
+	memset(&info, 0, sizeof(struct reviser_ioctl_info));
 
 	switch (cmd) {
 	case REVISER_IOCTL_SET_BOUNDARY:

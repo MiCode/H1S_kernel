@@ -38,7 +38,7 @@ static void _drbd_start_io_acct(struct drbd_device *device, struct drbd_request 
 {
 	struct request_queue *q = device->rq_queue;
 
-	generic_start_io_acct(q, bio_data_dir(req->master_bio),
+	generic_start_io_acct(q, bio_op(req->master_bio),
 				req->i.size >> 9, &device->vdisk->part0);
 }
 
@@ -47,7 +47,7 @@ static void _drbd_end_io_acct(struct drbd_device *device, struct drbd_request *r
 {
 	struct request_queue *q = device->rq_queue;
 
-	generic_end_io_acct(q, bio_data_dir(req->master_bio),
+	generic_end_io_acct(q, bio_op(req->master_bio),
 			    &device->vdisk->part0, req->start_jif);
 }
 
@@ -55,7 +55,7 @@ static struct drbd_request *drbd_req_new(struct drbd_device *device, struct bio 
 {
 	struct drbd_request *req;
 
-	req = mempool_alloc(drbd_request_mempool, GFP_NOIO);
+	req = mempool_alloc(&drbd_request_mempool, GFP_NOIO);
 	if (!req)
 		return NULL;
 	memset(req, 0, sizeof(*req));
@@ -184,7 +184,7 @@ void drbd_req_destroy(struct kref *kref)
 		}
 	}
 
-	mempool_free(req, drbd_request_mempool);
+	mempool_free(req, &drbd_request_mempool);
 }
 
 static void wake_all_senders(struct drbd_connection *connection)
@@ -207,7 +207,8 @@ void start_new_tl_epoch(struct drbd_connection *connection)
 void complete_master_bio(struct drbd_device *device,
 		struct bio_and_error *m)
 {
-	m->bio->bi_status = errno_to_blk_status(m->error);
+	if (unlikely(m->error))
+		m->bio->bi_status = errno_to_blk_status(m->error);
 	bio_endio(m->bio);
 	dec_ap_bio(device);
 }
@@ -1714,9 +1715,9 @@ static bool net_timeout_reached(struct drbd_request *net_req,
  * to expire twice (worst case) to become effective. Good enough.
  */
 
-void request_timer_fn(unsigned long data)
+void request_timer_fn(struct timer_list *t)
 {
-	struct drbd_device *device = (struct drbd_device *) data;
+	struct drbd_device *device = from_timer(device, t, request_timer);
 	struct drbd_connection *connection = first_peer_device(device)->connection;
 	struct drbd_request *req_read, *req_write, *req_peer; /* oldest request */
 	struct net_conf *nc;

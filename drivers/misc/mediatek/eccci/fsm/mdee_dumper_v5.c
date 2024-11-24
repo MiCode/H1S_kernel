@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2015 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -35,14 +27,16 @@ static void ccci_aed_v5(struct ccci_fsm_ee *mdee, unsigned int dump_flag,
 {
 	void *ex_log_addr = NULL;
 	int ex_log_len = 0;
+#if defined(CONFIG_MTK_AEE_FEATURE)
 	void *md_img_addr = NULL;
 	int md_img_len = 0;
+#endif
 	int info_str_len = 0;
 	char *buff;		/*[AED_STR_LEN]; */
 #if defined(CONFIG_MTK_AEE_FEATURE)
 	char buf_fail[] = "Fail alloc mem for exception\n";
 #endif
-	char *img_inf;
+	char *img_inf = NULL;
 	struct mdee_dumper_v5 *dumper = mdee->dumper_obj;
 	int md_id = mdee->md_id;
 	struct ccci_smem_region *mdss_dbg =
@@ -100,10 +94,6 @@ static void ccci_aed_v5(struct ccci_fsm_ee *mdee, unsigned int dump_flag,
 		ex_log_addr = (void *)dumper->ex_pl_info;
 		ex_log_len = MD_HS1_FAIL_DUMP_SIZE;
 	}
-	if (dump_flag & CCCI_AED_DUMP_MD_IMG_MEM) {
-		md_img_addr = (void *)mem_layout->md_bank0.base_ap_view_vir;
-		md_img_len = MD_IMG_DUMP_SIZE;
-	}
 	if (buff == NULL) {
 		fsm_sys_mdee_info_notify(aed_str);
 #if defined(CONFIG_MTK_AEE_FEATURE)
@@ -141,7 +131,7 @@ static void mdee_output_debug_info_to_buf(struct ccci_fsm_ee *mdee,
 	struct debug_info_t *debug_info, char *ex_info)
 {
 	int md_id = mdee->md_id;
-	struct ccci_mem_layout *mem_layout;
+	struct ccci_mem_layout *mem_layout = NULL;
 	char *ex_info_temp = NULL;
 	int ret = 0;
 	int val = 0;
@@ -306,12 +296,12 @@ static void mdee_info_dump_v5(struct ccci_fsm_ee *mdee)
 		/* use strncpy, otherwise if this happens after a MD EE,
 		 * the former EE info will be printed out
 		 */
-		db_opt |= DB_OPT_FTRACE;
+		db_opt |= (unsigned int)DB_OPT_FTRACE;
 		/* fall through */
 	case MD_EE_CASE_WDT:
-		strncpy(ex_info, mdee_more_inf_str[dumper->more_info],
-			EE_BUF_LEN_UMOLY);
-		ex_info[EE_BUF_LEN_UMOLY] = '\0';
+		if (snprintf(ex_info, EE_BUF_LEN_UMOLY, "%s",
+			mdee_more_inf_str[dumper->more_info]) < 0)
+			ex_info[0] = 0;
 		break;
 	default:
 		mdee_output_debug_info_to_buf(mdee, debug_info, ex_info);
@@ -391,7 +381,7 @@ static struct ex_overview_t *md_ee_get_buf_ptr(struct ccci_fsm_ee *mdee,
 	struct ccci_smem_region *mdss_dbg =
 		ccci_md_get_smem_by_user_id(mdee->md_id,
 			SMEM_USER_RAW_MDSS_DBG);
-	struct ex_overview_t *tar_ptr;
+	struct ex_overview_t *tar_ptr = NULL;
 
 	if (mdee->md_id == MD_SYS1)
 		ccci_md_dump_info(mdee->md_id, DUMP_FLAG_CCIF, ccif_sram, 0);
@@ -418,7 +408,7 @@ static int mdee_set_core_name(int md_id, char *core_name,
 {
 	int core_id;
 	u8 temp_sys_inf_1, temp_sys_inf_2;
-	struct ex_brief_maininfo_v5 *brief_info;
+	struct ex_brief_maininfo_v5 *brief_info = NULL;
 	char core_name_temp[MD_CORE_NAME_DEBUG];
 	int ret = 0;
 
@@ -656,8 +646,8 @@ static void md_ee_set_fatal_para(struct ex_fatal_v5 *fatal_src,
 
 static void mdee_info_prepare_v5(struct ccci_fsm_ee *mdee)
 {
-	struct ex_overview_t *ex_overview;
-	struct ex_brief_maininfo_v5 *brief_info;
+	struct ex_overview_t *ex_overview = NULL;
+	struct ex_brief_maininfo_v5 *brief_info = NULL;
 	struct mdee_dumper_v5 *dumper = mdee->dumper_obj;
 	struct debug_info_t *debug_info = &dumper->debug_info;
 	int md_id = mdee->md_id;
@@ -839,7 +829,7 @@ static void mdee_dumper_v5_dump_ee_info(struct ccci_fsm_ee *mdee,
 			}
 			/* Handshake 2 fail */
 			CCCI_MEM_LOG_TAG(md_id, FSM, "Dump MD EX log\n");
-			if (md_dbg_dump_flag & (1 << MD_DBG_DUMP_SMEM)) {
+			if (md_dbg_dump_flag & (1U << MD_DBG_DUMP_SMEM)) {
 				ccci_util_mem_dump(md_id, CCCI_DUMP_MEM_DUMP,
 					mdccci_dbg->base_ap_view_vir,
 						mdccci_dbg->size);
@@ -922,9 +912,16 @@ static void mdee_dumper_v5_emimpu_callback(
 #endif
 #endif
 
+int __weak mtk_emimpu_md_handling_register(void (*md_handling_func)
+	(unsigned int emi_id, struct reg_info_t *dump, unsigned int leng))
+{
+	CCCI_ERROR_LOG(-1, FSM, "[%s] is not supported!\n", __func__);
+	return -1;
+}
+
 int mdee_dumper_v5_alloc(struct ccci_fsm_ee *mdee)
 {
-	struct mdee_dumper_v5 *dumper;
+	struct mdee_dumper_v5 *dumper = NULL;
 	int md_id = mdee->md_id;
 
 #if (MD_GENERATION >= 6297)

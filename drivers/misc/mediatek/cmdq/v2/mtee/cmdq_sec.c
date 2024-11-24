@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #include <linux/slab.h>
@@ -31,7 +23,6 @@ static KREE_SESSION_HANDLE cmdq_session;
 static KREE_SESSION_HANDLE cmdq_mem_session;
 #endif
 
-#if 1
 /* lock to protect atomic secure task execution */
 static DEFINE_MUTEX(gCmdqSecExecLock);
 /* lock to protext atomic access gCmdqSecContextList */
@@ -394,11 +385,6 @@ static int32_t cmdq_sec_fill_iwc_command_msg_unlocked(
 			       sizeof(struct iwcCmdqAddrMetadata_t));
 		}
 
-		#if 0
-		/* medatada: debug config */
-		pIwc->debug.logLevel = (cmdq_core_should_print_msg()) ?
-			(1) : (0);
-		#endif
 		pIwc->debug.logLevel =
 		    cmdq_sec_get_sec_print_count() ? LOG_LEVEL_MSG :
 		    cmdq_sec_get_log_level();
@@ -453,7 +439,6 @@ static int32_t cmdq_sec_execute_session_unlocked(
 		unsigned int paramTypes;
 		KREE_SHAREDMEM_HANDLE cmdq_share_handle = 0;
 		struct KREE_SHAREDMEM_PARAM cmdq_shared_param;
-#if 1
 		/* allocate path init for shared cookie */
 		if (CMD_CMDQ_TL_INIT_SHARED_MEMORY ==
 		    ((struct iwcCmdqMessage_t *) (handle->iwcMessage))->cmd) {
@@ -498,21 +483,12 @@ static int32_t cmdq_sec_execute_session_unlocked(
 			CMDQ_MSG("KREE_TeeServiceCall tzRes =0x%x\n", tzRes);
 			break;
 		}
-#endif
 		cmdq_shared_param.buffer = handle->iwcMessage;
 		cmdq_shared_param.size = (sizeof(struct iwcCmdqMessage_t));
 		CMDQ_MSG("cmdq_shared_param.buffer %p\n",
 			cmdq_shared_param.buffer);
 		/* dump_message((iwcCmdqMessage_t *) handle->iwcMessage); */
 
-#if 0				/* add for debug */
-		CMDQ_ERR("dump secure task instructions in Normal world\n");
-		cmdq_core_dump_instructions((uint64_t *)
-			(((iwcCmdqMessage_t *)
-			(handle->iwcMessage))->command.pVABase),
-		    ((iwcCmdqMessage_t *)
-		    (handle->iwcMessage))->command.commandSize);
-#endif
 
 		tzRes =
 			KREE_RegisterSharedmem(handle->memSessionHandle,
@@ -708,10 +684,6 @@ int32_t cmdq_sec_submit_to_secure_world_async_unlocked(
 	CMDQ_TIME tEntrySec;
 	CMDQ_TIME tExitSec;
 
-#if 0
-	if (pTask != NULL)
-		cmdq_core_dump_secure_metadata(&(pTask->secData));
-#endif
 
 	CMDQ_MSG("[SEC]-->SEC_SUBMIT: tgid[%d:%d]\n", tgid, pid);
 	do {
@@ -784,13 +756,6 @@ int32_t cmdq_sec_submit_to_secure_world_async_unlocked(
 			duration, iwcCommand);
 
 	} else if (status < 0) {
-#if 0
-		if (!skipSecCtxDump) {
-			mutex_lock(&gCmdqSecContextLock);
-			cmdq_sec_dump_context_list();
-			mutex_unlock(&gCmdqSecContextLock);
-		}
-#endif
 		if (throwAEE) {
 			char buffer[200] = {0};
 			int n = 0;
@@ -1310,25 +1275,6 @@ void cmdqSecInitialize(void)
 #ifdef CMDQ_SECURE_PATH_SUPPORT
 	INIT_LIST_HEAD(&gCmdqSecContextList);
 /* cmdq_sec_allocate_path_resource_unlocked(); */
-#if 0
-/*
- **	no need to pass virtual irq id to secure world.
- ** MTEE need hardware irq id instead of virtual irq id
- */
-	/*	register secure IRQ handle */
-	cmdq_sec_lock_secure_path();
-	cmdq_sec_register_secure_irq();
-	cmdq_sec_unlock_secure_path();
-#endif
-#if 0
-	/* allocate shared memory */
-	gCmdqContext.hSecSharedMem = NULL;
-	cmdq_sec_create_shared_memory(&(gCmdqContext.hSecSharedMem), PAGE_SIZE);
-	/* init share memory */
-	cmdq_sec_lock_secure_path();
-	cmdq_sec_init_share_memory();
-	cmdq_sec_unlock_secure_path();
-#endif
 
 #endif
 }
@@ -1411,4 +1357,3 @@ int32_t cmdq_sec_get_log_level(void)
 	return LOG_LEVEL_LOG;
 }
 
-#endif

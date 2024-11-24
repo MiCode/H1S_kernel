@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 
@@ -19,11 +11,6 @@
 #include <linux/spinlock.h>
 #include <linux/kthread.h>
 #include <linux/timer.h>
-#include <linux/sched/clock.h>
-
-#if defined(CONFIG_MTK_SMI_EXT)
-#include <smi_public.h>
-#endif
 
 /* #include <mach/mt_irq.h> */
 #include "disp_drv_platform.h"	/* must be at the top-most */
@@ -37,7 +24,6 @@
 #include "ddp_dsi.h"
 #include "disp_drv_log.h"
 #include "primary_display.h"
-//#include "smi_debug.h"
 #include "disp_lowpower.h"
 #include "layering_rule.h"
 
@@ -237,7 +223,7 @@ irqreturn_t disp_irq_handler(int irq, void *dev_id)
 	} else if (irq == ddp_get_module_irq(DISP_MODULE_OVL0) ||
 		irq == ddp_get_module_irq(DISP_MODULE_OVL0_2L)) {
 /*
- *		not use this module
+ *		mt6765 not use this module
  *		irq == ddp_get_module_irq(DISP_MODULE_OVL1_2L)) {
  */
 		module = disp_irq_to_module(irq);
@@ -316,7 +302,6 @@ irqreturn_t disp_irq_handler(int irq, void *dev_id)
 		if (reg_val & (1 << 1)) {
 			DDPERR("IRQ: WDMA%d underrun! cnt=%d\n", index,
 			       cnt_wdma_underflow[index]++);
-
 			disp_irq_log_module |= 1 << module;
 		}
 		/* clear intr */
@@ -366,6 +351,7 @@ irqreturn_t disp_irq_handler(int irq, void *dev_id)
 			rdma_start_time[index] = sched_clock();
 			DDPIRQ("IRQ: RDMA%d frame start!\n", index);
 			rdma_start_irq_cnt[index]++;
+			primary_display_wakeup_pf_thread();
 		}
 		if (reg_val & (1 << 3)) {
 			mmprofile_log_ex(
@@ -473,7 +459,6 @@ irqreturn_t disp_irq_handler(int irq, void *dev_id)
 	}
 
 	disp_invoke_irq_callbacks(module, reg_val);
-
 	if (disp_irq_log_module != 0)
 		wake_up_interruptible(&disp_irq_log_wq);
 
@@ -489,10 +474,10 @@ static void disp_irq_rdma_underflow_aee_trigger(void)
 
 	if (disp_irq_rdma_underflow) {
 		/* Request highest dvfs */
-		#ifdef MTK_FB_MMDVFS_SUPPORT
-		primary_display_request_dvfs_perf(0,
-				HRT_LEVEL_LEVEL2);
-		#endif
+		primary_display_request_dvfs_perf(SMI_BWC_SCEN_UI_IDLE,
+				HRT_LEVEL_LEVEL2,
+				layering_rule_get_mm_freq_table
+					(HRT_OPP_LEVEL_LEVEL0));
 
 		if (disp_helper_get_option(DISP_OPT_RDMA_UNDERFLOW_AEE)) {
 			/* Just count underflow which happens more frequently */

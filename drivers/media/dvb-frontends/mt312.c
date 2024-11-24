@@ -32,7 +32,7 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "mt312_priv.h"
 #include "mt312.h"
 
@@ -559,8 +559,8 @@ static int mt312_set_frontend(struct dvb_frontend *fe)
 
 	dprintk("%s: Freq %d\n", __func__, p->frequency);
 
-	if ((p->frequency < fe->ops.info.frequency_min)
-	    || (p->frequency > fe->ops.info.frequency_max))
+	if ((p->frequency < fe->ops.info.frequency_min_hz / kHz)
+	    || (p->frequency > fe->ops.info.frequency_max_hz / kHz))
 		return -EINVAL;
 
 	if (((int)p->inversion < INVERSION_OFF)
@@ -755,10 +755,10 @@ static const struct dvb_frontend_ops mt312_ops = {
 	.delsys = { SYS_DVBS },
 	.info = {
 		.name = "Zarlink ???? DVB-S",
-		.frequency_min = 950000,
-		.frequency_max = 2150000,
+		.frequency_min_hz =  950 * MHz,
+		.frequency_max_hz = 2150 * MHz,
 		/* FIXME: adjust freq to real used xtal */
-		.frequency_stepsize = (MT312_PLL_CLK / 1000) / 128,
+		.frequency_stepsize_hz = MT312_PLL_CLK / 128,
 		.symbol_rate_min = MT312_SYS_CLK / 128, /* FIXME as above */
 		.symbol_rate_max = MT312_SYS_CLK / 2,
 		.caps =
@@ -840,7 +840,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(mt312_attach);
+EXPORT_SYMBOL_GPL(mt312_attach);
 
 module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "Turn on/off frontend debugging (default:off).");

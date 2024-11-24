@@ -326,7 +326,7 @@ static struct spi_board_info h3_spi_board_info[] __initdata = {
 	},
 };
 
-static struct gpio_led h3_gpio_led_pins[] = {
+static const struct gpio_led h3_gpio_led_pins[] = {
 	{
 		.name		= "h3:red",
 		.default_trigger = "heartbeat",
@@ -376,7 +376,7 @@ static struct omap_usb_config h3_usb_config __initdata = {
 	.pins[1]	= 3,
 };
 
-static struct omap_lcd_config h3_lcd_config __initdata = {
+static const struct omap_lcd_config h3_lcd_config __initconst = {
 	.ctrl_name	= "internal",
 };
 

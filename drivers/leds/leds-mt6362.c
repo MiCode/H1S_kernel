@@ -12,13 +12,13 @@
 #include <linux/led-class-flash.h>
 #include <media/v4l2-flash-led-class.h>
 #ifdef CONFIG_MTK_CHARGER
-#include <mt-plat/charger_class.h>
+#include <mt-plat/v1/charger_class.h>
 #endif
 
 #ifdef CONFIG_MTK_FLASHLIGHT
 #include "flashlight-core.h"
 
-#include "mtk_charger.h"
+#include "mt-plat/v1/mtk_charger.h"
 #endif
 
 enum {
@@ -236,7 +236,7 @@ static int mt6362_iled_blink_set(struct led_classdev *cdev,
 	}
 
 	if (freq == ARRAY_SIZE(dim_freqs)) {
-		dev_warn(cdev->dev, "no suited pwm freq, config to 0.125Hz\n");
+		dev_dbg(cdev->dev, "no suited pwm freq, config to 0.125Hz\n");
 		freq = ARRAY_SIZE(dim_freqs) - 1;
 	}
 
@@ -268,12 +268,15 @@ static int mt6362_fled_brightness_set(struct led_classdev *cdev,
 
 	dev_info(cdev->dev, "%s brightness:%d\n", __func__, brightness);
 	if (data->fl_strb_flags) {
-		dev_err(cdev->dev,
+		dev_dbg(cdev->dev,
 			"Disable all leds strobe [%lu]\n", data->fl_strb_flags);
 		return -EINVAL;
 	}
 
 	if (brightness == LED_OFF) {
+#ifdef CONFIG_MTK_FLASHLIGHT_DLPT
+		flashlight_kicker_pbm(0);
+#endif
 		rv = regmap_update_bits(data->regmap, mtcdev->source_enable_reg,
 					mtcdev->source_enable_mask, 0);
 		if (rv)
@@ -394,7 +397,7 @@ static int mt6362_fled_strobe_set(struct led_classdev_flash *flcdev, bool state)
 	}
 
 	if (data->fl_torch_flags) {
-		dev_err(lcdev->dev,
+		dev_dbg(lcdev->dev,
 			"Disable all leds torch [%lu]\n", data->fl_torch_flags);
 		return -EINVAL;
 	}
@@ -526,7 +529,7 @@ static int mt6362_fled_external_strobe_set(struct v4l2_flash *v4l2_flash,
 	}
 
 	if (data->fl_torch_flags) {
-		dev_err(lcdev->dev,
+		dev_dbg(lcdev->dev,
 			"Disable all leds torch [%lu]\n", data->fl_torch_flags);
 		return -EINVAL;
 	}
@@ -665,7 +668,7 @@ static int mt6362_leds_irq_register(struct platform_device *pdev,
 		rv = devm_request_threaded_irq(&pdev->dev, irq, NULL,
 					       irqts[i].irqh, 0, NULL, irqdata);
 		if (rv) {
-			dev_err(&pdev->dev,
+			dev_dbg(&pdev->dev,
 				"failed to request irq [%s]\n", irqts[i].name);
 			return rv;
 		}
@@ -679,9 +682,14 @@ static void mt6362_init_v4l2_flash_config(struct led_classdev_flash *flcdev,
 {
 	struct led_classdev *lcdev = &flcdev->led_cdev;
 	struct led_flash_setting *s = &v4l2_config->intensity;
+	int ret = 0;
 
-	snprintf(v4l2_config->dev_name,
-		 sizeof(v4l2_config->dev_name), "%s", lcdev->name);
+	ret = snprintf(v4l2_config->dev_name, sizeof(v4l2_config->dev_name),
+		       "%s", lcdev->name);
+	if (ret < 0) {
+		dev_dbg(lcdev->dev, "%s snprintf error\n", __func__);
+		return;
+	}
 
 	s->min = MT6362_TORCHCURR_MIN;
 	s->step = MT6362_TORCHCURR_STEP;
@@ -854,8 +862,9 @@ static ssize_t mt6362_strobe_store(struct flashlight_arg arg)
 {
 	struct led_classdev_flash *flcdev;
 	struct led_classdev *lcdev;
+	uint32_t channel = (uint32_t)arg.channel;
 
-	flcdev = mt6362_flash_class[arg.channel];
+	flcdev = mt6362_flash_class[channel];
 	lcdev = &flcdev->led_cdev;
 	mt6362_fled_brightness_set(lcdev, 1);
 	msleep(arg.dur);
@@ -898,7 +907,7 @@ static int mt6362_leds_parse_dt(struct platform_device *pdev,
 		if (rv)
 			continue;
 		if (reg >= MT6362_INDICATOR_LEDMAX) {
-			dev_err(&pdev->dev, "not valid reg property\n");
+			dev_dbg(&pdev->dev, "not valid reg property\n");
 			return -EINVAL;
 		}
 		mtcdev = data->indicators + reg;
@@ -923,7 +932,7 @@ static int mt6362_leds_parse_dt(struct platform_device *pdev,
 		if (rv)
 			continue;
 		if (reg >= MT6362_FLASH_LEDMAX) {
-			dev_err(&pdev->dev, "not valid reg property\n");
+			dev_dbg(&pdev->dev, "not valid reg property\n");
 			return -EINVAL;
 		}
 		mtcdev = data->flashleds + reg;
@@ -945,8 +954,12 @@ static int mt6362_leds_parse_dt(struct platform_device *pdev,
 		of_property_read_u32(child, "type", &mtcdev->dev_id.type);
 		of_property_read_u32(child, "ct", &mtcdev->dev_id.ct);
 		of_property_read_u32(child, "part", &mtcdev->dev_id.part);
-		snprintf(mtcdev->dev_id.name, FLASHLIGHT_NAME_SIZE,
-				flcdev->led_cdev.name);
+		rv = snprintf(mtcdev->dev_id.name, FLASHLIGHT_NAME_SIZE,
+			      flcdev->led_cdev.name);
+		if (rv < 0) {
+			dev_dbg(&pdev->dev, "%s snprintf error\n", __func__);
+			return -EINVAL;
+		}
 		mtcdev->dev_id.channel = reg;
 		mt6362_flash_class[reg] = flcdev;
 		mtcdev->dev_id.decouple = 0;
@@ -984,13 +997,13 @@ static int mt6362_leds_probe(struct platform_device *pdev)
 
 	data->regmap = dev_get_regmap(pdev->dev.parent, NULL);
 	if (!data->regmap) {
-		dev_err(&pdev->dev, "failed to allocate regmap\n");
+		dev_dbg(&pdev->dev, "failed to allocate regmap\n");
 		return -ENODEV;
 	}
 
 	rv = mt6362_leds_parse_dt(pdev, data);
 	if (rv) {
-		dev_err(&pdev->dev, "faled to parse dt\n");
+		dev_dbg(&pdev->dev, "faled to parse dt\n");
 		return rv;
 	}
 
@@ -1001,7 +1014,7 @@ static int mt6362_leds_probe(struct platform_device *pdev)
 		rv = devm_of_led_classdev_register(&pdev->dev,
 						   mtcdev->np, &mtcdev->cdev);
 		if (rv) {
-			dev_err(&pdev->dev, "failed to register %d ileds\n", i);
+			dev_dbg(&pdev->dev, "failed to register %d ileds\n", i);
 			return rv;
 		}
 	}
@@ -1022,7 +1035,7 @@ static int mt6362_leds_probe(struct platform_device *pdev)
 
 		rv = led_classdev_flash_register(&pdev->dev, flcdev);
 		if (rv) {
-			dev_err(&pdev->dev, "failed to register %d fleds\n", i);
+			dev_dbg(&pdev->dev, "failed to register %d fleds\n", i);
 			return rv;
 		}
 
@@ -1033,7 +1046,7 @@ static int mt6362_leds_probe(struct platform_device *pdev)
 						&mtcdev->flash, &v4l2_flash_ops,
 						&v4l2_config);
 		if (IS_ERR(mtcdev->v4l2_flash)) {
-			dev_err(&pdev->dev, "failed to register %d v4l2\n", i);
+			dev_dbg(&pdev->dev, "failed to register %d v4l2\n", i);
 			rv = PTR_ERR(mtcdev->v4l2_flash);
 			return rv;
 		}
@@ -1055,14 +1068,14 @@ static int mt6362_leds_probe(struct platform_device *pdev)
 
 	rv = mt6362_leds_irq_register(pdev, data);
 	if (rv) {
-		dev_err(&pdev->dev, "failed to register led irqs\n");
+		dev_dbg(&pdev->dev, "failed to register led irqs\n");
 		return rv;
 	}
 
 #ifdef CONFIG_MTK_CHARGER
 	data->chg_dev = get_charger_by_name("primary_chg");
 	if (!data->chg_dev) {
-		dev_err(&pdev->dev,
+		dev_dbg(&pdev->dev,
 			"%s: can't find primary charger\n", __func__);
 		return -EINVAL;
 	}

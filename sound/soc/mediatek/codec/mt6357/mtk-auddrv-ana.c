@@ -1,20 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
-
 
 /******************************************************************************
  *
@@ -51,55 +39,31 @@
 #include "mtk-auddrv-ana.h"
 #include "mtk-soc-codec-63xx.h"
 
-#ifdef AUDIO_USING_WRAP_DRIVER
-/*#include <mach/mt_pmic_wrap.h>*/
-#include <mach/mtk_pmic_wrap.h>
-#endif
-
-
-#ifdef AUDIO_USING_WRAP_DRIVER
-static DEFINE_SPINLOCK(ana_set_reg_lock);
-#endif
-
+#include <linux/regmap.h>
 /*****************************************************************************
  *                         D A T A   T Y P E S
  *****************************************************************************/
-unsigned int Ana_Get_Reg(unsigned int offset)
+/* don't use this directly if not necessary */
+static struct mt6357_priv *local_priv;
+
+int mt63xx_set_local_priv(struct mt6357_priv *priv)
 {
-	/* get pmic register */
-	unsigned int Rdata = 0;
-#ifdef AUDIO_USING_WRAP_DRIVER
-	int ret = 0;
+	local_priv = priv;
+	return 0;
+}
 
-	ret = pwrap_read(offset, &Rdata);
-	/* pr_debug("Ana_Get_Reg offset=0x%x,Rdata=0x%x,ret=%d\n",
-	 * offset, Rdata, ret);
-	 */
-#endif
+unsigned int Ana_Get_Reg(unsigned int addr)
+{
+	unsigned int val = 0;
 
-	return Rdata;
+	regmap_read(local_priv->regmap, addr, &val);
+	return val;
 }
 EXPORT_SYMBOL(Ana_Get_Reg);
 
-void Ana_Set_Reg(unsigned int offset, unsigned int value, unsigned int mask)
+void Ana_Set_Reg(unsigned int addr, unsigned int value, unsigned int mask)
 {
-	/* set pmic register or analog CONTROL_IFACE_PATH */
-
-#ifdef AUDIO_USING_WRAP_DRIVER
-	int ret = 0;
-	unsigned int Reg_Value;
-	unsigned long flags = 0;
-
-	/* pr_debug("Ana_Set_Reg offset= 0x%x, value = 0x%x
-	 * mask = 0x%x\n", offset, value, mask);
-	 */
-	spin_lock_irqsave(&ana_set_reg_lock, flags);
-	Reg_Value = Ana_Get_Reg(offset);
-	Reg_Value &= (~mask);
-	Reg_Value |= (value & mask);
-	ret = pwrap_write(offset, Reg_Value);
-	spin_unlock_irqrestore(&ana_set_reg_lock, flags);
-#endif
+	regmap_update_bits(local_priv->regmap, addr, mask, value);
 }
 EXPORT_SYMBOL(Ana_Set_Reg);
 
@@ -270,6 +234,8 @@ void Ana_Log_Print(void)
 	pr_debug("DCXO_CW14 = 0x%x\n", Ana_Get_Reg(DCXO_CW14));
 
 	audckbufEnable(false);
+
+	pr_debug("-%s()\n", __func__);
 }
 EXPORT_SYMBOL(Ana_Log_Print);
 

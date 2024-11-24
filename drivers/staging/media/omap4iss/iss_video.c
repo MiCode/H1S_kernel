@@ -806,9 +806,10 @@ iss_video_querybuf(struct file *file, void *fh, struct v4l2_buffer *b)
 static int
 iss_video_qbuf(struct file *file, void *fh, struct v4l2_buffer *b)
 {
+	struct iss_video *video = video_drvdata(file);
 	struct iss_video_fh *vfh = to_iss_video_fh(fh);
 
-	return vb2_qbuf(&vfh->queue, b);
+	return vb2_qbuf(&vfh->queue, video->video.v4l2_dev->mdev, b);
 }
 
 static int
@@ -1186,7 +1187,7 @@ static int iss_video_release(struct file *file)
 	return 0;
 }
 
-static unsigned int iss_video_poll(struct file *file, poll_table *wait)
+static __poll_t iss_video_poll(struct file *file, poll_table *wait)
 {
 	struct iss_video_fh *vfh = to_iss_video_fh(file->private_data);
 

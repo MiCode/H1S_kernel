@@ -1,8 +1,8 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2017 Broadcom. All Rights Reserved. The term      *
- * “Broadcom” refers to Broadcom Limited and/or its subsidiaries.  *
+ * Copyright (C) 2017-2018 Broadcom. All Rights Reserved. The term *
+ * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.     *
  * Copyright (C) 2004-2014 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.broadcom.com                                                *
@@ -120,8 +120,9 @@ lpfc_mem_alloc(struct lpfc_hba *phba, int align)
 	if (!phba->lpfc_mbuf_pool)
 		goto fail_free_dma_buf_pool;
 
-	pool->elements = kmalloc(sizeof(struct lpfc_dmabuf) *
-					 LPFC_MBUF_POOL_SIZE, GFP_KERNEL);
+	pool->elements = kmalloc_array(LPFC_MBUF_POOL_SIZE,
+				       sizeof(struct lpfc_dmabuf),
+				       GFP_KERNEL);
 	if (!pool->elements)
 		goto fail_free_lpfc_mbuf_pool;
 
@@ -559,8 +560,6 @@ lpfc_els_hbq_free(struct lpfc_hba *phba, struct hbq_dmabuf *hbqbp)
  * Description: Allocates a DMA-mapped receive buffer from the lpfc_hrb_pool PCI
  * pool along a non-DMA-mapped container for it.
  *
- * Notes: Not interrupt-safe.  Must be called with no locks held.
- *
  * Returns:
  *   pointer to HBQ on success
  *   NULL on failure
@@ -630,7 +629,7 @@ lpfc_sli4_nvmet_alloc(struct lpfc_hba *phba)
 {
 	struct rqb_dmabuf *dma_buf;
 
-	dma_buf = kzalloc(sizeof(struct rqb_dmabuf), GFP_KERNEL);
+	dma_buf = kzalloc(sizeof(*dma_buf), GFP_KERNEL);
 	if (!dma_buf)
 		return NULL;
 
@@ -754,10 +753,14 @@ lpfc_rq_buf_free(struct lpfc_hba *phba, struct lpfc_dmabuf *mp)
 	rc = lpfc_sli4_rq_put(rqb_entry->hrq, rqb_entry->drq, &hrqe, &drqe);
 	if (rc < 0) {
 		lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
-				"6409 Cannot post to RQ %d: %x %x\n",
+				"6409 Cannot post to HRQ %d: %x %x %x "
+				"DRQ %x %x\n",
 				rqb_entry->hrq->queue_id,
 				rqb_entry->hrq->host_index,
-				rqb_entry->hrq->hba_index);
+				rqb_entry->hrq->hba_index,
+				rqb_entry->hrq->entry_count,
+				rqb_entry->drq->host_index,
+				rqb_entry->drq->hba_index);
 		(rqbp->rqb_free_buffer)(phba, rqb_entry);
 	} else {
 		list_add_tail(&rqb_entry->hbuf.list, &rqbp->rqb_buffer_list);

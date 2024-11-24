@@ -41,6 +41,43 @@
 
 /* Portal register assists */
 
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+/* Cache-inhibited register offsets */
+#define QM_REG_EQCR_PI_CINH	0x3000
+#define QM_REG_EQCR_CI_CINH	0x3040
+#define QM_REG_EQCR_ITR		0x3080
+#define QM_REG_DQRR_PI_CINH	0x3100
+#define QM_REG_DQRR_CI_CINH	0x3140
+#define QM_REG_DQRR_ITR		0x3180
+#define QM_REG_DQRR_DCAP	0x31C0
+#define QM_REG_DQRR_SDQCR	0x3200
+#define QM_REG_DQRR_VDQCR	0x3240
+#define QM_REG_DQRR_PDQCR	0x3280
+#define QM_REG_MR_PI_CINH	0x3300
+#define QM_REG_MR_CI_CINH	0x3340
+#define QM_REG_MR_ITR		0x3380
+#define QM_REG_CFG		0x3500
+#define QM_REG_ISR		0x3600
+#define QM_REG_IER		0x3640
+#define QM_REG_ISDR		0x3680
+#define QM_REG_IIR		0x36C0
+#define QM_REG_ITPR		0x3740
+
+/* Cache-enabled register offsets */
+#define QM_CL_EQCR		0x0000
+#define QM_CL_DQRR		0x1000
+#define QM_CL_MR		0x2000
+#define QM_CL_EQCR_PI_CENA	0x3000
+#define QM_CL_EQCR_CI_CENA	0x3040
+#define QM_CL_DQRR_PI_CENA	0x3100
+#define QM_CL_DQRR_CI_CENA	0x3140
+#define QM_CL_MR_PI_CENA	0x3300
+#define QM_CL_MR_CI_CENA	0x3340
+#define QM_CL_CR		0x3800
+#define QM_CL_RR0		0x3900
+#define QM_CL_RR1		0x3940
+
+#else
 /* Cache-inhibited register offsets */
 #define QM_REG_EQCR_PI_CINH	0x0000
 #define QM_REG_EQCR_CI_CINH	0x0004
@@ -75,6 +112,7 @@
 #define QM_CL_CR		0x3800
 #define QM_CL_RR0		0x3900
 #define QM_CL_RR1		0x3940
+#endif
 
 /*
  * BTW, the drivers (and h/w programming model) already obtain the required
@@ -146,7 +184,7 @@ struct qm_eqcr_entry {
 	__be32 tag;
 	struct qm_fd fd;
 	u8 __reserved3[32];
-} __packed;
+} __packed __aligned(8);
 #define QM_EQCR_VERB_VBIT		0x80
 #define QM_EQCR_VERB_CMD_MASK		0x61	/* but only one value; */
 #define QM_EQCR_VERB_CMD_ENQUEUE	0x01
@@ -300,7 +338,8 @@ struct qm_mc {
 };
 
 struct qm_addr {
-	void __iomem *ce;	/* cache-enabled */
+	void *ce;		/* cache-enabled */
+	__be32 *ce_be;		/* same value as above but for direct access */
 	void __iomem *ci;	/* cache-inhibited */
 };
 
@@ -321,12 +360,12 @@ struct qm_portal {
 /* Cache-inhibited register access. */
 static inline u32 qm_in(struct qm_portal *p, u32 offset)
 {
-	return be32_to_cpu(__raw_readl(p->addr.ci + offset));
+	return ioread32be(p->addr.ci + offset);
 }
 
 static inline void qm_out(struct qm_portal *p, u32 offset, u32 val)
 {
-	__raw_writel(cpu_to_be32(val), p->addr.ci + offset);
+	iowrite32be(val, p->addr.ci + offset);
 }
 
 /* Cache Enabled Portal Access */
@@ -342,7 +381,7 @@ static inline void qm_cl_touch_ro(struct qm_portal *p, u32 offset)
 
 static inline u32 qm_ce_in(struct qm_portal *p, u32 offset)
 {
-	return be32_to_cpu(__raw_readl(p->addr.ce + offset));
+	return be32_to_cpu(*(p->addr.ce_be + (offset/4)));
 }
 
 /* --- EQCR API --- */
@@ -646,11 +685,7 @@ static inline void qm_dqrr_pvb_update(struct qm_portal *portal)
 	 */
 	dpaa_invalidate_touch_ro(res);
 #endif
-	/*
-	 *  when accessing 'verb', use __raw_readb() to ensure that compiler
-	 * inlining doesn't try to optimise out "excess reads".
-	 */
-	if ((__raw_readb(&res->verb) & QM_DQRR_VERB_VBIT) == dqrr->vbit) {
+	if ((res->verb & QM_DQRR_VERB_VBIT) == dqrr->vbit) {
 		dqrr->pi = (dqrr->pi + 1) & (QM_DQRR_SIZE - 1);
 		if (!dqrr->pi)
 			dqrr->vbit ^= QM_DQRR_VERB_VBIT;
@@ -777,11 +812,8 @@ static inline void qm_mr_pvb_update(struct qm_portal *portal)
 	union qm_mr_entry *res = qm_cl(mr->ring, mr->pi);
 
 	DPAA_ASSERT(mr->pmode == qm_mr_pvb);
-	/*
-	 *  when accessing 'verb', use __raw_readb() to ensure that compiler
-	 * inlining doesn't try to optimise out "excess reads".
-	 */
-	if ((__raw_readb(&res->verb) & QM_MR_VERB_VBIT) == mr->vbit) {
+
+	if ((res->verb & QM_MR_VERB_VBIT) == mr->vbit) {
 		mr->pi = (mr->pi + 1) & (QM_MR_SIZE - 1);
 		if (!mr->pi)
 			mr->vbit ^= QM_MR_VERB_VBIT;
@@ -822,7 +854,7 @@ static inline int qm_mc_init(struct qm_portal *portal)
 
 	mc->cr = portal->addr.ce + QM_CL_CR;
 	mc->rr = portal->addr.ce + QM_CL_RR0;
-	mc->rridx = (__raw_readb(&mc->cr->_ncw_verb) & QM_MCC_VERB_VBIT)
+	mc->rridx = (mc->cr->_ncw_verb & QM_MCC_VERB_VBIT)
 		    ? 0 : 1;
 	mc->vbit = mc->rridx ? QM_MCC_VERB_VBIT : 0;
 #ifdef CONFIG_FSL_DPAA_CHECKING
@@ -880,7 +912,7 @@ static inline union qm_mc_result *qm_mc_result(struct qm_portal *portal)
 	 * its command is submitted and completed. This includes the valid-bit,
 	 * in case you were wondering...
 	 */
-	if (!__raw_readb(&rr->verb)) {
+	if (!rr->verb) {
 		dpaa_invalidate_touch_ro(rr);
 		return NULL;
 	}
@@ -909,12 +941,12 @@ static inline int qm_mc_result_timeout(struct qm_portal *portal,
 
 static inline void fq_set(struct qman_fq *fq, u32 mask)
 {
-	set_bits(mask, &fq->flags);
+	fq->flags |= mask;
 }
 
 static inline void fq_clear(struct qman_fq *fq, u32 mask)
 {
-	clear_bits(mask, &fq->flags);
+	fq->flags &= ~mask;
 }
 
 static inline int fq_isset(struct qman_fq *fq, u32 mask)
@@ -944,7 +976,7 @@ struct qman_portal {
 	/* linked-list of CSCN handlers. */
 	struct list_head cgr_cbs;
 	/* list lock */
-	spinlock_t cgr_lock;
+	raw_spinlock_t cgr_lock;
 	struct work_struct congestion_work;
 	struct work_struct mr_work;
 	char irqname[MAX_IRQNAME];
@@ -989,7 +1021,8 @@ int qman_alloc_fq_table(u32 _num_fqids)
 {
 	num_fqids = _num_fqids;
 
-	fq_table = vzalloc(num_fqids * 2 * sizeof(struct qman_fq *));
+	fq_table = vzalloc(array3_size(sizeof(struct qman_fq *),
+				       num_fqids, 2));
 	if (!fq_table)
 		return -ENOMEM;
 
@@ -1085,11 +1118,7 @@ loop:
 		 * entries well before the ring has been fully consumed, so
 		 * we're being *really* paranoid here.
 		 */
-		u64 now, then = jiffies;
-
-		do {
-			now = jiffies;
-		} while ((then + 10000) > now);
+		msleep(1);
 		msg = qm_mr_current(p);
 		if (!msg)
 			return 0;
@@ -1125,8 +1154,9 @@ static int qman_create_portal(struct qman_portal *portal,
 	 * config, everything that follows depends on it and "config" is more
 	 * for (de)reference
 	 */
-	p->addr.ce = c->addr_virt[DPAA_PORTAL_CE];
-	p->addr.ci = c->addr_virt[DPAA_PORTAL_CI];
+	p->addr.ce = c->addr_virt_ce;
+	p->addr.ce_be = c->addr_virt_ce;
+	p->addr.ci = c->addr_virt_ci;
 	/*
 	 * If CI-stashing is used, the current defaults use a threshold of 3,
 	 * and stash with high-than-DQRR priority.
@@ -1153,7 +1183,7 @@ static int qman_create_portal(struct qman_portal *portal,
 	qm_dqrr_set_ithresh(p, QMAN_PIRQ_DQRR_ITHRESH);
 	qm_mr_set_ithresh(p, QMAN_PIRQ_MR_ITHRESH);
 	qm_out(p, QM_REG_ITPR, QMAN_PIRQ_IPERIOD);
-	portal->cgrs = kmalloc(2 * sizeof(*cgrs), GFP_KERNEL);
+	portal->cgrs = kmalloc_array(2, sizeof(*cgrs), GFP_KERNEL);
 	if (!portal->cgrs)
 		goto fail_cgrs;
 	/* initial snapshot is no-depletion */
@@ -1164,7 +1194,7 @@ static int qman_create_portal(struct qman_portal *portal,
 		/* if the given mask is NULL, assume all CGRs can be seen */
 		qman_cgrs_fill(&portal->cgrs[0]);
 	INIT_LIST_HEAD(&portal->cgr_cbs);
-	spin_lock_init(&portal->cgr_lock);
+	raw_spin_lock_init(&portal->cgr_lock);
 	INIT_WORK(&portal->congestion_work, qm_congestion_task);
 	INIT_WORK(&portal->mr_work, qm_mr_process_task);
 	portal->bits = 0;
@@ -1339,11 +1369,14 @@ static void qm_congestion_task(struct work_struct *work)
 	union qm_mc_result *mcr;
 	struct qman_cgr *cgr;
 
-	spin_lock(&p->cgr_lock);
+	/*
+	 * FIXME: QM_MCR_TIMEOUT is 10ms, which is too long for a raw spinlock!
+	 */
+	raw_spin_lock_irq(&p->cgr_lock);
 	qm_mc_start(&p->p);
 	qm_mc_commit(&p->p, QM_MCC_VERB_QUERYCONGESTION);
 	if (!qm_mc_result_timeout(&p->p, &mcr)) {
-		spin_unlock(&p->cgr_lock);
+		raw_spin_unlock_irq(&p->cgr_lock);
 		dev_crit(p->config->dev, "QUERYCONGESTION timeout\n");
 		qman_p_irqsource_add(p, QM_PIRQ_CSCI);
 		return;
@@ -1359,7 +1392,7 @@ static void qm_congestion_task(struct work_struct *work)
 	list_for_each_entry(cgr, &p->cgr_cbs, node)
 		if (cgr->cb && qman_cgrs_get(&c, cgr->cgrid))
 			cgr->cb(p, cgr, qman_cgrs_get(&rr, cgr->cgrid));
-	spin_unlock(&p->cgr_lock);
+	raw_spin_unlock_irq(&p->cgr_lock);
 	qman_p_irqsource_add(p, QM_PIRQ_CSCI);
 }
 
@@ -1567,7 +1600,7 @@ void qman_p_irqsource_add(struct qman_portal *p, u32 bits)
 	unsigned long irqflags;
 
 	local_irq_save(irqflags);
-	set_bits(bits & QM_PIRQ_VISIBLE, &p->irq_sources);
+	p->irq_sources |= bits & QM_PIRQ_VISIBLE;
 	qm_out(&p->p, QM_REG_IER, p->irq_sources);
 	local_irq_restore(irqflags);
 }
@@ -1590,7 +1623,7 @@ void qman_p_irqsource_remove(struct qman_portal *p, u32 bits)
 	 */
 	local_irq_save(irqflags);
 	bits &= QM_PIRQ_VISIBLE;
-	clear_bits(bits, &p->irq_sources);
+	p->irq_sources &= ~bits;
 	qm_out(&p->p, QM_REG_IER, p->irq_sources);
 	ier = qm_in(&p->p, QM_REG_IER);
 	/*
@@ -2316,7 +2349,7 @@ int qman_create_cgr(struct qman_cgr *cgr, u32 flags,
 	preempt_enable();
 
 	cgr->chan = p->config->channel;
-	spin_lock(&p->cgr_lock);
+	raw_spin_lock_irq(&p->cgr_lock);
 
 	if (opts) {
 		struct qm_mcc_initcgr local_opts = *opts;
@@ -2353,11 +2386,27 @@ int qman_create_cgr(struct qman_cgr *cgr, u32 flags,
 	    qman_cgrs_get(&p->cgrs[1], cgr->cgrid))
 		cgr->cb(p, cgr, 1);
 out:
-	spin_unlock(&p->cgr_lock);
+	raw_spin_unlock_irq(&p->cgr_lock);
 	put_affine_portal();
 	return ret;
 }
 EXPORT_SYMBOL(qman_create_cgr);
+
+static struct qman_portal *qman_cgr_get_affine_portal(struct qman_cgr *cgr)
+{
+	struct qman_portal *p = get_affine_portal();
+
+	if (cgr->chan != p->config->channel) {
+		/* attempt to delete from other portal than creator */
+		dev_err(p->config->dev, "CGR not owned by current portal");
+		dev_dbg(p->config->dev, " create 0x%x, delete 0x%x\n",
+			cgr->chan, p->config->channel);
+		put_affine_portal();
+		return NULL;
+	}
+
+	return p;
+}
 
 int qman_delete_cgr(struct qman_cgr *cgr)
 {
@@ -2366,19 +2415,13 @@ int qman_delete_cgr(struct qman_cgr *cgr)
 	struct qm_mcc_initcgr local_opts;
 	int ret = 0;
 	struct qman_cgr *i;
-	struct qman_portal *p = get_affine_portal();
+	struct qman_portal *p = qman_cgr_get_affine_portal(cgr);
 
-	if (cgr->chan != p->config->channel) {
-		/* attempt to delete from other portal than creator */
-		dev_err(p->config->dev, "CGR not owned by current portal");
-		dev_dbg(p->config->dev, " create 0x%x, delete 0x%x\n",
-			cgr->chan, p->config->channel);
+	if (!p)
+		return -EINVAL;
 
-		ret = -EINVAL;
-		goto put_portal;
-	}
 	memset(&local_opts, 0, sizeof(struct qm_mcc_initcgr));
-	spin_lock_irqsave(&p->cgr_lock, irqflags);
+	raw_spin_lock_irqsave(&p->cgr_lock, irqflags);
 	list_del(&cgr->node);
 	/*
 	 * If there are no other CGR objects for this CGRID in the list,
@@ -2403,8 +2446,7 @@ int qman_delete_cgr(struct qman_cgr *cgr)
 		/* add back to the list */
 		list_add(&cgr->node, &p->cgr_cbs);
 release_lock:
-	spin_unlock_irqrestore(&p->cgr_lock, irqflags);
-put_portal:
+	raw_spin_unlock_irqrestore(&p->cgr_lock, irqflags);
 	put_affine_portal();
 	return ret;
 }
@@ -2434,6 +2476,54 @@ void qman_delete_cgr_safe(struct qman_cgr *cgr)
 	preempt_enable();
 }
 EXPORT_SYMBOL(qman_delete_cgr_safe);
+
+static int qman_update_cgr(struct qman_cgr *cgr, struct qm_mcc_initcgr *opts)
+{
+	int ret;
+	unsigned long irqflags;
+	struct qman_portal *p = qman_cgr_get_affine_portal(cgr);
+
+	if (!p)
+		return -EINVAL;
+
+	raw_spin_lock_irqsave(&p->cgr_lock, irqflags);
+	ret = qm_modify_cgr(cgr, 0, opts);
+	raw_spin_unlock_irqrestore(&p->cgr_lock, irqflags);
+	put_affine_portal();
+	return ret;
+}
+
+struct update_cgr_params {
+	struct qman_cgr *cgr;
+	struct qm_mcc_initcgr *opts;
+	int ret;
+};
+
+static void qman_update_cgr_smp_call(void *p)
+{
+	struct update_cgr_params *params = p;
+
+	params->ret = qman_update_cgr(params->cgr, params->opts);
+}
+
+int qman_update_cgr_safe(struct qman_cgr *cgr, struct qm_mcc_initcgr *opts)
+{
+	struct update_cgr_params params = {
+		.cgr = cgr,
+		.opts = opts,
+	};
+
+	preempt_disable();
+	if (qman_cgr_cpus[cgr->cgrid] != smp_processor_id())
+		smp_call_function_single(qman_cgr_cpus[cgr->cgrid],
+					 qman_update_cgr_smp_call, &params,
+					 true);
+	else
+		params.ret = qman_update_cgr(cgr, opts);
+	preempt_enable();
+	return params.ret;
+}
+EXPORT_SYMBOL(qman_update_cgr_safe);
 
 /* Cleanup FQs */
 

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/delay.h>
 #include <mt-plat/upmu_common.h>
@@ -4921,6 +4913,10 @@ static unsigned int pmic_buck_get_mode(struct regulator_dev *rdev)
 	struct mtk_regulator *mreg = rdev_get_drvdata(rdev);
 	unsigned int mode;
 
+	if (mreg == NULL) {
+		pr_notice("regulator info null pointer\n");
+		return -EINVAL;
+	}
 	if (pmic_get_register_value(mreg->modeset_reg) == 1)
 		mode = REGULATOR_MODE_FAST;
 	else if (pmic_get_register_value(mreg->lp_mode_reg) == 1)
@@ -4935,6 +4931,10 @@ static int pmic_buck_set_mode(struct regulator_dev *rdev, unsigned int mode)
 	struct mtk_regulator *mreg = rdev_get_drvdata(rdev);
 	int curr_mode;
 
+	if (mreg == NULL) {
+		pr_notice("regulator info null pointer\n");
+		return -EINVAL;
+	}
 	curr_mode = pmic_buck_get_mode(rdev);
 	switch (mode) {
 	case REGULATOR_MODE_FAST:

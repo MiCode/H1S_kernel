@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __CCCI_CORE_H__
@@ -24,8 +16,9 @@
 #include <linux/pm_wakeup.h>
 #include <linux/kobject.h>
 #include <linux/sysfs.h>
-#include <mt-plat/mtk_ccci_common.h>
+#include "mt-plat/mtk_ccci_common.h"
 #include "ccci_config.h"
+#include "ccci_common_config.h"
 #include "ccci_debug.h"
 #include "ccci_bm.h"
 
@@ -272,8 +265,6 @@ extern void mtk_ccci_ccb_info_peek(void);
 	_IOWR(CCCI_IOC_MAGIC, 64, struct ccci_ccb_config)
 #define CCCI_IOC_CCB_CTRL_OFFSET		\
 	_IOR(CCCI_IOC_MAGIC, 65, unsigned int)
-#define CCCI_IOC_GET_CCB_DEBUG_VAL		\
-	_IOWR(CCCI_IOC_MAGIC, 67, struct ccci_ccb_debug)
 
 #define CCCI_IOC_CCB_CTRL_INFO			\
 	_IOWR(CCCI_IOC_MAGIC, 71, struct ccb_ctrl_info)
@@ -292,6 +283,9 @@ extern void mtk_ccci_ccb_info_peek(void);
 /* RILD  factory */
 #define CCCI_IOC_LEAVE_DEEP_FLIGHT_ENHANCED     \
 	_IO(CCCI_IOC_MAGIC,  124)
+/* RILD nodify ccci power off md */
+#define CCCI_IOC_RILD_POWER_OFF_MD		\
+	_IO(CCCI_IOC_MAGIC,  125)
 
 
 #define CCCI_IPC_MAGIC 'P' /* only for IPC user */
@@ -487,6 +481,9 @@ enum CCCI_CH {
 	CCCI_UDC_RX			= 177,
 	CCCI_UDC_TX			= 178,
 
+	CCCI_MIPI_CHANNEL_RX	= 179,
+	CCCI_MIPI_CHANNEL_TX	= 180,
+
 	CCCI_TCHE_RX			= 181,
 	CCCI_TCHE_TX			= 182,
 	CCCI_DISP_RX			= 183,
@@ -505,6 +502,15 @@ enum CCCI_CH {
 	CCCI_TIME_TX			= 203,
 	CCCI_GARB_RX			= 204,
 	CCCI_GARB_TX			= 205,
+
+	CCCI_EPDG1_RX			= 236,
+	CCCI_EPDG1_TX			= 237,
+	CCCI_EPDG2_RX			= 238,
+	CCCI_EPDG2_TX			= 239,
+	CCCI_EPDG3_RX			= 240,
+	CCCI_EPDG3_TX			= 241,
+	CCCI_EPDG4_RX			= 242,
+	CCCI_EPDG4_TX			= 243,
 
 	CCCI_C2K_PPP_DATA, /* data ch for c2k */
 
@@ -590,22 +596,17 @@ enum md_bc_event {
 	MD_STA_EV_READY,
 	MD_STA_EV_EXCEPTION,
 	MD_STA_EV_STOP,
+	MD_STA_EV_RILD_POWEROFF_START,
 };
 
 /* ========================================================================= */
 /* common API */
 /* ========================================================================= */
-void ccci_sysfs_add_md(int md_id, void *kobj);
-int ccci_register_dev_node(const char *name, int major_id, int minor);
-
-#ifdef CONFIG_MEDIATEK_MT6577_AUXADC
-int ccci_get_adc_num(void);
-int ccci_get_adc_val(void);
-#endif
-
-int hif_empty_query(int qno);
 
 #ifdef FEATURE_SCP_CCCI_SUPPORT
 extern void fsm_scp_init0(void);
+#endif
+#ifdef CCCI_KMODULE_ENABLE
+int ccci_init(void);
 #endif
 #endif	/* __CCCI_CORE_H__ */

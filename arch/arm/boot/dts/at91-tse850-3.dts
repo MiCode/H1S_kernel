@@ -221,6 +221,7 @@
 	jc42@18 {
 		compatible = "nxp,se97b", "jedec,jc-42.4-temp";
 		reg = <0x18>;
+		smbus-timeout-disable;
 	};
 
 	dpot: mcp4651-104@28 {
@@ -233,6 +234,7 @@
 		compatible = "ti,pcm5142";
 
 		reg = <0x4c>;
+		#sound-dai-cells = <0>;
 
 		AVDD-supply = <&reg_3v3>;
 		DVDD-supply = <&reg_3v3>;
@@ -267,7 +269,7 @@
 &macb1 {
 	status = "okay";
 
-	phy-mode = "rgmii";
+	phy-mode = "rmii";
 
 	#address-cells = <1>;
 	#size-cells = <0>;

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/string.h>
@@ -17,7 +9,15 @@
 #include <linux/fb.h>
 #include <linux/vmalloc.h>
 #include <linux/sched.h>
+
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 #include <linux/debugfs.h>
+#endif
+
+#if IS_ENABLED(CONFIG_PROC_FS)
+#include <linux/proc_fs.h>
+#endif
+
 #include <linux/wait.h>
 #include <linux/time.h>
 #include <linux/delay.h>
@@ -64,7 +64,15 @@
 #include "layering_rule.h"
 #include "ddp_clkmgr.h"
 
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 static struct dentry *mtkfb_dbgfs;
+#endif
+
+#if IS_ENABLED(CONFIG_PROC_FS)
+static struct proc_dir_entry *mtkfb_procfs;
+static struct proc_dir_entry *disp_lowpower_proc;
+#endif
+
 unsigned int g_mobilelog;
 int bypass_blank;
 int lcm_mode_status;
@@ -75,7 +83,7 @@ unsigned long long idle_check_interval = 50;
 int dbg_ultlow, dbg_ulthigh, dbg_prehigh, dbg_urg_low, dbg_urg_high;
 
 /* hrt */
-unsigned long long hrt_high, hrt_low;
+int hrt_high, hrt_low;
 int hrt_show_flag;
 
 struct BMP_FILE_HEADER {
@@ -408,11 +416,9 @@ struct test_buf_info {
 static int alloc_buffer_from_ion(size_t size, struct test_buf_info *buf_info)
 {
 #if defined(MTK_FB_ION_SUPPORT)
-	struct ion_client *client = NULL;
-	struct ion_mm_data mm_data = {0};
-	struct ion_handle *handle = NULL;
-	size_t mva_size = 0;
-	ion_phys_addr_t phy_addr = 0;
+	struct ion_client *client;
+	struct ion_mm_data mm_data;
+	struct ion_handle *handle;
 
 	client = ion_client_create(g_ion_device, "disp_test");
 	buf_info->ion_client = client;
@@ -433,8 +439,10 @@ static int alloc_buffer_from_ion(size_t size, struct test_buf_info *buf_info)
 		ion_client_destroy(client);
 		return -1;
 	}
-	mm_data.config_buffer_param.kernel_handle = handle;
-	mm_data.mm_cmd = ION_MM_CONFIG_BUFFER;
+
+	mm_data.get_phys_param.kernel_handle = handle;
+	mm_data.get_phys_param.module_id = DISP_M4U_PORT_DISP_OVL0;
+	mm_data.mm_cmd = ION_MM_GET_IOVA;
 	if (ion_kernel_ioctl(client, ION_CMD_MULTIMEDIA,
 		(unsigned long)&mm_data) < 0) {
 		DISPWARN("ion_test_drv: Config buffer failed.\n");
@@ -443,8 +451,7 @@ static int alloc_buffer_from_ion(size_t size, struct test_buf_info *buf_info)
 		return -1;
 	}
 
-	ion_phys(client, handle, &phy_addr, (size_t *)&mva_size);
-	buf_info->buf_mva = (unsigned int)phy_addr;
+	buf_info->buf_mva = (unsigned int)mm_data.get_phys_param.phy_addr;
 	if (buf_info->buf_mva == 0) {
 		DISPWARN("Fatal Error, get mva failed\n");
 		ion_free(client, handle);
@@ -461,8 +468,6 @@ static int alloc_buffer_from_dma(size_t size, struct test_buf_info *buf_info)
 {
 	int ret = 0;
 	unsigned long size_align;
-
-#ifndef CONFIG_MTK_IOMMU_V2
 	unsigned int mva = 0;
 
 	size_align = round_up(size, PAGE_SIZE);
@@ -483,11 +488,7 @@ static int alloc_buffer_from_dma(size_t size, struct test_buf_info *buf_info)
 		static struct sg_table table;
 		struct sg_table *sg_table = &table;
 
-		ret = sg_alloc_table(sg_table, 1, GFP_KERNEL);
-		if (ret) {
-			DISPWARN("sg alloc table failed!\n");
-			goto out1;
-		}
+		sg_alloc_table(sg_table, 1, GFP_KERNEL);
 
 		sg_dma_address(sg_table->sgl) = buf_info->buf_pa;
 		sg_dma_len(sg_table->sgl) = size_align;
@@ -501,43 +502,11 @@ static int alloc_buffer_from_dma(size_t size, struct test_buf_info *buf_info)
 		if (ret)
 			DISPWARN("m4u_alloc_mva returns fail: %d\n", ret);
 	}
-out1:
 	buf_info->buf_mva = mva;
 	DISPMSG("%s MVA is 0x%x PA is 0x%pa\n",
 		__func__, mva, &buf_info->buf_pa);
+
 	return ret;
-
-#else
-
-	struct ion_client *ion_display_client = NULL;
-	struct ion_handle *ion_display_handle = NULL;
-	unsigned long mva = 0;
-
-	size_align = round_up(size, PAGE_SIZE);
-	ion_display_client = disp_ion_create("disp_cap_ovl");
-	if (ion_display_client == NULL) {
-		DISPWARN("primary capture:Fail to create ion\n");
-		ret = 1;
-		goto out;
-	}
-
-	ion_display_handle = disp_ion_alloc(ion_display_client,
-		ION_HEAP_MULTIMEDIA_PA2MVA_MASK, buf_info->buf_pa,
-		size_align);
-	if (ion_display_handle == NULL) {
-		DISPWARN("primary capture:Fail to allocate buffer\n");
-		ret = 1;
-		goto out;
-	}
-	disp_ion_get_mva(ion_display_client, ion_display_handle,
-		&mva, 0, DISP_M4U_PORT_DISP_WDMA0);
-
-out:
-	buf_info->buf_mva = mva;
-	DISPMSG("%s MVA is 0x%lx PA is 0x%pa\n",
-		__func__, mva, &buf_info->buf_pa);
-	return ret;
-#endif
 }
 
 static int release_test_buf(struct test_buf_info *buf_info)
@@ -610,9 +579,8 @@ static int __maybe_unused compare_dsi_checksum(unsigned long unused)
 
 static int __maybe_unused check_dsi_checksum(void)
 {
-	struct cmdqRecStruct *handle = NULL;
-	int ret = 0;
-
+	struct cmdqRecStruct *handle;
+	int ret;
 
 	if (!cksum_golden)
 		return 0;
@@ -909,8 +877,7 @@ static void do_set_emi_bound_tb_opt(const char *opt)
 		goto done;
 
 	ret = set_emi_bound_tb(idx, num - 1, val);
-	if (ret)
-		DISPERR("%s set emi_bound_talbe error\n", __func__);
+
 done:
 	kfree(fmt);
 	fmt = NULL;
@@ -1046,11 +1013,7 @@ static void process_dbg_opt(const char *opt)
 #ifdef CONFIG_MTK_DISPLAY_120HZ_SUPPORT
 	} else if (strncmp(opt, "odbypass:", 9) == 0) {
 		char *p = (char *)opt + 9;
-		int bypass = 0;
-
-		ret = kstrtoul(p, 16, (unsigned long int *)&bypass);
-		if (ret)
-			DISPWARN("DISP/%s:odbypass errno %d\n", __func__, ret);
+		int bypass = kstrtoul(p, 16, (unsigned long int *)&p);
 
 		primary_display_od_bypass(bypass);
 		DISPMSG("OD bypass: %d\n", bypass);
@@ -1204,30 +1167,28 @@ static void process_dbg_opt(const char *opt)
 		set_esd_check_mode(mode);
 	} else if (strncmp(opt, "lcm0_reset", 10) == 0) {
 		DISPCHECK("lcm0_reset\n");
-#if  0
-		primary_display_idlemgr_kick(__func__, 1);
-		DISP_CPU_REG_SET(DISP_REG_CONFIG_MMSYS_LCM_RST_B, 1);
-		msleep(20);
-		DISP_CPU_REG_SET(DISP_REG_CONFIG_MMSYS_LCM_RST_B, 0);
-		msleep(20);
-		DISP_CPU_REG_SET(DISP_REG_CONFIG_MMSYS_LCM_RST_B, 1);
-#else
-#ifdef CONFIG_MTK_LEGACY
-		mt_set_gpio_mode(GPIO106 | 0x80000000, GPIO_MODE_00);
-		mt_set_gpio_dir(GPIO106 | 0x80000000, GPIO_DIR_OUT);
-		mt_set_gpio_out(GPIO106 | 0x80000000, GPIO_OUT_ONE);
-		msleep(20);
-		mt_set_gpio_out(GPIO106 | 0x80000000, GPIO_OUT_ZERO);
-		msleep(20);
-		mt_set_gpio_out(GPIO106 | 0x80000000, GPIO_OUT_ONE);
-#else
-		ret = disp_dts_gpio_select_state(DTS_GPIO_STATE_LCM_RST_OUT1);
-		msleep(20);
-		ret |= disp_dts_gpio_select_state(DTS_GPIO_STATE_LCM_RST_OUT0);
-		msleep(20);
-		ret |= disp_dts_gpio_select_state(DTS_GPIO_STATE_LCM_RST_OUT1);
-#endif
-#endif
+		if (primary_display_is_video_mode()) {
+			if (pgc && (pgc->state == DISP_ALIVE)) {
+				DISP_CPU_REG_SET(
+					DISP_REG_CONFIG_MMSYS_LCM_RST_B, 1);
+				msleep(20);
+				DISP_CPU_REG_SET(
+					DISP_REG_CONFIG_MMSYS_LCM_RST_B, 0);
+				msleep(20);
+				DISP_CPU_REG_SET(
+					DISP_REG_CONFIG_MMSYS_LCM_RST_B, 1);
+			} else
+				DISPCHECK("lcm0_reset: DISP isn't alive\n");
+		} else {
+			ret = disp_dts_gpio_select_state(
+				DTS_GPIO_STATE_LCM_RST_OUT1);
+			msleep(20);
+			ret |= disp_dts_gpio_select_state(
+				DTS_GPIO_STATE_LCM_RST_OUT0);
+			msleep(20);
+			ret |= disp_dts_gpio_select_state(
+				DTS_GPIO_STATE_LCM_RST_OUT1);
+		}
 	} else if (strncmp(opt, "lcm0_reset0", 11) == 0) {
 		DISP_CPU_REG_SET(DISP_REG_CONFIG_MMSYS_LCM_RST_B, 0);
 	} else if (strncmp(opt, "lcm0_reset1", 11) == 0) {
@@ -1319,14 +1280,10 @@ static void process_dbg_opt(const char *opt)
 		enable_idlemgr(flg);
 	} else if (strncmp(opt, "fps:", 4) == 0) {
 		char *p = (char *)opt+4;
-		unsigned long int fps = 0;
-
-		ret = kstrtoul(p, 10, &fps);
-		if (ret)
-			DISPWARN("DISP/%s:fps errno %d\n", __func__, ret);
+		int fps = kstrtoul(p, 10, (unsigned long int *)&p);
 
 		DDPMSG("change fps\n");
-		primary_display_set_lcm_refresh_rate((int)fps);
+		primary_display_set_lcm_refresh_rate(fps);
 		return;
 	} else if (strncmp(opt, "disp_mode:", 10) == 0) {
 		char *p = (char *)opt + 10;
@@ -1413,6 +1370,38 @@ static void process_dbg_opt(const char *opt)
 		primary_display_basic_test(layer_num, layer_en_mask,
 			w, h, fmt, frame_num, vsync_num,
 			x, y, r, g, b, a, mode, cksum);
+	} else if (!strncmp(opt, "set_cfg_id:", 11)) {
+		char *p = (char *)opt + 11;
+		unsigned int cfg_id = 0;
+
+		ret = kstrtouint(p, 10, &cfg_id);
+		DDPMSG("debug:set_cfg_id:%d start\n", cfg_id);
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+		primary_display_dynfps_chg_fps(cfg_id);
+#endif
+		g_force_cfg_id = cfg_id;
+		DDPMSG("debug:set_cfg_id:%d end\n", cfg_id);
+	} else if (!strncmp(opt, "enable_force_fps:", 17)) {
+		char *p = (char *)opt + 17;
+		unsigned int enable_force_fps = 0;
+
+		ret = kstrtouint(p, 10, &enable_force_fps);
+		g_force_cfg = !!enable_force_fps;
+		DDPMSG("debug:g_force_cfg:%d\n", g_force_cfg);
+	} else if (!strncmp(opt, "get_multi_cfg", 13)) {
+		struct multi_configs cfgs;
+		unsigned int i = 0;
+		struct dyn_config_info *dyn_info = NULL;
+
+		memset(&cfgs, 0, sizeof(cfgs));
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+		primary_display_get_multi_configs(&cfgs);
+#endif
+		DISPMSG("debug:get_multi_cfg:=%d\n", cfgs.config_num);
+		for (i = 0; i < cfgs.config_num; i++) {
+			dyn_info = &(cfgs.dyn_cfgs[i]);
+			DISPMSG("debug:%d,%dfps\n", i, dyn_info->vsyncFPS);
+		}
 	}
 
 	if (strncmp(opt, "pan_disp_test:", 13) == 0) {
@@ -1533,17 +1522,13 @@ static void process_dbg_opt(const char *opt)
 			}
 			dump_output = 0;
 		} else if (strncmp(opt + 12, "save", 4) == 0) {
-			int w = 0, h = 0, bytes = 0;
-			struct file *bmp = NULL;
+			int w, h, bytes;
+			struct file *bmp;
 
 			if (dump_output == 0)
 				dump_output = 1;
 			w = disp_helper_get_option(DISP_OPT_FAKE_LCM_WIDTH);
 			h = disp_helper_get_option(DISP_OPT_FAKE_LCM_HEIGHT);
-			if ((w == 0) || (h == 0)) {
-				DISPWARN("Failed to get w:%d h:%d\n", w, h);
-				return;
-			}
 			bytes = w * h * 3;
 			if (composed_buf == NULL)
 				composed_buf = vmalloc(bytes);
@@ -1772,26 +1757,91 @@ DEFINE_SIMPLE_ATTRIBUTE(idlevfp_fops, idlevfp_get, idlevfp_set, "%llu\n");
 
 void DBG_Init(void)
 {
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 	struct dentry *d_folder;
 	struct dentry *d_file;
 
 	mtkfb_dbgfs = debugfs_create_file("mtkfb",
-		S_IFREG | 0444, NULL, (void *)0, &debug_fops);
+		S_IFREG | 0440, NULL, (void *)0, &debug_fops);
 
 	d_folder = debugfs_create_dir("displowpower", NULL);
 	if (d_folder) {
 		d_file = debugfs_create_file("kickdump",
-			S_IFREG | 0444, d_folder, NULL, &kickidle_fops);
+			S_IFREG | 0440, d_folder, NULL, &kickidle_fops);
 		d_file = debugfs_create_file("partial",
-			S_IFREG | 0444, d_folder, NULL, &partial_fops);
+			S_IFREG | 0440, d_folder, NULL, &partial_fops);
 		d_file = debugfs_create_file("idletime",
-			S_IFREG | 0666, d_folder, NULL, &idletime_fops);
+			S_IFREG | 0440, d_folder, NULL, &idletime_fops);
 		d_file = debugfs_create_file("idlevfp",
-			S_IFREG | 0666, d_folder, NULL, &idlevfp_fops);
+			S_IFREG | 0440, d_folder, NULL, &idlevfp_fops);
 	}
+#endif
+
+#if IS_ENABLED(CONFIG_PROC_FS)
+	mtkfb_procfs = proc_create("mtkfb", S_IFREG | 0440,
+				NULL,
+				&debug_fops);
+	if (!mtkfb_procfs) {
+		pr_info("[%s %d]failed to create mtkfb in /proc/disp_ddp\n",
+			__func__, __LINE__);
+		goto out;
+	}
+
+	disp_lowpower_proc = proc_mkdir("displowpower", NULL);
+	if (!disp_lowpower_proc) {
+		pr_info("[%s %d]failed to create dir: /proc/displowpower\n",
+			__func__, __LINE__);
+		goto out;
+	}
+
+	if (!proc_create("kickdump", S_IFREG | 0440,
+		disp_lowpower_proc, &kickidle_fops)) {
+		pr_info("[%s %d]failed to create kickdump in /proc/displowpower\n",
+			__func__, __LINE__);
+		goto out;
+	}
+
+	if (!proc_create("partial", S_IFREG | 0440,
+		disp_lowpower_proc, &partial_fops)) {
+		pr_info("[%s %d]failed to create partial in /proc/displowpower\n",
+			__func__, __LINE__);
+		goto out;
+	}
+
+	if (!proc_create("idletime", S_IFREG | 0440,
+		disp_lowpower_proc, &idletime_fops)) {
+		pr_info("[%s %d]failed to create idletime in /proc/displowpower\n",
+			__func__, __LINE__);
+		goto out;
+	}
+
+	if (!proc_create("idlevfp", S_IFREG | 0440,
+		disp_lowpower_proc, &idlevfp_fops)) {
+		pr_info("[%s %d]failed to create idlevfp in /proc/displowpower\n",
+			__func__, __LINE__);
+		goto out;
+	}
+
+out:
+	return;
+#endif
 }
 
 void DBG_Deinit(void)
 {
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 	debugfs_remove(mtkfb_dbgfs);
+#endif
+
+#if IS_ENABLED(CONFIG_PROC_FS)
+	if (mtkfb_procfs) {
+		proc_remove(mtkfb_procfs);
+		mtkfb_procfs = NULL;
+	}
+	if (disp_lowpower_proc) {
+		proc_remove(disp_lowpower_proc);
+		disp_lowpower_proc = NULL;
+	}
+#endif
+
 }

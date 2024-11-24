@@ -32,9 +32,10 @@ ccflags-y += \
 	-I$(srctree)/drivers/misc/mediatek/vpu/$(MTK_PLATFORM)	\
 	-I$(EEM_ROOT_DIR)/$(CONFIG_MTK_PLATFORM)/inc	\
 	-I$(srctree)/drivers/misc/mediatek/base/power/mcdi/include/	\
+	-I$(srctree)/drivers/gpu/mediatek/gpufreq/$(MTK_PLATFORM)/
 
 ifeq ($(CONFIG_MTK_TINYSYS_SSPM_SUPPORT), y)
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/v1
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/$(CONFIG_MTK_PLATFORM)
 endif
 

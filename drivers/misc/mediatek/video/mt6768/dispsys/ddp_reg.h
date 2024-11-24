@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _DDP_REG_H_
 #define _DDP_REG_H_
@@ -121,6 +113,21 @@ extern cmdqBackupSlotHandle dispsys_slot;
 #define DISPSYS_MIPITX0_BASE ddp_get_module_va(DISP_MODULE_MIPI0)
 #define DISPSYS_MIPITX1_BASE ddp_get_module_va(DISP_MODULE_MIPI1)
 #define DISPSYS_SLOT_BASE		    dispsys_slot
+
+#define DISPSYS_BDG_SYSREG_CTRL_BASE		0x00000000UL
+#define DISPSYS_BDG_TOPCKGEN_BASE		0x00003000UL
+#define DISPSYS_BDG_APMIXEDSYS_BASE		0x00004000UL
+#define DISPSYS_BDG_GPIO_BASE			0x00007000UL
+#define DISPSYS_BDG_EFUSE_BASE			0x00009000UL
+#define DISPSYS_BDG_MIPIDSI2_DEVICE_BASE	0x0000d000UL
+#define DISPSYS_BDG_GCE_BASE			0x00010000UL
+#define DISPSYS_BDG_OCLA_BASE			0x00014000UL
+#define DISPSYS_BDG_DISP_DSC_BASE		0x00020000UL
+#define DISPSYS_BDG_TX_DSI0_BASE		0x00021000UL
+#define DISPSYS_BDG_MIPI_TX_BASE		0x00022000UL
+#define DISPSYS_BDG_MMSYS_CONFIG_BASE		0x00023000UL
+#define DISPSYS_BDG_RDMA0_REGS_BASE		0x00024000UL
+#define DISPSYS_BDG_MUTEX_REGS_BASE		0x00025000UL
 
 #ifdef INREG32
 #undef INREG32

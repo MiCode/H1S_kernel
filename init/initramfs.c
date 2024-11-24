@@ -1,14 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0
-/*
- * Many of the syscalls used in this file expect some of the arguments
- * to be __user pointers not __kernel pointers.  To limit the sparse
- * noise, turn off sparse checking for this file.
- */
-#ifdef __CHECKER__
-#undef __CHECKER__
-#warning "Sparse checking disabled for this file"
-#endif
-
 #include <linux/init.h>
 #include <linux/fs.h>
 #include <linux/slab.h>
@@ -20,15 +10,15 @@
 #include <linux/syscalls.h>
 #include <linux/utime.h>
 #include <linux/file.h>
-#include <linux/initramfs.h>
 
-static ssize_t __init xwrite(int fd, const char *p, size_t count)
+static ssize_t __init xwrite(struct file *file, const char *p, size_t count,
+		loff_t *pos)
 {
 	ssize_t out = 0;
 
 	/* sys_write only can write MAX_RW_COUNT aka 2G-4K bytes at most */
 	while (count) {
-		ssize_t rv = sys_write(fd, p, count);
+		ssize_t rv = kernel_write(file, p, count, pos);
 
 		if (rv < 0) {
 			if (rv == -EINTR || rv == -EAGAIN)
@@ -110,7 +100,7 @@ static void __init free_hash(void)
 	}
 }
 
-static long __init do_utime(char *filename, time_t mtime)
+static long __init do_utime(char *filename, time64_t mtime)
 {
 	struct timespec64 t[2];
 
@@ -126,10 +116,10 @@ static __initdata LIST_HEAD(dir_list);
 struct dir_entry {
 	struct list_head list;
 	char *name;
-	time_t mtime;
+	time64_t mtime;
 };
 
-static void __init dir_add(const char *name, time_t mtime)
+static void __init dir_add(const char *name, time64_t mtime)
 {
 	struct dir_entry *de = kmalloc(sizeof(struct dir_entry), GFP_KERNEL);
 	if (!de)
@@ -151,7 +141,7 @@ static void __init dir_utime(void)
 	}
 }
 
-static __initdata time_t mtime;
+static __initdata time64_t mtime;
 
 /* cpio header parsing */
 
@@ -178,7 +168,7 @@ static void __init parse_header(char *s)
 	uid = parsed[2];
 	gid = parsed[3];
 	nlink = parsed[4];
-	mtime = parsed[5];
+	mtime = parsed[5]; /* breaks in y2106 */
 	body_len = parsed[6];
 	major = parsed[7];
 	minor = parsed[8];
@@ -302,29 +292,32 @@ static int __init do_reset(void)
 	return 1;
 }
 
-static int __init maybe_link(void)
-{
-	if (nlink >= 2) {
-		char *old = find_link(major, minor, ino, mode, collected);
-		if (old)
-			return (sys_link(old, collected) < 0) ? -1 : 1;
-	}
-	return 0;
-}
-
 static void __init clean_path(char *path, umode_t fmode)
 {
 	struct kstat st;
 
 	if (!vfs_lstat(path, &st) && (st.mode ^ fmode) & S_IFMT) {
 		if (S_ISDIR(st.mode))
-			sys_rmdir(path);
+			ksys_rmdir(path);
 		else
-			sys_unlink(path);
+			ksys_unlink(path);
 	}
 }
 
-static __initdata int wfd;
+static int __init maybe_link(void)
+{
+	if (nlink >= 2) {
+		char *old = find_link(major, minor, ino, mode, collected);
+		if (old) {
+			clean_path(collected, 0);
+			return (ksys_link(old, collected) < 0) ? -1 : 1;
+		}
+	}
+	return 0;
+}
+
+static __initdata struct file *wfile;
+static __initdata loff_t wfile_pos;
 
 static int __init do_name(void)
 {
@@ -341,28 +334,29 @@ static int __init do_name(void)
 			int openflags = O_WRONLY|O_CREAT;
 			if (ml != 1)
 				openflags |= O_TRUNC;
-			wfd = sys_open(collected, openflags, mode);
+			wfile = filp_open(collected, openflags, mode);
+			if (IS_ERR(wfile))
+				return 0;
+			wfile_pos = 0;
 
-			if (wfd >= 0) {
-				sys_fchown(wfd, uid, gid);
-				sys_fchmod(wfd, mode);
-				if (body_len)
-					sys_ftruncate(wfd, body_len);
-				vcollected = kstrdup(collected, GFP_KERNEL);
-				state = CopyFile;
-			}
+			vfs_fchown(wfile, uid, gid);
+			vfs_fchmod(wfile, mode);
+			if (body_len)
+				vfs_truncate(&wfile->f_path, body_len);
+			vcollected = kstrdup(collected, GFP_KERNEL);
+			state = CopyFile;
 		}
 	} else if (S_ISDIR(mode)) {
-		sys_mkdir(collected, mode);
-		sys_chown(collected, uid, gid);
-		sys_chmod(collected, mode);
+		ksys_mkdir(collected, mode);
+		ksys_chown(collected, uid, gid);
+		ksys_chmod(collected, mode);
 		dir_add(collected, mtime);
 	} else if (S_ISBLK(mode) || S_ISCHR(mode) ||
 		   S_ISFIFO(mode) || S_ISSOCK(mode)) {
 		if (maybe_link() == 0) {
-			sys_mknod(collected, mode, rdev);
-			sys_chown(collected, uid, gid);
-			sys_chmod(collected, mode);
+			ksys_mknod(collected, mode, rdev);
+			ksys_chown(collected, uid, gid);
+			ksys_chmod(collected, mode);
 			do_utime(collected, mtime);
 		}
 	}
@@ -372,16 +366,16 @@ static int __init do_name(void)
 static int __init do_copy(void)
 {
 	if (byte_count >= body_len) {
-		if (xwrite(wfd, victim, body_len) != body_len)
+		if (xwrite(wfile, victim, body_len, &wfile_pos) != body_len)
 			error("write error");
-		sys_close(wfd);
+		fput(wfile);
 		do_utime(vcollected, mtime);
 		kfree(vcollected);
 		eat(body_len);
 		state = SkipIt;
 		return 0;
 	} else {
-		if (xwrite(wfd, victim, byte_count) != byte_count)
+		if (xwrite(wfile, victim, byte_count, &wfile_pos) != byte_count)
 			error("write error");
 		body_len -= byte_count;
 		eat(byte_count);
@@ -393,8 +387,8 @@ static int __init do_symlink(void)
 {
 	collected[N_ALIGN(name_len) + body_len] = '\0';
 	clean_path(collected, 0);
-	sys_symlink(collected + N_ALIGN(name_len), collected);
-	sys_lchown(collected, uid, gid);
+	ksys_symlink(collected + N_ALIGN(name_len), collected);
+	ksys_lchown(collected, uid, gid);
 	do_utime(collected, mtime);
 	state = SkipIt;
 	next_state = Reset;
@@ -533,7 +527,7 @@ static void __init free_initrd(void)
 	unsigned long crashk_start = (unsigned long)__va(crashk_res.start);
 	unsigned long crashk_end   = (unsigned long)__va(crashk_res.end);
 #endif
-	if (do_retain_initrd)
+	if (do_retain_initrd || !initrd_start)
 		goto skip;
 
 #ifdef CONFIG_KEXEC_CORE
@@ -568,19 +562,19 @@ static void __init clean_rootfs(void)
 	struct linux_dirent64 *dirp;
 	int num;
 
-	fd = sys_open("/", O_RDONLY, 0);
+	fd = ksys_open("/", O_RDONLY, 0);
 	WARN_ON(fd < 0);
 	if (fd < 0)
 		return;
 	buf = kzalloc(BUF_SIZE, GFP_KERNEL);
 	WARN_ON(!buf);
 	if (!buf) {
-		sys_close(fd);
+		ksys_close(fd);
 		return;
 	}
 
 	dirp = buf;
-	num = sys_getdents64(fd, dirp, BUF_SIZE);
+	num = ksys_getdents64(fd, dirp, BUF_SIZE);
 	while (num > 0) {
 		while (num > 0) {
 			struct kstat st;
@@ -590,9 +584,9 @@ static void __init clean_rootfs(void)
 			WARN_ON_ONCE(ret);
 			if (!ret) {
 				if (S_ISDIR(st.mode))
-					sys_rmdir(dirp->d_name);
+					ksys_rmdir(dirp->d_name);
 				else
-					sys_unlink(dirp->d_name);
+					ksys_unlink(dirp->d_name);
 			}
 
 			num -= dirp->d_reclen;
@@ -600,68 +594,55 @@ static void __init clean_rootfs(void)
 		}
 		dirp = buf;
 		memset(buf, 0, BUF_SIZE);
-		num = sys_getdents64(fd, dirp, BUF_SIZE);
+		num = ksys_getdents64(fd, dirp, BUF_SIZE);
 	}
 
-	sys_close(fd);
+	ksys_close(fd);
 	kfree(buf);
 }
 #endif
 
-static int __initdata do_skip_initramfs;
-
-static int __init skip_initramfs_param(char *str)
+#ifdef CONFIG_BLK_DEV_RAM
+static void __init populate_initrd_image(char *err)
 {
-	if (*str)
-		return 0;
-	do_skip_initramfs = 1;
-	return 1;
+	ssize_t written;
+	struct file *file;
+	loff_t pos = 0;
+
+	unpack_to_rootfs(__initramfs_start, __initramfs_size);
+
+	printk(KERN_INFO "rootfs image is not initramfs (%s); looks like an initrd\n",
+			err);
+	file = filp_open("/initrd.image", O_WRONLY|O_CREAT|O_LARGEFILE, 0700);
+	if (IS_ERR(file))
+		return;
+
+	written = xwrite(file, (char *)initrd_start, initrd_end - initrd_start,
+			&pos);
+	if (written != initrd_end - initrd_start)
+		pr_err("/initrd.image: incomplete write (%zd != %ld)\n",
+		       written, initrd_end - initrd_start);
+	fput(file);
 }
-__setup("skip_initramfs", skip_initramfs_param);
+#endif /* CONFIG_BLK_DEV_RAM */
 
 static int __init populate_rootfs(void)
 {
-	char *err;
-
-	if (do_skip_initramfs) {
-		if (initrd_start)
-			free_initrd();
-		return default_rootfs();
-	}
-
 	/* Load the built in initramfs */
-	err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
+	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
 	if (err)
 		panic("%s", err); /* Failed to decompress INTERNAL initramfs */
 	/* If available load the bootloader supplied initrd */
 	if (initrd_start && !IS_ENABLED(CONFIG_INITRAMFS_FORCE)) {
 #ifdef CONFIG_BLK_DEV_RAM
-		int fd;
 		printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
 		err = unpack_to_rootfs((char *)initrd_start,
 			initrd_end - initrd_start);
-		if (!err) {
-			free_initrd();
+		if (!err)
 			goto done;
-		} else {
-			clean_rootfs();
-			unpack_to_rootfs(__initramfs_start, __initramfs_size);
-		}
-		printk(KERN_INFO "rootfs image is not initramfs (%s)"
-				"; looks like an initrd\n", err);
-		fd = sys_open("/initrd.image",
-			      O_WRONLY|O_CREAT, 0700);
-		if (fd >= 0) {
-			ssize_t written = xwrite(fd, (char *)initrd_start,
-						initrd_end - initrd_start);
 
-			if (written != initrd_end - initrd_start)
-				pr_err("/initrd.image: incomplete write (%zd != %ld)\n",
-				       written, initrd_end - initrd_start);
-
-			sys_close(fd);
-			free_initrd();
-		}
+		clean_rootfs();
+		populate_initrd_image(err);
 	done:
 		/* empty statement */;
 #else
@@ -670,9 +651,9 @@ static int __init populate_rootfs(void)
 			initrd_end - initrd_start);
 		if (err)
 			printk(KERN_EMERG "Initramfs unpacking failed: %s\n", err);
-		free_initrd();
 #endif
 	}
+	free_initrd();
 	flush_delayed_fput();
 	/*
 	 * Try loading default modules from initramfs.  This gives

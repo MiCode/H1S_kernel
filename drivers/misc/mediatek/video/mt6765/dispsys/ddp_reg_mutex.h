@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _DDP_REG_MUTEX_H_
@@ -98,12 +90,12 @@
 
 #define SOF_VAL_MUTEX0_SOF_SINGLE_MODE (0)
 #define SOF_VAL_MUTEX0_SOF_FROM_DSI0 (1)
-#define SOF_VAL_MUTEX0_SOF_FROM_DSI1 (0) /*no DSI1*/
-#define SOF_VAL_MUTEX0_SOF_FROM_DPI (2) /*no DPI*/
+#define SOF_VAL_MUTEX0_SOF_FROM_DSI1 (0) /*mt6765 no DSI1*/
+#define SOF_VAL_MUTEX0_SOF_FROM_DPI (2) /*mt6765 no DPI*/
 #define SOF_VAL_MUTEX0_SOF_FROM_RESERVED (5)
 #define SOF_VAL_MUTEX0_EOF_DISABLE (0)
 #define SOF_VAL_MUTEX0_EOF_FROM_DSI0 (1)
-#define SOF_VAL_MUTEX0_EOF_FROM_DSI1 (0) /*no DSI1*/
-#define SOF_VAL_MUTEX0_EOF_FROM_DPI (2) /*no DPI*/
+#define SOF_VAL_MUTEX0_EOF_FROM_DSI1 (0) /*mt6765 no DSI1*/
+#define SOF_VAL_MUTEX0_EOF_FROM_DPI (2) /*mt6765 no DPI*/
 
 #endif

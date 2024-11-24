@@ -10,6 +10,7 @@
  */
 
 #define _GNU_SOURCE
+#include <errno.h>
 #include <sched.h>
 #include <string.h>
 #include <stdio.h>
@@ -22,6 +23,7 @@
 #include <limits.h>
 #include <sys/time.h>
 #include <sys/syscall.h>
+#include <sys/sysinfo.h>
 #include <sys/types.h>
 #include <sys/shm.h>
 #include <linux/futex.h>
@@ -75,6 +77,7 @@ static void touch(void)
 
 static void start_thread_on(void *(*fn)(void *), void *arg, unsigned long cpu)
 {
+	int rc;
 	pthread_t tid;
 	cpu_set_t cpuset;
 	pthread_attr_t attr;
@@ -82,14 +85,23 @@ static void start_thread_on(void *(*fn)(void *), void *arg, unsigned long cpu)
 	CPU_ZERO(&cpuset);
 	CPU_SET(cpu, &cpuset);
 
-	pthread_attr_init(&attr);
+	rc = pthread_attr_init(&attr);
+	if (rc) {
+		errno = rc;
+		perror("pthread_attr_init");
+		exit(1);
+	}
 
-	if (pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpuset)) {
+	rc = pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpuset);
+	if (rc)	{
+		errno = rc;
 		perror("pthread_attr_setaffinity_np");
 		exit(1);
 	}
 
-	if (pthread_create(&tid, &attr, fn, arg)) {
+	rc = pthread_create(&tid, &attr, fn, arg);
+	if (rc) {
+		errno = rc;
 		perror("pthread_create");
 		exit(1);
 	}
@@ -97,8 +109,9 @@ static void start_thread_on(void *(*fn)(void *), void *arg, unsigned long cpu)
 
 static void start_process_on(void *(*fn)(void *), void *arg, unsigned long cpu)
 {
-	int pid;
-	cpu_set_t cpuset;
+	int pid, ncpus;
+	cpu_set_t *cpuset;
+	size_t size;
 
 	pid = fork();
 	if (pid == -1) {
@@ -109,14 +122,23 @@ static void start_process_on(void *(*fn)(void *), void *arg, unsigned long cpu)
 	if (pid)
 		return;
 
-	CPU_ZERO(&cpuset);
-	CPU_SET(cpu, &cpuset);
+	ncpus = get_nprocs();
+	size = CPU_ALLOC_SIZE(ncpus);
+	cpuset = CPU_ALLOC(ncpus);
+	if (!cpuset) {
+		perror("malloc");
+		exit(1);
+	}
+	CPU_ZERO_S(size, cpuset);
+	CPU_SET_S(cpu, size, cpuset);
 
-	if (sched_setaffinity(0, sizeof(cpuset), &cpuset)) {
+	if (sched_setaffinity(0, size, cpuset)) {
 		perror("sched_setaffinity");
+		CPU_FREE(cpuset);
 		exit(1);
 	}
 
+	CPU_FREE(cpuset);
 	fn(arg);
 
 	exit(0);

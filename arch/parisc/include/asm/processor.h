@@ -108,7 +108,6 @@ struct cpuinfo_parisc {
 	unsigned long cpu_loc;      /* CPU location from PAT firmware */
 	unsigned int state;
 	struct parisc_device *dev;
-	unsigned long loops_per_jiffy;
 };
 
 extern struct system_cpuinfo_parisc boot_cpu_data;
@@ -256,11 +255,7 @@ on downward growing arches, it looks like this:
  * it in here from the current->personality
  */
 
-#ifdef CONFIG_64BIT
-#define USER_WIDE_MODE	(!test_thread_flag(TIF_32BIT))
-#else
-#define USER_WIDE_MODE	0
-#endif
+#define USER_WIDE_MODE	(!is_32bit_task())
 
 #define start_thread(regs, new_pc, new_sp) do {		\
 	elf_addr_t *sp = (elf_addr_t *)new_sp;		\

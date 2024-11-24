@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __USB20_H__
 #define __USB20_H__
@@ -18,17 +10,42 @@
 #define FPGA_PLATFORM
 #endif
 
+#include <linux/interrupt.h>
+#include <musb.h>
+
 struct mt_usb_work {
 	struct delayed_work dwork;
 	int ops;
 };
 
+/* ToDo: should be moved to glue */
+extern struct musb *mtk_musb;
+extern struct musb *musb;
+
 struct mt_usb_glue {
 	struct device *dev;
-	struct platform_device *musb;
+	struct platform_device *musb_pdev;
+	struct musb *mtk_musb;
+	/* common power & clock */
+	struct clk *musb_clk;
+	struct clk *musb_clk_top_sel;
+	struct clk *musb_clk_univpll3_d4;
+#ifdef CONFIG_PHY_MTK_TPHY
+	struct platform_device *usb_phy;
+	struct phy *phy;
+	struct usb_phy *xceiv;
+	enum phy_mode phy_mode;
+#endif
+#ifdef CONFIG_MTK_MUSB_DUAL_ROLE
+	struct otg_switch_mtk otg_sx;
+#endif
 };
 
+extern struct mt_usb_glue *glue;
+
 #define glue_to_musb(g)         platform_get_drvdata(g->musb)
+
+extern int kernel_init_done;
 
 extern unsigned int upmu_get_rgs_chrdet(void);
 extern bool upmu_is_chr_det(void);
@@ -80,10 +97,6 @@ extern void USB_PHY_Write_Register8(u8 var, u8 addr);
 extern u8 USB_PHY_Read_Register8(u8 addr);
 #endif
 
-extern struct clk *musb_clk;
-extern struct clk *musb_clk_top_sel;
-extern struct clk *musb_clk_univpll3_d4;
-
 #ifdef CONFIG_MTK_UART_USB_SWITCH
 
 #define RG_GPIO_SELECT (0x600)
@@ -106,8 +119,21 @@ extern enum charger_type mt_get_charger_type(void);
 #define PHY_HOST_ACTIVE     2
 void set_usb_phy_mode(int mode);
 #ifdef CONFIG_USB_MTK_OTG
-extern bool usb20_check_vbus_on(void);
+extern void mt_usb_otg_init(struct musb *musb);
+extern void mt_usb_otg_exit(struct musb *musb);
+extern int mt_usb_get_vbus_status(struct musb *musb);
+extern void mt_usb_host_connect(int delay);
+extern void mt_usb_host_disconnect(int delay);
+extern void mt_usb_host_connect(int delay);
+extern void mt_usb_host_disconnect(int delay);
 #endif
+extern void musb_platform_reset(struct musb *musb);
+extern bool usb_enable_clock(bool enable);
 extern bool usb_prepare_clock(bool enable);
 extern void usb_prepare_enable_clock(bool enable);
+
+/* usb host mode wakeup */
+#define USB_WAKEUP_DEC_CON1	0x404
+#define USB1_CDEN		BIT(0)
+#define USB1_CDDEBOUNCE(x)	(((x) & 0xf) << 1)
 #endif

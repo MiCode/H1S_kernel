@@ -18,10 +18,11 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/emi/submodule
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/dramc
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/dramc/$(MTK_PLATFORM)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/debug_latch/plat_dbg_info
+ccflags-y += -I$(srctree)/include/memory/mediatek
 
 ifeq ($(CONFIG_MTK_DEVMPU),y)
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/devmpu
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/devmpu/$(MTK_PLATFORM)
+ccflags-y += -I$(srctree)/drivers/soc/mediatek/devmpu
+ccflags-y += -I$(srctree)/drivers/soc/mediatek/devmpu/$(MTK_PLATFORM)
 endif
 
 obj-y += bwl_platform.o

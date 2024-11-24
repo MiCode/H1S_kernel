@@ -16,6 +16,7 @@
 #include <linux/completion.h>
 #include <linux/slab.h>
 #include <linux/seq_file.h>
+#define CREATE_TRACE_POINTS
 #include "internal.h"
 
 MODULE_DESCRIPTION("FS Cache Manager");
@@ -98,6 +99,45 @@ static struct ctl_table fscache_sysctls_root[] = {
 #endif
 
 /*
+ * Mixing scores (in bits) for (7,20):
+ * Input delta: 1-bit      2-bit
+ * 1 round:     330.3     9201.6
+ * 2 rounds:   1246.4    25475.4
+ * 3 rounds:   1907.1    31295.1
+ * 4 rounds:   2042.3    31718.6
+ * Perfect:    2048      31744
+ *            (32*64)   (32*31/2 * 64)
+ */
+#define HASH_MIX(x, y, a)	\
+	(	x ^= (a),	\
+	y ^= x,	x = rol32(x, 7),\
+	x += y,	y = rol32(y,20),\
+	y *= 9			)
+
+static inline unsigned int fold_hash(unsigned long x, unsigned long y)
+{
+	/* Use arch-optimized multiply if one exists */
+	return __hash_32(y ^ __hash_32(x));
+}
+
+/*
+ * Generate a hash.  This is derived from full_name_hash(), but we want to be
+ * sure it is arch independent and that it doesn't change as bits of the
+ * computed hash value might appear on disk.  The caller also guarantees that
+ * the hashed data will be a series of aligned 32-bit words.
+ */
+unsigned int fscache_hash(unsigned int salt, unsigned int *data, unsigned int n)
+{
+	unsigned int a, x = 0, y = salt;
+
+	for (; n; n--) {
+		a = *data++;
+		HASH_MIX(x, y, a);
+	}
+	return fold_hash(x, y);
+}
+
+/*
  * initialise the fs caching module
  */
 static int __init fscache_init(void)
@@ -142,9 +182,7 @@ static int __init fscache_init(void)
 
 	fscache_cookie_jar = kmem_cache_create("fscache_cookie_jar",
 					       sizeof(struct fscache_cookie),
-					       0,
-					       0,
-					       fscache_cookie_init_once);
+					       0, 0, NULL);
 	if (!fscache_cookie_jar) {
 		pr_notice("Failed to allocate a cookie jar\n");
 		ret = -ENOMEM;
@@ -195,12 +233,3 @@ static void __exit fscache_exit(void)
 }
 
 module_exit(fscache_exit);
-
-/*
- * wait_on_atomic_t() sleep function for uninterruptible waiting
- */
-int fscache_wait_atomic_t(atomic_t *p)
-{
-	schedule();
-	return 0;
-}

@@ -48,7 +48,7 @@ int mtk_lp_sysfs_entry_func_create(const char *name,
 		int mode, struct mtk_lp_sysfs_handle *parent,
 		struct mtk_lp_sysfs_handle *handle)
 {
-	int bRet;
+	int bRet = 0;
 
 	mutex_lock(&mtk_lp_sysfs_locker);
 	bRet = mtk_lp_sysfs_entry_create_plat(name
@@ -63,7 +63,7 @@ int mtk_lp_sysfs_entry_func_node_add(const char *name,
 		struct mtk_lp_sysfs_handle *parent,
 		struct mtk_lp_sysfs_handle *node)
 {
-	int bRet;
+	int bRet = 0;
 
 	mutex_lock(&mtk_lp_sysfs_locker);
 	bRet = mtk_lp_sysfs_entry_node_add_plat(name
@@ -76,7 +76,7 @@ EXPORT_SYMBOL(mtk_lp_sysfs_entry_func_node_add);
 int mtk_lp_sysfs_entry_func_node_remove(
 		struct mtk_lp_sysfs_handle *node)
 {
-	int bRet;
+	int bRet = 0;
 
 	mutex_lock(&mtk_lp_sysfs_locker);
 	bRet = mtk_lp_sysfs_entry_node_remove_plat(node);
@@ -90,7 +90,7 @@ int mtk_lp_sysfs_entry_func_group_create(const char *name,
 		struct mtk_lp_sysfs_handle *parent,
 		struct mtk_lp_sysfs_handle *handle)
 {
-	int bRet;
+	int bRet = 0;
 
 	mutex_lock(&mtk_lp_sysfs_locker);
 	bRet = mtk_lp_sysfs_entry_group_create_plat(name

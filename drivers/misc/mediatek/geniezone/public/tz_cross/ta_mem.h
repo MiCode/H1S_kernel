@@ -1,14 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ */
+
+/*
+ * GenieZone (hypervisor-based seucrity platform) enables hardware protected
+ * and isolated security execution environment, includes
+ * 1. GZ hypervisor
+ * 2. Hypervisor-TEE OS (built-in Trusty OS)
+ * 3. Drivers (ex: debug, communication and interrupt) for GZ and
+ *    hypervisor-TEE OS
+ * 4. GZ and hypervisor-TEE and GZ framework (supporting multiple TEE
+ *    ecosystem, ex: M-TEE, Trusty, GlobalPlatform, ...)
  */
 
 
@@ -50,11 +54,12 @@
 #define TZCMD_MEM_SECUREMULTICHUNKMEM_REF 27
 #define TZCMD_MEM_SECUREMULTICHUNKMEM_UNREF 28
 #define TZCMD_MEM_Query_IONHandle 29
-#define TZCMD_MEM_CopyChmtoShm 30
+
 #define TZCMD_MEM_APPEND_MULTI_CHUNKMEM_ION 31
 #define TZCMD_MEM_RELEASE_CHUNKMEM_ION 32
 #define TZCMD_MEM_CONFIG_CHUNKMEM_INFO_ION 34
 
+#define TZCMD_MEM_Query_SECUREMEM_INFO 35
 
 /* data structure for parameter passing */
 struct shm_buffer_s {

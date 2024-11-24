@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2022 MediaTek Inc.
  */
 
 
@@ -451,8 +444,8 @@ static struct DIP_MEM_INFO_STRUCT g_CmdqBaseAddrInfo = {0x0, 0x0, NULL, 0x0};
 static unsigned int m_CurrentPPB;
 
 #ifdef CONFIG_PM_SLEEP
-struct wakeup_source dip_wake_lock;
-struct wakeup_source isp_mdp_wake_lock;
+struct wakeup_source *dip_wake_lock;
+struct wakeup_source *isp_mdp_wake_lock;
 #endif
 static int g_bWaitLock;
 static unsigned int g_dip1sterr = DIP_GCE_EVENT_NONE;
@@ -719,7 +712,7 @@ static struct SV_LOG_STR gSvLog[DIP_IRQ_TYPE_AMOUNT];
 		do_div(sec, 1000);    \
 		usec = do_div(sec, 1000000);\
 	}
-#if 1
+
 #define IRQ_LOG_KEEPER(irq, ppb, logT, fmt, ...) do {\
 	char *ptr; \
 	char *pDes;\
@@ -759,7 +752,7 @@ static struct SV_LOG_STR gSvLog[DIP_IRQ_TYPE_AMOUNT];
 				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 					LOG_DBG("%s", &ptr[NORMAL_STR_LEN*i]);\
-				} else{\
+				} else {\
 					LOG_DBG("%s", &ptr[NORMAL_STR_LEN*i]);\
 					break;\
 				} \
@@ -770,7 +763,7 @@ static struct SV_LOG_STR gSvLog[DIP_IRQ_TYPE_AMOUNT];
 				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 					LOG_INF("%s", &ptr[NORMAL_STR_LEN*i]);\
-				} else{\
+				} else {\
 					LOG_INF("%s", &ptr[NORMAL_STR_LEN*i]);\
 					break;\
 				} \
@@ -781,7 +774,7 @@ static struct SV_LOG_STR gSvLog[DIP_IRQ_TYPE_AMOUNT];
 				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 					LOG_ERR("%s", &ptr[NORMAL_STR_LEN*i]);\
-				} else{\
+				} else {\
 					LOG_ERR("%s", &ptr[NORMAL_STR_LEN*i]);\
 					break;\
 				} \
@@ -803,12 +796,7 @@ static struct SV_LOG_STR gSvLog[DIP_IRQ_TYPE_AMOUNT];
 	} \
 	} \
 } while (0)
-#else
-#define IRQ_LOG_KEEPER(irq, ppb, logT, fmt, args...) \
-pr_debug(IRQTag fmt,  ##args)
-#endif
 
-#if 1
 #define IRQ_LOG_PRINTER(irq, ppb_in, logT_in) do {\
 	struct SV_LOG_STR *pSrc = &gSvLog[irq];\
 	char *ptr;\
@@ -817,12 +805,12 @@ pr_debug(IRQTag fmt,  ##args)
 	unsigned int logT = 0;\
 	if (ppb_in > 1) {\
 		ppb = 1;\
-	} else{\
+	} else {\
 		ppb = ppb_in;\
 	} \
 	if (logT_in > _LOG_ERR) {\
 		logT = _LOG_ERR;\
-	} else{\
+	} else {\
 		logT = logT_in;\
 	} \
 	ptr = pSrc->_str[ppb][logT];\
@@ -832,7 +820,7 @@ pr_debug(IRQTag fmt,  ##args)
 				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 					LOG_DBG("%s", &ptr[NORMAL_STR_LEN*i]);\
-				} else{\
+				} else {\
 					LOG_DBG("%s", &ptr[NORMAL_STR_LEN*i]);\
 					break;\
 				} \
@@ -843,7 +831,7 @@ pr_debug(IRQTag fmt,  ##args)
 				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 					LOG_INF("%s", &ptr[NORMAL_STR_LEN*i]);\
-				} else{\
+				} else {\
 					LOG_INF("%s", &ptr[NORMAL_STR_LEN*i]);\
 					break;\
 				} \
@@ -854,7 +842,7 @@ pr_debug(IRQTag fmt,  ##args)
 				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 					LOG_ERR("%s", &ptr[NORMAL_STR_LEN*i]);\
-				} else{\
+				} else {\
 					LOG_ERR("%s", &ptr[NORMAL_STR_LEN*i]);\
 					break;\
 				} \
@@ -868,10 +856,6 @@ pr_debug(IRQTag fmt,  ##args)
 	} \
 	} while (0)
 
-
-#else
-#define IRQ_LOG_PRINTER(irq, ppb, logT)
-#endif
 
 /*#define CAMSYS_REG_CG_CON               (DIP_CAMSYS_CONFIG_BASE + 0x0)*/
 #define IMGSYS_REG_CG_CON               (DIP_IMGSYS_CONFIG_BASE + 0x0)
@@ -2035,109 +2019,109 @@ EXIT:
  *
  **************************************************************/
 /*
-static signed int DIP_WriteRegToHw(
-	struct DIP_REG_STRUCT *pReg,
-	unsigned int         Count)
-{
-	signed int Ret = 0;
-	unsigned int i;
-	bool dbgWriteReg;
-	unsigned int module;
-	void __iomem *regBase;
-
-	spin_lock(&(IspInfo.SpinLockIsp));
-	dbgWriteReg = IspInfo.DebugMask & DIP_DBG_WRITE_REG;
-	spin_unlock(&(IspInfo.SpinLockIsp));
-
-	module = pReg->module;
-
-
-	switch (module) {
-	case DIP_DIP_A_IDX:
-		regBase = DIP_A_BASE;
-		break;
-	default:
-		LOG_ERR("Unsupported module(%x) !!!\n", module);
-		return -EFAULT;
-	}
-
-	if (dbgWriteReg)
-		LOG_DBG("- E.\n");
-
-	for (i = 0; i < Count; i++) {
-		if (dbgWriteReg)
-			LOG_DBG("mod(%d),base(0x%lx),Addr(0x%lx),Val(0x%x)\n",
-			module,
-			(unsigned long)regBase,
-			(unsigned long)(pReg[i].Addr),
-			(unsigned int)(pReg[i].Val));
-		if (((regBase + pReg[i].Addr) < (regBase + PAGE_SIZE))
-			&& ((pReg[i].Addr & 0x3) == 0))
-			DIP_WR32(regBase + pReg[i].Addr, pReg[i].Val);
-		else
-			LOG_ERR("wrong address(0x%lx)\n",
-				(unsigned long)(regBase + pReg[i].Addr));
-
-	}
-
-	return Ret;
-}
-*/
+ *static signed int DIP_WriteRegToHw(
+ *	struct DIP_REG_STRUCT *pReg,
+ *	unsigned int         Count)
+ *{
+ *	signed int Ret = 0;
+ *	unsigned int i;
+ *	bool dbgWriteReg;
+ *	unsigned int module;
+ *	void __iomem *regBase;
+ *
+ *	spin_lock(&(IspInfo.SpinLockIsp));
+ *	dbgWriteReg = IspInfo.DebugMask & DIP_DBG_WRITE_REG;
+ *	spin_unlock(&(IspInfo.SpinLockIsp));
+ *
+ *	module = pReg->module;
+ *
+ *
+ *	switch (module) {
+ *	case DIP_DIP_A_IDX:
+ *		regBase = DIP_A_BASE;
+ *		break;
+ *	default:
+ *		LOG_ERR("Unsupported module(%x) !!!\n", module);
+ *		return -EFAULT;
+ *	}
+ *
+ *	if (dbgWriteReg)
+ *		LOG_DBG("- E.\n");
+ *
+ *	for (i = 0; i < Count; i++) {
+ *		if (dbgWriteReg)
+ *			LOG_DBG("mod(%d),base(0x%lx),Addr(0x%lx),Val(0x%x)\n",
+ *			module,
+ *			(unsigned long)regBase,
+ *			(unsigned long)(pReg[i].Addr),
+ *			(unsigned int)(pReg[i].Val));
+ *		if (((regBase + pReg[i].Addr) < (regBase + PAGE_SIZE))
+ *			&& ((pReg[i].Addr & 0x3) == 0))
+ *			DIP_WR32(regBase + pReg[i].Addr, pReg[i].Val);
+ *		else
+ *			LOG_ERR("wrong address(0x%lx)\n",
+ *				(unsigned long)(regBase + pReg[i].Addr));
+ *
+ *	}
+ *
+ *	return Ret;
+ *}
+ */
 
 /**************************************************************
  *
  **************************************************************/
 /*
-static signed int DIP_WriteReg(struct DIP_REG_IO_STRUCT *pRegIo)
-{
-	signed int Ret = 0;
-	struct DIP_REG_STRUCT *pData = NULL;
-
-	if (IspInfo.DebugMask & DIP_DBG_WRITE_REG)
-		LOG_DBG("Data(0x%p), Count(%d)\n",
-			(pRegIo->pData),
-			(pRegIo->Count));
-
-	if ((pRegIo->pData == NULL) ||
-		(pRegIo->Count == 0) ||
-		(pRegIo->Count > (DIP_REG_RANGE>>2))) {
-		LOG_INF("ERROR: pRegIo->pData is NULL or Count:%d\n",
-			pRegIo->Count);
-		Ret = -EFAULT;
-		goto EXIT;
-	}
-	pData = kmalloc((pRegIo->Count) *
-		sizeof(struct DIP_REG_STRUCT),
-		GFP_KERNEL);
-	if (pData == NULL) {
-		LOG_INF("ERROR:kmalloc failed,(process,pid,tgid)=(%s,%d,%d)\n",
-		current->comm,
-		current->pid,
-		current->tgid);
-	Ret = -ENOMEM;
-	goto EXIT;
-	}
-	if (copy_from_user(pData,
-		(void __user *)(pRegIo->pData),
-		pRegIo->Count * sizeof(struct DIP_REG_STRUCT)) != 0) {
-		LOG_INF("copy_from_user failed\n");
-		Ret = -EFAULT;
-		goto EXIT;
-	}
-
-
-	Ret = DIP_WriteRegToHw(
-		      pData,
-		      pRegIo->Count);
-
-EXIT:
-	if (pData != NULL) {
-		kfree(pData);
-		pData = NULL;
-	}
-	return Ret;
-}
-*/
+ *static signed int DIP_WriteReg(struct DIP_REG_IO_STRUCT *pRegIo)
+ *{
+ *	signed int Ret = 0;
+ *	struct DIP_REG_STRUCT *pData = NULL;
+ *
+ *	if (IspInfo.DebugMask & DIP_DBG_WRITE_REG)
+ *		LOG_DBG("Data(0x%p), Count(%d)\n",
+ *			(pRegIo->pData),
+ *			(pRegIo->Count));
+ *
+ *	if ((pRegIo->pData == NULL) ||
+ *		(pRegIo->Count == 0) ||
+ *		(pRegIo->Count > (DIP_REG_RANGE>>2))) {
+ *		LOG_INF("ERROR: pRegIo->pData is NULL or Count:%d\n",
+ *			pRegIo->Count);
+ *		Ret = -EFAULT;
+ *		goto EXIT;
+ *	}
+ *	pData = kmalloc((pRegIo->Count) *
+ *		sizeof(struct DIP_REG_STRUCT),
+ *		GFP_KERNEL);
+ *	if (pData == NULL) {
+ *		LOG_INF("ERROR:kmalloc failed,(process,pid,tgid)=(%s,%d,%d)\n",
+ *		current->comm,
+ *		current->pid,
+ *		current->tgid);
+ *	Ret = -ENOMEM;
+ *	goto EXIT;
+ *	}
+ *	if (copy_from_user(pData,
+ *		(void __user *)(pRegIo->pData),
+ *		pRegIo->Count * sizeof(struct DIP_REG_STRUCT)) != 0) {
+ *		LOG_INF("copy_from_user failed\n");
+ *		Ret = -EFAULT;
+ *		goto EXIT;
+ *	}
+ *
+ *
+ *	Ret = DIP_WriteRegToHw(
+ *		      pData,
+ *		      pRegIo->Count);
+ *
+ *EXIT:
+ *	if (pData != NULL) {
+ *		kfree(pData);
+ *		pData = NULL;
+ *	}
+ *	return Ret;
+ *}
+ */
 /**************************************************************
  *
  **************************************************************/
@@ -3563,7 +3547,7 @@ static long DIP_ioctl(
 			if (wakelock_ctrl == 1) {    /* Enable     wakelock */
 				if (g_bWaitLock == 0) {
 #ifdef CONFIG_PM_SLEEP
-					__pm_stay_awake(&dip_wake_lock);
+					__pm_stay_awake(dip_wake_lock);
 #endif
 					g_bWaitLock = 1;
 					LOG_DBG("wakelock enable!!\n");
@@ -3571,7 +3555,7 @@ static long DIP_ioctl(
 			} else {        /* Disable wakelock */
 				if (g_bWaitLock == 1) {
 #ifdef CONFIG_PM_SLEEP
-					__pm_relax(&dip_wake_lock);
+					__pm_relax(dip_wake_lock);
 #endif
 					g_bWaitLock = 0;
 					LOG_DBG("wakelock disable!!\n");
@@ -4218,7 +4202,7 @@ static signed int DIP_open(
 
 	/* Enable clock */
 #ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&dip_wake_lock);
+	__pm_stay_awake(dip_wake_lock);
 #endif
 	DIP_EnableClock(MTRUE);
 	/* Initial HW default value */
@@ -4226,7 +4210,7 @@ static signed int DIP_open(
 		DIP_Load_InitialSettings();
 	g_u4DipCnt = 0;
 #ifdef CONFIG_PM_SLEEP
-	__pm_relax(&dip_wake_lock);
+	__pm_relax(dip_wake_lock);
 #endif
 	LOG_DBG("dip open G_u4DipEnClkCnt: %d\n", G_u4DipEnClkCnt);
 #ifdef KERNEL_LOG
@@ -4298,7 +4282,7 @@ static signed int DIP_release(
 
 	if (g_bWaitLock == 1) {
 #ifdef CONFIG_PM_SLEEP
-		__pm_relax(&dip_wake_lock);
+		__pm_relax(dip_wake_lock);
 #endif
 		g_bWaitLock = 0;
 	}
@@ -4379,11 +4363,11 @@ static signed int DIP_release(
 #endif
 
 #ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&dip_wake_lock);
+	__pm_stay_awake(dip_wake_lock);
 #endif
 	DIP_EnableClock(MFALSE);
 #ifdef CONFIG_PM_SLEEP
-	__pm_relax(&dip_wake_lock);
+	__pm_relax(dip_wake_lock);
 #endif
 	LOG_DBG("dip release G_u4DipEnClkCnt: %d", G_u4DipEnClkCnt);
 EXIT:
@@ -4399,41 +4383,41 @@ EXIT:
  *
  **************************************************************/
 /*
-static signed int DIP_mmap(
-	struct file *pFile, struct vm_area_struct *pVma)
-{
-	unsigned long length = 0;
-	unsigned int pfn = 0x0;
-
-	length = (pVma->vm_end - pVma->vm_start);
-
-	pVma->vm_page_prot = pgprot_noncached(pVma->vm_page_prot);
-	pfn = pVma->vm_pgoff << PAGE_SHIFT;
-
-
-	switch (pfn) {
-	case DIP_A_BASE_HW:
-		if (length > DIP_REG_RANGE) {
-			LOG_ERR("mmap range error\n");
-			LOG_ERR("mod(0x%x),len(0x%lx),dip_regsize(0x%x)\n",
-			pfn, length, DIP_REG_RANGE);
-			return -EAGAIN;
-		}
-		break;
-	default:
-		LOG_ERR("Illegal starting HW addr for mmap!\n");
-		return -EAGAIN;
-	}
-	if (remap_pfn_range(pVma,
-		pVma->vm_start,
-		pVma->vm_pgoff,
-		pVma->vm_end - pVma->vm_start,
-		pVma->vm_page_prot))
-		return -EAGAIN;
-
-	return 0;
-}
-*/
+ *static signed int DIP_mmap(
+ *	struct file *pFile, struct vm_area_struct *pVma)
+ *{
+ *	unsigned long length = 0;
+ *	unsigned int pfn = 0x0;
+ *
+ *	length = (pVma->vm_end - pVma->vm_start);
+ *
+ *	pVma->vm_page_prot = pgprot_noncached(pVma->vm_page_prot);
+ *	pfn = pVma->vm_pgoff << PAGE_SHIFT;
+ *
+ *
+ *	switch (pfn) {
+ *	case DIP_A_BASE_HW:
+ *		if (length > DIP_REG_RANGE) {
+ *			LOG_ERR("mmap range error\n");
+ *			LOG_ERR("mod(0x%x),len(0x%lx),dip_regsize(0x%x)\n",
+ *			pfn, length, DIP_REG_RANGE);
+ *			return -EAGAIN;
+ *		}
+ *		break;
+ *	default:
+ *		LOG_ERR("Illegal starting HW addr for mmap!\n");
+ *		return -EAGAIN;
+ *	}
+ *	if (remap_pfn_range(pVma,
+ *		pVma->vm_start,
+ *		pVma->vm_pgoff,
+ *		pVma->vm_end - pVma->vm_start,
+ *		pVma->vm_page_prot))
+ *		return -EAGAIN;
+ *
+ *	return 0;
+ *}
+ */
 /**************************************************************
  *
  **************************************************************/
@@ -4541,7 +4525,7 @@ static signed int DIP_probe(struct platform_device *pDev)
 	}
 
 	nr_dip_devs += 1;
-#if 1
+
 	_dipdev = krealloc(dip_devs,
 		sizeof(struct dip_device) * nr_dip_devs,
 		GFP_KERNEL);
@@ -4550,16 +4534,6 @@ static signed int DIP_probe(struct platform_device *pDev)
 		return -ENOMEM;
 	}
 	dip_devs = _dipdev;
-
-#else
-	/* WARNING: Reusing the krealloc arg is almost always a bug */
-	dip_devs = KREALLOC(dip_devs,
-		sizeof(struct dip_device) * nr_dip_devs, GFP_KERNEL);
-	if (!dip_devs) {
-		LOG_INF("Unable to allocate dip_devs\n");
-		return -ENOMEM;
-	}
-#endif
 
 	dip_dev = &(dip_devs[nr_dip_devs - 1]);
 	dip_dev->dev = &pDev->dev;
@@ -4706,8 +4680,8 @@ static signed int DIP_probe(struct platform_device *pDev)
 			init_waitqueue_head(&IspInfo.WaitQueueHead[i]);
 
 #ifdef CONFIG_PM_SLEEP
-		wakeup_source_init(&dip_wake_lock, "dip_lock_wakelock");
-		wakeup_source_init(&isp_mdp_wake_lock, "isp_mdp_wakelock");
+		dip_wake_lock = wakeup_source_register(&pDev->dev, "dip_lock_wakelock");
+		isp_mdp_wake_lock = wakeup_source_register(&pDev->dev, "isp_mdp_wakelock");
 #endif
 
 		/* enqueue/dequeue control in ihalpipe wrapper */
@@ -4781,37 +4755,6 @@ static signed int DIP_remove(struct platform_device *pDev)
 	for (i = 0; i < DIP_IRQ_TYPE_AMOUNT; i++)
 		tasklet_kill(dip_tasklet[i].pIsp_tkt);
 
-#if 0
-	/* free all registered irq(child nodes) */
-	DIP_UnRegister_AllregIrq();
-	/* free father nodes of irq user list */
-	struct my_list_head *head;
-	struct my_list_head *father;
-
-	head = ((struct my_list_head *)(&SupIrqUserListHead.list));
-	while (1) {
-		father = head;
-		if (father->nextirq != father) {
-			father = father->nextirq;
-			REG_IRQ_NODE *accessNode;
-
-			typeof(((REG_IRQ_NODE *)0)->list) * __mptr = (father);
-			accessNode = ((REG_IRQ_NODE *)((char *)__mptr -
-				offsetof(REG_IRQ_NODE, list)));
-			LOG_INF("free father,reg_T(%d)\n", accessNode->reg_T);
-			if (father->nextirq != father) {
-				head->nextirq = father->nextirq;
-				father->nextirq = father;
-			} else {
-				/* last father node */
-				head->nextirq = head;
-				LOG_INF("break\n");
-				break;
-			}
-			kfree(accessNode);
-		}
-	}
-#endif
 	/*  */
 	device_destroy(pIspClass, IspDevNo);
 	/*  */
@@ -5232,9 +5175,9 @@ static signed int __init DIP_Init(void)
 {
 	signed int Ret = 0, j;
 	void *tmp;
-#if 0
-	struct device_node *node = NULL;
-#endif
+//#if 0
+//	struct device_node *node = NULL;
+//#endif
 	struct proc_dir_entry *proc_entry;
 	struct proc_dir_entry *dip_p2_dir;
 
@@ -5247,21 +5190,6 @@ static signed int __init DIP_Init(void)
 		LOG_ERR("platform_driver_register fail");
 		return Ret;
 	}
-	/*  */
-
-#if 0
-	node = of_find_compatible_node(NULL, NULL, "mediatek,mmsys_config");
-	if (!node) {
-		LOG_ERR("find mmsys_config node failed!!!\n");
-		return -ENODEV;
-	}
-	DIP_MMSYS_CONFIG_BASE = of_iomap(node, 0);
-	if (!DIP_MMSYS_CONFIG_BASE) {
-		LOG_ERR("unable to map DIP_MMSYS_CONFIG_BASE registers!!!\n");
-		return -ENODEV;
-	}
-	LOG_DBG("DIP_MMSYS_CONFIG_BASE: %p\n", DIP_MMSYS_CONFIG_BASE);
-#endif
 
 	/* FIX-ME: linux-3.10 procfs API changed */
 	dip_p2_dir = proc_mkdir("isp_p2", NULL);
@@ -5396,7 +5324,7 @@ int32_t DIP_MDPClockOnCallback(uint64_t engineFlag)
 	/* LOG_DBG("DIP_MDPClockOnCallback"); */
 	/*LOG_DBG("+MDPEn:%d", G_u4DipEnClkCnt);*/
 #ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&isp_mdp_wake_lock);
+	__pm_stay_awake(isp_mdp_wake_lock);
 #endif
 	DIP_EnableClock(MTRUE);
 
@@ -5425,7 +5353,7 @@ int32_t DIP_MDPClockOffCallback(uint64_t engineFlag)
 	/* LOG_DBG("DIP_MDPClockOffCallback"); */
 	DIP_EnableClock(MFALSE);
 #ifdef CONFIG_PM_SLEEP
-	__pm_relax(&isp_mdp_wake_lock);
+	__pm_relax(isp_mdp_wake_lock);
 #endif
 	/*LOG_DBG("-MDPEn:%d", G_u4DipEnClkCnt);*/
 	return 0;

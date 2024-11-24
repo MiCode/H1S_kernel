@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -58,8 +47,9 @@
 #include "mtk-soc-pcm-platform.h"
 #include <linux/dma-mapping.h>
 #include <sound/pcm_params.h>
-
+#ifndef ASOC_TEMP_BYPASS
 #include "mtk_mcdi_api.h"
+#endif
 
 #ifdef DEBUG_DEEP_BUFFER_DL
 #define DEBUG_DEEP_BUFFER_DL(format, args...) pr_debug(format, ##args)
@@ -326,8 +316,9 @@ static int mtk_deep_buffer_dl_close(struct snd_pcm_substream *substream)
 
 	vcore_dvfs(&vcore_dvfs_enable, true);
 
+#ifndef ASOC_TEMP_BYPASS
 	system_idle_hint_request(SYSTEM_IDLE_HINT_USER_AUDIO, 0);
-
+#endif
 	return 0;
 }
 
@@ -347,9 +338,9 @@ static int mtk_deep_buffer_dl_open(struct snd_pcm_substream *substream)
 	       sizeof(struct snd_pcm_hardware));
 
 	AudDrv_Clk_On();
-
+#ifndef ASOC_TEMP_BYPASS
 	system_idle_hint_request(SYSTEM_IDLE_HINT_USER_AUDIO, 1);
-
+#endif
 	pMemControl = Get_Mem_ControlT(deep_buffer_mem_blk);
 
 	ret = snd_pcm_hw_constraint_list(runtime, 0, SNDRV_PCM_HW_PARAM_RATE,
@@ -555,10 +546,11 @@ static struct snd_pcm_ops mtk_deep_buffer_dl_ops = {
 	.trigger = mtk_deep_buffer_dl_trigger,
 	.pointer = mtk_deep_buffer_dl_pointer,
 	.page = mtk_deep_buffer_dl_page,
+	.copy_user = mtk_afe_pcm_copy,
 	.ack = mtk_deep_buffer_dl_ack,
 };
 
-static int mtk_deep_buffer_dl_platform_probe(struct snd_soc_platform *platform)
+static int mtk_deep_buffer_dl_platform_probe(struct snd_soc_component *component)
 {
 	deep_buffer_mem_blk =
 		get_usage_digital_block(AUDIO_USAGE_DEEPBUFFER_PLAYBACK);
@@ -575,11 +567,11 @@ static int mtk_deep_buffer_dl_platform_probe(struct snd_soc_platform *platform)
 	pr_debug("%s(), deep_buffer_mem_blk %d, deep_buffer_mem_blk_io %d\n",
 		 __func__, deep_buffer_mem_blk, deep_buffer_mem_blk_io);
 
-	snd_soc_add_platform_controls(platform, deep_buffer_dl_controls,
+	snd_soc_add_component_controls(component, deep_buffer_dl_controls,
 				      ARRAY_SIZE(deep_buffer_dl_controls));
 	/* allocate dram */
 	deep_buffer_dl_dma_buf.area = dma_alloc_coherent(
-		platform->dev, SOC_HIFI_DEEP_BUFFER_SIZE,
+		component->dev, SOC_HIFI_DEEP_BUFFER_SIZE,
 		&deep_buffer_dl_dma_buf.addr, GFP_KERNEL | GFP_DMA);
 	if (!deep_buffer_dl_dma_buf.area)
 		return -ENOMEM;
@@ -590,7 +582,8 @@ static int mtk_deep_buffer_dl_platform_probe(struct snd_soc_platform *platform)
 	return 0;
 }
 
-static struct snd_soc_platform_driver mtk_deep_buffer_dl_soc_platform = {
+static const struct snd_soc_component_driver mtk_deep_buffer_dl_soc_component = {
+	.name = AFE_PCM_NAME,
 	.ops = &mtk_deep_buffer_dl_ops,
 	.probe = mtk_deep_buffer_dl_platform_probe,
 };
@@ -599,26 +592,28 @@ static int mtk_deep_buffer_dl_probe(struct platform_device *pdev)
 {
 	pr_info("%s\n", __func__);
 
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
 
-	if (pdev->dev.of_node) {
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_DEEP_BUFFER_DL_PCM);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
 
 	mDev = &pdev->dev;
 
-	return snd_soc_register_platform(&pdev->dev,
-					 &mtk_deep_buffer_dl_soc_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_deep_buffer_dl_soc_component,
+					  NULL,
+					  0);
 }
 
 static int mtk_deep_buffer_dl_remove(struct platform_device *pdev)
 {
 	pr_debug("%s()\n", __func__);
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

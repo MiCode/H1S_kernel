@@ -39,6 +39,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/io-64-nonatomic-hi-lo.h>
+#include <linux/io-pgtable.h>
 #include <linux/iommu.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
@@ -53,7 +54,6 @@
 
 #include <linux/amba/bus.h>
 
-#include "io-pgtable.h"
 #include "arm-smmu-regs.h"
 
 /*
@@ -68,6 +68,7 @@
 #define ARM_MMU500_ACTLR_CPRE		(1 << 1)
 
 #define ARM_MMU500_ACR_CACHE_LOCK	(1 << 26)
+#define ARM_MMU500_ACR_S2CRB_TLBEN	(1 << 10)
 #define ARM_MMU500_ACR_SMTNMB_TLBEN	(1 << 8)
 
 #define TLB_LOOP_TIMEOUT		1000000	/* 1s! */
@@ -128,14 +129,6 @@ enum arm_smmu_implementation {
 	CAVIUM_SMMUV2,
 	QCOM_SMMUV2,
 };
-
-/* Until ACPICA headers cover IORT rev. C */
-#ifndef ACPI_IORT_SMMU_CORELINK_MMU401
-#define ACPI_IORT_SMMU_CORELINK_MMU401	0x4
-#endif
-#ifndef ACPI_IORT_SMMU_CAVIUM_THUNDERX
-#define ACPI_IORT_SMMU_CAVIUM_THUNDERX	0x5
-#endif
 
 struct arm_smmu_s2cr {
 	struct iommu_group		*group;
@@ -1585,7 +1578,6 @@ static struct iommu_ops arm_smmu_ops = {
 	.attach_dev		= arm_smmu_attach_dev,
 	.map			= arm_smmu_map,
 	.unmap			= arm_smmu_unmap,
-	.map_sg			= default_iommu_map_sg,
 	.flush_iotlb_all	= arm_smmu_iotlb_sync,
 	.iotlb_sync		= arm_smmu_iotlb_sync,
 	.iova_to_phys		= arm_smmu_iova_to_phys,
@@ -1632,7 +1624,7 @@ static void arm_smmu_device_reset(struct arm_smmu_device *smmu)
 		 * Allow unmatched Stream IDs to allocate bypass
 		 * TLB entries for reduced latency.
 		 */
-		reg |= ARM_MMU500_ACR_SMTNMB_TLBEN;
+		reg |= ARM_MMU500_ACR_SMTNMB_TLBEN | ARM_MMU500_ACR_S2CRB_TLBEN;
 		writel_relaxed(reg, gr0_base + ARM_SMMU_GR0_sACR);
 	}
 
@@ -2107,7 +2099,7 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	smmu->irqs = devm_kzalloc(dev, sizeof(*smmu->irqs) * num_irqs,
+	smmu->irqs = devm_kcalloc(dev, num_irqs, sizeof(*smmu->irqs),
 				  GFP_KERNEL);
 	if (!smmu->irqs) {
 		dev_err(dev, "failed to allocate %d irqs\n", num_irqs);
@@ -2196,7 +2188,9 @@ static int arm_smmu_legacy_bus_init(void)
 		arm_smmu_bus_init();
 	return 0;
 }
+#ifndef MODULE
 device_initcall_sync(arm_smmu_legacy_bus_init);
+#endif
 
 static int arm_smmu_device_remove(struct platform_device *pdev)
 {
@@ -2238,14 +2232,26 @@ static struct platform_driver arm_smmu_driver = {
 	.remove	= arm_smmu_device_remove,
 	.shutdown = arm_smmu_device_shutdown,
 };
-module_platform_driver(arm_smmu_driver);
 
-IOMMU_OF_DECLARE(arm_smmuv1, "arm,smmu-v1", NULL);
-IOMMU_OF_DECLARE(arm_smmuv2, "arm,smmu-v2", NULL);
-IOMMU_OF_DECLARE(arm_mmu400, "arm,mmu-400", NULL);
-IOMMU_OF_DECLARE(arm_mmu401, "arm,mmu-401", NULL);
-IOMMU_OF_DECLARE(arm_mmu500, "arm,mmu-500", NULL);
-IOMMU_OF_DECLARE(cavium_smmuv2, "cavium,smmu-v2", NULL);
+static int __init arm_smmu_driver_init(void)
+{
+	int ret;
+
+	ret = platform_driver_register(&arm_smmu_driver);
+#ifdef MODULE
+	if (!ret)
+		arm_smmu_legacy_bus_init();
+#endif
+	return ret;
+}
+
+static void __exit arm_smmu_driver_exit(void)
+{
+	platform_driver_unregister(&arm_smmu_driver);
+}
+
+subsys_initcall(arm_smmu_driver_init);
+module_exit(arm_smmu_driver_exit);
 
 MODULE_DESCRIPTION("IOMMU API for ARM architected SMMU implementations");
 MODULE_AUTHOR("Will Deacon <will.deacon@arm.com>");

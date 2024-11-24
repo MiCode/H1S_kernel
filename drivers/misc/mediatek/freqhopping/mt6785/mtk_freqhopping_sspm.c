@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -429,8 +421,12 @@ static noinline int __freq_to_index(enum FH_PLL_ID pll_id,
 {
 	unsigned int retVal = 0;
 	unsigned int i = PLL_SETTING_IDX__DEF;	/* start from 1 */
-	const unsigned int size =
-	    ARRAY_SIZE(g_pll_ssc_setting_tbl[pll_id]);
+	unsigned int size;
+
+	if (pll_id < 0)
+		return 0;
+
+	size = ARRAY_SIZE(g_pll_ssc_setting_tbl[pll_id]);
 
 	while (i < size) {
 		if (pattern == g_pll_ssc_setting_tbl[pll_id][i].idx_pattern) {

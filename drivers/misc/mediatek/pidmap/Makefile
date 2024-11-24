@@ -10,6 +10,6 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 #
-
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/include
 obj-$(CONFIG_MTK_PID_MAP)	+= pidmap.o
 

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -49,7 +41,6 @@
 #include <mtk_power_gs_api.h>
 #endif
 
-#include <trace/events/mtk_idle_event.h>
 
 #include <mtk_idle_internal.h>
 #include <mtk_idle_profile.h>
@@ -333,7 +324,6 @@ unsigned int spm_go_to_sodi3(u32 spm_flags, u32 spm_data, u32 sodi3_flags)
 		(1 << SPM_SODI3_B4) | (1 << SPM_SODI3_B5) |
 		(1 << SPM_SODI3_B6));
 
-	trace_sodi3_rcuidle(cpu, 1);
 
 	profile_so3_end(PIDX_ENTER_TOTAL);
 
@@ -341,7 +331,6 @@ unsigned int spm_go_to_sodi3(u32 spm_flags, u32 spm_data, u32 sodi3_flags)
 
 	profile_so3_start(PIDX_LEAVE_TOTAL);
 
-	trace_sodi3_rcuidle(cpu, 0);
 
 	spm_sodi3_footprint(SPM_SODI3_LEAVE_WFI);
 

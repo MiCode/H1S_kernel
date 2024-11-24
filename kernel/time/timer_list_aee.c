@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) year MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/proc_fs.h>
@@ -21,7 +13,7 @@
 
 #include <linux/uaccess.h>
 #ifdef CONFIG_MTK_AEE_IPANIC
-#include <mt-plat/mtk_ram_console.h>
+#include <mt-plat/mboot_params.h>
 #endif
 
 #include "tick-internal.h"
@@ -270,6 +262,20 @@ print_tickdevice(struct seq_file *m, struct tick_device *td, int cpu)
 	SEQ_printf_at_AEE(m, " retries:        %lu\n", dev->retries);
 	SEQ_printf_at_AEE(m, "\n");
 }
+
+static void timer_list_show_tickdevices_header(struct seq_file *m)
+{
+#ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
+	print_tickdevice(m, tick_get_broadcast_device(), -1);
+	SEQ_printf_at_AEE(m, "tick_broadcast_mask: %*pb\n",
+			cpumask_pr_args(tick_get_broadcast_mask()));
+#ifdef CONFIG_TICK_ONESHOT
+	SEQ_printf_at_AEE(m, "tick_broadcast_oneshot_mask: %*pb\n",
+			cpumask_pr_args(tick_get_broadcast_oneshot_mask()));
+#endif
+	SEQ_printf_at_AEE(m, "\n");
+#endif
+}
 #endif
 
 static inline void timer_list_header(struct seq_file *m, u64 now)
@@ -293,6 +299,7 @@ void timer_list_aee_dump(int exclude_cpus)
 			print_cpu(NULL, cpu, now);
 
 #ifdef CONFIG_GENERIC_CLOCKEVENTS
+	timer_list_show_tickdevices_header(NULL);
 	for_each_online_cpu(cpu)
 		if ((exclude_cpus & (1 << cpu)) == 0)
 			print_tickdevice(NULL, tick_get_device(cpu), cpu);

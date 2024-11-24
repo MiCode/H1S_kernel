@@ -35,12 +35,12 @@ static inline bool is_omap_iommu_detached(struct omap_iommu *obj)
 		ssize_t bytes;						\
 		const char *str = "%20s: %08x\n";			\
 		const int maxcol = 32;					\
-		bytes = snprintf(p, maxcol, str, __stringify(name),	\
+		if (len < maxcol)					\
+			goto out;					\
+		bytes = scnprintf(p, maxcol, str, __stringify(name),	\
 				 iommu_read_reg(obj, MMU_##name));	\
 		p += bytes;						\
 		len -= bytes;						\
-		if (len < maxcol)					\
-			goto out;					\
 	} while (0)
 
 static ssize_t
@@ -274,8 +274,8 @@ void omap_iommu_debugfs_add(struct omap_iommu *obj)
 	if (!obj->debug_dir)
 		return;
 
-	d = debugfs_create_u8("nr_tlb_entries", 0400, obj->debug_dir,
-			      (u8 *)&obj->nr_tlb_entries);
+	d = debugfs_create_u32("nr_tlb_entries", 0400, obj->debug_dir,
+			       &obj->nr_tlb_entries);
 	if (!d)
 		return;
 

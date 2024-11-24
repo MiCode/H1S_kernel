@@ -149,7 +149,7 @@ int bio_crypt_ctx_acquire_keyslot(struct bio_crypt_ctx *bc,
 
 struct request;
 bool bio_crypt_should_process(struct request *rq);
-extern int fscrypt_force_iv_ino_lblk_32(void);
+extern int is_emmc_type(void);
 
 static inline bool bio_crypt_dun_is_contiguous(const struct bio_crypt_ctx *bc,
 					       unsigned int bytes,
@@ -160,7 +160,7 @@ static inline bool bio_crypt_dun_is_contiguous(const struct bio_crypt_ctx *bc,
 
 	/* eMMC + F2FS OTA only */
 #ifdef CONFIG_MMC_CRYPTO_LEGACY
-	if (fscrypt_force_iv_ino_lblk_32() && !bc->hie_ext4 &&
+	if (is_emmc_type() && !bc->hie_ext4 &&
 		(bc->bc_key->hie_duint_size != 4096))
 		inc = inc * 8;
 #endif
@@ -200,7 +200,7 @@ static inline void bio_crypt_advance(struct bio *bio, unsigned int bytes)
 
 	/* eMMC + F2FS OTA only */
 #ifdef CONFIG_MMC_CRYPTO_LEGACY
-	if (fscrypt_force_iv_ino_lblk_32() && !bc->hie_ext4 &&
+	if (is_emmc_type() && !bc->hie_ext4 &&
 		(bc->bc_key->hie_duint_size != 4096))
 		inc = inc * 8;
 #endif

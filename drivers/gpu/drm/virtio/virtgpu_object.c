@@ -28,7 +28,6 @@
 #include <drm/ttm/ttm_execbuf_util.h>
 
 #include "virtgpu_drv.h"
-#include <uapi/drm/virtgpu_drm.h>
 
 static int virtio_gpu_virglrenderer_workaround = 1;
 module_param_named(virglhack, virtio_gpu_virglrenderer_workaround, int, 0400);
@@ -47,21 +46,12 @@ static int virtio_gpu_resource_id_get(struct virtio_gpu_device *vgdev,
 		 */
 		static atomic_t seqno = ATOMIC_INIT(0);
 		int handle = atomic_inc_return(&seqno);
-		*resid = handle;
+		*resid = handle + 1;
 	} else {
-		int handle;
-
-		idr_preload(GFP_KERNEL);
-		spin_lock(&vgdev->resource_idr_lock);
-		handle = idr_alloc(&vgdev->resource_idr, NULL, 1, 0,
-				   GFP_NOWAIT);
-		spin_unlock(&vgdev->resource_idr_lock);
-		idr_preload_end();
-
+		int handle = ida_alloc(&vgdev->resource_ida, GFP_KERNEL);
 		if (handle < 0)
 			return handle;
-
-		*resid = handle;
+		*resid = handle + 1;
 	}
 	return 0;
 }
@@ -69,9 +59,7 @@ static int virtio_gpu_resource_id_get(struct virtio_gpu_device *vgdev,
 static void virtio_gpu_resource_id_put(struct virtio_gpu_device *vgdev, uint32_t id)
 {
 	if (!virtio_gpu_virglrenderer_workaround) {
-		spin_lock(&vgdev->resource_idr_lock);
-		idr_remove(&vgdev->resource_idr, id);
-		spin_unlock(&vgdev->resource_idr_lock);
+		ida_free(&vgdev->resource_ida, id - 1);
 	}
 }
 
@@ -87,56 +75,22 @@ static void virtio_gpu_ttm_bo_destroy(struct ttm_buffer_object *tbo)
 		virtio_gpu_cmd_unref_resource(vgdev, bo->hw_res_handle);
 	if (bo->pages)
 		virtio_gpu_object_free_sg_table(bo);
-	if (bo->vmap)
-		virtio_gpu_object_kunmap(bo);
 	drm_gem_object_release(&bo->gem_base);
 	virtio_gpu_resource_id_put(vgdev, bo->hw_res_handle);
 	kfree(bo);
 }
 
-// define internally for testing purposes
-#define VIRTGPU_BLOB_MEM_CACHE_MASK      0xf000
-#define VIRTGPU_BLOB_MEM_CACHE_CACHED    0x1000
-#define VIRTGPU_BLOB_MEM_CACHE_UNCACHED  0x2000
-#define VIRTGPU_BLOB_MEM_CACHE_WC        0x3000
-
 static void virtio_gpu_init_ttm_placement(struct virtio_gpu_object *vgbo)
 {
 	u32 c = 1;
-	u32 ttm_caching_flags = 0;
-
-	u32 cache_type = (vgbo->blob_mem & VIRTGPU_BLOB_MEM_CACHE_MASK);
-	bool has_guest = (vgbo->blob_mem == VIRTGPU_BLOB_MEM_GUEST ||
-			  vgbo->blob_mem == VIRTGPU_BLOB_MEM_HOST_GUEST);
 
 	vgbo->placement.placement = &vgbo->placement_code;
 	vgbo->placement.busy_placement = &vgbo->placement_code;
 	vgbo->placement_code.fpfn = 0;
 	vgbo->placement_code.lpfn = 0;
-
-	switch (cache_type) {
-	case VIRTGPU_BLOB_MEM_CACHE_CACHED:
-		ttm_caching_flags = TTM_PL_FLAG_CACHED;
-		break;
-	case VIRTGPU_BLOB_MEM_CACHE_WC:
-		ttm_caching_flags = TTM_PL_FLAG_WC;
-		break;
-	case VIRTGPU_BLOB_MEM_CACHE_UNCACHED:
-		ttm_caching_flags = TTM_PL_FLAG_UNCACHED;
-		break;
-	default:
-		ttm_caching_flags = TTM_PL_MASK_CACHING;
-	}
-
-	if (!has_guest && vgbo->blob) {
-		vgbo->placement_code.flags =
-			ttm_caching_flags | TTM_PL_FLAG_VRAM |
-			TTM_PL_FLAG_NO_EVICT;
-	} else {
-		vgbo->placement_code.flags =
-			TTM_PL_MASK_CACHING | TTM_PL_FLAG_TT |
-			TTM_PL_FLAG_NO_EVICT;
-	}
+	vgbo->placement_code.flags =
+		TTM_PL_MASK_CACHING | TTM_PL_FLAG_TT |
+		TTM_PL_FLAG_NO_EVICT;
 	vgbo->placement.num_placement = c;
 	vgbo->placement.num_busy_placement = c;
 
@@ -172,19 +126,17 @@ int virtio_gpu_object_create(struct virtio_gpu_device *vgdev,
 		return ret;
 	}
 	bo->dumb = params->dumb;
-	bo->blob = params->blob;
-	bo->blob_mem = params->blob_mem;
 
 	if (params->virgl) {
 		virtio_gpu_cmd_resource_create_3d(vgdev, bo, params, fence);
-	} else if (params->dumb) {
+	} else {
 		virtio_gpu_cmd_create_resource(vgdev, bo, params, fence);
 	}
 
 	virtio_gpu_init_ttm_placement(bo);
 	ret = ttm_bo_init(&vgdev->mman.bdev, &bo->tbo, params->size,
 			  ttm_bo_type_device, &bo->placement, 0,
-			  true, NULL, acc_size, NULL, NULL,
+			  true, acc_size, NULL, NULL,
 			  &virtio_gpu_ttm_bo_destroy);
 	/* ttm_bo_init failure will call the destroy */
 	if (ret != 0)
@@ -252,13 +204,17 @@ int virtio_gpu_object_get_sg_table(struct virtio_gpu_device *qdev,
 	int ret;
 	struct page **pages = bo->tbo.ttm->pages;
 	int nr_pages = bo->tbo.num_pages;
+	struct ttm_operation_ctx ctx = {
+		.interruptible = false,
+		.no_wait_gpu = false
+	};
 
 	/* wtf swapping */
 	if (bo->pages)
 		return 0;
 
 	if (bo->tbo.ttm->state == tt_unpopulated)
-		bo->tbo.ttm->bdev->driver->ttm_tt_populate(bo->tbo.ttm);
+		bo->tbo.ttm->bdev->driver->ttm_tt_populate(bo->tbo.ttm, &ctx);
 	bo->pages = kmalloc(sizeof(struct sg_table), GFP_KERNEL);
 	if (!bo->pages)
 		goto out;

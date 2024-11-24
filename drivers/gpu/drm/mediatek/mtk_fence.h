@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTK_FENCE_H__
 #define __MTK_FENCE_H__
@@ -153,7 +145,7 @@ struct mtk_fence_buf_info *mtk_init_buf_info(struct mtk_fence_buf_info *buf);
 void mtk_release_fence(unsigned int session_id, unsigned int layer_id,
 		       int fence);
 void mtk_release_layer_fence(unsigned int session_id, unsigned int layer_id);
-int mtk_release_present_fence(unsigned int session_id, unsigned int fence_idx);
+int mtk_release_present_fence(unsigned int session_id, unsigned int fence_idx, ktime_t time);
 int mtk_release_sf_present_fence(unsigned int session_id,
 				 unsigned int fence_idx);
 int mtk_fence_get_output_timeline_id(void);

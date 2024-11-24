@@ -445,20 +445,6 @@ static const struct seq_operations bpq_seqops = {
 	.show = bpq_seq_show,
 };
 
-static int bpq_info_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &bpq_seqops);
-}
-
-static const struct file_operations bpq_info_fops = {
-	.owner = THIS_MODULE,
-	.open = bpq_info_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = seq_release,
-};
-
-
 /* ------------------------------------------------------------------------ */
 
 static const struct net_device_ops bpq_netdev_ops = {
@@ -551,7 +537,7 @@ static int bpq_device_event(struct notifier_block *this,
 	if (!net_eq(dev_net(dev), &init_net))
 		return NOTIFY_DONE;
 
-	if (!dev_is_ethdev(dev))
+	if (!dev_is_ethdev(dev) && !bpq_get_ax25_dev(dev))
 		return NOTIFY_DONE;
 
 	switch (event) {
@@ -586,8 +572,7 @@ static int bpq_device_event(struct notifier_block *this,
 static int __init bpq_init_driver(void)
 {
 #ifdef CONFIG_PROC_FS
-	if (!proc_create("bpqether", S_IRUGO, init_net.proc_net,
-			 &bpq_info_fops)) {
+	if (!proc_create_seq("bpqether", 0444, init_net.proc_net, &bpq_seqops)) {
 		printk(KERN_ERR
 			"bpq: cannot create /proc/net/bpqether entry.\n");
 		return -ENOENT;

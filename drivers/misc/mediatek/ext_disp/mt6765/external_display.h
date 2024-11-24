@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _EXTD_DDP_H_
@@ -111,7 +103,6 @@ int ext_disp_frame_cfg_input(struct disp_frame_cfg_t *cfg);
 int ext_disp_get_width(unsigned int session);
 int ext_disp_get_height(unsigned int session);
 int ext_disp_is_alive(void);
-int ext_disp_is_sleepd(void);
 int ext_disp_wait_for_vsync(void *config, unsigned int session);
 int ext_fence_release_callback(unsigned long userdata);
 int ext_disp_trigger(int blocking, void *callback, unsigned int userdata,

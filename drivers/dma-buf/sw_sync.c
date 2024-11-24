@@ -43,14 +43,14 @@
  * timelines.
  *
  * Fences can be created with SW_SYNC_IOC_CREATE_FENCE ioctl with struct
- * sw_sync_ioctl_create_fence as parameter.
+ * sw_sync_create_fence_data as parameter.
  *
  * To increment the timeline counter, SW_SYNC_IOC_INC ioctl should be used
  * with the increment as u32. This will update the last signaled value
  * from the timeline and signal any fence that has a seqno smaller or equal
  * to it.
  *
- * struct sw_sync_ioctl_create_fence
+ * struct sw_sync_create_fence_data
  * @value:	the seqno to initialise the fence with
  * @name:	the name of the new sync point
  * @fence:	return the fd of the new sync_file with the created fence
@@ -84,7 +84,7 @@ static inline struct sync_pt *dma_fence_to_sync_pt(struct dma_fence *fence)
  * Creates a new sync_timeline. Returns the sync_timeline object or NULL in
  * case of error.
  */
-struct sync_timeline *sync_timeline_create(const char *name)
+static struct sync_timeline *sync_timeline_create(const char *name)
 {
 	struct sync_timeline *obj;
 
@@ -141,17 +141,14 @@ static void timeline_fence_release(struct dma_fence *fence)
 {
 	struct sync_pt *pt = dma_fence_to_sync_pt(fence);
 	struct sync_timeline *parent = dma_fence_parent(fence);
+	unsigned long flags;
 
+	spin_lock_irqsave(fence->lock, flags);
 	if (!list_empty(&pt->link)) {
-		unsigned long flags;
-
-		spin_lock_irqsave(fence->lock, flags);
-		if (!list_empty(&pt->link)) {
-			list_del(&pt->link);
-			rb_erase(&pt->node, &parent->pt_tree);
-		}
-		spin_unlock_irqrestore(fence->lock, flags);
+		list_del(&pt->link);
+		rb_erase(&pt->node, &parent->pt_tree);
 	}
+	spin_unlock_irqrestore(fence->lock, flags);
 
 	sync_timeline_put(parent);
 	dma_fence_free(fence);
@@ -167,13 +164,6 @@ static bool timeline_fence_signaled(struct dma_fence *fence)
 static bool timeline_fence_enable_signaling(struct dma_fence *fence)
 {
 	return true;
-}
-
-static void timeline_fence_disable_signaling(struct dma_fence *fence)
-{
-	struct sync_pt *pt = dma_fence_to_sync_pt(fence);
-
-	list_del_init(&pt->link);
 }
 
 static void timeline_fence_value_str(struct dma_fence *fence,
@@ -194,9 +184,7 @@ static const struct dma_fence_ops timeline_fence_ops = {
 	.get_driver_name = timeline_fence_get_driver_name,
 	.get_timeline_name = timeline_fence_get_timeline_name,
 	.enable_signaling = timeline_fence_enable_signaling,
-	.disable_signaling = timeline_fence_disable_signaling,
 	.signaled = timeline_fence_signaled,
-	.wait = dma_fence_default_wait,
 	.release = timeline_fence_release,
 	.fence_value_str = timeline_fence_value_str,
 	.timeline_value_str = timeline_fence_timeline_value_str,
@@ -212,6 +200,7 @@ static const struct dma_fence_ops timeline_fence_ops = {
  */
 static void sync_timeline_signal(struct sync_timeline *obj, unsigned int inc)
 {
+	LIST_HEAD(signalled);
 	struct sync_pt *pt, *next;
 
 	trace_sync_timeline(obj);
@@ -224,29 +213,28 @@ static void sync_timeline_signal(struct sync_timeline *obj, unsigned int inc)
 		if (!timeline_fence_signaled(&pt->base))
 			break;
 
-		list_del_init(&pt->link);
+		dma_fence_get(&pt->base);
+
+		list_move_tail(&pt->link, &signalled);
 		rb_erase(&pt->node, &obj->pt_tree);
 
-		/*
-		 * A signal callback may release the last reference to this
-		 * fence, causing it to be freed. That operation has to be
-		 * last to avoid a use after free inside this loop, and must
-		 * be after we remove the fence from the timeline in order to
-		 * prevent deadlocking on timeline->lock inside
-		 * timeline_fence_release().
-		 */
 		dma_fence_signal_locked(&pt->base);
 	}
 
 	spin_unlock_irq(&obj->lock);
+
+	list_for_each_entry_safe(pt, next, &signalled, link) {
+		list_del_init(&pt->link);
+		dma_fence_put(&pt->base);
+	}
 }
 
 /**
  * sync_pt_create() - creates a sync pt
- * @parent:	fence's parent sync_timeline
- * @inc:	value of the fence
+ * @obj:	parent sync_timeline
+ * @value:	value of the fence
  *
- * Creates a new sync_pt as a child of @parent.  @size bytes will be
+ * Creates a new sync_pt (fence) as a child of @parent.  @size bytes will be
  * allocated allowing for implementation specific data to be kept after
  * the generic sync_timeline struct. Returns the sync_pt object or
  * NULL in case of error.
@@ -283,7 +271,8 @@ static struct sync_pt *sync_pt_create(struct sync_timeline *obj,
 				p = &parent->rb_left;
 			} else {
 				if (dma_fence_get_rcu(&other->base)) {
-					dma_fence_put(&pt->base);
+					sync_timeline_put(obj);
+					kfree(pt);
 					pt = other;
 					goto unlock;
 				}

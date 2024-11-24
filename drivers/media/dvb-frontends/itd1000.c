@@ -22,7 +22,7 @@
 #include <linux/i2c.h>
 #include <linux/slab.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 
 #include "itd1000.h"
 #include "itd1000_priv.h"
@@ -353,10 +353,10 @@ static void itd1000_release(struct dvb_frontend *fe)
 
 static const struct dvb_tuner_ops itd1000_tuner_ops = {
 	.info = {
-		.name           = "Integrant ITD1000",
-		.frequency_min  = 950000,
-		.frequency_max  = 2150000,
-		.frequency_step = 125,     /* kHz for QPSK frontends */
+		.name              = "Integrant ITD1000",
+		.frequency_min_hz  =  950 * MHz,
+		.frequency_max_hz  = 2150 * MHz,
+		.frequency_step_hz =  125 * kHz,
 	},
 
 	.release       = itd1000_release,
@@ -399,7 +399,7 @@ struct dvb_frontend *itd1000_attach(struct dvb_frontend *fe, struct i2c_adapter 
 
 	return fe;
 }
-EXPORT_SYMBOL(itd1000_attach);
+EXPORT_SYMBOL_GPL(itd1000_attach);
 
 MODULE_AUTHOR("Patrick Boettcher <pb@linuxtv.org>");
 MODULE_DESCRIPTION("Integrant ITD1000 driver");

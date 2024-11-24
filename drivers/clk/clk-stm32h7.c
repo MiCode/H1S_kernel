@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) Gabriel Fernandez 2017
- * Author: Gabriel Fernandez <gabriel.fernandez@st.com>
- *
- * License terms: GPL V2.0.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (C) STMicroelectronics 2017
+ * Author: Gabriel Fernandez <gabriel.fernandez@st.com> for STMicroelectronics.
  */
 
 #include <linux/clk.h>
@@ -476,7 +463,7 @@ static struct clk_hw *clk_register_stm32_timer_ker(struct device *dev,
 		spinlock_t *lock)
 {
 	struct timer_ker *element;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 	struct clk_hw *hw;
 	int err;
 
@@ -1214,9 +1201,8 @@ static void __init stm32h7_rcc_init(struct device_node *np)
 	const char *hse_clk, *lse_clk, *i2s_clk;
 	struct regmap *pdrm;
 
-	clk_data = kzalloc(sizeof(*clk_data) +
-			sizeof(*clk_data->hws) * STM32H7_MAX_CLKS,
-			GFP_KERNEL);
+	clk_data = kzalloc(struct_size(clk_data, hws, STM32H7_MAX_CLKS),
+			   GFP_KERNEL);
 	if (!clk_data)
 		return;
 

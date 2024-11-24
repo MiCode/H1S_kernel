@@ -1,18 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /******************************************************************************
@@ -50,6 +39,7 @@
  *                E X T E R N A L   R E F E R E N C E S
  *****************************************************************************/
 #include "mtk-auddrv-def.h"
+#include "mtk-soc-analog-type.h"
 
 /*****************************************************************************
  *                         D A T A   T Y P E S
@@ -254,6 +244,8 @@
 #define GPIO_MODE2           ((unsigned int)(PMIC_REG_BASE+0x0000+0x00B6))
 #define GPIO_MODE2_SET       ((unsigned int)(PMIC_REG_BASE+0x0000+0x00B8))
 #define GPIO_MODE2_CLR       ((unsigned int)(PMIC_REG_BASE+0x0000+0x00BA))
+#define SMT_CON1           ((unsigned int)(PMIC_REG_BASE+0x0000+0x002c))
+
 /* miso */
 #define GPIO_MODE3           ((unsigned int)(PMIC_REG_BASE+0x0000+0x00BC))
 #define GPIO_MODE3_SET       ((unsigned int)(PMIC_REG_BASE+0x0000+0x00BE))
@@ -263,13 +255,6 @@
 
 #define AUXADC_CON10         ((unsigned int)(PMIC_REG_BASE+0x0F80+0x01B8))
 
-#if 1
-/* register number */
-
-#else
-#include <mach/upmu_hw.h>
-#endif
-
 void Ana_Set_Reg(unsigned int offset, unsigned int value, unsigned int mask);
 unsigned int Ana_Get_Reg(unsigned int offset);
 
@@ -278,4 +263,5 @@ void Ana_Log_Print(void);
 
 int Ana_Debug_Read(char *buffer, const int size);
 
+int mt63xx_set_local_priv(struct mt6357_priv *priv);
 #endif

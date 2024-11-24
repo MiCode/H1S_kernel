@@ -1,17 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __FPSGO_BASE_H__
@@ -24,7 +13,7 @@
 #include <linux/workqueue.h>
 
 #define WINDOW 20
-#define RESCUE_TIMER_NUM 3
+#define RESCUE_TIMER_NUM 2
 
 /* EARA job type */
 enum HW_EVENT4RENDER {
@@ -66,6 +55,7 @@ struct fbt_thread_blc {
 	int pid;
 	unsigned long long buffer_id;
 	unsigned int blc;
+	int freerun;
 	struct list_head entry;
 };
 
@@ -120,6 +110,7 @@ struct render_info {
 	struct fbt_boost_info boost_info;
 	struct fbt_thread_loading *pLoading;
 	struct fbt_thread_blc *p_blc;
+	int is_listed;
 	struct fpsgo_loading *dep_arr;
 	int dep_valid_size;
 	unsigned long long dep_loading_ts;
@@ -145,7 +136,6 @@ struct fpsgo_loading {
 	int pid;
 	int loading;
 	int prefer_type;
-	int policy;
 };
 
 struct gbe_runtime {
@@ -186,11 +176,24 @@ struct BQ_id *fpsgo_find_BQ_id(int pid, int tgid, long long identifier,
 int fpsgo_get_BQid_pair(int pid, int tgid, long long identifier,
 		unsigned long long *buffer_id, int *queue_SF, int enqueue);
 void fpsgo_main_trace(const char *fmt, ...);
-void fpsgo_clear_uclamp_boost(void);
+void fpsgo_clear_uclamp_boost(int check);
 void fpsgo_clear_llf_cpu_policy(int orig_llf);
 void fpsgo_del_linger(struct render_info *thr);
 
 int init_fpsgo_common(void);
+
+
+enum FPSGO_ERROR {
+	FPSGO_OK,
+	FPSGO_ERROR_FAIL,
+	FPSGO_ERROR_OOM,
+	FPSGO_ERROR_OUT_OF_FD,
+	FPSGO_ERROR_FAIL_WITH_LIMIT,
+	FPSGO_ERROR_TIMEOUT,
+	FPSGO_ERROR_CMD_NOT_PROCESSED,
+	FPSGO_ERROR_INVALID_PARAMS,
+	FPSGO_INTENTIONAL_BLOCK
+};
 
 enum FPSGO_FRAME_TYPE {
 	NON_VSYNC_ALIGNED_TYPE = 0,

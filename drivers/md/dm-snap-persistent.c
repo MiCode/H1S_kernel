@@ -14,7 +14,7 @@
 #include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/dm-io.h>
-#include "dm-bufio.h"
+#include <linux/dm-bufio.h>
 
 #define DM_MSG_PREFIX "persistent snapshot"
 #define DM_CHUNK_SIZE_DEFAULT_SECTORS 32U	/* 16KB */
@@ -613,7 +613,7 @@ static int persistent_read_metadata(struct dm_exception_store *store,
 						    chunk_t old, chunk_t new),
 				    void *callback_context)
 {
-	int r, uninitialized_var(new_snapshot);
+	int r, new_snapshot;
 	struct pstore *ps = get_info(store);
 
 	/*

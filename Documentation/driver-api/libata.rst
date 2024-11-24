@@ -118,8 +118,7 @@ PIO data read/write
 All bmdma-style drivers must implement this hook. This is the low-level
 operation that actually copies the data bytes during a PIO data
 transfer. Typically the driver will choose one of
-:c:func:`ata_sff_data_xfer_noirq`, :c:func:`ata_sff_data_xfer`, or
-:c:func:`ata_sff_data_xfer32`.
+:c:func:`ata_sff_data_xfer`, or :c:func:`ata_sff_data_xfer32`.
 
 ATA command execute
 ~~~~~~~~~~~~~~~~~~~
@@ -251,7 +250,7 @@ High-level taskfile hooks
 
 ::
 
-    void (*qc_prep) (struct ata_queued_cmd *qc);
+    enum ata_completion_errors (*qc_prep) (struct ata_queued_cmd *qc);
     int (*qc_issue) (struct ata_queued_cmd *qc);
 
 

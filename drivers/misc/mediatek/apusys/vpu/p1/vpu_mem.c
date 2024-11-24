@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/of.h>
@@ -175,6 +167,7 @@ vpu_map_sg_to_iova(
 	struct platform_device *pdev, struct scatterlist *sg,
 	unsigned int nents, size_t len, dma_addr_t given_iova)
 {
+	struct device *dev = &pdev->dev;
 	dma_addr_t mask;
 	dma_addr_t iova = 0;
 	bool dyn_alloc = false;
@@ -189,23 +182,32 @@ vpu_map_sg_to_iova(
 		mask = (VPU_IOVA_END - 1) | VPU_IOVA_BANK;
 		given_iova |= VPU_IOVA_BANK;
 		vpu_mem_debug("%s: dev: %p, len: %zx, given_iova mask: %llx (dynamic alloc)\n",
-			__func__, &pdev->dev,
-			len, (u64)given_iova);
+			__func__, dev, len, (u64)given_iova);
 	} else {
 		mask = (given_iova + len - 1) | VPU_IOVA_BANK;
 		given_iova |= VPU_IOVA_BANK;
 		vpu_mem_debug("%s: dev: %p, len: %zx, given_iova start ~ end(mask): %llx ~ %llx\n",
-			__func__, &pdev->dev,
-			len, (u64)given_iova, (u64)mask);
+			__func__, dev, len, (u64)given_iova, (u64)mask);
 	}
 
-	dma_set_mask_and_coherent(&pdev->dev, mask);
+	dma_set_mask_and_coherent(dev, mask);
 
-	ret = dma_map_sg_attrs(&pdev->dev, sg, nents,
+	if (!dev->dma_parms) {
+		dev->dma_parms =
+			devm_kzalloc(dev, sizeof(*dev->dma_parms), GFP_KERNEL);
+	}
+
+	if (dev->dma_parms) {
+		ret = dma_set_max_seg_size(dev, (unsigned int)DMA_BIT_MASK(34));
+		if (ret)
+			dev_info(dev, "Failed to set DMA segment size\n");
+	}
+
+	ret = dma_map_sg_attrs(dev, sg, nents,
 		DMA_BIDIRECTIONAL, DMA_ATTR_SKIP_CPU_SYNC);
 
 	if (ret <= 0) {
-		dev_info(&pdev->dev,
+		dev_info(dev,
 			"%s: dma_map_sg_attrs: failed with %d\n",
 			__func__, ret);
 		return 0;
@@ -216,7 +218,7 @@ vpu_map_sg_to_iova(
 	if (given_iova == iova)
 		match = true;
 
-	dev_info(&pdev->dev,
+	dev_info(dev,
 		"%s: sg_dma_address: size: %lx, mapped iova: 0x%llx %s\n",
 		__func__, len, (u64)iova,
 		dyn_alloc ? "(dynamic alloc)" :
@@ -328,3 +330,49 @@ int vpu_iova_dts(struct platform_device *pdev,
 	return 0;
 }
 
+void *vpu_vmap(phys_addr_t start, size_t size,
+	unsigned int memtype)
+{
+	struct page **pages = NULL;
+	phys_addr_t page_start = 0;
+	unsigned int page_count = 0;
+	pgprot_t prot;
+	unsigned int i;
+	void *vaddr = NULL;
+
+	if (!size) {
+		pr_info("%s: input size should not be zero\n", __func__);
+		return NULL;
+	}
+
+	page_start = start - offset_in_page(start);
+	page_count = DIV_ROUND_UP(size + offset_in_page(start), PAGE_SIZE);
+
+	if (memtype)
+		prot = pgprot_noncached(PAGE_KERNEL);
+	else
+		prot = pgprot_writecombine(PAGE_KERNEL);
+
+	pages = kmalloc_array(page_count, sizeof(struct page *), GFP_KERNEL);
+	if (!pages)
+		return NULL;
+
+	for (i = 0; i < page_count; i++) {
+		phys_addr_t addr = page_start + i * PAGE_SIZE;
+
+		pages[i] = pfn_to_page(addr >> PAGE_SHIFT);
+	}
+
+	vaddr = vmap(pages, page_count, VM_MAP, prot);
+	kfree(pages);
+	if (!vaddr) {
+		pr_info("%s: failed to get vaddr from vmap\n", __func__);
+		return NULL;
+	}
+	/*
+	 * Since vmap() uses page granularity, we must add the offset
+	 * into the page here, to get the byte granularity address
+	 * into the mapping to represent the actual "start" location.
+	 */
+	return vaddr + offset_in_page(start);
+}

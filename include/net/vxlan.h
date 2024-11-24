@@ -146,7 +146,7 @@ struct vxlanhdr_gpe {
 		np_applied:1,
 		instance_applied:1,
 		version:2,
-reserved_flags2:2;
+		reserved_flags2:2;
 #elif defined(__BIG_ENDIAN_BITFIELD)
 	u8	reserved_flags2:2,
 		version:2,
@@ -262,6 +262,7 @@ struct vxlan_dev {
 #define VXLAN_F_COLLECT_METADATA	0x2000
 #define VXLAN_F_GPE			0x4000
 #define VXLAN_F_IPV6_LINKLOCAL		0x8000
+#define VXLAN_F_TTL_INHERIT		0x10000
 
 /* Flags that are used in the receive path. These flags must match in
  * order for a socket to be shareable
@@ -301,7 +302,7 @@ static inline netdev_features_t vxlan_features_check(struct sk_buff *skb,
 		l4_hdr = ipv6_hdr(skb)->nexthdr;
 		break;
 	default:
-		return features;;
+		return features;
 	}
 
 	if ((l4_hdr == IPPROTO_UDP) &&

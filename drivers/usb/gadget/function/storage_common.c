@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * storage_common.c -- Common definitions for mass storage functionality
  *
  * Copyright (C) 2003-2008 Alan Stern
  * Copyeight (C) 2009 Samsung Electronics
  * Author: Michal Nazarewicz (mina86@mina86.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 /*
@@ -28,20 +24,9 @@
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/usb/composite.h>
-#include <uapi/linux/usb/ch9.h>
 
 #include "storage_common.h"
 
-#ifdef CONFIG_USBIF_COMPLIANCE
-static struct usb_otg20_descriptor
-fsg_otg_desc = {
-	.bLength = sizeof(fsg_otg_desc),
-	.bDescriptorType = USB_DT_OTG,
-	/* OTG 2.0: */
-	.bmAttributes =	USB_OTG_SRP | USB_OTG_HNP,
-	.bcdOTG = cpu_to_le16(0x200),
-};
-#endif
 /* There is only one interface. */
 
 struct usb_interface_descriptor fsg_intf_desc = {
@@ -82,9 +67,6 @@ struct usb_endpoint_descriptor fsg_fs_bulk_out_desc = {
 EXPORT_SYMBOL_GPL(fsg_fs_bulk_out_desc);
 
 struct usb_descriptor_header *fsg_fs_function[] = {
-#ifdef CONFIG_USBIF_COMPLIANCE
-	(struct usb_descriptor_header *) &fsg_otg_desc,
-#endif
 	(struct usb_descriptor_header *) &fsg_intf_desc,
 	(struct usb_descriptor_header *) &fsg_fs_bulk_in_desc,
 	(struct usb_descriptor_header *) &fsg_fs_bulk_out_desc,
@@ -122,9 +104,6 @@ EXPORT_SYMBOL_GPL(fsg_hs_bulk_out_desc);
 
 
 struct usb_descriptor_header *fsg_hs_function[] = {
-#ifdef CONFIG_USBIF_COMPLIANCE
-	(struct usb_descriptor_header *) &fsg_otg_desc,
-#endif
 	(struct usb_descriptor_header *) &fsg_intf_desc,
 	(struct usb_descriptor_header *) &fsg_hs_bulk_in_desc,
 	(struct usb_descriptor_header *) &fsg_hs_bulk_out_desc,
@@ -169,9 +148,6 @@ struct usb_ss_ep_comp_descriptor fsg_ss_bulk_out_comp_desc = {
 EXPORT_SYMBOL_GPL(fsg_ss_bulk_out_comp_desc);
 
 struct usb_descriptor_header *fsg_ss_function[] = {
-#ifdef CONFIG_USBIF_COMPLIANCE
-	(struct usb_descriptor_header *) &fsg_otg_desc,
-#endif
 	(struct usb_descriptor_header *) &fsg_intf_desc,
 	(struct usb_descriptor_header *) &fsg_ss_bulk_in_desc,
 	(struct usb_descriptor_header *) &fsg_ss_bulk_in_comp_desc,
@@ -318,8 +294,10 @@ EXPORT_SYMBOL_GPL(fsg_lun_fsync_sub);
 void store_cdrom_address(u8 *dest, int msf, u32 addr)
 {
 	if (msf) {
-		/* Convert to Minutes-Seconds-Frames */
-		addr >>= 2;		/* Convert to 2048-byte frames */
+		/*
+		 * Convert to Minutes-Seconds-Frames.
+		 * Sector size is already set to 2048 bytes.
+		 */
 		addr += 2*75;		/* Lead-in occupies 2 seconds */
 		dest[3] = addr % 75;	/* Frames */
 		addr /= 75;
@@ -464,28 +442,29 @@ ssize_t fsg_store_file(struct fsg_lun *curlun, struct rw_semaphore *filesem,
 		LDBG(curlun, "eject attempt prevented\n");
 		return -EBUSY;				/* "Door is locked" */
 	}
+
 	pr_notice("%s file=%s, count=%d, curlun->cdrom=%d\n",
 			__func__, buf, (int)count, curlun->cdrom);
 
 	/*
-	 * WORKAROUND:VOLD would clean the file path after switching to bicr.
-	 * So when the lun is being a CD-ROM a.k.a. BICR.
-	 * Dont clean the file path to empty.
+	 * WORKAROUND for Android:
+	 *   VOLD would clean the file path after switching to bicr.
+	 *   So when the lun is being a CD-ROM a.k.a. BICR.
+	 *   Don't clean the file path to empty.
 	 */
 	if (curlun->cdrom == 1 && count == 1)
 		return count;
 
 	/*
-	 * WORKAROUND:Should be closed the fsg lun for virtual cd-rom,
+	 * WORKAROUND: Should be closed the fsg lun for virtual cd-rom,
 	 * when switch to other usb functions.
 	 * Use the special keyword "off", because the init can
 	 * not parse the char '\n' in rc file and write into the sysfs.
 	 */
 	if (count == 3 &&
 			buf[0] == 'o' && buf[1] == 'f' && buf[2] == 'f' &&
-			fsg_lun_is_open(curlun)) {
+			fsg_lun_is_open(curlun))
 		((char *) buf)[0] = 0;
-	}
 
 	/* Remove a trailing newline */
 	if (count > 0 && buf[count-1] == '\n')

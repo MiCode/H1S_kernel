@@ -20,6 +20,7 @@
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/videodev2.h>
+#include <media/media-request.h>
 
 /* forward references */
 struct file;
@@ -40,6 +41,11 @@ struct poll_table_struct;
  * @p_u16:	Pointer to a 16-bit unsigned value.
  * @p_u32:	Pointer to a 32-bit unsigned value.
  * @p_char:	Pointer to a string.
+ * @p_h264_sps:	Pointer to a struct v4l2_ctrl_h264_sps.
+ * @p_h264_pps:	Pointer to a struct v4l2_ctrl_h264_pps.
+ * @p_h264_scal_mtrx:	Pointer to a struct v4l2_ctrl_h264_scaling_matrix.
+ * @p_h264_slice_param:	Pointer to a struct v4l2_ctrl_h264_slice_param.
+ * @p_h264_decode_param: Pointer to a struct v4l2_ctrl_h264_decode_param.
  * @p:		Pointer to a compound value.
  */
 union v4l2_ctrl_ptr {
@@ -49,6 +55,11 @@ union v4l2_ctrl_ptr {
 	u16 *p_u16;
 	u32 *p_u32;
 	char *p_char;
+	struct v4l2_ctrl_h264_sps *p_h264_sps;
+	struct v4l2_ctrl_h264_pps *p_h264_pps;
+	struct v4l2_ctrl_h264_scaling_matrix *p_h264_scal_mtrx;
+	struct v4l2_ctrl_h264_slice_param *p_h264_slice_param;
+	struct v4l2_ctrl_h264_decode_param *p_h264_decode_param;
 	void *p;
 };
 
@@ -166,18 +177,25 @@ typedef void (*v4l2_ctrl_notify_fnc)(struct v4l2_ctrl *ctrl, void *priv);
  *		empty strings ("") correspond to non-existing menu items (this
  *		is in addition to the menu_skip_mask above). The last entry
  *		must be NULL.
+ *		Used only if the @type is %V4L2_CTRL_TYPE_MENU.
+ * @qmenu_int:	A 64-bit integer array for with integer menu items.
+ *		The size of array must be equal to the menu size, e. g.:
+ *		:math:`ceil(\frac{maximum - minimum}{step}) + 1`.
+ *		Used only if the @type is %V4L2_CTRL_TYPE_INTEGER_MENU.
  * @flags:	The control's flags.
- * @cur:	The control's current value.
+ * @cur:	Structure to store the current value.
+ * @cur.val:	The control's current value, if the @type is represented via
+ *		a u32 integer (see &enum v4l2_ctrl_type).
  * @val:	The control's new s32 value.
  * @priv:	The control's private pointer. For use by the driver. It is
  *		untouched by the control framework. Note that this pointer is
  *		not freed when the control is deleted. Should this be needed
  *		then a new internal bitfield can be added to tell the framework
  *		to free this pointer.
- * @p_cur:	The control's current value represented via a union with
+ * @p_cur:	The control's current value represented via a union which
  *		provides a standard way of accessing control types
  *		through a pointer.
- * @p_new:	The control's new value represented via a union with provides
+ * @p_new:	The control's new value represented via a union which provides
  *		a standard way of accessing control types
  *		through a pointer.
  */
@@ -240,6 +258,19 @@ struct v4l2_ctrl {
  * @ctrl:	The actual control information.
  * @helper:	Pointer to helper struct. Used internally in
  *		``prepare_ext_ctrls`` function at ``v4l2-ctrl.c``.
+ * @from_other_dev: If true, then @ctrl was defined in another
+ *		device than the &struct v4l2_ctrl_handler.
+ * @req_done:	Internal flag: if the control handler containing this control
+ *		reference is bound to a media request, then this is set when
+ *		the control has been applied. This prevents applying controls
+ *		from a cluster with multiple controls twice (when the first
+ *		control of a cluster is applied, they all are).
+ * @req:	If set, this refers to another request that sets this control.
+ * @p_req:	If the control handler containing this control reference
+ *		is bound to a media request, then this points to the
+ *		value of the control that should be applied when the request
+ *		is executed, or to the value of the control at the time
+ *		that the request was completed.
  *
  * Each control handler has a list of these refs. The list_head is used to
  * keep a sorted-by-control-ID list of all controls, while the next pointer
@@ -250,6 +281,10 @@ struct v4l2_ctrl_ref {
 	struct v4l2_ctrl_ref *next;
 	struct v4l2_ctrl *ctrl;
 	struct v4l2_ctrl_helper *helper;
+	bool from_other_dev;
+	bool req_done;
+	struct v4l2_ctrl_ref *req;
+	union v4l2_ctrl_ptr p_req;
 };
 
 /**
@@ -273,6 +308,17 @@ struct v4l2_ctrl_ref {
  * @notify_priv: Passed as argument to the v4l2_ctrl notify callback.
  * @nr_of_buckets: Total number of buckets in the array.
  * @error:	The error code of the first failed control addition.
+ * @request_is_queued: True if the request was queued.
+ * @requests:	List to keep track of open control handler request objects.
+ *		For the parent control handler (@req_obj.req == NULL) this
+ *		is the list header. When the parent control handler is
+ *		removed, it has to unbind and put all these requests since
+ *		they refer to the parent.
+ * @requests_queued: List of the queued requests. This determines the order
+ *		in which these controls are applied. Once the request is
+ *		completed it is removed from this list.
+ * @req_obj:	The &struct media_request_object, used to link into a
+ *		&struct media_request. This request object has a refcount.
  */
 struct v4l2_ctrl_handler {
 	struct mutex _lock;
@@ -285,6 +331,10 @@ struct v4l2_ctrl_handler {
 	void *notify_priv;
 	u16 nr_of_buckets;
 	int error;
+	bool request_is_queued;
+	struct list_head requests;
+	struct list_head requests_queued;
+	struct media_request_object req_obj;
 };
 
 /**
@@ -626,6 +676,8 @@ typedef bool (*v4l2_ctrl_filter)(const struct v4l2_ctrl *ctrl);
  * @add:	The control handler whose controls you want to add to
  *		the @hdl control handler.
  * @filter:	This function will filter which controls should be added.
+ * @from_other_dev: If true, then the controls in @add were defined in another
+ *		device than @hdl.
  *
  * Does nothing if either of the two handlers is a NULL pointer.
  * If @filter is NULL, then all controls are added. Otherwise only those
@@ -635,7 +687,8 @@ typedef bool (*v4l2_ctrl_filter)(const struct v4l2_ctrl *ctrl);
  */
 int v4l2_ctrl_add_handler(struct v4l2_ctrl_handler *hdl,
 			  struct v4l2_ctrl_handler *add,
-			  v4l2_ctrl_filter filter);
+			  v4l2_ctrl_filter filter,
+			  bool from_other_dev);
 
 /**
  * v4l2_ctrl_radio_filter() - Standard filter for radio controls.
@@ -754,8 +807,8 @@ void v4l2_ctrl_grab(struct v4l2_ctrl *ctrl, bool grabbed);
  * An error is returned if one of the range arguments is invalid for this
  * control type.
  *
- * This function assumes that the control handler is not locked and will
- * take the lock itself.
+ * The caller is responsible for acquiring the control handler mutex on behalf
+ * of __v4l2_ctrl_modify_range().
  */
 int __v4l2_ctrl_modify_range(struct v4l2_ctrl *ctrl,
 			     s64 min, s64 max, u64 step, s64 def);
@@ -1037,7 +1090,85 @@ int v4l2_ctrl_subscribe_event(struct v4l2_fh *fh,
  * @file: pointer to struct file
  * @wait: pointer to struct poll_table_struct
  */
-unsigned int v4l2_ctrl_poll(struct file *file, struct poll_table_struct *wait);
+__poll_t v4l2_ctrl_poll(struct file *file, struct poll_table_struct *wait);
+
+/**
+ * v4l2_ctrl_request_setup - helper function to apply control values in a request
+ *
+ * @req: The request
+ * @parent: The parent control handler ('priv' in media_request_object_find())
+ *
+ * This is a helper function to call the control handler's s_ctrl callback with
+ * the control values contained in the request. Do note that this approach of
+ * applying control values in a request is only applicable to memory-to-memory
+ * devices.
+ */
+void v4l2_ctrl_request_setup(struct media_request *req,
+			     struct v4l2_ctrl_handler *parent);
+
+/**
+ * v4l2_ctrl_request_complete - Complete a control handler request object
+ *
+ * @req: The request
+ * @parent: The parent control handler ('priv' in media_request_object_find())
+ *
+ * This function is to be called on each control handler that may have had a
+ * request object associated with it, i.e. control handlers of a driver that
+ * supports requests.
+ *
+ * The function first obtains the values of any volatile controls in the control
+ * handler and attach them to the request. Then, the function completes the
+ * request object.
+ */
+void v4l2_ctrl_request_complete(struct media_request *req,
+				struct v4l2_ctrl_handler *parent);
+
+/**
+ * v4l2_ctrl_request_hdl_find - Find the control handler in the request
+ *
+ * @req: The request
+ * @parent: The parent control handler ('priv' in media_request_object_find())
+ *
+ * This function finds the control handler in the request. It may return
+ * NULL if not found. When done, you must call v4l2_ctrl_request_put_hdl()
+ * with the returned handler pointer.
+ *
+ * If the request is not in state VALIDATING or QUEUED, then this function
+ * will always return NULL.
+ *
+ * Note that in state VALIDATING the req_queue_mutex is held, so
+ * no objects can be added or deleted from the request.
+ *
+ * In state QUEUED it is the driver that will have to ensure this.
+ */
+struct v4l2_ctrl_handler *v4l2_ctrl_request_hdl_find(struct media_request *req,
+					struct v4l2_ctrl_handler *parent);
+
+/**
+ * v4l2_ctrl_request_hdl_put - Put the control handler
+ *
+ * @hdl: Put this control handler
+ *
+ * This function released the control handler previously obtained from'
+ * v4l2_ctrl_request_hdl_find().
+ */
+static inline void v4l2_ctrl_request_hdl_put(struct v4l2_ctrl_handler *hdl)
+{
+	if (hdl)
+		media_request_object_put(&hdl->req_obj);
+}
+
+/**
+ * v4l2_ctrl_request_ctrl_find() - Find a control with the given ID.
+ *
+ * @hdl: The control handler from the request.
+ * @id: The ID of the control to find.
+ *
+ * This function returns a pointer to the control if this control is
+ * part of the request or NULL otherwise.
+ */
+struct v4l2_ctrl *
+v4l2_ctrl_request_hdl_ctrl_find(struct v4l2_ctrl_handler *hdl, u32 id);
 
 /* Helpers for ioctl_ops */
 
@@ -1105,11 +1236,12 @@ int v4l2_s_ctrl(struct v4l2_fh *fh, struct v4l2_ctrl_handler *hdl,
  *	:ref:`VIDIOC_G_EXT_CTRLS <vidioc_g_ext_ctrls>` ioctl
  *
  * @hdl: pointer to &struct v4l2_ctrl_handler
+ * @mdev: pointer to &struct media_device
  * @c: pointer to &struct v4l2_ext_controls
  *
  * If hdl == NULL then they will all return -EINVAL.
  */
-int v4l2_g_ext_ctrls(struct v4l2_ctrl_handler *hdl,
+int v4l2_g_ext_ctrls(struct v4l2_ctrl_handler *hdl, struct media_device *mdev,
 		     struct v4l2_ext_controls *c);
 
 /**
@@ -1117,11 +1249,13 @@ int v4l2_g_ext_ctrls(struct v4l2_ctrl_handler *hdl,
  *	:ref:`VIDIOC_TRY_EXT_CTRLS <vidioc_g_ext_ctrls>` ioctl
  *
  * @hdl: pointer to &struct v4l2_ctrl_handler
+ * @mdev: pointer to &struct media_device
  * @c: pointer to &struct v4l2_ext_controls
  *
  * If hdl == NULL then they will all return -EINVAL.
  */
 int v4l2_try_ext_ctrls(struct v4l2_ctrl_handler *hdl,
+		       struct media_device *mdev,
 		       struct v4l2_ext_controls *c);
 
 /**
@@ -1130,16 +1264,18 @@ int v4l2_try_ext_ctrls(struct v4l2_ctrl_handler *hdl,
  *
  * @fh: pointer to &struct v4l2_fh
  * @hdl: pointer to &struct v4l2_ctrl_handler
+ * @mdev: pointer to &struct media_device
  * @c: pointer to &struct v4l2_ext_controls
  *
  * If hdl == NULL then they will all return -EINVAL.
  */
 int v4l2_s_ext_ctrls(struct v4l2_fh *fh, struct v4l2_ctrl_handler *hdl,
+		     struct media_device *mdev,
 		     struct v4l2_ext_controls *c);
 
 /**
  * v4l2_ctrl_subdev_subscribe_event - Helper function to implement
- * 	as a &struct v4l2_subdev_core_ops subscribe_event function
+ *	as a &struct v4l2_subdev_core_ops subscribe_event function
  *	that just subscribes control events.
  *
  * @sd: pointer to &struct v4l2_subdev

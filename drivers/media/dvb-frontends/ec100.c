@@ -15,7 +15,7 @@
  *
  */
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "ec100.h"
 
 struct ec100_state {
@@ -309,7 +309,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(ec100_attach);
+EXPORT_SYMBOL_GPL(ec100_attach);
 
 static const struct dvb_frontend_ops ec100_ops = {
 	.delsys = { SYS_DVBT },

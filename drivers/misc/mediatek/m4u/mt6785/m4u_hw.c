@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/slab.h>
 #include <linux/interrupt.h>
@@ -353,7 +345,8 @@ struct mau_config_info {
 };
 
 int mau_start_monitor(int m4u_id, int m4u_slave_id, int mau_set,
-		      int wr, int vir, int io, int bit32,
+		      int wr, int vir, int io,
+		      unsigned int ext_addr_start, unsigned int ext_addr_end,
 		      unsigned int start, unsigned int end,
 		      unsigned int port_mask, unsigned int larb_mask)
 {
@@ -371,12 +364,13 @@ int mau_start_monitor(int m4u_id, int m4u_slave_id, int mau_set,
 	M4U_WriteReg32(m4u_base,
 		REG_MMU_MAU_START(m4u_slave_id, mau_set), start);
 	M4U_WriteReg32(m4u_base,
-		REG_MMU_MAU_START_BIT32(m4u_slave_id, mau_set), !!(bit32));
+		REG_MMU_MAU_START_BIT32(m4u_slave_id, mau_set),
+		(ext_addr_start));
 	M4U_WriteReg32(m4u_base,
 		REG_MMU_MAU_END(m4u_slave_id, mau_set), end);
 	M4U_WriteReg32(m4u_base,
 		REG_MMU_MAU_END_BIT32(m4u_slave_id, mau_set),
-		!!(bit32));
+		(ext_addr_end));
 
 	M4U_WriteReg32(m4u_base,
 		REG_MMU_MAU_PORT_EN(m4u_slave_id, mau_set),
@@ -1401,7 +1395,15 @@ static int _m4u_config_port(int port, int virt, int sec, int dis, int dir)
 		m4uHw_set_field_by_mask(larb_base,
 			SMI_LARB_NON_SEC_CONx(larb_port),
 			F_SMI_MMU_EN, !!(virt));
-
+#ifdef M4U_GZ_SERVICE_ENABLE
+		if (virt == 1 && sec == 0)
+			m4uHw_set_field_by_mask(
+					larb_base,
+					SMI_LARB_NON_SEC_CONx(
+					larb_port),
+					F_SMI_BIT32,
+					0);
+#endif
 		/* debug use */
 		mmu_en = m4uHw_get_field_by_mask(larb_base,
 			SMI_LARB_NON_SEC_CONx(larb_port), 0x1);
@@ -1965,21 +1967,12 @@ void m4u_larb0_disable(char *name)
  *    2. and violation issue when dump without enable clock
  *    3. here we check m4u id to avoid virtual larb defined in sw
  */
-void m4u_print_port_status(struct seq_file *seq, int only_print_active,
-			unsigned int target_larb)
+void m4u_print_port_status(struct seq_file *seq, int only_print_active)
 {
 	unsigned int port, mmu_en = 0;
 	unsigned int m4u_index, larb_port;
 	unsigned long larb_base;
 	int last_larb = -1, larb = 0;
-
-	if (unlikely(target_larb >= SMI_LARB_NR)) {
-		M4U_PRINT_SEQ(seq, "%s larb invalid%d  ========>\n",
-			__func__, target_larb);
-		return;
-	}
-	M4U_PRINT_SEQ(seq, "%s of larb %d start  ========>\n",
-			__func__, target_larb);
 
 	for (port = 0; port < M4U_PORT_NR; port++) {
 		m4u_index = m4u_port_2_m4u_id(port);
@@ -1988,7 +1981,6 @@ void m4u_print_port_status(struct seq_file *seq, int only_print_active,
 			larb_port = m4u_port_2_larb_port(port);
 
 			if (larb >= SMI_LARB_NR ||
-				larb != target_larb ||
 				!seq)
 				continue;
 
@@ -2035,8 +2027,6 @@ void m4u_print_port_status(struct seq_file *seq, int only_print_active,
 		M4U_PRINT_SEQ(seq, "%s(%d),",
 				m4u_get_port_name(port), !!mmu_en);
 	}
-	M4U_PRINT_SEQ(seq, "\n<======== %s of larb %d end\n",
-			__func__, target_larb);
 
 	if (seq && m4u_index == 0)
 		larb_clock_off(last_larb, 1);
@@ -2132,7 +2122,7 @@ int m4u_unregister_fault_callback(int port)
 	return 0;
 }
 
-int m4u_enable_tf(unsigned int port, bool fgenable)
+int m4u_enable_tf(int port, bool fgenable)
 {
 	if (port < 0 || port >= M4U_PORT_UNKNOWN) {
 		M4UMSG("%s fail,m port=%d\n", __func__, port);
@@ -2144,7 +2134,7 @@ int m4u_enable_tf(unsigned int port, bool fgenable)
 
 static struct timer_list m4u_isr_pause_timer;
 
-static void m4u_isr_restart(unsigned long unused)
+static void m4u_isr_restart(struct timer_list *unused)
 {
 	M4UMSG("restart m4u irq\n");
 	m4u_intr_modify_all(1);
@@ -2152,8 +2142,11 @@ static void m4u_isr_restart(unsigned long unused)
 
 static int m4u_isr_pause_timer_init(void)
 {
-	init_timer(&m4u_isr_pause_timer);
-	m4u_isr_pause_timer.function = m4u_isr_restart;
+	timer_setup(&m4u_isr_pause_timer, m4u_isr_restart, 0);
+/*
+ * init_timer(&m4u_isr_pause_timer);
+ * m4u_isr_pause_timer.function = m4u_isr_restart;
+ */
 	return 0;
 }
 
@@ -2364,7 +2357,7 @@ bank_irq_out:
 				unsigned int valid_size = 0;
 				unsigned int valid_mva_end = 0;
 
-				__m4u_query_mva_info(m4u_index, fault_mva - 1,
+				m4u_query_mva_info(m4u_index, fault_mva - 1,
 					0, &valid_mva, &valid_size);
 				if (valid_mva != 0 && valid_size != 0)
 					valid_mva_end = valid_mva + valid_size;

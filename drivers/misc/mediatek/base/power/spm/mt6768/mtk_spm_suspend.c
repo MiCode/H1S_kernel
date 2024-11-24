@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -22,6 +14,7 @@
 #include <linux/interrupt.h>
 #include <linux/wakeup_reason.h>
 #include <asm/setup.h>
+#include <mtk_spm_internal.h>
 
 #if defined(CONFIG_MTK_WATCHDOG) && defined(CONFIG_MTK_WD_KICKER)
 #include <mt-plat/mtk_wd_api.h>
@@ -31,7 +24,7 @@
 #endif
 #include <mtk_spm_irq.h>
 
-#include <mtk_spm_internal.h>
+
 #include <mtk_spm_suspend_internal.h>
 #include <mtk_spm_resource_req_internal.h>
 #include <mtk_spm_resource_req.h>
@@ -59,6 +52,11 @@ u8 spm_snapshot_golden_setting;
 struct wake_status spm_wakesta; /* record last wakesta */
 unsigned int spm_sleep_count;
 
+extern int mtk8250_request_to_sleep(void);
+extern int mtk8250_request_to_wakeup(void);
+extern void mtk8250_backup_dev(void);
+extern void mtk8250_restore_dev(void);
+
 int __attribute__ ((weak)) mtk_enter_idle_state(int idx)
 {
 	printk_deferred("[name:spm&]NO %s !!!\n", __func__);
@@ -76,6 +74,30 @@ int  __attribute__ ((weak)) vcorefs_get_curr_vcore(void)
 	printk_deferred("[name:spm&]NO %s !!!\n", __func__);
 	return -1;
 }
+
+
+void __attribute__ ((weak)) mtk8250_backup_dev(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+}
+
+void __attribute__ ((weak)) mtk8250_restore_dev(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+}
+
+int __attribute__ ((weak)) mtk8250_request_to_wakeup(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+	return 0;
+}
+
+int __attribute__ ((weak)) mtk8250_request_to_sleep(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+	return 0;
+}
+
 
 static u32 suspend_pcm_flags = {
 	/* SPM_FLAG_DIS_CPU_PDN | */
@@ -125,7 +147,7 @@ struct spm_wakesrc_irq_list spm_wakesrc_irqs[] = {
 	/* SCP A IPC2HOST */
 	{ WAKE_SRC_R12_SCP_SPM_IRQ_B, "mediatek,scp", 0, 0},
 	/* CLDMA_AP */
-	{ WAKE_SRC_R12_CLDMA_EVENT_B, "mediatek,mdcldma", 0, 0},
+	{ WAKE_SRC_R12_CLDMA_EVENT_B, "mediatek,mddriver", 0, 0},
 };
 
 #define IRQ_NUMBER	\
@@ -134,7 +156,6 @@ static void get_spm_wakesrc_irq(void)
 {
 	int i;
 	struct device_node *node;
-
 	for (i = 0; i < IRQ_NUMBER; i++) {
 		if (spm_wakesrc_irqs[i].name == NULL)
 			continue;
@@ -208,7 +229,7 @@ static void spm_suspend_pcm_setup_before_wfi(unsigned int ex_flag
 #endif
 
 	/* Only get resource usage from user SCP */
-	resource_usage = spm_get_resource_usage_by_user(SPM_RESOURCE_USER_SCP);
+	resource_usage = spm_get_resource_usage();
 
 	if ((ex_flag & SPM_SUSPEND_PLAT_SLP_DP) != 0) {
 		mtk_idle_module_notifier_call_chain(MTK_IDLE_MAINPLL_OFF);
@@ -446,9 +467,9 @@ unsigned int spm_go_to_sleep_ex(unsigned int ex_flag)
 	} else
 		printk_deferred("[name:spm&]FAILED TO GET WD API\n");
 #endif
-	lockdep_off();
+
 	spin_lock_irqsave(&__spm_lock, flags);
-	lockdep_on();
+
 
 	mtk_spm_irq_backup();
 
@@ -493,9 +514,7 @@ RESTORE_IRQ:
 	last_wr = spm_output_wake_reason(ex_flag, &spm_wakesta);
 	mtk_spm_irq_restore();
 
-	lockdep_off();
 	spin_unlock_irqrestore(&__spm_lock, flags);
-	lockdep_on();
 
 #if defined(CONFIG_MTK_WATCHDOG) && defined(CONFIG_MTK_WD_KICKER)
 	if (!wd_ret) {

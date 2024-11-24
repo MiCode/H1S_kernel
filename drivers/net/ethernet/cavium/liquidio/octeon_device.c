@@ -541,6 +541,7 @@ static char oct_dev_app_str[CVM_DRV_APP_COUNT + 1][32] = {
 
 static struct octeon_device *octeon_device[MAX_OCTEON_DEVICES];
 static atomic_t adapter_refcounts[MAX_OCTEON_DEVICES];
+static atomic_t adapter_fw_states[MAX_OCTEON_DEVICES];
 
 static u32 octeon_device_count;
 /* locks device array (i.e. octeon_device[]) */
@@ -701,11 +702,9 @@ static struct octeon_device *octeon_allocate_device_mem(u32 pci_id,
 	size = octdevsize + priv_size + configsize +
 		(sizeof(struct octeon_dispatch) * DISPATCH_LIST_SIZE);
 
-	buf = vmalloc(size);
+	buf = vzalloc(size);
 	if (!buf)
 		return NULL;
-
-	memset(buf, 0, size);
 
 	oct = (struct octeon_device *)buf;
 	oct->priv = (void *)(buf + octdevsize);
@@ -770,6 +769,10 @@ int octeon_register_device(struct octeon_device *oct,
 	oct->adapter_refcount = &adapter_refcounts[oct->octeon_id];
 	atomic_set(oct->adapter_refcount, 0);
 
+	/* Like the reference count, the f/w state is shared 'per-adapter' */
+	oct->adapter_fw_state = &adapter_fw_states[oct->octeon_id];
+	atomic_set(oct->adapter_fw_state, FW_NEEDS_TO_BE_LOADED);
+
 	spin_lock(&octeon_devices_lock);
 	for (idx = (int)oct->octeon_id - 1; idx >= 0; idx--) {
 		if (!octeon_device[idx]) {
@@ -780,11 +783,15 @@ int octeon_register_device(struct octeon_device *oct,
 			atomic_inc(oct->adapter_refcount);
 			return 1; /* here, refcount is guaranteed to be 1 */
 		}
-		/* if another device is at same bus/dev, use its refcounter */
+		/* If another device is at same bus/dev, use its refcounter
+		 * (and f/w state variable).
+		 */
 		if ((octeon_device[idx]->loc.bus == bus) &&
 		    (octeon_device[idx]->loc.dev == dev)) {
 			oct->adapter_refcount =
 				octeon_device[idx]->adapter_refcount;
+			oct->adapter_fw_state =
+				octeon_device[idx]->adapter_fw_state;
 			break;
 		}
 	}
@@ -817,24 +824,18 @@ int octeon_deregister_device(struct octeon_device *oct)
 }
 
 int
-octeon_allocate_ioq_vector(struct octeon_device  *oct)
+octeon_allocate_ioq_vector(struct octeon_device *oct, u32 num_ioqs)
 {
-	int i, num_ioqs = 0;
 	struct octeon_ioq_vector *ioq_vector;
 	int cpu_num;
 	int size;
-
-	if (OCTEON_CN23XX_PF(oct))
-		num_ioqs = oct->sriov_info.num_pf_rings;
-	else if (OCTEON_CN23XX_VF(oct))
-		num_ioqs = oct->sriov_info.rings_per_vf;
+	int i;
 
 	size = sizeof(struct octeon_ioq_vector) * num_ioqs;
 
-	oct->ioq_vector = vmalloc(size);
+	oct->ioq_vector = vzalloc(size);
 	if (!oct->ioq_vector)
-		return 1;
-	memset(oct->ioq_vector, 0, size);
+		return -1;
 	for (i = 0; i < num_ioqs; i++) {
 		ioq_vector		= &oct->ioq_vector[i];
 		ioq_vector->oct_dev	= oct;
@@ -850,6 +851,7 @@ octeon_allocate_ioq_vector(struct octeon_device  *oct)
 		else
 			ioq_vector->ioq_num	= i;
 	}
+
 	return 0;
 }
 
@@ -1171,6 +1173,10 @@ octeon_register_dispatch_fn(struct octeon_device *oct,
 		spin_unlock_bh(&oct->dispatch.lock);
 
 	} else {
+		if (pfn == fn &&
+		    octeon_get_dispatch_arg(oct, opcode, subcode) == fn_arg)
+			return 0;
+
 		dev_err(&oct->pci_dev->dev,
 			"Found previously registered dispatch fn for opcode/subcode: %x/%x\n",
 			opcode, subcode);

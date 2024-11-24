@@ -338,7 +338,7 @@ static int st_nci_hci_connectivity_event_received(struct nci_dev *ndev,
 		 * AID          81      5 to 16
 		 * PARAMETERS   82      0 to 255
 		 */
-		if (skb->len < NFC_MIN_AID_LENGTH + 2 &&
+		if (skb->len < NFC_MIN_AID_LENGTH + 2 ||
 		    skb->data[0] != NFC_EVT_TRANSACTION_AID_TAG)
 			return -EPROTO;
 
@@ -352,8 +352,10 @@ static int st_nci_hci_connectivity_event_received(struct nci_dev *ndev,
 
 		/* Check next byte is PARAMETERS tag (82) */
 		if (skb->data[transaction->aid_len + 2] !=
-		    NFC_EVT_TRANSACTION_PARAMS_TAG)
+		    NFC_EVT_TRANSACTION_PARAMS_TAG) {
+			devm_kfree(dev, transaction);
 			return -EPROTO;
+		}
 
 		transaction->params_len = skb->data[transaction->aid_len + 3];
 		memcpy(transaction->params, skb->data +
@@ -674,12 +676,18 @@ int st_nci_se_io(struct nci_dev *ndev, u32 se_idx,
 					ST_NCI_EVT_TRANSMIT_DATA, apdu,
 					apdu_length);
 	default:
+		/* Need to free cb_context here as at the moment we can't
+		 * clearly indicate to the caller if the callback function
+		 * would be called (and free it) or not. In both cases a
+		 * negative value may be returned to the caller.
+		 */
+		kfree(cb_context);
 		return -ENODEV;
 	}
 }
 EXPORT_SYMBOL(st_nci_se_io);
 
-static void st_nci_se_wt_timeout(unsigned long data)
+static void st_nci_se_wt_timeout(struct timer_list *t)
 {
 	/*
 	 * No answer from the secure element
@@ -692,7 +700,7 @@ static void st_nci_se_wt_timeout(unsigned long data)
 	 */
 	/* hardware reset managed through VCC_UICC_OUT power supply */
 	u8 param = 0x01;
-	struct st_nci_info *info = (struct st_nci_info *) data;
+	struct st_nci_info *info = from_timer(info, t, se_info.bwi_timer);
 
 	pr_debug("\n");
 
@@ -710,9 +718,10 @@ static void st_nci_se_wt_timeout(unsigned long data)
 	info->se_info.cb(info->se_info.cb_context, NULL, 0, -ETIME);
 }
 
-static void st_nci_se_activation_timeout(unsigned long data)
+static void st_nci_se_activation_timeout(struct timer_list *t)
 {
-	struct st_nci_info *info = (struct st_nci_info *) data;
+	struct st_nci_info *info = from_timer(info, t,
+					      se_info.se_active_timer);
 
 	pr_debug("\n");
 
@@ -727,15 +736,11 @@ int st_nci_se_init(struct nci_dev *ndev, struct st_nci_se_status *se_status)
 
 	init_completion(&info->se_info.req_completion);
 	/* initialize timers */
-	init_timer(&info->se_info.bwi_timer);
-	info->se_info.bwi_timer.data = (unsigned long)info;
-	info->se_info.bwi_timer.function = st_nci_se_wt_timeout;
+	timer_setup(&info->se_info.bwi_timer, st_nci_se_wt_timeout, 0);
 	info->se_info.bwi_active = false;
 
-	init_timer(&info->se_info.se_active_timer);
-	info->se_info.se_active_timer.data = (unsigned long)info;
-	info->se_info.se_active_timer.function =
-			st_nci_se_activation_timeout;
+	timer_setup(&info->se_info.se_active_timer,
+		    st_nci_se_activation_timeout, 0);
 	info->se_info.se_active = false;
 
 	info->se_info.xch_error = false;

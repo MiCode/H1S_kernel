@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _DDP_OVL_H_
 #define _DDP_OVL_H_
@@ -27,11 +19,23 @@
 #define SBCH_EN_NUM    (1)
 
 #ifdef CONFIG_MTK_ROUND_CORNER_SUPPORT
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+#define TOTAL_OVL_LAYER_NUM	(3+2)
+#else
 #define TOTAL_OVL_LAYER_NUM	(4+3+1+2)
+#endif
+#else
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+#define TOTAL_OVL_LAYER_NUM	(4+3)
 #else
 #define TOTAL_OVL_LAYER_NUM	(4+3+2+3)
 #endif
+#endif
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+#define TOTAL_REAL_OVL_LAYER_NUM (4+3)
+#else
 #define TOTAL_REAL_OVL_LAYER_NUM (4+3+2+3)
+#endif
 #define OVL_NUM			(3)
 #define OVL_MODULE_MAX_PHY_LAYER (4)
 #define OVL_MODULE_MAX_EXT_LAYER (3)

@@ -1,6 +1,6 @@
 /*
  * da9211-regulator.c - Regulator device driver for DA9211/DA9212
- * /DA9213/DA9214/DA9215
+ * /DA9213/DA9223/DA9214/DA9224/DA9215/DA9225
  * Copyright (C) 2015  Dialog Semiconductor Ltd.
  *
  * This library is free software; you can redistribute it and/or
@@ -15,7 +15,6 @@
  */
 
 #include <linux/err.h>
-#include <linux/gpio.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -25,7 +24,7 @@
 #include <linux/regmap.h>
 #include <linux/irq.h>
 #include <linux/interrupt.h>
-#include <linux/of_gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/regulator/of_regulator.h>
 #include <linux/regulator/da9211.h>
 #include "da9211-regulator.h"
@@ -126,12 +125,31 @@ static unsigned int da9211_buck_get_mode(struct regulator_dev *rdev)
 	return mode;
 }
 
+static unsigned int da9211_map_mode(unsigned int mode)
+{
+	unsigned int val = 0;
+
+	switch (mode) {
+	case DA9211_BUCK_MODE_SYNC:
+		val = REGULATOR_MODE_FAST;
+		break;
+	case DA9211_BUCK_MODE_AUTO:
+		val = REGULATOR_MODE_NORMAL;
+		break;
+	case DA9211_BUCK_MODE_SLEEP:
+		val = REGULATOR_MODE_STANDBY;
+		break;
+	}
+
+	return val;
+}
+
 static int da9211_buck_set_mode(struct regulator_dev *rdev,
 					unsigned int mode)
 {
 	int id = rdev_get_id(rdev);
 	struct da9211 *chip = rdev_get_drvdata(rdev);
-	int val = 0;
+	int val = 0, ret;
 
 	switch (mode) {
 	case REGULATOR_MODE_FAST:
@@ -145,8 +163,13 @@ static int da9211_buck_set_mode(struct regulator_dev *rdev,
 		break;
 	}
 
-	return regmap_update_bits(chip->regmap, DA9211_REG_BUCKA_CONF+id,
-					0x03, val);
+	ret = regmap_update_bits(chip->regmap, DA9211_REG_BUCKA_CONF+id,
+				 0x03, val);
+
+	regmap_read(chip->regmap, DA9211_REG_BUCKA_CONF+id, &val);
+	dev_notice(chip->dev, "set mode = 0x%x\n", val);
+
+	return ret;
 }
 
 static int da9211_set_current_limit(struct regulator_dev *rdev, int min,
@@ -246,6 +269,7 @@ static const struct regulator_ops da9211_buck_ops = {
 	.enable_mask = DA9211_BUCKA_EN,\
 	.vsel_reg = DA9211_REG_VBUCKA_A + DA9211_ID_##_id * 2,\
 	.vsel_mask = DA9211_VBUCK_MASK,\
+	.of_map_mode = da9211_map_mode,\
 	.owner = THIS_MODULE,\
 }
 
@@ -256,8 +280,10 @@ static struct regulator_desc da9211_regulators[] = {
 
 #ifdef CONFIG_OF
 static struct of_regulator_match da9211_matches[] = {
-	[DA9211_ID_BUCKA] = { .name = "BUCKA" },
-	[DA9211_ID_BUCKB] = { .name = "BUCKB" },
+	[DA9211_ID_BUCKA] = { .name = "BUCKA",
+			      .desc = &da9211_regulators[0] },
+	[DA9211_ID_BUCKB] = { .name = "BUCKB",
+			      .desc = &da9211_regulators[1] },
 	};
 
 static struct da9211_pdata *da9211_parse_regulators_dt(
@@ -294,9 +320,12 @@ static struct da9211_pdata *da9211_parse_regulators_dt(
 
 		pdata->init_data[n] = da9211_matches[i].init_data;
 		pdata->reg_node[n] = da9211_matches[i].of_node;
-		pdata->gpio_ren[n] =
-			of_get_named_gpio(da9211_matches[i].of_node,
-				"enable-gpios", 0);
+		pdata->gpiod_ren[n] = devm_gpiod_get_from_of_node(dev,
+								  da9211_matches[i].of_node,
+								  "enable",
+								  0,
+								  GPIOD_OUT_HIGH,
+								  "da9211-enable");
 		n++;
 	}
 
@@ -382,13 +411,10 @@ static int da9211_regulator_init(struct da9211 *chip)
 		config.regmap = chip->regmap;
 		config.of_node = chip->pdata->reg_node[i];
 
-		if (gpio_is_valid(chip->pdata->gpio_ren[i])) {
-			config.ena_gpio = chip->pdata->gpio_ren[i];
-			config.ena_gpio_initialized = true;
-		} else {
-			config.ena_gpio = -EINVAL;
-			config.ena_gpio_initialized = false;
-		}
+		if (chip->pdata->gpiod_ren[i])
+			config.ena_gpiod = chip->pdata->gpiod_ren[i];
+		else
+			config.ena_gpiod = NULL;
 
 		chip->rdev[i] = devm_regulator_register(chip->dev,
 			&da9211_regulators[i], &config);
@@ -470,6 +496,12 @@ static int da9211_i2c_probe(struct i2c_client *i2c,
 
 	chip->chip_irq = i2c->irq;
 
+	ret = da9211_regulator_init(chip);
+	if (ret < 0) {
+		dev_err(chip->dev, "Failed to initialize regulator: %d\n", ret);
+		return ret;
+	}
+
 	if (chip->chip_irq != 0) {
 		ret = devm_request_threaded_irq(chip->dev, chip->chip_irq, NULL,
 					da9211_irq_handler,
@@ -484,11 +516,6 @@ static int da9211_i2c_probe(struct i2c_client *i2c,
 		dev_warn(chip->dev, "No IRQ configured\n");
 	}
 
-	ret = da9211_regulator_init(chip);
-
-	if (ret < 0)
-		dev_err(chip->dev, "Failed to initialize regulator: %d\n", ret);
-
 	return ret;
 }
 
@@ -496,8 +523,11 @@ static const struct i2c_device_id da9211_i2c_id[] = {
 	{"da9211", DA9211},
 	{"da9212", DA9212},
 	{"da9213", DA9213},
+	{"da9223", DA9223},
 	{"da9214", DA9214},
+	{"da9224", DA9224},
 	{"da9215", DA9215},
+	{"da9225", DA9225},
 	{},
 };
 MODULE_DEVICE_TABLE(i2c, da9211_i2c_id);
@@ -507,8 +537,11 @@ static const struct of_device_id da9211_dt_ids[] = {
 	{ .compatible = "dlg,da9211", .data = &da9211_i2c_id[0] },
 	{ .compatible = "dlg,da9212", .data = &da9211_i2c_id[1] },
 	{ .compatible = "dlg,da9213", .data = &da9211_i2c_id[2] },
-	{ .compatible = "dlg,da9214", .data = &da9211_i2c_id[3] },
-	{ .compatible = "dlg,da9215", .data = &da9211_i2c_id[4] },
+	{ .compatible = "dlg,da9223", .data = &da9211_i2c_id[3] },
+	{ .compatible = "dlg,da9214", .data = &da9211_i2c_id[4] },
+	{ .compatible = "dlg,da9224", .data = &da9211_i2c_id[5] },
+	{ .compatible = "dlg,da9215", .data = &da9211_i2c_id[6] },
+	{ .compatible = "dlg,da9225", .data = &da9211_i2c_id[7] },
 	{},
 };
 MODULE_DEVICE_TABLE(of, da9211_dt_ids);
@@ -526,5 +559,5 @@ static struct i2c_driver da9211_regulator_driver = {
 module_i2c_driver(da9211_regulator_driver);
 
 MODULE_AUTHOR("James Ban <James.Ban.opensource@diasemi.com>");
-MODULE_DESCRIPTION("DA9211/DA9212/DA9213/DA9214/DA9215 regulator driver");
+MODULE_DESCRIPTION("DA9211/DA9212/DA9213/DA9223/DA9214/DA9224/DA9215/DA9225 regulator driver");
 MODULE_LICENSE("GPL");

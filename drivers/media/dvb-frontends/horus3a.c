@@ -24,7 +24,7 @@
 #include <linux/dvb/frontend.h>
 #include <linux/types.h>
 #include "horus3a.h"
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 
 #define MAX_WRITE_REGSIZE      5
 
@@ -330,9 +330,9 @@ static int horus3a_get_frequency(struct dvb_frontend *fe, u32 *frequency)
 static const struct dvb_tuner_ops horus3a_tuner_ops = {
 	.info = {
 		.name = "Sony Horus3a",
-		.frequency_min = 950000,
-		.frequency_max = 2150000,
-		.frequency_step = 1000,
+		.frequency_min_hz  =  950 * MHz,
+		.frequency_max_hz  = 2150 * MHz,
+		.frequency_step_hz =    1 * MHz,
 	},
 	.init = horus3a_init,
 	.release = horus3a_release,
@@ -404,7 +404,7 @@ struct dvb_frontend *horus3a_attach(struct dvb_frontend *fe,
 		priv->i2c_address, priv->i2c);
 	return fe;
 }
-EXPORT_SYMBOL(horus3a_attach);
+EXPORT_SYMBOL_GPL(horus3a_attach);
 
 MODULE_DESCRIPTION("Sony HORUS3A satellite tuner driver");
 MODULE_AUTHOR("Sergey Kozlov <serjk@netup.ru>");

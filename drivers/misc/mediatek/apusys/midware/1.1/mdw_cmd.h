@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __APUSYS_MDW_CMD_H__
@@ -34,6 +26,7 @@ struct mdw_apu_cmd {
 	struct apu_fence_hdr *uf_hdr; // from user
 	struct file *file; // Fence sync file
 	uint32_t size;
+	int id;
 	uint64_t kid;
 	struct apusys_kmem *cmdbuf;
 
@@ -53,9 +46,12 @@ struct mdw_apu_cmd {
 	uint8_t pack_cnt[MDW_CMD_SC_MAX]; // pack count
 	struct list_head di_list; //for dispr item
 
-	int state;
+	struct timespec64 start_ts;
+	struct timespec64 end_ts;
 
-	struct list_head u_item; // to usr list
+	int state;
+	uint64_t sc_rets;
+
 	struct mdw_usr *usr; // usr
 	struct mutex mtx;
 	struct completion cmplt;
@@ -128,13 +124,14 @@ struct mdw_cmd_parser {
 	int (*get_ctx)(struct mdw_apu_sc *sc);
 	void (*put_ctx)(struct mdw_apu_sc *sc);
 	int (*exec_core_num)(struct mdw_apu_sc *sc);
-	void (*set_hnd)(struct mdw_apu_sc *sc, int d_idx, void *h);
+	int (*set_hnd)(struct mdw_apu_sc *sc, int d_idx, void *h);
+	void (*clr_hnd)(struct mdw_apu_sc *sc, void *h);
 	bool (*is_deadline)(struct mdw_apu_sc *sc);
 };
 struct mdw_cmd_parser *mdw_cmd_get_parser(void);
 
 uint64_t mdw_cmd_get_magic(void);
 uint32_t mdw_cmd_get_ver(void);
-int mdw_wait_cmd(struct mdw_apu_cmd *c);
+int mdw_wait_cmd(struct mdw_usr *u, struct mdw_apu_cmd *c);
 
 #endif

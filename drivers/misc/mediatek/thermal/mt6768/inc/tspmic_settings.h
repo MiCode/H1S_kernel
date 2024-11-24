@@ -1,21 +1,17 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __TSPMIC_SETTINGS_H__
 #define __TSPMIC_SETTINGS_H__
 
 #include <mach/upmu_hw.h>
 #include <mach/mtk_pmic_wrap.h>
+#include <linux/regmap.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/platform_device.h>
 
 /*=============================================================
  * Genernal
@@ -41,7 +37,7 @@ do {									\
 } while (0)
 
 extern int mtktspmic_debug_log;
-extern void mtktspmic_cali_prepare(void);
+extern void mtktspmic_cali_prepare(struct regmap *pmic_map);
 extern void mtktspmic_cali_prepare2(void);
 extern int mtktspmic_get_hw_temp(void);
 extern int mt6358tsbuck1_get_hw_temp(void);

@@ -30,7 +30,7 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "ves1x93.h"
 
 
@@ -516,10 +516,10 @@ static const struct dvb_frontend_ops ves1x93_ops = {
 	.delsys = { SYS_DVBS },
 	.info = {
 		.name			= "VLSI VES1x93 DVB-S",
-		.frequency_min		= 950000,
-		.frequency_max		= 2150000,
-		.frequency_stepsize	= 125,		 /* kHz for QPSK frontends */
-		.frequency_tolerance	= 29500,
+		.frequency_min_hz	=   950 * MHz,
+		.frequency_max_hz	=  2150 * MHz,
+		.frequency_stepsize_hz	=   125 * kHz,
+		.frequency_tolerance_hz	= 29500 * kHz,
 		.symbol_rate_min	= 1000000,
 		.symbol_rate_max	= 45000000,
 	/*	.symbol_rate_tolerance	=	???,*/
@@ -553,4 +553,4 @@ MODULE_DESCRIPTION("VLSI VES1x93 DVB-S Demodulator driver");
 MODULE_AUTHOR("Ralph Metzler");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(ves1x93_attach);
+EXPORT_SYMBOL_GPL(ves1x93_attach);

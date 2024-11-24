@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) "<GYROSCOPE> " fmt
@@ -290,7 +282,7 @@ static int gyro_enable_and_batch(void)
 	return 0;
 }
 #endif
-static ssize_t gyro_show_enable_nodata(struct device *dev,
+static ssize_t gyroenablenodata_show(struct device *dev,
 				       struct device_attribute *attr, char *buf)
 {
 	int len = 0;
@@ -299,7 +291,7 @@ static ssize_t gyro_show_enable_nodata(struct device *dev,
 	return len;
 }
 
-static ssize_t gyro_store_enable_nodata(struct device *dev,
+static ssize_t gyroenablenodata_store(struct device *dev,
 					struct device_attribute *attr,
 					const char *buf, size_t count)
 {
@@ -347,7 +339,7 @@ err_out:
 		return count;
 }
 
-static ssize_t gyro_store_active(struct device *dev,
+static ssize_t gyroactive_store(struct device *dev,
 				 struct device_attribute *attr, const char *buf,
 				 size_t count)
 {
@@ -395,7 +387,7 @@ err_out:
 		return count;
 }
 /*----------------------------------------------------------------------------*/
-static ssize_t gyro_show_active(struct device *dev,
+static ssize_t gyroactive_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct gyro_context *cxt = NULL;
@@ -409,7 +401,7 @@ static ssize_t gyro_show_active(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%d\n", div);
 }
 
-static ssize_t gyro_store_batch(struct device *dev,
+static ssize_t gyrobatch_store(struct device *dev,
 				struct device_attribute *attr, const char *buf,
 				size_t count)
 {
@@ -442,13 +434,13 @@ static ssize_t gyro_store_batch(struct device *dev,
 		return count;
 }
 
-static ssize_t gyro_show_batch(struct device *dev,
+static ssize_t gyrobatch_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-static ssize_t gyro_store_flush(struct device *dev,
+static ssize_t gyroflush_store(struct device *dev,
 				struct device_attribute *attr, const char *buf,
 				size_t count)
 {
@@ -477,18 +469,18 @@ static ssize_t gyro_store_flush(struct device *dev,
 		return count;
 }
 
-static ssize_t gyro_show_flush(struct device *dev,
+static ssize_t gyroflush_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
-static ssize_t gyro_show_cali(struct device *dev, struct device_attribute *attr,
+static ssize_t gyrocali_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-static ssize_t gyro_store_cali(struct device *dev,
+static ssize_t gyrocali_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
 {
@@ -516,7 +508,7 @@ static ssize_t gyro_store_cali(struct device *dev,
 }
 
 /* need work around again */
-static ssize_t gyro_show_devnum(struct device *dev,
+static ssize_t gyrodevnum_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
@@ -656,13 +648,12 @@ static int gyro_misc_init(struct gyro_context *cxt)
 
 	return err;
 }
-DEVICE_ATTR(gyroenablenodata, 0644, gyro_show_enable_nodata,
-	    gyro_store_enable_nodata);
-DEVICE_ATTR(gyroactive, 0644, gyro_show_active, gyro_store_active);
-DEVICE_ATTR(gyrobatch, 0644, gyro_show_batch, gyro_store_batch);
-DEVICE_ATTR(gyroflush, 0644, gyro_show_flush, gyro_store_flush);
-DEVICE_ATTR(gyrocali, 0644, gyro_show_cali, gyro_store_cali);
-DEVICE_ATTR(gyrodevnum, 0644, gyro_show_devnum, NULL);
+DEVICE_ATTR_RW(gyroenablenodata);
+DEVICE_ATTR_RW(gyroactive);
+DEVICE_ATTR_RW(gyrobatch);
+DEVICE_ATTR_RW(gyroflush);
+DEVICE_ATTR_RW(gyrocali);
+DEVICE_ATTR_RO(gyrodevnum);
 
 static struct attribute *gyro_attributes[] = {
 	&dev_attr_gyroenablenodata.attr,
@@ -892,6 +883,8 @@ static int gyro_remove(void)
 		pr_err("misc_deregister fail: %d\n", err);
 
 	kfree(gyro_context_obj);
+
+	platform_driver_unregister(&gyroscope_driver);
 
 	return 0;
 }

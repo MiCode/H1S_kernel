@@ -1,22 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 
 #ifndef _MTK_SECURE_API_H_
 #define _MTK_SECURE_API_H_
 
 #include <linux/kernel.h>
-
+#include <linux/arm-smccc.h>
 
 /* Error Code */
 #define SIP_SVC_E_SUCCESS               0
@@ -298,12 +290,21 @@
 #define MTK_SIP_TMEM_CONTROL \
 	(0x82000524 | MTK_SIP_SMC_AARCH_BIT)
 
-extern size_t mt_secure_call_all(size_t function_id,
-	size_t arg0, size_t arg1, size_t arg2,
-	size_t arg3, size_t *r1, size_t *r2, size_t *r3);
+/* APUPWR control related SMC call */
+#define MTK_SIP_APUPWR_CONTROL \
+	(0x82000526 | MTK_SIP_SMC_AARCH_BIT)
 
-#define mt_secure_call(_fun_id, _arg0, _arg1, _arg2, _arg3) \
-	mt_secure_call_all(_fun_id, _arg0, _arg1, _arg2, _arg3, 0, 0, 0)
+#define mtk_idle_smc_impl(p1, p2, p3, p4, p5, res) \
+	arm_smccc_smc(p1, p2, p3, p4,\
+	p5, 0, 0, 0, &res)
+
+#ifndef mt_secure_call
+#define mt_secure_call(x1, x2, x3, x4, x5) ({\
+	struct arm_smccc_res res;\
+		mtk_idle_smc_impl(x1, x2, x3, x4, x5, res);\
+		res.a0; })
+#endif
+
 #define mt_secure_call_ret1(_fun_id, _arg0, _arg1, _arg2, _arg3) \
 	mt_secure_call_all(_fun_id, _arg0, _arg1, _arg2, _arg3, 0, 0, 0)
 #define mt_secure_call_ret2(_fun_id, _arg0, _arg1, _arg2, _arg3, _r1) \
@@ -367,13 +368,13 @@ mt_secure_call(MTK_SIP_KERNEL_DCM, type, 1, 0, 0)
 
 #define kernel_smc_msg(x1, x2, x3) \
 	mt_secure_call(MTK_SIP_KERNEL_MSG, x1, x2, x3, 0)
-
+#ifndef mcsi_reg_read
 #define mcsi_reg_read(offset) \
 	mt_secure_call(MTK_SIP_KERNEL_MCSI_NS_ACCESS, 0, offset, 0, 0)
 
 #define mcsi_reg_write(val, offset) \
 	mt_secure_call(MTK_SIP_KERNEL_MCSI_NS_ACCESS, 1, offset, val, 0)
-
+#endif
 #define mcsi_reg_set_bitmask(val, offset) \
 	mt_secure_call(MTK_SIP_KERNEL_MCSI_NS_ACCESS, 2, offset, val, 0)
 

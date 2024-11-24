@@ -16,5 +16,21 @@ NAMES = {
           'DEV2': '',
           'BATCH_FILE': './batch.txt',
           # Name of the namespace to use
-          'NS': 'tcut'
+          'NS': 'tcut',
+          # Directory containing eBPF test programs
+          'EBPFDIR': './bpf'
         }
+
+
+ENVIR = { }
+
+# put customizations in tdc_config_local.py
+try:
+    from tdc_config_local import *
+except ImportError as ie:
+    pass
+
+try:
+    NAMES.update(EXTRA_NAMES)
+except NameError as ne:
+    pass

@@ -151,7 +151,7 @@ nouveau_conn_atomic_set_property(struct drm_connector *connector,
 				/* ... except prior to G80, where the code
 				 * doesn't support such things.
 				 */
-				if (disp->disp.oclass < NV50_DISP)
+				if (disp->disp.object.oclass < NV50_DISP)
 					return -EINVAL;
 				break;
 			default:
@@ -260,7 +260,7 @@ nouveau_conn_reset(struct drm_connector *connector)
 	asyc->procamp.color_vibrance = 150;
 	asyc->procamp.vibrant_hue = 90;
 
-	if (nouveau_display(connector->dev)->disp.oclass < NV50_DISP) {
+	if (nouveau_display(connector->dev)->disp.object.oclass < NV50_DISP) {
 		switch (connector->connector_type) {
 		case DRM_MODE_CONNECTOR_LVDS:
 			/* See note in nouveau_conn_atomic_set_property(). */
@@ -314,7 +314,7 @@ nouveau_conn_attach_properties(struct drm_connector *connector)
 	case DRM_MODE_CONNECTOR_TV:
 		break;
 	case DRM_MODE_CONNECTOR_VGA:
-		if (disp->disp.oclass < NV50_DISP)
+		if (disp->disp.object.oclass < NV50_DISP)
 			break; /* Can only scale on DFPs. */
 		/* Fall-through. */
 	default:
@@ -363,19 +363,11 @@ module_param_named(hdmimhz, nouveau_hdmimhz, int, 0400);
 struct nouveau_encoder *
 find_encoder(struct drm_connector *connector, int type)
 {
-	struct drm_device *dev = connector->dev;
 	struct nouveau_encoder *nv_encoder;
 	struct drm_encoder *enc;
-	int i, id;
+	int i;
 
-	for (i = 0; i < DRM_CONNECTOR_MAX_ENCODER; i++) {
-		id = connector->encoder_ids[i];
-		if (!id)
-			break;
-
-		enc = drm_encoder_find(dev, NULL, id);
-		if (!enc)
-			continue;
+	drm_connector_for_each_possible_encoder(connector, enc, i) {
 		nv_encoder = nouveau_encoder(enc);
 
 		if (type == DCB_OUTPUT_ANY ||
@@ -417,66 +409,45 @@ static struct nouveau_encoder *
 nouveau_connector_ddc_detect(struct drm_connector *connector)
 {
 	struct drm_device *dev = connector->dev;
-	struct nouveau_connector *nv_connector = nouveau_connector(connector);
-	struct nouveau_drm *drm = nouveau_drm(dev);
-	struct nvkm_gpio *gpio = nvxx_gpio(&drm->client.device);
-	struct nouveau_encoder *nv_encoder;
+	struct nouveau_encoder *nv_encoder = NULL, *found = NULL;
 	struct drm_encoder *encoder;
-	int i, panel = -ENODEV;
+	int i, ret;
+	bool switcheroo_ddc = false;
 
-	/* eDP panels need powering on by us (if the VBIOS doesn't default it
-	 * to on) before doing any AUX channel transactions.  LVDS panel power
-	 * is handled by the SOR itself, and not required for LVDS DDC.
-	 */
-	if (nv_connector->type == DCB_CONNECTOR_eDP) {
-		panel = nvkm_gpio_get(gpio, 0, DCB_GPIO_PANEL_POWER, 0xff);
-		if (panel == 0) {
-			nvkm_gpio_set(gpio, 0, DCB_GPIO_PANEL_POWER, 0xff, 1);
-			msleep(300);
-		}
-	}
-
-	for (i = 0; nv_encoder = NULL, i < DRM_CONNECTOR_MAX_ENCODER; i++) {
-		int id = connector->encoder_ids[i];
-		if (id == 0)
-			break;
-
-		encoder = drm_encoder_find(dev, NULL, id);
-		if (!encoder)
-			continue;
+	drm_connector_for_each_possible_encoder(connector, encoder, i) {
 		nv_encoder = nouveau_encoder(encoder);
 
-		if (nv_encoder->dcb->type == DCB_OUTPUT_DP) {
-			int ret = nouveau_dp_detect(nv_encoder);
+		switch (nv_encoder->dcb->type) {
+		case DCB_OUTPUT_DP:
+			ret = nouveau_dp_detect(nv_encoder);
 			if (ret == NOUVEAU_DP_MST)
 				return NULL;
-			if (ret == NOUVEAU_DP_SST)
+			else if (ret == NOUVEAU_DP_SST)
+				found = nv_encoder;
+
+			break;
+		case DCB_OUTPUT_LVDS:
+			switcheroo_ddc = !!(vga_switcheroo_handler_flags() &
+					    VGA_SWITCHEROO_CAN_SWITCH_DDC);
+		/* fall-through */
+		default:
+			if (!nv_encoder->i2c)
 				break;
-		} else
-		if ((vga_switcheroo_handler_flags() &
-		     VGA_SWITCHEROO_CAN_SWITCH_DDC) &&
-		    nv_encoder->dcb->type == DCB_OUTPUT_LVDS &&
-		    nv_encoder->i2c) {
-			int ret;
-			vga_switcheroo_lock_ddc(dev->pdev);
-			ret = nvkm_probe_i2c(nv_encoder->i2c, 0x50);
-			vga_switcheroo_unlock_ddc(dev->pdev);
-			if (ret)
-				break;
-		} else
-		if (nv_encoder->i2c) {
+
+			if (switcheroo_ddc)
+				vga_switcheroo_lock_ddc(dev->pdev);
 			if (nvkm_probe_i2c(nv_encoder->i2c, 0x50))
-				break;
+				found = nv_encoder;
+			if (switcheroo_ddc)
+				vga_switcheroo_unlock_ddc(dev->pdev);
+
+			break;
 		}
+		if (found)
+			break;
 	}
 
-	/* eDP panel not detected, restore panel power GPIO to previous
-	 * state to avoid confusing the SOR for other output types.
-	 */
-	if (!nv_encoder && panel == 0)
-		nvkm_gpio_set(gpio, 0, DCB_GPIO_PANEL_POWER, 0xff, panel);
-
-	return nv_encoder;
+	return found;
 }
 
 static struct nouveau_encoder *
@@ -550,6 +521,19 @@ nouveau_connector_set_encoder(struct drm_connector *connector,
 	}
 }
 
+static void
+nouveau_connector_set_edid(struct nouveau_connector *nv_connector,
+			   struct edid *edid)
+{
+	if (nv_connector->edid != edid) {
+		struct edid *old_edid = nv_connector->edid;
+
+		drm_connector_update_edid_property(&nv_connector->base, edid);
+		kfree(old_edid);
+		nv_connector->edid = edid;
+	}
+}
+
 static enum drm_connector_status
 nouveau_connector_detect(struct drm_connector *connector, bool force)
 {
@@ -563,13 +547,6 @@ nouveau_connector_detect(struct drm_connector *connector, bool force)
 	int ret;
 	enum drm_connector_status conn_status = connector_status_disconnected;
 
-	/* Cleanup the previous EDID block. */
-	if (nv_connector->edid) {
-		drm_mode_connector_update_edid_property(connector, NULL);
-		kfree(nv_connector->edid);
-		nv_connector->edid = NULL;
-	}
-
 	/* Outputs are only polled while runtime active, so resuming the
 	 * device here is unnecessary (and would deadlock upon runtime suspend
 	 * because it waits for polling to finish). We do however, want to
@@ -580,22 +557,25 @@ nouveau_connector_detect(struct drm_connector *connector, bool force)
 		pm_runtime_get_noresume(dev->dev);
 	} else {
 		ret = pm_runtime_get_sync(dev->dev);
-		if (ret < 0 && ret != -EACCES)
+		if (ret < 0 && ret != -EACCES) {
+			pm_runtime_put_autosuspend(dev->dev);
+			nouveau_connector_set_edid(nv_connector, NULL);
 			return conn_status;
+		}
 	}
 
 	nv_encoder = nouveau_connector_ddc_detect(connector);
 	if (nv_encoder && (i2c = nv_encoder->i2c) != NULL) {
+		struct edid *new_edid;
+
 		if ((vga_switcheroo_handler_flags() &
 		     VGA_SWITCHEROO_CAN_SWITCH_DDC) &&
 		    nv_connector->type == DCB_CONNECTOR_LVDS)
-			nv_connector->edid = drm_get_edid_switcheroo(connector,
-								     i2c);
+			new_edid = drm_get_edid_switcheroo(connector, i2c);
 		else
-			nv_connector->edid = drm_get_edid(connector, i2c);
+			new_edid = drm_get_edid(connector, i2c);
 
-		drm_mode_connector_update_edid_property(connector,
-							nv_connector->edid);
+		nouveau_connector_set_edid(nv_connector, new_edid);
 		if (!nv_connector->edid) {
 			NV_ERROR(drm, "DDC responded, but no EDID for %s\n",
 				 connector->name);
@@ -628,6 +608,8 @@ nouveau_connector_detect(struct drm_connector *connector, bool force)
 		nouveau_connector_set_encoder(connector, nv_encoder);
 		conn_status = connector_status_connected;
 		goto out;
+	} else {
+		nouveau_connector_set_edid(nv_connector, NULL);
 	}
 
 	nv_encoder = nouveau_connector_of_detect(connector);
@@ -670,24 +652,20 @@ nouveau_connector_detect_lvds(struct drm_connector *connector, bool force)
 	struct nouveau_drm *drm = nouveau_drm(dev);
 	struct nouveau_connector *nv_connector = nouveau_connector(connector);
 	struct nouveau_encoder *nv_encoder = NULL;
+	struct edid *edid = NULL;
 	enum drm_connector_status status = connector_status_disconnected;
-
-	/* Cleanup the previous EDID block. */
-	if (nv_connector->edid) {
-		drm_mode_connector_update_edid_property(connector, NULL);
-		kfree(nv_connector->edid);
-		nv_connector->edid = NULL;
-	}
 
 	nv_encoder = find_encoder(connector, DCB_OUTPUT_LVDS);
 	if (!nv_encoder)
-		return connector_status_disconnected;
+		goto out;
 
 	/* Try retrieving EDID via DDC */
 	if (!drm->vbios.fp_no_ddc) {
 		status = nouveau_connector_detect(connector, force);
-		if (status == connector_status_connected)
+		if (status == connector_status_connected) {
+			edid = nv_connector->edid;
 			goto out;
+		}
 	}
 
 	/* On some laptops (Sony, i'm looking at you) there appears to
@@ -700,7 +678,8 @@ nouveau_connector_detect_lvds(struct drm_connector *connector, bool force)
 	 * valid - it's not (rh#613284)
 	 */
 	if (nv_encoder->dcb->lvdsconf.use_acpi_for_edid) {
-		if ((nv_connector->edid = nouveau_acpi_edid(dev, connector))) {
+		edid = nouveau_acpi_edid(dev, connector);
+		if (edid) {
 			status = connector_status_connected;
 			goto out;
 		}
@@ -720,12 +699,10 @@ nouveau_connector_detect_lvds(struct drm_connector *connector, bool force)
 	 * stored for the panel stored in them.
 	 */
 	if (!drm->vbios.fp_no_ddc) {
-		struct edid *edid =
-			(struct edid *)nouveau_bios_embedded_edid(dev);
+		edid = (struct edid *)nouveau_bios_embedded_edid(dev);
 		if (edid) {
-			nv_connector->edid =
-					kmemdup(edid, EDID_LENGTH, GFP_KERNEL);
-			if (nv_connector->edid)
+			edid = kmemdup(edid, EDID_LENGTH, GFP_KERNEL);
+			if (edid)
 				status = connector_status_connected;
 		}
 	}
@@ -738,8 +715,9 @@ out:
 		status = connector_status_unknown;
 #endif
 
-	drm_mode_connector_update_edid_property(connector, nv_connector->edid);
-	nouveau_connector_set_encoder(connector, nv_encoder);
+	nouveau_connector_set_edid(nv_connector, edid);
+	if (nv_encoder)
+		nouveau_connector_set_encoder(connector, nv_encoder);
 	return status;
 }
 
@@ -956,6 +934,9 @@ nouveau_connector_get_modes(struct drm_connector *connector)
 		struct drm_display_mode *mode;
 
 		mode = drm_mode_duplicate(dev, nv_connector->native_mode);
+		if (!mode)
+			return 0;
+
 		drm_mode_probed_add(connector, mode);
 		ret = 1;
 	}
@@ -964,7 +945,7 @@ nouveau_connector_get_modes(struct drm_connector *connector)
 	 * "native" mode as some VBIOS tables require us to use the
 	 * pixel clock as part of the lookup...
 	 */
-	if (connector->connector_type == DRM_MODE_CONNECTOR_LVDS)
+	if (connector->connector_type == DRM_MODE_CONNECTOR_LVDS && nv_connector->native_mode)
 		nouveau_connector_detect_depth(connector);
 
 	if (nv_encoder->dcb->type == DCB_OUTPUT_TV)
@@ -1007,7 +988,7 @@ get_tmds_link_bandwidth(struct drm_connector *connector, bool hdmi)
 		return 112000;
 }
 
-static int
+static enum drm_mode_status
 nouveau_connector_mode_valid(struct drm_connector *connector,
 			     struct drm_display_mode *mode)
 {
@@ -1350,7 +1331,7 @@ nouveau_connector_create(struct drm_device *dev, int index)
 	}
 
 	/* HDMI 3D support */
-	if ((disp->disp.oclass >= G82_DISP)
+	if ((disp->disp.object.oclass >= G82_DISP)
 	    && ((type == DRM_MODE_CONNECTOR_DisplayPort)
 		|| (type == DRM_MODE_CONNECTOR_eDP)
 		|| (type == DRM_MODE_CONNECTOR_HDMIA)))
@@ -1372,7 +1353,7 @@ nouveau_connector_create(struct drm_device *dev, int index)
 	case DCB_CONNECTOR_LVDS_SPWG:
 	case DCB_CONNECTOR_eDP:
 		/* see note in nouveau_connector_set_property() */
-		if (disp->disp.oclass < NV50_DISP) {
+		if (disp->disp.object.oclass < NV50_DISP) {
 			nv_connector->scaling_mode = DRM_MODE_SCALE_FULLSCREEN;
 			break;
 		}
@@ -1395,8 +1376,8 @@ nouveau_connector_create(struct drm_device *dev, int index)
 		break;
 	}
 
-	ret = nvif_notify_init(&disp->disp, nouveau_connector_hotplug, true,
-			       NV04_DISP_NTFY_CONN,
+	ret = nvif_notify_init(&disp->disp.object, nouveau_connector_hotplug,
+			       true, NV04_DISP_NTFY_CONN,
 			       &(struct nvif_notify_conn_req_v0) {
 				.mask = NVIF_NOTIFY_CONN_V0_ANY,
 				.conn = index,

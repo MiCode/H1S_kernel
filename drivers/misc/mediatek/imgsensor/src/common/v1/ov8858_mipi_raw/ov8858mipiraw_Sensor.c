@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /*****************************************************************************
@@ -25,13 +17,13 @@
  * ------------
  *	 Source code of Sensor driver
  *	PengtaoFan
- *  0528:修改get_info,??mipi ??? *  0604:�?init preview 延时??0ms
- *  0604:??�init setting�?stream on,?otp??�?
- *  0608:??�ov???setting
- *  0703:for  修改?non continue mode 4800
+ *  0528:ä¿®æ¹get_info,??mipi ??? *  0604:å¢?init preview å»¶æ¶??0ms
+ *  0604:??­init settingä¸?stream on,?otp??è®?
+ *  0608:??°ov???setting
+ *  0703:for  ä¿®æ¹?non continue mode 4800
  *  0703:for  crc test 0x5002=00
- *  ---RD ??????? *  0714 ??�capture setting full size@30fps 24fps 15fps
- *  15072115172729: ??�nick??full size 30fps setting，for ???size �???��??
+ *  ---RD ??????? *  0714 ??¥capture setting full size@30fps 24fps 15fps
+ *  15072115172729: ??¥nick??full size 30fps settingï¼for ???size ä¸???®é??
  *------------------------------------------------------------------------------
  * Upper this line, this part is controlled by CC/CQ. DO NOT MODIFY!!
  *============================================================================

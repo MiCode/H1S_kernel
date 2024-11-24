@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /*****************************************************************************
@@ -2053,8 +2045,6 @@ static kal_uint32 set_max_framerate_by_scenario(
 		    (frame_length > imgsensor_info.custom1.framelength)
 		  ? (frame_length - imgsensor_info.custom1.framelength) : 0;
 
-		if (imgsensor.dummy_line < 0)
-			imgsensor.dummy_line = 0;
 		imgsensor.frame_length =
 		    imgsensor_info.custom1.framelength + imgsensor.dummy_line;
 
@@ -2071,8 +2061,6 @@ static kal_uint32 set_max_framerate_by_scenario(
 		    (frame_length > imgsensor_info.custom2.framelength)
 		  ? (frame_length - imgsensor_info.custom2.framelength) : 0;
 
-		if (imgsensor.dummy_line < 0)
-			imgsensor.dummy_line = 0;
 		imgsensor.frame_length =
 		    imgsensor_info.custom2.framelength + imgsensor.dummy_line;
 
@@ -2089,8 +2077,6 @@ static kal_uint32 set_max_framerate_by_scenario(
 		    (frame_length > imgsensor_info.custom3.framelength)
 		  ? (frame_length - imgsensor_info.custom3.framelength) : 0;
 
-		if (imgsensor.dummy_line < 0)
-			imgsensor.dummy_line = 0;
 		imgsensor.frame_length =
 		    imgsensor_info.custom3.framelength + imgsensor.dummy_line;
 
@@ -2107,8 +2093,6 @@ static kal_uint32 set_max_framerate_by_scenario(
 		    (frame_length > imgsensor_info.custom4.framelength)
 		  ? (frame_length - imgsensor_info.custom4.framelength) : 0;
 
-		if (imgsensor.dummy_line < 0)
-			imgsensor.dummy_line = 0;
 		imgsensor.frame_length =
 		    imgsensor_info.custom4.framelength + imgsensor.dummy_line;
 
@@ -2125,8 +2109,6 @@ static kal_uint32 set_max_framerate_by_scenario(
 		    (frame_length > imgsensor_info.custom5.framelength)
 		  ? (frame_length - imgsensor_info.custom5.framelength) : 0;
 
-		if (imgsensor.dummy_line < 0)
-			imgsensor.dummy_line = 0;
 		imgsensor.frame_length =
 		    imgsensor_info.custom1.framelength + imgsensor.dummy_line;
 

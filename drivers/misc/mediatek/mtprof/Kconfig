@@ -1,40 +1,19 @@
 config MTPROF
-	bool "Enable MTK profiler/debugger tool"
+	tristate "Enable MTK profiler/debugger tool"
+	default n
 	help
-	  CONFIG_MTPROF define if mtk profiling tools should be built-in or
-	  not. It includes workqueue debugger, signal debugger, bootprof, and
-	  other misc tools. If you are not sure about whether to enable it or
-	  not, please set n.
-
-config BOOTPROF_THRESHOLD_MS
-        int "the print threshold of kernel driver init duration"
-        depends on MTK_ENG_BUILD
-        default 30
-        help
-          BOOTPROF_THRESHOLD_MS(unit: millisec)is the threshold for
-          bootprof log print out or not. If driver init duration is
-          greater than threshold, bootprof log is print. Opposite is not.
-          If you are not sure about whether to enable it or not,
-          please do not set
-
-if MTPROF
+	  CONFIG_MTPROF define if mtk profiling/debugger tools should be
+	  built-in, module or not. It includes bootprof logger which is for
+	  boot time profiling. If you are not sure about whether to
+	  enable it or not, please set n.
 
 config MTK_SCHED_MONITOR
 	bool "mtk scheduler monitor"
-	default n
 	help
 	  MTK_SCHED_MONITOR is used to monitor ISR/SOFTIRQ/TASKLET/HRTIMER
 	  /STIMER/RCU processing duration and IRQ disabled duration. Say Y
 	  here to enable monitor. If you are not sure about whether to enable
 	  it or not, please set n.
-
-config MTK_WQ_DEBUG
-	bool "mtk workqueue debug"
-	help
-	  CONFIG_MTK_WQ_DEBUG define if workqueue debugging should be
-	  built-in or not. It will add logs to monitor work activation,
-	  queue, and execution. Say Y to enable mtk workqueue debug, or
-	  if you are not sure about this, please set n.
 
 config MTK_IRQ_COUNT_TRACER
 	bool "mtk irq count tracer"
@@ -70,5 +49,3 @@ config MTK_PREEMPT_TRACER
 	  long time.
 
 	  If unsure, say N.
-
-endif # MTPROF

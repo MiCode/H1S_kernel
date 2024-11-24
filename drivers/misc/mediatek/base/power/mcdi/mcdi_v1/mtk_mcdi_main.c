@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 #include <linux/cpu.h>
 #include <linux/proc_fs.h>
@@ -34,7 +26,6 @@
 #include <mtk_mcdi_profile.h>
 #include <mtk_mcdi_util.h>
 #include <mtk_mcdi_cpc.h>
-#include <mtk_mcdi_mcupm.h>
 
 #include <mtk_mcdi_plat.h>
 #include <mtk_mcdi_reg.h>
@@ -43,8 +34,9 @@
 
 #include <mtk_mcdi_governor_hint.h>
 
+#define CREATE_TRACE_POINTS
 #include <trace/events/mtk_idle_event.h>
-#include <linux/irqchip/mtk-gic-extend.h>
+/* #include <linux/irqchip/mtk-gic-extend.h> */
 
 #define MCDI_DEBUG_INFO_MAGIC_NUM           0x1eef9487
 #define MCDI_DEBUG_INFO_NON_REPLACE_OFFSET  0x0008
@@ -121,13 +113,6 @@ mcdi_set_state_res(int cpu_type, int state, unsigned int val)
 {
 }
 
-int __attribute__((weak))
-mtk_idle_model_enter(int cpu, int IdleModelType)
-{
-	soidle_enter(cpu);
-	return 0;
-}
-
 void wakeup_all_cpu(void)
 {
 	int cpu = 0;
@@ -171,8 +156,7 @@ static int mcdi_stress_task(void *arg)
 static void mcdi_stress_start(void)
 {
 	int i;
-	char name[24] = {0};
-	int ret = 0;
+	char name[16] = {0};
 
 	if (mcdi_stress_en)
 		return;
@@ -180,9 +164,7 @@ static void mcdi_stress_start(void)
 	mcdi_stress_en = true;
 
 	for (i = 0; i < NF_CPU; i++) {
-		ret = scnprintf(name, sizeof(name), "mcdi_stress_task%d", i);
-		if (ret == 0)
-			pr_info("[mcdi]%s task naming fail\n", __func__);
+		snprintf(name, sizeof(name), "mcdi_stress_task%d", i);
 
 		mcdi_stress_tsk[i] =
 			kthread_create(mcdi_stress_task, NULL, name);
@@ -503,14 +485,14 @@ parse_cmd:
 	} else if (!strncmp(cmd_str, "remain", sizeof("remain"))) {
 
 		if (param_cnt == 1 && mcdi_is_cpc_mode())
-			mcdi_cluster_chk_res_each_core_set(!!param_0);
+			get_mcdi_cluster_dev()->chk_res_each_core = !!param_0;
 
 		return count;
 
 	} else if (!strncmp(cmd_str, "mcdi_timer", sizeof("mcdi_timer"))) {
 
 		if (param_cnt == 1 && mcdi_is_cpc_mode())
-			mcdi_cluster_tmr_en_set(!!param_0);
+			get_mcdi_cluster_dev()->tmr_en = !!param_0;
 
 		return count;
 
@@ -552,7 +534,7 @@ static int mcdi_procfs_init(void)
 
 static void __go_to_wfi(int cpu)
 {
-/*	remove_cpu_from_prefer_schedule_domain(cpu); */
+	/* remove_cpu_from_prefer_schedule_domain(cpu); */
 
 	trace_rgidle_rcuidle(cpu, 1);
 
@@ -563,7 +545,7 @@ static void __go_to_wfi(int cpu)
 
 	trace_rgidle_rcuidle(cpu, 0);
 
-/*	add_cpu_to_prefer_schedule_domain(cpu); */
+	/* add_cpu_to_prefer_schedule_domain(cpu); */
 }
 
 void mcdi_heart_beat_log_dump(void)
@@ -643,7 +625,7 @@ void mcdi_heart_beat_log_dump(void)
 	mcdi_buf_append(buf, ", system_idle_hint = %08x",
 						system_idle_hint_result_raw());
 
-	printk_deferred("[mcdi]%s\n", get_mcdi_buf(buf));
+	printk_deferred("%s\n", get_mcdi_buf(buf));
 }
 
 int wfi_enter(int cpu)
@@ -712,8 +694,6 @@ int mcdi_enter(int cpu)
 
 		aee_rr_rec_mcdi_val(cpu, MCDI_STATE_CPU_OFF << 16 | 0xff);
 
-		mcdi_cluster_counter_set_cpu_residency(cpu);
-
 		mtk_enter_idle_state(MTK_MCDI_CPU_MODE);
 
 		aee_rr_rec_mcdi_val(cpu, 0x0);
@@ -729,8 +709,6 @@ int mcdi_enter(int cpu)
 
 		aee_rr_rec_mcdi_val(cpu, MCDI_STATE_CLUSTER_OFF << 16 | 0xff);
 
-		mcdi_cluster_counter_set_cpu_residency(cpu);
-
 		mtk_enter_idle_state(MTK_MCDI_CLUSTER_MODE);
 
 		aee_rr_rec_mcdi_val(cpu, 0x0);
@@ -742,7 +720,7 @@ int mcdi_enter(int cpu)
 		break;
 	case MCDI_STATE_SODI:
 
-		mtk_idle_model_enter(cpu, mcdi_get_mtk_idle_mode());
+		soidle_enter(cpu);
 
 		break;
 	case MCDI_STATE_DPIDLE:
@@ -754,8 +732,6 @@ int mcdi_enter(int cpu)
 
 		soidle3_enter(cpu);
 
-		break;
-	default:
 		break;
 	}
 
@@ -840,21 +816,21 @@ static int mcdi_cpuhp_notify_enter(unsigned int cpu)
 static int mcdi_cpuhp_notify_leave(unsigned int cpu)
 {
 	mcdi_avail_cpu_cluster_update();
-
 	__mcdi_pause(MCDI_PAUSE_BY_HOTPLUG, false);
 
 	return 0;
 }
 
-static void mcdi_hotplug_cb_init(void)
+static int mcdi_hotplug_cb_init(void)
 {
 	cpuhp_setup_state_nocalls(CPUHP_BP_PREPARE_DYN_END, "mcdi_cb",
 				mcdi_cpuhp_notify_enter,
 				mcdi_cpuhp_notify_leave);
-
 	cpuhp_setup_state_nocalls(CPUHP_AP_ONLINE_DYN, "mcdi_cb",
 				mcdi_cpuhp_notify_leave,
 				mcdi_cpuhp_notify_enter);
+
+	return 0;
 }
 
 static void __init mcdi_pm_qos_init(void)

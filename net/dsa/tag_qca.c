@@ -38,7 +38,7 @@
 
 static struct sk_buff *qca_tag_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	struct dsa_slave_priv *p = netdev_priv(dev);
+	struct dsa_port *dp = dsa_slave_to_port(dev);
 	u16 *phdr, hdr;
 
 	if (skb_cow_head(skb, QCA_HDR_LEN) < 0)
@@ -51,8 +51,7 @@ static struct sk_buff *qca_tag_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	/* Set the version field, and set destination port information */
 	hdr = QCA_HDR_VERSION << QCA_HDR_XMIT_VERSION_S |
-		QCA_HDR_XMIT_FROM_CPU |
-		BIT(p->dp->index);
+		QCA_HDR_XMIT_FROM_CPU | BIT(dp->index);
 
 	*phdr = htons(hdr);
 
@@ -62,9 +61,6 @@ static struct sk_buff *qca_tag_xmit(struct sk_buff *skb, struct net_device *dev)
 static struct sk_buff *qca_tag_rcv(struct sk_buff *skb, struct net_device *dev,
 				   struct packet_type *pt)
 {
-	struct dsa_switch_tree *dst = dev->dsa_ptr;
-	struct dsa_port *cpu_dp = dsa_get_cpu_port(dst);
-	struct dsa_switch *ds;
 	u8 ver;
 	int port;
 	__be16 *phdr, hdr;
@@ -89,23 +85,12 @@ static struct sk_buff *qca_tag_rcv(struct sk_buff *skb, struct net_device *dev,
 	memmove(skb->data - ETH_HLEN, skb->data - ETH_HLEN - QCA_HDR_LEN,
 		ETH_HLEN - QCA_HDR_LEN);
 
-	/* This protocol doesn't support cascading multiple switches so it's
-	 * safe to assume the switch is first in the tree
-	 */
-	ds = cpu_dp->ds;
-	if (!ds)
-		return NULL;
-
 	/* Get source port information */
 	port = (hdr & QCA_HDR_RECV_SOURCE_PORT_MASK);
-	if (!ds->ports[port].netdev)
-		return NULL;
 
-	if (unlikely(ds->cpu_port_mask & BIT(port)))
+	skb->dev = dsa_master_find_slave(dev, 0, port);
+	if (!skb->dev)
 		return NULL;
-
-	/* Update skb & forward the frame accordingly */
-	skb->dev = ds->ports[port].netdev;
 
 	return skb;
 }

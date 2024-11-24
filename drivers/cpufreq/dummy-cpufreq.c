@@ -19,7 +19,8 @@ static int dummy_cpufreq_target_index(struct cpufreq_policy *policy,
 
 static int dummy_cpufreq_driver_init(struct cpufreq_policy *policy)
 {
-	return cpufreq_table_validate_and_show(policy, freq_table);
+	policy->freq_table = freq_table;
+	return 0;
 }
 
 static unsigned int dummy_cpufreq_get(unsigned int cpu)

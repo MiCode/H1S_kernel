@@ -64,7 +64,7 @@
 static DEFINE_MUTEX(drbd_main_mutex);
 static int drbd_open(struct block_device *bdev, fmode_t mode);
 static void drbd_release(struct gendisk *gd, fmode_t mode);
-static void md_sync_timer_fn(unsigned long data);
+static void md_sync_timer_fn(struct timer_list *t);
 static int w_bitmap_io(struct drbd_work *w, int unused);
 
 MODULE_AUTHOR("Philipp Reisner <phil@linbit.com>, "
@@ -124,11 +124,11 @@ struct kmem_cache *drbd_request_cache;
 struct kmem_cache *drbd_ee_cache;	/* peer requests */
 struct kmem_cache *drbd_bm_ext_cache;	/* bitmap extents */
 struct kmem_cache *drbd_al_ext_cache;	/* activity log extents */
-mempool_t *drbd_request_mempool;
-mempool_t *drbd_ee_mempool;
-mempool_t *drbd_md_io_page_pool;
-struct bio_set *drbd_md_io_bio_set;
-struct bio_set *drbd_io_bio_set;
+mempool_t drbd_request_mempool;
+mempool_t drbd_ee_mempool;
+mempool_t drbd_md_io_page_pool;
+struct bio_set drbd_md_io_bio_set;
+struct bio_set drbd_io_bio_set;
 
 /* I do not use a standard mempool, because:
    1) I want to hand out the pre-allocated objects first.
@@ -153,10 +153,10 @@ struct bio *bio_alloc_drbd(gfp_t gfp_mask)
 {
 	struct bio *bio;
 
-	if (!drbd_md_io_bio_set)
+	if (!bioset_initialized(&drbd_md_io_bio_set))
 		return bio_alloc(gfp_mask, 1);
 
-	bio = bio_alloc_bioset(gfp_mask, 1, drbd_md_io_bio_set);
+	bio = bio_alloc_bioset(gfp_mask, 1, &drbd_md_io_bio_set);
 	if (!bio)
 		return NULL;
 	return bio;
@@ -195,7 +195,7 @@ void tl_release(struct drbd_connection *connection, unsigned int barrier_nr,
 		unsigned int set_size)
 {
 	struct drbd_request *r;
-	struct drbd_request *req = NULL;
+	struct drbd_request *req = NULL, *tmp = NULL;
 	int expect_epoch = 0;
 	int expect_size = 0;
 
@@ -249,8 +249,11 @@ void tl_release(struct drbd_connection *connection, unsigned int barrier_nr,
 	 * to catch requests being barrier-acked "unexpectedly".
 	 * It usually should find the same req again, or some READ preceding it. */
 	list_for_each_entry(req, &connection->transfer_log, tl_requests)
-		if (req->epoch == expect_epoch)
+		if (req->epoch == expect_epoch) {
+			tmp = req;
 			break;
+		}
+	req = list_prepare_entry(tmp, &connection->transfer_log, tl_requests);
 	list_for_each_entry_safe_from(req, r, &connection->transfer_log, tl_requests) {
 		if (req->epoch != expect_epoch)
 			break;
@@ -513,7 +516,8 @@ static void drbd_calc_cpu_mask(cpumask_var_t *cpu_mask)
 {
 	unsigned int *resources_per_cpu, min_index = ~0;
 
-	resources_per_cpu = kzalloc(nr_cpu_ids * sizeof(*resources_per_cpu), GFP_KERNEL);
+	resources_per_cpu = kcalloc(nr_cpu_ids, sizeof(*resources_per_cpu),
+				    GFP_KERNEL);
 	if (resources_per_cpu) {
 		struct drbd_resource *resource;
 		unsigned int cpu, min = ~0;
@@ -1848,19 +1852,13 @@ int drbd_send(struct drbd_connection *connection, struct socket *sock,
 	      void *buf, size_t size, unsigned msg_flags)
 {
 	struct kvec iov = {.iov_base = buf, .iov_len = size};
-	struct msghdr msg;
+	struct msghdr msg = {.msg_flags = msg_flags | MSG_NOSIGNAL};
 	int rv, sent = 0;
 
 	if (!sock)
 		return -EBADR;
 
 	/* THINK  if (signal_pending) return ... ? */
-
-	msg.msg_name       = NULL;
-	msg.msg_namelen    = 0;
-	msg.msg_control    = NULL;
-	msg.msg_controllen = 0;
-	msg.msg_flags      = msg_flags | MSG_NOSIGNAL;
 
 	iov_iter_kvec(&msg.msg_iter, WRITE | ITER_KVEC, &iov, 1, size);
 
@@ -2024,14 +2022,10 @@ void drbd_init_set_defaults(struct drbd_device *device)
 	device->unplug_work.cb  = w_send_write_hint;
 	device->bm_io_work.w.cb = w_bitmap_io;
 
-	setup_timer(&device->resync_timer, resync_timer_fn,
-			(unsigned long)device);
-	setup_timer(&device->md_sync_timer, md_sync_timer_fn,
-			(unsigned long)device);
-	setup_timer(&device->start_resync_timer, start_resync_timer_fn,
-			(unsigned long)device);
-	setup_timer(&device->request_timer, request_timer_fn,
-			(unsigned long)device);
+	timer_setup(&device->resync_timer, resync_timer_fn, 0);
+	timer_setup(&device->md_sync_timer, md_sync_timer_fn, 0);
+	timer_setup(&device->start_resync_timer, start_resync_timer_fn, 0);
+	timer_setup(&device->request_timer, request_timer_fn, 0);
 
 	init_waitqueue_head(&device->misc_wait);
 	init_waitqueue_head(&device->state_wait);
@@ -2108,30 +2102,16 @@ static void drbd_destroy_mempools(void)
 
 	/* D_ASSERT(device, atomic_read(&drbd_pp_vacant)==0); */
 
-	if (drbd_io_bio_set)
-		bioset_free(drbd_io_bio_set);
-	if (drbd_md_io_bio_set)
-		bioset_free(drbd_md_io_bio_set);
-	if (drbd_md_io_page_pool)
-		mempool_destroy(drbd_md_io_page_pool);
-	if (drbd_ee_mempool)
-		mempool_destroy(drbd_ee_mempool);
-	if (drbd_request_mempool)
-		mempool_destroy(drbd_request_mempool);
-	if (drbd_ee_cache)
-		kmem_cache_destroy(drbd_ee_cache);
-	if (drbd_request_cache)
-		kmem_cache_destroy(drbd_request_cache);
-	if (drbd_bm_ext_cache)
-		kmem_cache_destroy(drbd_bm_ext_cache);
-	if (drbd_al_ext_cache)
-		kmem_cache_destroy(drbd_al_ext_cache);
+	bioset_exit(&drbd_io_bio_set);
+	bioset_exit(&drbd_md_io_bio_set);
+	mempool_exit(&drbd_md_io_page_pool);
+	mempool_exit(&drbd_ee_mempool);
+	mempool_exit(&drbd_request_mempool);
+	kmem_cache_destroy(drbd_ee_cache);
+	kmem_cache_destroy(drbd_request_cache);
+	kmem_cache_destroy(drbd_bm_ext_cache);
+	kmem_cache_destroy(drbd_al_ext_cache);
 
-	drbd_io_bio_set      = NULL;
-	drbd_md_io_bio_set   = NULL;
-	drbd_md_io_page_pool = NULL;
-	drbd_ee_mempool      = NULL;
-	drbd_request_mempool = NULL;
 	drbd_ee_cache        = NULL;
 	drbd_request_cache   = NULL;
 	drbd_bm_ext_cache    = NULL;
@@ -2144,18 +2124,7 @@ static int drbd_create_mempools(void)
 {
 	struct page *page;
 	const int number = (DRBD_MAX_BIO_SIZE/PAGE_SIZE) * drbd_minor_count;
-	int i;
-
-	/* prepare our caches and mempools */
-	drbd_request_mempool = NULL;
-	drbd_ee_cache        = NULL;
-	drbd_request_cache   = NULL;
-	drbd_bm_ext_cache    = NULL;
-	drbd_al_ext_cache    = NULL;
-	drbd_pp_pool         = NULL;
-	drbd_md_io_page_pool = NULL;
-	drbd_md_io_bio_set   = NULL;
-	drbd_io_bio_set      = NULL;
+	int i, ret;
 
 	/* caches */
 	drbd_request_cache = kmem_cache_create(
@@ -2179,26 +2148,26 @@ static int drbd_create_mempools(void)
 		goto Enomem;
 
 	/* mempools */
-	drbd_io_bio_set = bioset_create(BIO_POOL_SIZE, 0, 0);
-	if (drbd_io_bio_set == NULL)
+	ret = bioset_init(&drbd_io_bio_set, BIO_POOL_SIZE, 0, 0);
+	if (ret)
 		goto Enomem;
 
-	drbd_md_io_bio_set = bioset_create(DRBD_MIN_POOL_PAGES, 0,
-					   BIOSET_NEED_BVECS);
-	if (drbd_md_io_bio_set == NULL)
+	ret = bioset_init(&drbd_md_io_bio_set, DRBD_MIN_POOL_PAGES, 0,
+			  BIOSET_NEED_BVECS);
+	if (ret)
 		goto Enomem;
 
-	drbd_md_io_page_pool = mempool_create_page_pool(DRBD_MIN_POOL_PAGES, 0);
-	if (drbd_md_io_page_pool == NULL)
+	ret = mempool_init_page_pool(&drbd_md_io_page_pool, DRBD_MIN_POOL_PAGES, 0);
+	if (ret)
 		goto Enomem;
 
-	drbd_request_mempool = mempool_create_slab_pool(number,
-		drbd_request_cache);
-	if (drbd_request_mempool == NULL)
+	ret = mempool_init_slab_pool(&drbd_request_mempool, number,
+				     drbd_request_cache);
+	if (ret)
 		goto Enomem;
 
-	drbd_ee_mempool = mempool_create_slab_pool(number, drbd_ee_cache);
-	if (drbd_ee_mempool == NULL)
+	ret = mempool_init_slab_pool(&drbd_ee_mempool, number, drbd_ee_cache);
+	if (ret)
 		goto Enomem;
 
 	/* drbd's page pool */
@@ -2289,7 +2258,6 @@ void drbd_destroy_device(struct kref *kref)
 		kref_put(&peer_device->connection->kref, drbd_destroy_connection);
 		kfree(peer_device);
 	}
-	memset(device, 0xfd, sizeof(*device));
 	kfree(device);
 	kref_put(&resource->kref, drbd_destroy_resource);
 }
@@ -2382,7 +2350,6 @@ void drbd_destroy_resource(struct kref *kref)
 	idr_destroy(&resource->devices);
 	free_cpumask_var(resource->cpu_mask);
 	kfree(resource->name);
-	memset(resource, 0xf2, sizeof(*resource));
 	kfree(resource);
 }
 
@@ -2779,7 +2746,6 @@ void drbd_destroy_connection(struct kref *kref)
 	drbd_free_socket(&connection->data);
 	kfree(connection->int_dig_in);
 	kfree(connection->int_dig_vv);
-	memset(connection, 0xfc, sizeof(*connection));
 	kfree(connection);
 	kref_put(&resource->kref, drbd_destroy_resource);
 }
@@ -2801,7 +2767,7 @@ static int init_submitter(struct drbd_device *device)
 enum drbd_ret_code drbd_create_device(struct drbd_config_context *adm_ctx, unsigned int minor)
 {
 	struct drbd_resource *resource = adm_ctx->resource;
-	struct drbd_connection *connection;
+	struct drbd_connection *connection, *n;
 	struct drbd_device *device;
 	struct drbd_peer_device *peer_device, *tmp_peer_device;
 	struct gendisk *disk;
@@ -2827,7 +2793,7 @@ enum drbd_ret_code drbd_create_device(struct drbd_config_context *adm_ctx, unsig
 
 	drbd_init_set_defaults(device);
 
-	q = blk_alloc_queue(GFP_KERNEL);
+	q = blk_alloc_queue_node(GFP_KERNEL, NUMA_NO_NODE, &resource->req_lock);
 	if (!q)
 		goto out_no_q;
 	device->rq_queue = q;
@@ -2859,7 +2825,6 @@ enum drbd_ret_code drbd_create_device(struct drbd_config_context *adm_ctx, unsig
 	/* Setting the max_hw_sectors to an odd value of 8kibyte here
 	   This triggers a max_bio_size message upon first attach or connect */
 	blk_queue_max_hw_sectors(q, DRBD_MAX_BIO_SIZE_SAFE >> 8);
-	q->queue_lock = &resource->req_lock;
 
 	device->md_io.page = alloc_page(GFP_KERNEL);
 	if (!device->md_io.page)
@@ -2930,7 +2895,7 @@ enum drbd_ret_code drbd_create_device(struct drbd_config_context *adm_ctx, unsig
 out_idr_remove_vol:
 	idr_remove(&connection->peer_devices, vnr);
 out_idr_remove_from_resource:
-	for_each_connection(connection, resource) {
+	for_each_connection_safe(connection, n, resource) {
 		peer_device = idr_remove(&connection->peer_devices, vnr);
 		if (peer_device)
 			kref_put(&connection->kref, drbd_destroy_connection);
@@ -3022,7 +2987,7 @@ static int __init drbd_init(void)
 		goto fail;
 
 	err = -ENOMEM;
-	drbd_proc = proc_create_data("drbd", S_IFREG | S_IRUGO , NULL, &drbd_proc_fops, NULL);
+	drbd_proc = proc_create_single("drbd", S_IFREG | 0444 , NULL, drbd_seq_show);
 	if (!drbd_proc)	{
 		pr_err("unable to register proc file\n");
 		goto fail;
@@ -3534,10 +3499,12 @@ void drbd_uuid_new_current(struct drbd_device *device) __must_hold(local)
 void drbd_uuid_set_bm(struct drbd_device *device, u64 val) __must_hold(local)
 {
 	unsigned long flags;
-	if (device->ldev->md.uuid[UI_BITMAP] == 0 && val == 0)
-		return;
-
 	spin_lock_irqsave(&device->ldev->md.uuid_lock, flags);
+	if (device->ldev->md.uuid[UI_BITMAP] == 0 && val == 0) {
+		spin_unlock_irqrestore(&device->ldev->md.uuid_lock, flags);
+		return;
+	}
+
 	if (val == 0) {
 		drbd_uuid_move_history(device);
 		device->ldev->md.uuid[UI_HISTORY_START] = device->ldev->md.uuid[UI_BITMAP];
@@ -3722,9 +3689,9 @@ int drbd_md_test_flag(struct drbd_backing_dev *bdev, int flag)
 	return (bdev->md.flags & flag) != 0;
 }
 
-static void md_sync_timer_fn(unsigned long data)
+static void md_sync_timer_fn(struct timer_list *t)
 {
-	struct drbd_device *device = (struct drbd_device *) data;
+	struct drbd_device *device = from_timer(device, t, md_sync_timer);
 	drbd_device_post_work(device, MD_SYNC);
 }
 

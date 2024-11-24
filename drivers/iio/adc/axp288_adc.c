@@ -108,22 +108,14 @@ static const struct iio_chan_spec axp288_adc_channels[] = {
 	},
 };
 
-#define AXP288_ADC_MAP(_adc_channel_label, _consumer_dev_name,	\
-		_consumer_channel)				\
-	{							\
-		.adc_channel_label = _adc_channel_label,	\
-		.consumer_dev_name = _consumer_dev_name,	\
-		.consumer_channel = _consumer_channel,		\
-	}
-
 /* for consumer drivers */
 static struct iio_map axp288_adc_default_maps[] = {
-	AXP288_ADC_MAP("TS_PIN", "axp288-batt", "axp288-batt-temp"),
-	AXP288_ADC_MAP("PMIC_TEMP", "axp288-pmic", "axp288-pmic-temp"),
-	AXP288_ADC_MAP("GPADC", "axp288-gpadc", "axp288-system-temp"),
-	AXP288_ADC_MAP("BATT_CHG_I", "axp288-chrg", "axp288-chrg-curr"),
-	AXP288_ADC_MAP("BATT_DISCHRG_I", "axp288-chrg", "axp288-chrg-d-curr"),
-	AXP288_ADC_MAP("BATT_V", "axp288-batt", "axp288-batt-volt"),
+	IIO_MAP("TS_PIN", "axp288-batt", "axp288-batt-temp"),
+	IIO_MAP("PMIC_TEMP", "axp288-pmic", "axp288-pmic-temp"),
+	IIO_MAP("GPADC", "axp288-gpadc", "axp288-system-temp"),
+	IIO_MAP("BATT_CHG_I", "axp288-chrg", "axp288-chrg-curr"),
+	IIO_MAP("BATT_DISCHRG_I", "axp288-chrg", "axp288-chrg-d-curr"),
+	IIO_MAP("BATT_V", "axp288-batt", "axp288-batt-volt"),
 	{},
 };
 
@@ -213,6 +205,14 @@ static const struct dmi_system_id axp288_adc_ts_bias_override[] = {
 		},
 		.driver_data = (void *)(uintptr_t)AXP288_ADC_TS_BIAS_80UA,
 	},
+	{
+		/* Nuvision Solo 10 Draw */
+		.matches = {
+		  DMI_MATCH(DMI_SYS_VENDOR, "TMAX"),
+		  DMI_MATCH(DMI_PRODUCT_NAME, "TM101W610L"),
+		},
+		.driver_data = (void *)(uintptr_t)AXP288_ADC_TS_BIAS_80UA,
+	},
 	{}
 };
 
@@ -259,7 +259,6 @@ static int axp288_adc_initialize(struct axp288_adc_info *info)
 
 static const struct iio_info axp288_adc_iio_info = {
 	.read_raw = &axp288_adc_read_raw,
-	.driver_module = THIS_MODULE,
 };
 
 static int axp288_adc_probe(struct platform_device *pdev)

@@ -55,14 +55,16 @@ static s32 cmdq_sec_check_sec(struct cmdq_pkt *pkt)
 
 static s32 cmdq_sec_append_metadata(
 	struct cmdq_pkt *pkt, const enum CMDQ_IWC_ADDR_METADATA_TYPE type,
-	const u64 base, const u32 offset, const u32 size, const u32 port)
+	const u64 base, const u32 offset, const u32 size, const u32 port, uint32_t sec_id)
 {
 	struct cmdq_sec_data *sec_data;
 	struct cmdq_sec_addr_meta *meta;
 	s32 idx, max, ret;
 
-	cmdq_log("pkt:%p type:%u base:%#llx offset:%#x size:%#x port:%#x",
-		pkt, type, base, offset, size, port);
+	cmdq_log("pkt:%p type:%u base:%#llx offset:%#x size:%#x port:%#x sec_id:%d",
+		pkt, type, base, offset, size, port, sec_id);
+	cmdq_msg("%s pkt:%p type:%u base:%#llx offset:%#x size:%#x port:%#x sec_id:%d",
+		__func__, pkt, type, base, offset, size, port, sec_id);
 
 	ret = cmdq_sec_check_sec(pkt);
 	if (ret < 0)
@@ -102,6 +104,8 @@ static s32 cmdq_sec_append_metadata(
 	meta[idx].offset = offset;
 	meta[idx].size = size;
 	meta[idx].port = port;
+	meta[idx].useSecIdinMeta = 1;
+	meta[idx].sec_id = sec_id;
 	sec_data->addrMetadataCount += 1;
 	return 0;
 }
@@ -135,13 +139,15 @@ s32 cmdq_sec_pkt_set_data(struct cmdq_pkt *pkt, const u64 dapc_engine,
 }
 EXPORT_SYMBOL(cmdq_sec_pkt_set_data);
 
-void cmdq_sec_pkt_set_mtee(struct cmdq_pkt *pkt, const bool enable)
+void cmdq_sec_pkt_set_mtee(struct cmdq_pkt *pkt, const bool enable, const int32_t sec_id)
 {
 	struct cmdq_sec_data *sec_data =
 		(struct cmdq_sec_data *)pkt->sec_data;
 	sec_data->mtee = enable;
-	cmdq_msg("%s pkt:%p mtee:%d\n",
-		__func__, pkt, ((struct cmdq_sec_data *)pkt->sec_data)->mtee);
+	sec_data->sec_id = sec_id;
+	cmdq_msg("%s pkt:%p mtee:%d sec_id:%d\n",
+		__func__, pkt, ((struct cmdq_sec_data *)pkt->sec_data)->mtee,
+		((struct cmdq_sec_data *)pkt->sec_data)->sec_id);
 }
 EXPORT_SYMBOL(cmdq_sec_pkt_set_mtee);
 
@@ -198,7 +204,7 @@ EXPORT_SYMBOL(cmdq_sec_pkt_set_payload);
 
 s32 cmdq_sec_pkt_write_reg(struct cmdq_pkt *pkt, u32 addr, u64 base,
 	const enum CMDQ_IWC_ADDR_METADATA_TYPE type,
-	const u32 offset, const u32 size, const u32 port)
+	const u32 offset, const u32 size, const u32 port, uint32_t sec_id)
 {
 	s32 ret;
 
@@ -213,7 +219,13 @@ s32 cmdq_sec_pkt_write_reg(struct cmdq_pkt *pkt, u32 addr, u64 base,
 	if (ret)
 		return ret;
 
-	return cmdq_sec_append_metadata(pkt, type, base, offset, size, port);
+	/* check boundary size and append at first before append metadata */
+	if (unlikely(!pkt->avail_buf_size)) {
+		if (cmdq_pkt_add_cmd_buffer(pkt) < 0)
+			return -ENOMEM;
+	}
+
+	return cmdq_sec_append_metadata(pkt, type, base, offset, size, port, sec_id);
 }
 EXPORT_SYMBOL(cmdq_sec_pkt_write_reg);
 

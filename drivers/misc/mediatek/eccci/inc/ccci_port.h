@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __CCCI_PORT_H__
@@ -61,6 +53,13 @@ int ccci_port_recv_skb(int md_id, int hif_id, struct sk_buff *skb,
  * and used to check whether all critical user exited.
  */
 int ccci_port_check_critical_user(int md_id);
+
+/*
+ * This API is called by ccci fsm,
+ * and used to check critical user only ccci_fsd exited.
+ */
+int ccci_port_critical_user_only_fsd(int md_id);
+
 /*
  * This API is called by ccci fsm,
  * and used to get critical user status.

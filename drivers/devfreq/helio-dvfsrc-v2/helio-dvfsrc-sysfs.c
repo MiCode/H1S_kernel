@@ -1,21 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/device.h>
 #include <linux/kernel.h>
+#include <linux/soc/mediatek/mtk-pm-qos.h>
 #include <linux/pm_qos.h>
 #include <linux/sysfs.h>
-
+#include <linux/mutex.h>
 #include <helio-dvfsrc_v2.h>
 #include <helio-dvfsrc-opp.h>
 
@@ -30,13 +23,15 @@ __weak int dvfsrc_get_dvfs_freq_hopping_status(void)
 	return 0;
 }
 
-static struct pm_qos_request dvfsrc_memory_bw_req;
-static struct pm_qos_request dvfsrc_ddr_opp_req;
-static struct pm_qos_request dvfsrc_vcore_opp_req;
-static struct pm_qos_request dvfsrc_scp_vcore_req;
-static struct pm_qos_request dvfsrc_power_model_ddr_req;
-static struct pm_qos_request dvfsrc_power_model_vcore_req;
-static struct pm_qos_request dvfsrc_vcore_dvfs_opp_force;
+static struct mtk_pm_qos_request dvfsrc_memory_bw_req;
+static struct mtk_pm_qos_request dvfsrc_ddr_opp_req;
+static struct mtk_pm_qos_request dvfsrc_vcore_opp_req;
+static struct mtk_pm_qos_request dvfsrc_scp_vcore_req;
+static struct mtk_pm_qos_request dvfsrc_power_model_ddr_req;
+static struct mtk_pm_qos_request dvfsrc_power_model_vcore_req;
+static struct mtk_pm_qos_request dvfsrc_vcore_dvfs_opp_force;
+
+static DEFINE_MUTEX(dump_lock);
 
 static ssize_t dvfsrc_enable_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -87,7 +82,7 @@ static ssize_t dvfsrc_req_memory_bw_store(struct device *dev,
 	if (kstrtoint(buf, 10, &val))
 		return -EINVAL;
 
-	pm_qos_update_request(&dvfsrc_memory_bw_req, val);
+	mtk_pm_qos_update_request(&dvfsrc_memory_bw_req, val);
 
 	return count;
 }
@@ -102,7 +97,7 @@ static ssize_t dvfsrc_req_ddr_opp_store(struct device *dev,
 	if (kstrtoint(buf, 10, &val))
 		return -EINVAL;
 
-	pm_qos_update_request(&dvfsrc_ddr_opp_req, val);
+	mtk_pm_qos_update_request(&dvfsrc_ddr_opp_req, val);
 
 	return count;
 }
@@ -117,7 +112,7 @@ static ssize_t dvfsrc_req_vcore_opp_store(struct device *dev,
 	if (kstrtoint(buf, 10, &val))
 		return -EINVAL;
 
-	pm_qos_update_request(&dvfsrc_vcore_opp_req, val);
+	mtk_pm_qos_update_request(&dvfsrc_vcore_opp_req, val);
 
 	return count;
 }
@@ -132,7 +127,7 @@ static ssize_t dvfsrc_req_scp_vcore_store(struct device *dev,
 	if (kstrtoint(buf, 10, &val))
 		return -EINVAL;
 
-	pm_qos_update_request(&dvfsrc_scp_vcore_req, val);
+	mtk_pm_qos_update_request(&dvfsrc_scp_vcore_req, val);
 
 	return count;
 }
@@ -147,7 +142,7 @@ static ssize_t dvfsrc_req_power_model_ddr_store(struct device *dev,
 	if (kstrtoint(buf, 10, &val))
 		return -EINVAL;
 
-	pm_qos_update_request(&dvfsrc_power_model_ddr_req, val);
+	mtk_pm_qos_update_request(&dvfsrc_power_model_ddr_req, val);
 
 	return count;
 }
@@ -162,7 +157,7 @@ static ssize_t dvfsrc_req_power_model_vcore_store(struct device *dev,
 	if (kstrtoint(buf, 10, &val))
 		return -EINVAL;
 
-	pm_qos_update_request(&dvfsrc_power_model_vcore_req, val);
+	mtk_pm_qos_update_request(&dvfsrc_power_model_vcore_req, val);
 
 	return count;
 }
@@ -193,7 +188,7 @@ static ssize_t dvfsrc_force_vcore_dvfs_opp_store(struct device *dev,
 	if (kstrtoint(buf, 10, &val))
 		return -EINVAL;
 
-	pm_qos_update_request(&dvfsrc_vcore_dvfs_opp_force, val);
+	mtk_pm_qos_update_request(&dvfsrc_vcore_dvfs_opp_force, val);
 
 	return count;
 }
@@ -213,14 +208,14 @@ static ssize_t dvfsrc_opp_table_show(struct device *dev,
 	if (!dvfsrc)
 		return sprintf(buf, "Failed to access dvfsrc\n");
 
-	mutex_lock(&dvfsrc->devfreq->lock);
+	mutex_lock(&dump_lock);
 	for (i = VCORE_DVFS_OPP_0; i < VCORE_DVFS_OPP_NUM; i++) {
 		p += snprintf(p, buff_end - p, "[OPP%-2d]: %-8u uv %-8u khz\n",
 				i, get_vcore_uv(i), get_ddr_khz(i));
 	}
 
 	p += snprintf(p, buff_end - p, "\n");
-	mutex_unlock(&dvfsrc->devfreq->lock);
+	mutex_unlock(&dump_lock);
 
 	return p - buf;
 }
@@ -288,23 +283,23 @@ static struct attribute_group helio_dvfsrc_attr_group = {
 
 int helio_dvfsrc_add_interface(struct device *dev)
 {
-	pm_qos_add_request(&dvfsrc_memory_bw_req, PM_QOS_MEMORY_BANDWIDTH,
-			PM_QOS_MEMORY_BANDWIDTH_DEFAULT_VALUE);
-	pm_qos_add_request(&dvfsrc_ddr_opp_req, PM_QOS_DDR_OPP,
-			PM_QOS_DDR_OPP_DEFAULT_VALUE);
-	pm_qos_add_request(&dvfsrc_vcore_opp_req, PM_QOS_VCORE_OPP,
-			PM_QOS_VCORE_OPP_DEFAULT_VALUE);
-	pm_qos_add_request(&dvfsrc_scp_vcore_req, PM_QOS_SCP_VCORE_REQUEST,
-			PM_QOS_SCP_VCORE_REQUEST_DEFAULT_VALUE);
-	pm_qos_add_request(&dvfsrc_power_model_ddr_req,
-			PM_QOS_POWER_MODEL_DDR_REQUEST,
-			PM_QOS_POWER_MODEL_DDR_REQUEST_DEFAULT_VALUE);
-	pm_qos_add_request(&dvfsrc_power_model_vcore_req,
-			PM_QOS_POWER_MODEL_VCORE_REQUEST,
-			PM_QOS_POWER_MODEL_VCORE_REQUEST_DEFAULT_VALUE);
-	pm_qos_add_request(&dvfsrc_vcore_dvfs_opp_force,
-			PM_QOS_VCORE_DVFS_FORCE_OPP,
-			PM_QOS_VCORE_DVFS_FORCE_OPP_DEFAULT_VALUE);
+	mtk_pm_qos_add_request(&dvfsrc_memory_bw_req, MTK_PM_QOS_MEMORY_BANDWIDTH_TEST,
+			MTK_PM_QOS_MEMORY_BANDWIDTH_DEFAULT_VALUE);
+	mtk_pm_qos_add_request(&dvfsrc_ddr_opp_req, MTK_PM_QOS_DDR_OPP,
+			MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE);
+	mtk_pm_qos_add_request(&dvfsrc_vcore_opp_req, MTK_PM_QOS_VCORE_OPP,
+			MTK_PM_QOS_VCORE_OPP_DEFAULT_VALUE);
+	mtk_pm_qos_add_request(&dvfsrc_scp_vcore_req, MTK_PM_QOS_SCP_VCORE_REQUEST,
+			MTK_PM_QOS_SCP_VCORE_REQUEST_DEFAULT_VALUE);
+	mtk_pm_qos_add_request(&dvfsrc_power_model_ddr_req,
+			MTK_PM_QOS_POWER_MODEL_DDR_REQUEST,
+			MTK_PM_QOS_POWER_MODEL_DDR_REQUEST_DEFAULT_VALUE);
+	mtk_pm_qos_add_request(&dvfsrc_power_model_vcore_req,
+			MTK_PM_QOS_POWER_MODEL_VCORE_REQUEST,
+			MTK_PM_QOS_POWER_MODEL_VCORE_REQUEST_DEFAULT_VALUE);
+	mtk_pm_qos_add_request(&dvfsrc_vcore_dvfs_opp_force,
+			MTK_PM_QOS_VCORE_DVFS_FORCE_OPP,
+			MTK_PM_QOS_VCORE_DVFS_FORCE_OPP_DEFAULT_VALUE);
 
 	return sysfs_create_group(&dev->kobj, &helio_dvfsrc_attr_group);
 }

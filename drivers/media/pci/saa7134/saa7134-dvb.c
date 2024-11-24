@@ -29,7 +29,7 @@
 
 #include <media/v4l2-common.h>
 #include "dvb-pll.h"
-#include <dvb_frontend.h>
+#include <media/dvb_frontend.h>
 
 #include "mt352.h"
 #include "mt352_priv.h" /* FIXME */
@@ -475,7 +475,9 @@ static int philips_europa_tuner_sleep(struct dvb_frontend *fe)
 	/* switch the board to analog mode */
 	if (fe->ops.i2c_gate_ctrl)
 		fe->ops.i2c_gate_ctrl(fe, 1);
-	i2c_transfer(&dev->i2c_adap, &analog_msg, 1);
+	if (i2c_transfer(&dev->i2c_adap, &analog_msg, 1) != 1)
+		return -EIO;
+
 	return 0;
 }
 
@@ -1027,7 +1029,9 @@ static int md8800_set_voltage2(struct dvb_frontend *fe,
 	else
 		wbuf[1] = rbuf & 0xef;
 	msg[0].len = 2;
-	i2c_transfer(&dev->i2c_adap, msg, 1);
+	if (i2c_transfer(&dev->i2c_adap, msg, 1) != 1)
+		return -EIO;
+
 	return 0;
 }
 
@@ -1195,7 +1199,7 @@ static struct s5h1411_config kworld_s5h1411_config = {
 	.inversion     = S5H1411_INVERSION_ON,
 	.status_mode   = S5H1411_DEMODLOCKING,
 	.mpeg_timing   =
-		S5H1411_MPEGTIMING_CONTINOUS_NONINVERTING_CLOCK,
+		S5H1411_MPEGTIMING_CONTINUOUS_NONINVERTING_CLOCK,
 };
 
 
@@ -1389,7 +1393,7 @@ static int dvb_init(struct saa7134_dev *dev)
 			if (configure_tda827x_fe(dev, &lifeview_trio_config,
 						 &tda827x_cfg_0) < 0)
 				goto detach_frontend;
-		} else {  		/* satellite */
+		} else {		/* satellite */
 			fe0->dvb.frontend = dvb_attach(tda10086_attach, &flydvbs, &dev->i2c_adap);
 			if (fe0->dvb.frontend) {
 				if (dvb_attach(tda826x_attach, fe0->dvb.frontend, 0x63,
@@ -1659,7 +1663,7 @@ static int dvb_init(struct saa7134_dev *dev)
 			if (configure_tda827x_fe(dev, &asus_tiger_3in1_config,
 							&tda827x_cfg_2) < 0)
 				goto detach_frontend;
-		} else {  		/* satellite */
+		} else {		/* satellite */
 			fe0->dvb.frontend = dvb_attach(tda10086_attach,
 						&flydvbs, &dev->i2c_adap);
 			if (fe0->dvb.frontend) {

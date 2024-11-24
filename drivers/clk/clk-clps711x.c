@@ -32,11 +32,13 @@ static const struct clk_div_table spi_div_table[] = {
 	{ .val = 1, .div = 8, },
 	{ .val = 2, .div = 2, },
 	{ .val = 3, .div = 1, },
+	{ /* sentinel */ }
 };
 
 static const struct clk_div_table timer_div_table[] = {
 	{ .val = 0, .div = 256, },
 	{ .val = 1, .div = 1, },
+	{ /* sentinel */ }
 };
 
 struct clps711x_clk {
@@ -54,9 +56,9 @@ static struct clps711x_clk * __init _clps711x_clk_init(void __iomem *base,
 	if (!base)
 		return ERR_PTR(-ENOMEM);
 
-	clps711x_clk = kzalloc(sizeof(*clps711x_clk) +
-			sizeof(*clps711x_clk->clk_data.hws) * CLPS711X_CLK_MAX,
-			GFP_KERNEL);
+	clps711x_clk = kzalloc(struct_size(clps711x_clk, clk_data.hws,
+					   CLPS711X_CLK_MAX),
+			       GFP_KERNEL);
 	if (!clps711x_clk)
 		return ERR_PTR(-ENOMEM);
 

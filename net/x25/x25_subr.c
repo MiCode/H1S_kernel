@@ -335,8 +335,7 @@ int x25_decode(struct sock *sk, struct sk_buff *skb, int *ns, int *nr, int *q,
 		}
 	}
 
-	pr_debug("invalid PLP frame %02X %02X %02X\n",
-	       frame[0], frame[1], frame[2]);
+	pr_debug("invalid PLP frame %3ph\n", frame);
 
 	return X25_ILLEGAL;
 }
@@ -363,6 +362,12 @@ void x25_disconnect(struct sock *sk, int reason, unsigned char cause,
 		sk->sk_state_change(sk);
 		sock_set_flag(sk, SOCK_DEAD);
 	}
+	if (x25->neighbour) {
+		read_lock_bh(&x25_list_lock);
+		x25_neigh_put(x25->neighbour);
+		x25->neighbour = NULL;
+		read_unlock_bh(&x25_list_lock);
+	}
 }
 
 /*
@@ -382,4 +387,3 @@ void x25_check_rbuf(struct sock *sk)
 		x25_stop_timer(sk);
 	}
 }
-

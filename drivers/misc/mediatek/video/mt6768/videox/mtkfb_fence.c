@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include "disp_drv_log.h"
 #include "ion_drv.h"
@@ -395,7 +387,7 @@ static void mtkfb_ion_free_handle(struct ion_client *client,
 static size_t mtkfb_ion_phys_mmu_addr(struct ion_client *client,
 	struct ion_handle *handle, unsigned int *mva, int type)
 {
-	size_t size;
+	size_t size = 0;
 	ion_phys_addr_t phy_addr = 0;
 	struct ion_mm_data mm_data;
 
@@ -1239,7 +1231,7 @@ struct mtkfb_fence_buf_info *disp_sync_prepare_buf(
 	unsigned int session_id = 0;
 	unsigned int timeline_id = 0;
 	struct mtkfb_fence_buf_info *buf_info = NULL;
-	struct fence_data data;
+	struct mtk_sync_create_fence_data data;
 	struct disp_sync_info *layer_info = NULL;
 	struct disp_session_sync_info *session_info = NULL;
 
@@ -1537,3 +1529,31 @@ int disp_sync_get_debug_info(char *stringbuf, int buf_len)
 
 	return len;
 }
+
+struct ion_handle *disp_snyc_get_ion_handle(unsigned int session_id,
+	unsigned int timeline_id, unsigned int idx)
+{
+	struct mtkfb_fence_buf_info *buf = NULL;
+	struct disp_sync_info *layer_info = NULL;
+	struct ion_handle *handle = NULL;
+
+	layer_info = _get_sync_info(session_id, timeline_id);
+	if (layer_info == NULL) {
+		DISPERR("layer_info is null, layer_info=%p\n", layer_info);
+		return 0;
+	}
+
+	mutex_lock(&layer_info->sync_lock);
+	list_for_each_entry(buf, &layer_info->buf_list, list) {
+		if (buf->idx == idx) {
+			/* use local variable here to avoid polluted pointer */
+			handle = buf->hnd;
+			DISPMSG("%s, get handle", __func__);
+			break;
+		}
+	}
+	mutex_unlock(&layer_info->sync_lock);
+
+	return handle;
+}
+

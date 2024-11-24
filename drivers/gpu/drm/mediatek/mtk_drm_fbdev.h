@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef MTK_DRM_FBDEV_H
 #define MTK_DRM_FBDEV_H
@@ -39,7 +31,7 @@ void mtk_fbdev_fini(struct drm_device *dev)
 int _parse_tag_videolfb(unsigned int *vramsize, phys_addr_t *fb_base,
 			unsigned int *fps);
 bool mtk_drm_lcm_is_connect(void);
-int free_fb_buf(void);
+int try_free_fb_buf(struct drm_device *dev);
 #define MTKFB_FACTORY_AUTO_TEST _IOR('O', 25, unsigned long)
 int pan_display_test(int frame_num, int bpp);
 

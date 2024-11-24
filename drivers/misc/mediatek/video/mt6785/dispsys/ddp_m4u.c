@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include "ddp_m4u.h"
 #include "ddp_dump.h"
@@ -272,7 +264,7 @@ int disp_ion_get_mva(struct ion_client *client, struct ion_handle *handle,
 	*mva = mm_data.get_phys_param.phy_addr;
 	mva_size = mm_data.get_phys_param.len;
 	if (*mva == 0)
-		DDPMSG("alloc mmu addr hnd=0x%p,mva=0x%08lx\n",
+		DDPMSG("alloc mmu addr hnd=0x%p,mva=0x%08x\n",
 			handle, *mva);
 #endif
 	return 0;

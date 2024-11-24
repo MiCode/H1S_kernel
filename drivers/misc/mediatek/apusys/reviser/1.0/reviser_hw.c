@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/errno.h>
@@ -61,9 +53,11 @@ APUSYS_ATTR_USE static void _reviser_set_context_ID(void *drvinfo,
 APUSYS_ATTR_USE static void _reviser_set_remap_table(void *drvinfo,
 		uint32_t offset, uint8_t valid, uint8_t ID,
 		uint8_t src_page, uint8_t dst_page);
+#if APUSYS_SECURE
 static uint32_t _reviser_get_remap_table_reg(
 		uint8_t valid, uint8_t ID,
 		uint8_t src_page, uint8_t dst_page);
+#endif
 APUSYS_ATTR_USE static void _reviser_set_default_iova(void *drvinfo,
 		uint32_t iova);
 
@@ -304,7 +298,7 @@ void reviser_print_boundary(void *drvinfo, void *s_file)
 
 	reviser_device = (struct reviser_dev_info *)drvinfo;
 
-
+#if VLM_CTXT_MDLA_MAX
 	for (i = 0; i < VLM_CTXT_MDLA_MAX; i++) {
 		offset = _reviser_get_contex_offset(REVISER_DEVICE_MDLA, i);
 		if (offset == REVISER_FAIL)
@@ -312,16 +306,19 @@ void reviser_print_boundary(void *drvinfo, void *s_file)
 		mdla[i] = _reviser_ctrl_reg_read(reviser_device, offset) &
 				VLM_CTXT_BDY_SELECT;
 	}
+#endif
 
+#if VLM_CTXT_VPU_MAX
 	for (i = 0; i < VLM_CTXT_VPU_MAX; i++) {
 		offset = _reviser_get_contex_offset(REVISER_DEVICE_VPU, i);
 		if (offset == REVISER_FAIL)
 			goto fail_offset;
 		vpu[i] = _reviser_ctrl_reg_read(reviser_device, offset) &
 				VLM_CTXT_BDY_SELECT;
-
 	}
+#endif
 
+#if VLM_CTXT_EDMA_MAX
 	for (i = 0; i < VLM_CTXT_EDMA_MAX; i++) {
 		offset = _reviser_get_contex_offset(REVISER_DEVICE_EDMA, i);
 		if (offset == REVISER_FAIL)
@@ -329,6 +326,7 @@ void reviser_print_boundary(void *drvinfo, void *s_file)
 		edma[i] = _reviser_ctrl_reg_read(reviser_device, offset) &
 				VLM_CTXT_BDY_SELECT;
 	}
+#endif
 
 	LOG_CON(s, "=============================\n");
 	LOG_CON(s, " reviser driver boundary info\n");
@@ -368,6 +366,7 @@ void reviser_print_context_ID(void *drvinfo, void *s_file)
 
 	reviser_device = (struct reviser_dev_info *)drvinfo;
 
+#if VLM_CTXT_MDLA_MAX
 	for (i = 0; i < VLM_CTXT_MDLA_MAX; i++) {
 		offset = _reviser_get_contex_offset(REVISER_DEVICE_MDLA, i);
 		if (offset == REVISER_FAIL)
@@ -375,8 +374,9 @@ void reviser_print_context_ID(void *drvinfo, void *s_file)
 		mdla[i] = (_reviser_ctrl_reg_read(reviser_device, offset)
 				& VLM_CTXT_CTX_ID) >> VLM_CTXT_CTX_ID_OFFSET;
 	}
+#endif
 
-
+#if VLM_CTXT_VPU_MAX
 	for (i = 0; i < VLM_CTXT_VPU_MAX; i++) {
 		offset = _reviser_get_contex_offset(REVISER_DEVICE_VPU, i);
 		if (offset == REVISER_FAIL)
@@ -384,8 +384,9 @@ void reviser_print_context_ID(void *drvinfo, void *s_file)
 		vpu[i] = (_reviser_ctrl_reg_read(reviser_device, offset)
 				& VLM_CTXT_CTX_ID) >> VLM_CTXT_CTX_ID_OFFSET;
 	}
+#endif
 
-
+#if VLM_CTXT_EDMA_MAX
 	for (i = 0; i < VLM_CTXT_EDMA_MAX; i++) {
 		offset = _reviser_get_contex_offset(REVISER_DEVICE_EDMA, i);
 		if (offset == REVISER_FAIL)
@@ -393,7 +394,7 @@ void reviser_print_context_ID(void *drvinfo, void *s_file)
 		edma[i] = (_reviser_ctrl_reg_read(reviser_device, offset)
 				& VLM_CTXT_CTX_ID) >> VLM_CTXT_CTX_ID_OFFSET;
 	}
-
+#endif
 
 
 	LOG_CON(s, "=============================\n");
@@ -548,18 +549,23 @@ static uint32_t _reviser_ctrl_reg_read(void *drvinfo, uint32_t offset)
 	struct reviser_dev_info *reviser_device = NULL;
 	int ret = 0;
 	size_t value = 0;
-
+#if APUSYS_SECURE
+	struct arm_smccc_res res;
+#endif
 	if (drvinfo == NULL) {
 		LOG_ERR("invalid argument\n");
 		return ret;
 	}
 
 	reviser_device = (struct reviser_dev_info *)drvinfo;
-#if 1
+#if APUSYS_SECURE
 
-	ret = mt_secure_call_ret2(MTK_SIP_APUSYS_CONTROL,
-			MTK_APUSYS_KERNEL_OP_REVISER_CHK_VALUE,
-			offset, 0, 0, &value);
+	arm_smccc_smc(MTK_SIP_APUSYS_CONTROL,
+		MTK_APUSYS_KERNEL_OP_REVISER_CHK_VALUE,
+		offset, 0, 0, 0, 0, 0, &res);
+
+	ret = res.a0;
+	value = res.a1;
 	if (ret) {
 		LOG_ERR("invalid argument %.8x\n", offset);
 		ret = 0;
@@ -742,6 +748,8 @@ static void  _reviser_set_remap_table(void *drvinfo,
 		_reviser_reg_set(reviser_device->pctrl_top,
 				offset, (1 << VLM_REMAP_VALID_OFFSET));
 }
+
+#if APUSYS_SECURE
 static uint32_t  _reviser_get_remap_table_reg(
 		uint8_t valid, uint8_t ID,
 		uint8_t src_page, uint8_t dst_page)
@@ -762,6 +770,8 @@ static uint32_t  _reviser_get_remap_table_reg(
 
 	return value;
 }
+#endif
+
 int reviser_type_convert(int type, enum REVISER_DEVICE_E *reviser_type)
 {
 	int ret = 0;
@@ -796,8 +806,10 @@ int reviser_set_remap_table(void *drvinfo,
 {
 	uint32_t offset = 0;
 	int ret = 0;
+#if APUSYS_SECURE
 	uint32_t value = 0;
-
+	struct arm_smccc_res res;
+#endif
 	DEBUG_TAG;
 
 	if (index > VLM_REMAP_TABLE_DST_MAX) {
@@ -839,9 +851,10 @@ int reviser_set_remap_table(void *drvinfo,
 	value = _reviser_get_remap_table_reg(valid,
 			ID, src_page, dst_page);
 
-	ret = mt_secure_call(MTK_SIP_APUSYS_CONTROL,
+	arm_smccc_smc(MTK_SIP_APUSYS_CONTROL,
 			MTK_APUSYS_KERNEL_OP_REVISER_SET_REMAP_TABLE,
-			offset, valid, value);
+		offset, valid, value, 0, 0, 0, &res);
+	ret = res.a0;
 	if (ret) {
 		LOG_ERR("Set HW RemapTable Fail\n");
 		return -1;
@@ -857,8 +870,10 @@ int reviser_set_boundary(void *drvinfo,
 		enum REVISER_DEVICE_E type, int index, uint8_t boundary)
 {
 	APUSYS_ATTR_USE uint32_t offset;
+#if APUSYS_SECURE
 	uint32_t value = 0;
-
+	struct arm_smccc_res res;
+#endif
 	DEBUG_TAG;
 
 	if (boundary > VLM_CTXT_BDY_SELECT_MAX) {
@@ -882,30 +897,22 @@ int reviser_set_boundary(void *drvinfo,
 
 	switch (type) {
 	case REVISER_DEVICE_MDLA:
-
-		mt_secure_call(MTK_SIP_APUSYS_CONTROL,
+		arm_smccc_smc(MTK_SIP_APUSYS_CONTROL,
 				MTK_APUSYS_KERNEL_OP_REVISER_SET_BOUNDARY,
-				value,
-				BOUNDARY_ALL_NO_CHANGE,
-				BOUNDARY_ALL_NO_CHANGE
-				);
+				value, BOUNDARY_ALL_NO_CHANGE,
+				BOUNDARY_ALL_NO_CHANGE, 0, 0, 0, &res);
 		break;
 	case REVISER_DEVICE_VPU:
-		mt_secure_call(MTK_SIP_APUSYS_CONTROL,
+		arm_smccc_smc(MTK_SIP_APUSYS_CONTROL,
 				MTK_APUSYS_KERNEL_OP_REVISER_SET_BOUNDARY,
-				BOUNDARY_ALL_NO_CHANGE,
-				value,
-				BOUNDARY_ALL_NO_CHANGE
-				);
+				BOUNDARY_ALL_NO_CHANGE, value,
+				BOUNDARY_ALL_NO_CHANGE, 0, 0, 0, &res);
 		break;
 	case REVISER_DEVICE_EDMA:
-
-		mt_secure_call(MTK_SIP_APUSYS_CONTROL,
+		arm_smccc_smc(MTK_SIP_APUSYS_CONTROL,
 				MTK_APUSYS_KERNEL_OP_REVISER_SET_BOUNDARY,
 				BOUNDARY_ALL_NO_CHANGE,
-				BOUNDARY_ALL_NO_CHANGE,
-				value
-				);
+				BOUNDARY_ALL_NO_CHANGE, value, 0, 0, 0, &res);
 		break;
 	default:
 		LOG_ERR("invalid argument\n");
@@ -929,7 +936,9 @@ int reviser_set_context_ID(void *drvinfo,
 {
 	uint32_t offset = 0;
 	int ret = 0;
-
+#if APUSYS_SECURE
+	struct arm_smccc_res res;
+#endif
 	DEBUG_TAG;
 
 	if (ID >= VLM_CTXT_CTX_ID_MAX) {
@@ -948,9 +957,10 @@ int reviser_set_context_ID(void *drvinfo,
 		return -1;
 	}
 #if APUSYS_SECURE
-	ret = mt_secure_call(MTK_SIP_APUSYS_CONTROL,
+	arm_smccc_smc(MTK_SIP_APUSYS_CONTROL,
 			MTK_APUSYS_KERNEL_OP_REVISER_SET_CONTEXT_ID,
-			offset, ID, 0);
+			offset, ID, 0, 0, 0, 0, &res);
+	ret = res.a0;
 	if (ret) {
 		LOG_ERR("Set HW CtxID Fail\n");
 		return -1;
@@ -968,28 +978,42 @@ static void _reviser_set_default_iova(void *drvinfo,
 		uint32_t iova)
 {
 	struct reviser_dev_info *reviser_device = NULL;
-
-
+#if APUSYS_SECURE
+	int ret = 0;
+	struct arm_smccc_res res;
+#endif
 	if (drvinfo == NULL) {
 		LOG_ERR("invalid argument\n");
 		return;
 	}
 
 	reviser_device = (struct reviser_dev_info *)drvinfo;
+#if APUSYS_SECURE
+	arm_smccc_smc(MTK_SIP_APUSYS_CONTROL,
+			MTK_APUSYS_KERNEL_OP_REVISER_SET_DEFAULT_IOVA,
+			iova, 0, 0, 0, 0, 0, &res);
+	ret = res.a0;
+	if (ret) {
+		LOG_ERR("Set IOVA Fail\n");
+		return;
+	}
 
+#else
 	_reviser_reg_clr(reviser_device->pctrl_top,
 			VLM_DEFAULT_MVA, REVISER_DEFAULT);
 	_reviser_reg_set(reviser_device->pctrl_top,
 			VLM_DEFAULT_MVA, iova);
-
+#endif
 }
 
 int reviser_get_interrupt_offset(void *drvinfo)
 {
 	uint32_t offset = 0;
 	int ret = 0;
+#if APUSYS_SECURE
 	size_t reg_value;
-
+	struct arm_smccc_res res;
+#endif
 	struct reviser_dev_info *reviser_device = NULL;
 
 
@@ -1035,9 +1059,11 @@ int reviser_get_interrupt_offset(void *drvinfo)
 
 	if (offset > 0) {
 #if APUSYS_SECURE
-		ret = mt_secure_call_ret2(MTK_SIP_APUSYS_CONTROL,
-			MTK_APUSYS_KERNEL_OP_REVISER_GET_INTERRUPT_STATUS,
-			offset, 0, 0, &reg_value);
+		arm_smccc_smc(MTK_SIP_APUSYS_CONTROL,
+				MTK_APUSYS_KERNEL_OP_REVISER_GET_INTERRUPT_STATUS,
+				offset, 0, 0, 0, 0, 0, &res);
+		ret = res.a0;
+		reg_value = res.a1;
 #else
 		_reviser_reg_set(reviser_device->pctrl_top,
 				offset, 1);
@@ -1050,16 +1076,18 @@ int reviser_get_interrupt_offset(void *drvinfo)
 int reviser_set_default_iova(void *drvinfo)
 {
 	int ret = 0;
-
+#if APUSYS_SECURE
+	struct arm_smccc_res res;
+#endif
 	if (g_mem_sys.iova == 0) {
 		LOG_ERR("invalid iova\n");
 		return -1;
 	}
 #if APUSYS_SECURE
-	ret = mt_secure_call(MTK_SIP_APUSYS_CONTROL,
+	arm_smccc_smc(MTK_SIP_APUSYS_CONTROL,
 			MTK_APUSYS_KERNEL_OP_REVISER_SET_DEFAULT_IOVA,
-			g_mem_sys.iova, 0, 0);
-
+			g_mem_sys.iova, 0, 0, 0, 0, 0, &res);
+	ret = res.a0;
 	if (ret) {
 		LOG_ERR("Set IOVA Fail\n");
 		return -1;
@@ -1070,6 +1098,37 @@ int reviser_set_default_iova(void *drvinfo)
 #endif
 
 	LOG_DEBUG("Set IOVA %x\n", g_mem_sys.iova);
+
+	return ret;
+}
+
+int reviser_init_ip(void)
+{
+	int ret = 0;
+#if APUSYS_SECURE
+	struct arm_smccc_res res;
+#endif
+
+#if APUSYS_SECURE
+	arm_smccc_smc(MTK_SIP_APUSYS_CONTROL,
+			MTK_APUSYS_KERNEL_OP_REVISER_INIT_IP,
+			0, 0, 0, 0, 0, 0, &res);
+	ret = res.a0;
+	if (ret) {
+		if (ret == -EIO)
+			LOG_ERR("Unsupported secure monitor call\n");
+		else
+			LOG_ERR("Init IP fail\n");
+
+		return -1;
+	}
+
+#else
+	LOG_ERR("APUSYS_SECURE is not enable\n");
+	return -1;
+#endif
+
+	LOG_DEBUG("Init IP\n");
 
 	return ret;
 }

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2016 MediaTek Inc.
  */
 
 #ifndef _MTK_EEM_
@@ -82,7 +74,6 @@ enum {
 	EEM_VOLT_RESTORE = BIT(1),
 };
 
-extern u32 get_devinfo_with_index(u32 index);
 extern const unsigned int reg_dump_addr_off[105];
 
 #ifdef CONFIG_MTK_RAM_CONSOLE

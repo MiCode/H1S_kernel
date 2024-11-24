@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 #define PFX "CAM_CAL"
 #define pr_fmt(fmt) PFX "[%s] " fmt, __func__
 
@@ -52,7 +45,7 @@
 #define EEPROM_I2C_MSG_SIZE_READ 2
 
 #ifndef EEPROM_I2C_READ_MSG_LENGTH_MAX
-#define EEPROM_I2C_READ_MSG_LENGTH_MAX 1024
+#define EEPROM_I2C_READ_MSG_LENGTH_MAX 255
 #endif
 #ifndef EEPROM_I2C_WRITE_MSG_LENGTH_MAX
 #define EEPROM_I2C_WRITE_MSG_LENGTH_MAX 32

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #define LOG_TAG "ddp_manager"
 
@@ -29,6 +21,8 @@
 #include "ddp_ovl.h"
 #include "ddp_color.h"
 #include "ddp_clkmgr.h"
+#include "ddp_dsi.h"
+#include "ddp_disp_bdg.h"
 
 #include "ddp_log.h"
 
@@ -1296,6 +1290,10 @@ int dpmgr_path_trigger(disp_path_handle dp_handle, void *trigger_loop_handle,
 	int module_num, module_name;
 	int i;
 	struct DDP_MODULE_DRIVER *mod_drv;
+	char para[7] = {0x10, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00};
+	char para1[7] = {0x10, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00};
+	char para2[7] = {0x50, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00};
+	char para3[7] = {0x50, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00};
 
 	if (!dp_handle) {
 		ASSERT(0);
@@ -1306,7 +1304,18 @@ int dpmgr_path_trigger(disp_path_handle dp_handle, void *trigger_loop_handle,
 		ddp_get_scenario_name(handle->scenario));
 	modules = ddp_get_scenario_list(handle->scenario);
 	module_num = ddp_get_module_num(handle->scenario);
-
+	if (bdg_is_bdg_connected() == 1) {
+		if (get_mt6382_init() && (get_bdg_tx_mode() == CMD_MODE)) {
+			DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, trigger_loop_handle,
+					0x00, 7, para, 1);
+			DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, trigger_loop_handle,
+					0x00, 7, para1, 1);
+			DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, trigger_loop_handle,
+					0x20, 7, para2, 1);
+			DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, trigger_loop_handle,
+					0x20, 7, para3, 1);
+		}
+	}
 	ddp_mutex_enable(handle->hwmutexid, handle->scenario, handle->mode,
 		trigger_loop_handle);
 	for (i = 0; i < module_num; i++) {
@@ -1775,6 +1784,13 @@ int dpmgr_check_status_by_scenario(enum DDP_SCENARIO_ENUM scenario)
 		ddp_dump_reg(modules[i]);
 
 	return 0;
+}
+
+bool dpmgr_is_power_on(void)
+{
+	struct DDP_MANAGER_CONTEXT *context = _get_context();
+
+	return context->power_state;
 }
 
 int dpmgr_check_status(disp_path_handle dp_handle)

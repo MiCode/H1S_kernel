@@ -7,7 +7,8 @@
  */
 
 #include <generated/compile.h>
-#include <linux/module.h>
+#include <linux/build-salt.h>
+#include <linux/export.h>
 #include <linux/uts.h>
 #include <linux/utsname.h>
 #include <generated/utsrelease.h>
@@ -45,7 +46,12 @@ const char linux_banner[] =
 	"Linux version " UTS_RELEASE " (" LINUX_COMPILE_BY "@"
 	LINUX_COMPILE_HOST ") (" LINUX_COMPILER ") " UTS_VERSION "\n";
 
+const char *linux_banner_ptr = linux_banner;
+EXPORT_SYMBOL_GPL(linux_banner_ptr);
+
 const char linux_proc_banner[] =
 	"%s version %s"
 	" (" LINUX_COMPILE_BY "@" LINUX_COMPILE_HOST ")"
 	" (" LINUX_COMPILER ") %s\n";
+
+BUILD_SALT;

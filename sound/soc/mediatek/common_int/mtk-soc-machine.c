@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -70,6 +59,7 @@
 #include <linux/module.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/proc_fs.h>
 #include <linux/sched.h>
@@ -84,6 +74,7 @@
 
 #include "mtk-soc-codec-63xx.h"
 #include <linux/clk.h>
+
 #include <linux/delay.h>
 #include <linux/gpio.h>
 #include <linux/platform_device.h>
@@ -607,7 +598,7 @@ static struct snd_soc_dai_link mt_soc_dai_common[] = {
 		.codec_name = MT_SOC_CODEC_NAME,
 		.playback_only = true,
 	},
-#ifdef CONFIG_SND_SOC_MTK_SCP_SMARTPA
+#ifdef CONFIG_MTK_AUDIO_SCP_SPKPROTECT_SUPPORT
 	{
 		.name = "DL1SCPSPKOUTPUT",
 		.stream_name = MT_SOC_DL1SCPSPK_STREAM_NAME,
@@ -696,7 +687,7 @@ static struct snd_soc_dai_link mt_soc_extspk_dai[] = {
 static struct snd_soc_dai_link
 	mt_soc_dai_component[ARRAY_SIZE(mt_soc_dai_common) +
 #ifdef CONFIG_SND_SOC_MTK_BTCVSD
-	ARRAY_SIZE(mt_soc_btcvsd_dai) +
+			     ARRAY_SIZE(mt_soc_btcvsd_dai) +
 #endif
 			     ARRAY_SIZE(mt_soc_exthp_dai) +
 			     ARRAY_SIZE(mt_soc_extspk_dai)];
@@ -706,17 +697,13 @@ static struct snd_soc_card mt_snd_soc_card_mt = {
 	.dai_link = mt_soc_dai_common,
 	.num_links = ARRAY_SIZE(mt_soc_dai_common),
 };
-#if 0
-static void get_ext_dai_codec_name(void)
-{
-	get_extspk_dai_codec_name(mt_soc_extspk_dai);
-	get_exthp_dai_codec_name(mt_soc_exthp_dai);
-}
-#endif
+
 static int mt_soc_snd_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = &mt_snd_soc_card_mt;
+#ifdef CONFIG_SND_SOC_MTK_BTCVSD
 	struct device_node *btcvsd_node;
+#endif
 	int ret;
 	int daiLinkNum = 0;
 
@@ -727,9 +714,9 @@ static int mt_soc_snd_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	/*get_ext_dai_codec_name();*/
-	pr_debug("dai_link = %p\n",
-		mt_snd_soc_card_mt.dai_link);
+	/* get_ext_dai_codec_name(); */
+	pr_debug("%s(), dai_link = %p\n",
+		 __func__, mt_snd_soc_card_mt.dai_link);
 
 	/* DEAL WITH DAI LINK */
 	memcpy(mt_soc_dai_component, mt_soc_dai_common,
@@ -787,7 +774,7 @@ static int mt_soc_snd_probe(struct platform_device *pdev)
 static int mt_soc_snd_remove(struct platform_device *pdev)
 {
 	pr_debug("%s\n", __func__);
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

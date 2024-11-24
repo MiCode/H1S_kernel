@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Joey Pan <joey.pan@mediatek.com>
  */
 
 #ifndef __FBCONFIG_KDEBUG_H
@@ -21,9 +14,10 @@ void PanelMaster_Init(void);
 void PanelMaster_Deinit(void);
 int fb_config_execute_cmd(void);
 int fbconfig_get_esd_check_exec(void);
-#ifdef CONFIG_MTK_M4U
-int m4u_query_mva_info(unsigned int mva, unsigned int size,
-	unsigned int *real_mva, unsigned int *real_size);
+#ifndef CONFIG_MACH_MT6785
+extern int m4u_query_mva_info(unsigned int mva, unsigned int size,
+				  unsigned int *real_mva,
+				  unsigned int *real_size);
 #endif
 #ifndef TOTAL_OVL_LAYER_NUM
 #define TOTAL_OVL_LAYER_NUM OVL_LAYER_NUM
@@ -110,13 +104,7 @@ struct ESD_PARA {
 	int para_num;
 	char *esd_ret_buffer;
 };
-#if 0
-struct LAYER_H_SIZE {
-	int layer_size;
-	int height;
-	int fmt;
-};
-#endif
+
 struct MIPI_CLK_V2 {
 	unsigned char div1;
 	unsigned char div2;

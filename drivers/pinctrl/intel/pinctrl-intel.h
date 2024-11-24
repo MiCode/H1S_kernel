@@ -1,13 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Core pinctrl/GPIO driver for Intel GPIO controllers
  *
  * Copyright (C) 2015, Intel Corporation
  * Authors: Mathias Nyman <mathias.nyman@linux.intel.com>
  *          Mika Westerberg <mika.westerberg@linux.intel.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #ifndef PINCTRL_INTEL_H
@@ -28,10 +25,10 @@ struct device;
  */
 struct intel_pingroup {
 	const char *name;
-	const unsigned *pins;
+	const unsigned int *pins;
 	size_t npins;
 	unsigned short mode;
-	const unsigned *modes;
+	const unsigned int *modes;
 };
 
 /**
@@ -51,16 +48,19 @@ struct intel_function {
  * @reg_num: GPI_IS register number
  * @base: Starting pin of this group
  * @size: Size of this group (maximum is 32).
+ * @gpio_base: Starting GPIO base of this group (%0 if matches with @base,
+ *	       and %-1 if no GPIO mapping should be created)
  * @padown_num: PAD_OWN register number (assigned by the core driver)
  *
  * If pad groups of a community are not the same size, use this structure
  * to specify them.
  */
 struct intel_padgroup {
-	unsigned reg_num;
-	unsigned base;
-	unsigned size;
-	unsigned padown_num;
+	unsigned int reg_num;
+	unsigned int base;
+	unsigned int size;
+	int gpio_base;
+	unsigned int padown_num;
 };
 
 /**
@@ -73,6 +73,8 @@ struct intel_padgroup {
  * @hostown_offset: Register offset of HOSTSW_OWN from @regs. If %0 then it
  *                  is assumed that the host owns the pin (rather than
  *                  ACPI).
+ * @is_offset: Register offset of GPI_IS from @regs. If %0 then uses the
+ *             default (%0x100).
  * @ie_offset: Register offset of GPI_IE from @regs.
  * @pin_base: Starting pin of pins in this community
  * @gpp_size: Maximum number of pads in each group, such as PADCFGLOCK,
@@ -94,16 +96,17 @@ struct intel_padgroup {
  * pass custom @gpps and @ngpps instead.
  */
 struct intel_community {
-	unsigned barno;
-	unsigned padown_offset;
-	unsigned padcfglock_offset;
-	unsigned hostown_offset;
-	unsigned ie_offset;
-	unsigned pin_base;
-	unsigned gpp_size;
-	unsigned gpp_num_padown_regs;
+	unsigned int barno;
+	unsigned int padown_offset;
+	unsigned int padcfglock_offset;
+	unsigned int hostown_offset;
+	unsigned int is_offset;
+	unsigned int ie_offset;
+	unsigned int pin_base;
+	unsigned int gpp_size;
+	unsigned int gpp_num_padown_regs;
 	size_t npins;
-	unsigned features;
+	unsigned int features;
 	const struct intel_padgroup *gpps;
 	size_t ngpps;
 	/* Reserved for the core driver */

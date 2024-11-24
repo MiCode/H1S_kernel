@@ -1,15 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2018 MediaTek Inc.
  */
+
 #include <linux/dma-mapping.h>
 #include <linux/dmapool.h>
 #include <linux/list.h>
@@ -43,6 +36,22 @@ static u32 Tx_gpd_max_count[MAX_QMU_EP + 1];
 static bool Tx_enable[MAX_QMU_EP + 1];
 static bool Rx_enable[MAX_QMU_EP + 1];
 
+int isoc_ep_end_idx = 3;
+EXPORT_SYMBOL(isoc_ep_end_idx);
+
+int isoc_ep_gpd_count = 260;
+EXPORT_SYMBOL(isoc_ep_gpd_count);
+
+int mtk_qmu_dbg_level = LOG_WARN;
+EXPORT_SYMBOL(mtk_qmu_dbg_level);
+
+int mtk_qmu_max_gpd_num;
+EXPORT_SYMBOL(mtk_qmu_max_gpd_num);
+
+module_param(mtk_qmu_dbg_level, int, 0644);
+module_param(mtk_qmu_max_gpd_num, int, 0644);
+module_param(isoc_ep_end_idx, int, 0644);
+module_param(isoc_ep_gpd_count, int, 0644);
 
 u32 qmu_used_gpd_count(u8 isRx, u32 num)
 {
@@ -240,12 +249,10 @@ int qmu_init_gpd_pool(struct device *dev)
 		Rx_gpd_free_count[i] = Rx_gpd_max_count[i] - 1;
 		TGPD_CLR_FLAGS_HWO(Rx_gpd_end[i]);
 		gpd_ptr_align(RXQ, i, Rx_gpd_end[i]);
-		QMU_DBG(
-				"RX GPD HEAD[%d], VIRT<%p>, DMA<%p>, RQSAR<%p>\n"
-				, i
-				, Rx_gpd_head[i], io_ptr,
-				(void *)(uintptr_t)
-				gpd_virt_to_phys(Rx_gpd_end[i], RXQ, i));
+		QMU_DBG("RXGPD HEAD[%d] VIRT<0x%lx> DMA<0x%lx> RQSAR<0x%lx>\n",
+			i, Rx_gpd_head[i], io_ptr,
+			(void *)(uintptr_t) gpd_virt_to_phys(
+				Rx_gpd_end[i], RXQ, i));
 	}
 
 	for (i = 1; i <= TXQ_NUM; i++) {
@@ -266,12 +273,10 @@ int qmu_init_gpd_pool(struct device *dev)
 		Tx_gpd_free_count[i] = Tx_gpd_max_count[i] - 1;
 		TGPD_CLR_FLAGS_HWO(Tx_gpd_end[i]);
 		gpd_ptr_align(TXQ, i, Tx_gpd_end[i]);
-		QMU_DBG(
-				"TX GPD HEAD[%d], VIRT<%p>, DMA<%p>, TQSAR<%p>\n",
-				i,
-				Tx_gpd_head[i], io_ptr,
-				(void *)(uintptr_t)gpd_virt_to_phys
-				(Tx_gpd_end[i], TXQ, i));
+		QMU_DBG("TXGPD HEAD[%d] VIRT<0x%lx> DMA<0x%lx> TQSAR<0x%lx>\n",
+			i, Tx_gpd_head[i], io_ptr,
+			(void *)(uintptr_t)gpd_virt_to_phys(
+				Tx_gpd_end[i], TXQ, i));
 	}
 
 #ifdef CONFIG_MTK_UAC_POWER_SAVING
@@ -389,10 +394,8 @@ void gpd_switch_to_dram(struct device *dev)
 				(void *)(uintptr_t)Tx_gpd_Offset[index],
 				(void *)(uintptr_t)Tx_gpd_Offset_dram);
 		QMU_ERR("%s\n", string);
-#if 0
 #ifdef CONFIG_MTK_AEE_FEATURE
 		aee_kernel_warning(string, string);
-#endif
 #endif
 	}
 
@@ -606,6 +609,7 @@ bool mtk_is_qmu_enabled(u8 ep_num, u8 isRx)
 	}
 	return false;
 }
+EXPORT_SYMBOL(mtk_is_qmu_enabled);
 
 void mtk_qmu_enable(struct musb *musb, u8 ep_num, u8 isRx)
 {
@@ -778,6 +782,7 @@ void mtk_qmu_enable(struct musb *musb, u8 ep_num, u8 isRx)
 		MGC_WriteQMU32(base, MGC_O_QMU_TQCSR(ep_num), DQMU_QUE_START);
 	}
 }
+EXPORT_SYMBOL(mtk_qmu_enable);
 
 void mtk_qmu_stop(u8 ep_num, u8 isRx)
 {
@@ -821,6 +826,7 @@ void mtk_qmu_stop(u8 ep_num, u8 isRx)
 		}
 	}
 }
+EXPORT_SYMBOL(mtk_qmu_stop);
 
 static void mtk_qmu_disable(u8 ep_num, u8 isRx)
 {
@@ -844,6 +850,10 @@ static void mtk_qmu_disable(u8 ep_num, u8 isRx)
 		/* / clear Queue start address */
 		MGC_WriteQMU32(base, MGC_O_QMU_RQSAR(ep_num), 0);
 
+		/* KOBE, in MT6735,
+		 * different EP QMU
+		 * EN is separated in MGC_O_QUCS_USBGCSR ??
+		 */
 		MGC_WriteQUCS32(base, MGC_O_QUCS_USBGCSR,
 				MGC_ReadQUCS32(base,
 					MGC_O_QUCS_USBGCSR) &
@@ -871,6 +881,10 @@ static void mtk_qmu_disable(u8 ep_num, u8 isRx)
 		/* / clear Queue start address */
 		MGC_WriteQMU32(base, MGC_O_QMU_TQSAR(ep_num), 0);
 
+		/* KOBE, in MT6735,
+		 * different EP QMU EN is
+		 * separated in MGC_O_QUCS_USBGCSR ??
+		 */
 		MGC_WriteQUCS32(base, MGC_O_QUCS_USBGCSR,
 				MGC_ReadQUCS32(base,
 					       MGC_O_QUCS_USBGCSR)
@@ -929,6 +943,13 @@ void qmu_done_rx(struct musb *musb, u8 ep_num)
 		return;
 	}
 	request = &req->request;
+	if (!request) {
+		QMU_ERR(
+			"[RXD]%s Cannot get next usb_request of %d"
+			"but we should have next request and QMU has done.\n"
+			, __func__, ep_num);
+		return;
+	}
 
 	/*Transfer PHY addr got from QMU register to VIR addr */
 	gpd_current = (struct TGPD *)
@@ -1002,6 +1023,10 @@ void qmu_done_rx(struct musb *musb, u8 ep_num)
 			, rcv_len, buf_len,
 			 TGPD_GET_DATA_RX(gpd));
 
+		if (!request) {
+			QMU_WARN("[RXD]%s the request is null, return.\n");
+			return;
+		}
 		request->actual += rcv_len;
 
 		if (!TGPD_GET_NEXT_RX(gpd) || !TGPD_GET_DATA_RX(gpd)) {
@@ -1238,6 +1263,7 @@ void mtk_disable_q(struct musb *musb, u8 ep_num, u8 isRx)
 		flush_ep_csr(musb, ep_num, isRx);
 	}
 }
+EXPORT_SYMBOL(mtk_disable_q);
 
 void h_qmu_done_rx(struct musb *musb, u8 ep_num)
 {
@@ -1363,7 +1389,7 @@ void h_qmu_done_rx(struct musb *musb, u8 ep_num)
 		gpd = gpd_phys_to_virt((dma_addr_t)(uintptr_t)gpd, RXQ, ep_num);
 		DBG(4, "gpd = %p ep_num = %d\n", gpd, ep_num);
 		if (!gpd) {
-			pr_err("[RXD][ERROR]%s EP%d ,gpd=%p\n"
+			pr_notice("[RXD][ERROR]%s EP%d ,gpd=%p\n"
 					, __func__, ep_num, gpd);
 			return;
 		}
@@ -1645,11 +1671,10 @@ finished:
 			default:
 				break;
 			}
-#if 0
+
 #ifdef CONFIG_MTK_AEE_FEATURE
 			if (val && !skip_val)
 				aee_kernel_warning(string, string);
-#endif
 #endif
 		}
 #endif
@@ -1753,10 +1778,8 @@ finished:
 
 		sprintf(string, "USB20_HOST, TXQ<%d> ERR, CSR:%x", epnum, val);
 		QMU_ERR("%s\n", string);
-#if 0
 #ifdef CONFIG_MTK_AEE_FEATURE
 		aee_kernel_warning(string, string);
-#endif
 #endif
 	}
 
@@ -1824,7 +1847,7 @@ normal_handle:
 	else
 		mtk_qmu_host_tx_err(musb, ep_num);
 }
-void mtk_pr_err_recover(struct musb *musb, u8 ep_num, u8 isRx, bool is_len_err)
+void mtk_err_recover(struct musb *musb, u8 ep_num, u8 isRx, bool is_len_err)
 {
 	struct musb_ep *musb_ep;
 	struct musb_request *request;
@@ -2034,8 +2057,8 @@ void mtk_qmu_irq_err(struct musb *musb, u32 qisar)
 
 	/* QMU ERR RECOVER , only servie one ep error ? */
 	if (rx_err_ep_num)
-		mtk_pr_err_recover(musb, rx_err_ep_num, 1, is_len_err);
+		mtk_err_recover(musb, rx_err_ep_num, 1, is_len_err);
 
 	if (tx_err_ep_num)
-		mtk_pr_err_recover(musb, tx_err_ep_num, 0, is_len_err);
+		mtk_err_recover(musb, tx_err_ep_num, 0, is_len_err);
 }

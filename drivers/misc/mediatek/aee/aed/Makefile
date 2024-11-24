@@ -11,9 +11,14 @@
 # GNU General Public License for more details.
 #
 
-subdir-ccflags-y += -Idrivers/misc/mediatek/aee/mrdump/
-subdir-ccflags-y += -Idrivers/misc/mediatek/log_store/
+ifeq ($(CONFIG_MTK_GCOV_KERNEL),y)
+GCOV_PROFILE := y
+endif
 
-obj-$(CONFIG_MTK_AEE_AED) += aed.o
-aed-y := aed-main.o aed-debug.o
-aed-$(CONFIG_MTK_AEE_HANG_DETECT) += monitor_hang.o
+obj-$(CONFIG_MTK_AEE_AED)	+= aee_aed.o
+obj-$(CONFIG_MTK_AEE_UT)	+= aed-debug.o
+aee_aed-y	+= \
+	aed-main.o \
+	aee-common.o \
+	reboot-reason.o
+

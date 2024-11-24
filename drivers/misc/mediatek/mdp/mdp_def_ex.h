@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MDP_DEF_EX_H__
 #define __MDP_DEF_EX_H__
@@ -31,6 +23,8 @@ enum CMDQ_META_OP {
 	CMDQ_MOP_WRITE_FROM_REG,
 	CMDQ_MOP_WRITE_SEC,
 	CMDQ_MOP_READBACK,
+	CMDQ_MOP_WRITE_RDMA,
+	CMDQ_MOP_WRITE_FD_RDMA,
 	CMDQ_MOP_NOP,
 };
 
@@ -50,6 +44,11 @@ struct op_meta {
 		uint16_t offset;
 		/* event id */
 		uint16_t event;
+		/* for rdma cpr */
+		struct {
+			uint8_t pipe_idx;
+			uint8_t cpr_idx;
+		};
 	};
 	union {
 		/* value to write */

@@ -1,16 +1,5 @@
-/*****************************************************************************
- * Copyright 2011 Broadcom Corporation.  All rights reserved.
- *
- * Unless you and Broadcom execute a separate written software license
- * agreement governing use of this software, this software is licensed to you
- * under the terms of the GNU General Public License version 2, available at
- * http://www.broadcom.com/licenses/GPLv2.php (the "GPL").
- *
- * Notwithstanding the above, under no circumstances may you combine this
- * software in any way with any other Broadcom software provided under a
- * license other than the GPL, without Broadcom's express prior written
- * consent.
- *****************************************************************************/
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright 2011 Broadcom Corporation.  All rights reserved. */
 
 #ifndef __SOUND_ARM_BCM2835_H
 #define __SOUND_ARM_BCM2835_H
@@ -25,6 +14,8 @@
 #include <sound/pcm_params.h>
 #include <sound/pcm-indirect.h>
 #include <linux/workqueue.h>
+
+#include "interface/vchi/vchi.h"
 
 /*
  * #define AUDIO_DEBUG_ENABLE
@@ -97,6 +88,11 @@ enum snd_bcm2835_ctrl {
 	PCM_PLAYBACK_DEVICE,
 };
 
+struct bcm2835_vchi_ctx {
+	VCHI_INSTANCE_T vchi_instance;
+	VCHI_CONNECTION_T *vchi_connection;
+};
+
 /* definition of the chip-specific record */
 struct bcm2835_chip {
 	struct snd_card *card;
@@ -115,6 +111,8 @@ struct bcm2835_chip {
 	unsigned int opened;
 	unsigned int spdif_status;
 	struct mutex audio_mutex;
+
+	struct bcm2835_vchi_ctx *vchi_ctx;
 };
 
 struct bcm2835_alsa_stream {
@@ -123,8 +121,6 @@ struct bcm2835_alsa_stream {
 	struct snd_pcm_indirect pcm_indirect;
 
 	spinlock_t lock;
-	volatile unsigned int control;
-	volatile unsigned int status;
 
 	int open;
 	int running;
@@ -154,6 +150,9 @@ int snd_bcm2835_new_simple_pcm(struct bcm2835_chip *chip,
 
 int snd_bcm2835_new_hdmi_ctl(struct bcm2835_chip *chip);
 int snd_bcm2835_new_headphones_ctl(struct bcm2835_chip *chip);
+
+int bcm2835_new_vchi_ctx(struct bcm2835_vchi_ctx *vchi_ctx);
+void bcm2835_free_vchi_ctx(struct bcm2835_vchi_ctx *vchi_ctx);
 
 int bcm2835_audio_open(struct bcm2835_alsa_stream *alsa_stream);
 int bcm2835_audio_close(struct bcm2835_alsa_stream *alsa_stream);

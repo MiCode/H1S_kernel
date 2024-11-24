@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #include <linux/proc_fs.h>
@@ -20,7 +12,7 @@
 #include "mtk_cpufreq_platform.h"
 
 #ifdef CONFIG_MTK_CPU_MSSV
-extern unsigned int cpumssv_get_state(void);
+unsigned int __attribute__((weak)) cpumssv_get_state(void) { return 0; }
 #endif
 
 unsigned int func_lv_mask;
@@ -49,25 +41,17 @@ static const char *power_mode_str[NUM_PPB_POWER_MODE] = {
 
 char *_copy_from_user_for_proc(const char __user *buffer, size_t count)
 {
-	char *buf = (char *)__get_free_page(GFP_USER);
+	static char buf[64];
+	unsigned int len = 0;
 
-	if (!buf)
+	len = (count < (sizeof(buf) - 1)) ? count : (sizeof(buf) - 1);
+
+	if (copy_from_user(buf, buffer, len))
 		return NULL;
 
-	if (count >= PAGE_SIZE)
-		goto out;
-
-	if (copy_from_user(buf, buffer, count))
-		goto out;
-
-	buf[count] = '\0';
+	buf[len] = '\0';
 
 	return buf;
-
-out:
-	free_page((unsigned long)buf);
-
-	return NULL;
 }
 
 /* cpufreq_debug */
@@ -96,7 +80,6 @@ static ssize_t cpufreq_debug_proc_write(struct file *file,
 	else
 		func_lv_mask = dbg_lv;
 
-	free_page((unsigned long)buf);
 	return count;
 }
 
@@ -113,7 +96,7 @@ static int cpufreq_power_mode_proc_show(struct seq_file *m, void *v)
 static ssize_t cpufreq_power_mode_proc_write(struct file *file,
 	const char __user *buffer, size_t count, loff_t *pos)
 {
-	unsigned int mode = 0;
+	unsigned int mode;
 
 	char *buf = _copy_from_user_for_proc(buffer, count);
 
@@ -128,7 +111,6 @@ static ssize_t cpufreq_power_mode_proc_write(struct file *file,
 		("echo 0/1/2/3 > /proc/cpufreq/cpufreq_power_mode\n");
 	}
 
-	free_page((unsigned long)buf);
 	return count;
 }
 
@@ -158,7 +140,6 @@ static ssize_t cpufreq_stress_test_proc_write(struct file *file,
 #endif
 	}
 
-	free_page((unsigned long)buf);
 	return count;
 }
 
@@ -205,13 +186,13 @@ static ssize_t cpufreq_oppidx_proc_write(struct file *file,
 		if (oppidx >= 0 && oppidx < p->nr_opp_tbl) {
 			p->dvfs_disable_by_procfs = true;
 #ifdef CONFIG_HYBRID_CPU_DVFS
-			if (!cpu_dvfs_is(p, MT_CPU_DVFS_CCI))
+			/* if (!cpu_dvfs_is(p, MT_CPU_DVFS_CCI)) */
 				cpuhvfs_set_freq(
-					arch_get_cluster_id(p->cpu_id),
+					cpufreq_get_cluster_id(p->cpu_id),
 					cpu_dvfs_get_freq_by_idx(p, oppidx));
 #else
 			_mt_cpufreq_dvfs_request_wrapper(p, oppidx,
-			MT_CPU_DVFS_NORMAL, NULL);
+				MT_CPU_DVFS_NORMAL, NULL);
 #endif
 		} else {
 			p->dvfs_disable_by_procfs = false;
@@ -220,8 +201,6 @@ static ssize_t cpufreq_oppidx_proc_write(struct file *file,
 			p->name);
 		}
 	}
-
-	free_page((unsigned long)buf);
 
 	return count;
 }
@@ -232,10 +211,8 @@ static int cpufreq_freq_proc_show(struct seq_file *m, void *v)
 	struct mt_cpu_dvfs *p = m->private;
 	struct pll_ctrl_t *pll_p = id_to_pll_ctrl(p->Pll_id);
 
-	if (pll_p == NULL)
-		return 0;
-
-	seq_printf(m, "%d KHz\n", pll_p->pll_ops->get_cur_freq(pll_p));
+	if (pll_p != NULL)
+		seq_printf(m, "%d KHz\n", pll_p->pll_ops->get_cur_freq(pll_p));
 
 	return 0;
 }
@@ -309,26 +286,34 @@ static ssize_t cpufreq_freq_proc_write(struct file *file,
 
 			if (found == 1) {
 				p->dvfs_disable_by_procfs = true;
+
 #ifdef CONFIG_HYBRID_CPU_DVFS
-				if (!cpu_dvfs_is(p, MT_CPU_DVFS_CCI))
-					cpuhvfs_set_freq(
-					arch_get_cluster_id(p->cpu_id),
-						cpu_dvfs_get_freq_by_idx(p, i));
+				/* if (!cpu_dvfs_is(p, MT_CPU_DVFS_CCI)) */
+#ifdef SINGLE_CLUSTER
+				cpuhvfs_set_freq(cpufreq_get_cluster_id(
+					p->cpu_id), freq);
 #else
-				_mt_cpufreq_dvfs_request_wrapper(p,
-				i, MT_CPU_DVFS_NORMAL, NULL);
+				cpuhvfs_set_freq(
+					arch_get_cluster_id(p->cpu_id), freq);
 #endif
+				/* else */
+					/* cpuhvfs_set_freq( */
+						/* MT_CPU_DVFS_CCI, freq); */
+#else
+				_mt_cpufreq_dvfs_request_wrapper(
+					p, i, MT_CPU_DVFS_NORMAL, NULL);
+#endif
+
+
 			} else {
 				p->dvfs_disable_by_procfs = false;
 				tag_pr_info
 			("frequency %dKHz! is not found in CPU opp table\n",
-					    freq);
+				freq);
 			}
 		}
 #endif
 	}
-
-	free_page((unsigned long)buf);
 
 	return count;
 }
@@ -341,12 +326,12 @@ static int cpufreq_volt_proc_show(struct seq_file *m, void *v)
 	struct buck_ctrl_t *vsram_p = id_to_buck_ctrl(p->Vsram_buck_id);
 	unsigned long flags;
 
-	if (vproc_p == NULL || vsram_p == NULL)
-		return 0;
 	cpufreq_lock(flags);
-	seq_printf(m, "Vproc: %d uV\n",
+	if (vproc_p != NULL)
+		seq_printf(m, "Vproc: %d uV\n",
 		vproc_p->buck_ops->get_cur_volt(vproc_p) * 10);
-	seq_printf(m, "Vsram: %d uV\n",
+	if (vsram_p != NULL)
+		seq_printf(m, "Vsram: %d uV\n",
 		vsram_p->buck_ops->get_cur_volt(vsram_p) * 10);
 	cpufreq_unlock(flags);
 
@@ -379,13 +364,11 @@ static ssize_t cpufreq_volt_proc_write(struct file *file,
 		cpufreq_lock(flags);
 #ifdef CONFIG_HYBRID_CPU_DVFS
 #ifdef CONFIG_MTK_CPU_MSSV
-		if (!cpu_dvfs_is(p, MT_CPU_DVFS_CCI))
+		/* if (!cpu_dvfs_is(p, MT_CPU_DVFS_CCI)) */
 #ifdef SINGLE_CLUSTER
-			cpuhvfs_set_volt(
-				cpufreq_get_cluster_id(p->cpu_id), uv/10);
+		cpuhvfs_set_volt(cpufreq_get_cluster_id(p->cpu_id), uv/10);
 #else
-			cpuhvfs_set_volt(
-				arch_get_cluster_id(p->cpu_id), uv/10);
+		cpuhvfs_set_volt(arch_get_cluster_id(p->cpu_id), uv/10);
 #endif
 #endif
 #else
@@ -393,12 +376,10 @@ static ssize_t cpufreq_volt_proc_write(struct file *file,
 		ret = set_cur_volt_wrapper(p, vproc_p->fix_volt);
 		if (ret)
 			tag_pr_info("%s err to set_cur_volt_wrapper ret = %d\n",
-					__func__, ret);
+				    __func__, ret);
 #endif
 		cpufreq_unlock(flags);
 	}
-
-	free_page((unsigned long)buf);
 
 	return count;
 }
@@ -441,8 +422,6 @@ static ssize_t cpufreq_turbo_mode_proc_write(struct file *file,
 #endif
 	}
 
-	free_page((unsigned long)buf);
-
 	return count;
 }
 
@@ -483,8 +462,6 @@ static ssize_t cpufreq_sched_disable_proc_write(struct file *file,
 #endif
 	}
 
-	free_page((unsigned long)buf);
-
 	return count;
 }
 
@@ -522,11 +499,9 @@ static ssize_t cpufreq_dvfs_time_profile_proc_write(struct file *file,
 	else {
 		if (temp == 1) {
 			for (i = 0; i < NR_SET_V_F; i++)
-				/* max[i].tv64 = 0; */
 				max[i] = ktime_set(0, 0);
 		}
 	}
-	free_page((unsigned long)buf);
 
 	return count;
 }
@@ -596,11 +571,11 @@ static int cpufreq_cci_mode_proc_show(struct seq_file *m, void *v)
 #ifdef CONFIG_HYBRID_CPU_DVFS
 	mode = cpuhvfs_get_cci_mode();
 	if (mode == 0)
-		seq_puts(m, "cci_mode as Normal mode\n");
+		seq_puts(m, "cci_mode as Normal mode 0\n");
 	else if (mode == 1)
-		seq_puts(m, "cci_mode as Perf mode\n");
+		seq_puts(m, "cci_mode as Perf mode 1\n");
 	else
-		seq_puts(m, "cci_mode as Unknown mode\n");
+		seq_puts(m, "cci_mode as Unknown mode 2\n");
 #endif
 	return 0;
 }
@@ -626,8 +601,6 @@ static ssize_t cpufreq_cci_mode_proc_write(struct file *file,
 		cpuhvfs_update_cci_mode(mode, 0);
 #endif
 	}
-
-	free_page((unsigned long)buf);
 
 	return count;
 }

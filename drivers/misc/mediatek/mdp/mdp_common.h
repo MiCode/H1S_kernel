@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MDP_COMMON_H__
 #define __MDP_COMMON_H__
@@ -172,6 +164,8 @@ struct mdp_pmqos_record {
 #define MDP_TOTAL_THREAD 16
 #ifdef CMDQ_SECURE_PATH_SUPPORT
 #define MDP_THREAD_START (CMDQ_MIN_SECURE_THREAD_ID + 2)
+#define MDP_MAX_METADATA_COUNT_SIZE   ( \
+	(0xFFFFFFFF) / (sizeof(struct cmdqSecAddrMetadataStruct)))
 #else
 #define MDP_THREAD_START CMDQ_DYNAMIC_THREAD_ID_START
 #endif
@@ -219,6 +213,7 @@ s32 cmdq_mdp_handle_create(struct cmdqRecStruct **handle_out);
 s32 cmdq_mdp_handle_flush(struct cmdqRecStruct *handle);
 s32 cmdq_mdp_handle_sec_setup(struct cmdqSecDataStruct *secData,
 			struct cmdqRecStruct *handle);
+void cmdq_mdp_init_secure_id(void *meta_array, u32 count);
 s32 cmdq_mdp_update_sec_addr_index(struct cmdqRecStruct *handle,
 	u32 sec_handle, u32 index, u32 instr_index);
 u32 cmdq_mdp_handle_get_instr_count(struct cmdqRecStruct *handle);

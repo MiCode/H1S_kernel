@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -76,6 +68,29 @@ int  __attribute__ ((weak)) vcorefs_get_curr_vcore(void)
 	return -1;
 }
 
+
+void __attribute__ ((weak)) mtk8250_backup_dev(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+}
+
+void __attribute__ ((weak)) mtk8250_restore_dev(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+}
+
+int __attribute__ ((weak)) mtk8250_request_to_wakeup(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+	return 0;
+}
+
+int __attribute__ ((weak)) mtk8250_request_to_sleep(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+	return 0;
+}
+
 #if defined(CONFIG_MTK_WATCHDOG) && defined(CONFIG_MTK_WD_KICKER)
 int  __attribute__ ((weak)) get_wd_api(struct wd_api **obj)
 {
@@ -83,11 +98,6 @@ int  __attribute__ ((weak)) get_wd_api(struct wd_api **obj)
 	return -1;
 }
 #endif
-
-void __attribute__ ((weak)) mtk8250_backup_dev(void)
-{
-	printk_deferred("[name:spm&]NO %s !!!\n", __func__);
-}
 
 static u32 suspend_pcm_flags = {
 	#if !defined(CONFIG_MTK_TINYSYS_SSPM_SUPPORT)
@@ -396,7 +406,7 @@ unsigned int spm_go_to_sleep_ex(unsigned int ex_flag)
 
 	spm_suspend_pcm_setup_before_wfi(ex_flag, cpu, pwrctrl);
 
-	if (slp_dump_subsys_sleep_duration)
+	/*if (slp_dump_subsys_sleep_duration)
 		md_slp_duration = get_md_slp_duration();
 
 	if (slp_dump_ap_awake_duration) {
@@ -410,7 +420,7 @@ unsigned int spm_go_to_sleep_ex(unsigned int ex_flag)
 			WORLD_CLK_TICK_TO_SEC(((app_last_sleep_time
 				- app_last_wakeup_time)
 			% WORLD_CLK_13M_TICKS_PER_SEC) * 1000));
-	}
+	}*/
 
 	spm_suspend_footprint(SPM_SUSPEND_ENTER_UART_SLEEP);
 
@@ -448,7 +458,7 @@ RESTORE_IRQ:
 	last_wr = spm_output_wake_reason(ex_flag, &spm_wakesta);
 	mtk_spm_irq_restore();
 
-	if (slp_dump_ap_awake_duration) {
+	/*if (slp_dump_ap_awake_duration) {
 		app_last_wakeup_time =
 			(u64)_golden_read_reg(WORLD_CLK_CNTCV_H) << 32
 			| _golden_read_reg(WORLD_CLK_CNTCV_L);
@@ -458,6 +468,7 @@ RESTORE_IRQ:
 		spm_wakesta.timer_out >= PCM_32K_TICKS_FIVE_SEC)
 		printk_deferred("[name:spm&][SPM] md_slp_duration = %llu",
 			get_md_slp_duration() - md_slp_duration);
+*/
 
 	spin_unlock_irqrestore(&__spm_lock, flags);
 

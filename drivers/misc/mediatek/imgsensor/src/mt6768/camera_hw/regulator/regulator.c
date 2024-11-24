@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "regulator.h"
@@ -37,7 +29,8 @@ struct reg_oc_debug_t {
 	bool is_md_reg;
 };
 
-static struct reg_oc_debug_t reg_oc_debug[REGULATOR_TYPE_MAX_NUM];
+static struct reg_oc_debug_t
+	reg_oc_debug[IMGSENSOR_SENSOR_IDX_MAX_NUM][REGULATOR_TYPE_MAX_NUM];
 
 static const int regulator_voltage[] = {
 	REGULATOR_VOLTAGE_0,
@@ -96,22 +89,21 @@ enum IMGSENSOR_RETURN imgsensor_oc_interrupt(
 	if (enable) {
 		mdelay(5);
 		for (i = 0; i < REGULATOR_TYPE_MAX_NUM; i++) {
-			if (preg_own->pregulator[sensor_idx][i] &&
-					regulator_is_enabled(preg_own->pregulator[sensor_idx][i]) &&
-					!Is_Notify_call[sensor_idx][i]
-				) {
+			if (preg_own->pregulator[(unsigned int)sensor_idx][i] &&
+			regulator_is_enabled(preg_own->pregulator[(unsigned int)sensor_idx][i]) &&
+			!Is_Notify_call[(unsigned int)sensor_idx][i]
+			) {
 				/* oc notifier callback function */
-				if (reg_oc_debug[i].name == NULL)
-					reg_oc_debug[i].name = regulator_control[i].pregulator_type;
-				if (reg_oc_debug[i].regulator == NULL)
-					reg_oc_debug[i].regulator =
-						preg_own->pregulator[sensor_idx][i];
-				reg_oc_debug[i].nb.notifier_call =
+			reg_oc_debug[(unsigned int)sensor_idx][i].name =
+					regulator_control[i].pregulator_type;
+				reg_oc_debug[(unsigned int)sensor_idx][i].regulator =
+					preg_own->pregulator[(unsigned int)sensor_idx][i];
+				reg_oc_debug[(unsigned int)sensor_idx][i].nb.notifier_call =
 					regulator_oc_notify;
 				ret = devm_regulator_register_notifier(
-					preg_own->pregulator[sensor_idx][i],
-					&reg_oc_debug[i].nb);
-				Is_Notify_call[sensor_idx][i] = true;
+					preg_own->pregulator[(unsigned int)sensor_idx][i],
+					&reg_oc_debug[(unsigned int)sensor_idx][i].nb);
+				Is_Notify_call[(unsigned int)sensor_idx][i] = true;
 
 				if (ret) {
 					pr_info(
@@ -133,15 +125,15 @@ enum IMGSENSOR_RETURN imgsensor_oc_interrupt(
 		/* Disable interrupt before power off */
 
 		for (i = 0; i < REGULATOR_TYPE_MAX_NUM; i++) {
-			if (preg_own->pregulator[sensor_idx][i] &&
-				!regulator_is_enabled(preg_own->pregulator[sensor_idx][i]) &&
-				Is_Notify_call[sensor_idx][i]
-				) {
+			if (preg_own->pregulator[(unsigned int)sensor_idx][i] &&
+			regulator_is_enabled(preg_own->pregulator[(unsigned int)sensor_idx][i]) &&
+			Is_Notify_call[(unsigned int)sensor_idx][i]
+			) {
 				/* oc notifier callback function */
 				devm_regulator_unregister_notifier(
-					preg_own->pregulator[sensor_idx][i],
-					&reg_oc_debug[i].nb);
-				Is_Notify_call[sensor_idx][i] = false;
+					preg_own->pregulator[(unsigned int)sensor_idx][i],
+					&reg_oc_debug[(unsigned int)sensor_idx][i].nb);
+				Is_Notify_call[(unsigned int)sensor_idx][i] = false;
 				pr_info("Unregister OC notifier");
 			}
 		}
@@ -246,8 +238,7 @@ static enum IMGSENSOR_RETURN regulator_set(
 	if (pin > IMGSENSOR_HW_PIN_DOVDD   ||
 	    pin < IMGSENSOR_HW_PIN_AVDD    ||
 	    pin_state < IMGSENSOR_HW_PIN_STATE_LEVEL_0 ||
-	    pin_state >= IMGSENSOR_HW_PIN_STATE_LEVEL_HIGH ||
-	    sensor_idx < 0)
+	    pin_state >= IMGSENSOR_HW_PIN_STATE_LEVEL_HIGH)
 		return IMGSENSOR_RETURN_ERROR;
 
 	reg_type_offset = REGULATOR_TYPE_VCAMA;

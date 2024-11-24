@@ -31,23 +31,6 @@
 #define xfrm_state_deref_prot(table, net) \
 	rcu_dereference_protected((table), lockdep_is_held(&(net)->xfrm.xfrm_state_lock))
 
-static char dmsg[128];
-#define format_trace_info()				\
-do {							\
-	int ret;					\
-	memset(dmsg, 0, sizeof(dmsg));			\
-	ret = snprintf(dmsg, sizeof(dmsg) - 1, "%s:%d", __func__, __LINE__);	\
-	if (ret < 0)								\
-		pr_info("[mtk_net][xfrm_state] snprintf return error code :%d\n", ret);	\
-} while (0)
-
-static void
-xfrm_state_check_add_byspi_hlish(struct hlist_head *head, struct xfrm_state *new, char *func_name);
-static void xfrm_state_check_del_byspi_hlish(struct xfrm_state *x, char *func_name);
-static void xfrm_state_get_back_trace(struct xfrm_state_trace *trace);
-static void xfrm_state_print_back_trace(struct xfrm_state *x);
-static void xfrm_state_print_refcount_back_trace(struct xfrm_state *x);
-
 static void xfrm_state_gc_task(struct work_struct *work);
 
 /* Each xfrm_state may be linked to two tables:
@@ -59,36 +42,13 @@ static void xfrm_state_gc_task(struct work_struct *work);
 
 static unsigned int xfrm_state_hashmax __read_mostly = 1 * 1024 * 1024;
 static __read_mostly seqcount_t xfrm_state_hash_generation = SEQCNT_ZERO(xfrm_state_hash_generation);
+static struct kmem_cache *xfrm_state_cache __ro_after_init;
 
 static DECLARE_WORK(xfrm_state_gc_work, xfrm_state_gc_task);
 static HLIST_HEAD(xfrm_state_gc_list);
 
 static inline bool xfrm_state_hold_rcu(struct xfrm_state __rcu *x)
 {
-#ifdef CONFIG_MTK_ENG_BUILD
-	unsigned int cpu, idx;
-	struct stack_trace stack_trace;
-	u64 ts_nsc = sched_clock();
-
-	cpu = get_cpu();
-	idx = x->xfrm_refcount_trace_idx;
-	if (++x->xfrm_refcount_trace_idx >= MAX_TRACE_LEN) {
-		x->xfrm_refcount_trace_idx = 0;
-		x->xfrm_refcount_trace_overwrite++;
-	}
-
-	stack_trace.max_entries = XFRM_TRACK_ADDRS_COUNT;
-	stack_trace.nr_entries = 0;
-	stack_trace.entries = (x->xfrm_refcount_trace)[idx].addrs;
-	stack_trace.skip = 0;
-	save_stack_trace(&stack_trace);
-	(x->xfrm_refcount_trace)[idx].cpu = cpu;
-	(x->xfrm_refcount_trace)[idx].pid = current->pid | XFRM_HOLD_FLAG;
-	(x->xfrm_refcount_trace)[idx].count = refcount_read(&x->refcnt);
-	(x->xfrm_refcount_trace)[idx].when_nsec = do_div(ts_nsc, 1000000000);
-	(x->xfrm_refcount_trace)[idx].when_sec = ts_nsc;
-	put_cpu();
-#endif
 	return refcount_inc_not_zero(&x->refcnt);
 }
 
@@ -358,7 +318,7 @@ retry:
 
 	if (!type && try_load) {
 		request_module("xfrm-offload-%d-%d", family, proto);
-		try_load = 0;
+		try_load = false;
 		goto retry;
 	}
 
@@ -466,17 +426,14 @@ static void xfrm_put_mode(struct xfrm_mode *mode)
 	module_put(mode->owner);
 }
 
-static void xfrm_state_gc_destroy(struct xfrm_state *x)
+void xfrm_state_free(struct xfrm_state *x)
 {
-#ifdef CONFIG_MTK_ENG_BUILD
-	pr_info("[mtk_net][xfrm_state] %s  free x %px\n", __func__, x);
-	if (x->user_del_flag) {
-		pr_info("[mtk_net][xfrm_state] WARNING3.... x %px\n", x);
-		xfrm_state_print_refcount_back_trace(x);
-		BUG_ON(1);
-	}
-#endif
-	xfrm_state_get_back_trace(&x->xfrm_free_trace);
+	kmem_cache_free(xfrm_state_cache, x);
+}
+EXPORT_SYMBOL(xfrm_state_free);
+
+static void ___xfrm_state_destroy(struct xfrm_state *x)
+{
 	tasklet_hrtimer_cancel(&x->mtimer);
 	del_timer_sync(&x->rtimer);
 	kfree(x->aead);
@@ -503,7 +460,7 @@ static void xfrm_state_gc_destroy(struct xfrm_state *x)
 		put_page(x->xfrag.page);
 	xfrm_dev_state_free(x);
 	security_xfrm_state_free(x);
-	kfree(x);
+	xfrm_state_free(x);
 }
 
 static void xfrm_state_gc_task(struct work_struct *work)
@@ -519,15 +476,15 @@ static void xfrm_state_gc_task(struct work_struct *work)
 	synchronize_rcu();
 
 	hlist_for_each_entry_safe(x, tmp, &gc_list, gclist)
-		xfrm_state_gc_destroy(x);
+		___xfrm_state_destroy(x);
 }
 
 static enum hrtimer_restart xfrm_timer_handler(struct hrtimer *me)
 {
 	struct tasklet_hrtimer *thr = container_of(me, struct tasklet_hrtimer, timer);
 	struct xfrm_state *x = container_of(thr, struct xfrm_state, mtimer);
-	unsigned long now = get_seconds();
-	long next = LONG_MAX;
+	time64_t now = ktime_get_real_seconds();
+	time64_t next = TIME64_MAX;
 	int warn = 0;
 	int err = 0;
 
@@ -588,7 +545,7 @@ static enum hrtimer_restart xfrm_timer_handler(struct hrtimer *me)
 	if (warn)
 		km_state_expired(x, 0, 0);
 resched:
-	if (next != LONG_MAX) {
+	if (next != TIME64_MAX) {
 		tasklet_hrtimer_start(&x->mtimer, ktime_set(next, 0), HRTIMER_MODE_REL);
 	}
 
@@ -609,16 +566,14 @@ out:
 	return HRTIMER_NORESTART;
 }
 
-static void xfrm_replay_timer_handler(unsigned long data);
+static void xfrm_replay_timer_handler(struct timer_list *t);
 
 struct xfrm_state *xfrm_state_alloc(struct net *net)
 {
 	struct xfrm_state *x;
 
-	x = kzalloc(sizeof(struct xfrm_state), GFP_ATOMIC);
-#ifdef CONFIG_MTK_ENG_BUILD
-	pr_info("[mtk_net][xfrm_state] %s alloc x: %px\n", __func__, x);
-#endif
+	x = kmem_cache_alloc(xfrm_state_cache, GFP_ATOMIC | __GFP_ZERO);
+
 	if (x) {
 		write_pnet(&x->xs_net, net);
 		refcount_set(&x->refcnt, 1);
@@ -629,9 +584,8 @@ struct xfrm_state *xfrm_state_alloc(struct net *net)
 		INIT_HLIST_NODE(&x->byspi);
 		tasklet_hrtimer_init(&x->mtimer, xfrm_timer_handler,
 					CLOCK_BOOTTIME, HRTIMER_MODE_ABS);
-		setup_timer(&x->rtimer, xfrm_replay_timer_handler,
-				(unsigned long)x);
-		x->curlft.add_time = get_seconds();
+		timer_setup(&x->rtimer, xfrm_replay_timer_handler, 0);
+		x->curlft.add_time = ktime_get_real_seconds();
 		x->lft.soft_byte_limit = XFRM_INF;
 		x->lft.soft_packet_limit = XFRM_INF;
 		x->lft.hard_byte_limit = XFRM_INF;
@@ -641,28 +595,24 @@ struct xfrm_state *xfrm_state_alloc(struct net *net)
 		x->inner_mode = NULL;
 		x->inner_mode_iaf = NULL;
 		spin_lock_init(&x->lock);
-		x->xfrm_alloc_trace.count = 0;
-		x->xfrm_free_trace.count = 0;
-		x->xfrm_transfer_trace.count = 0;
-		x->xfrm_find_trace.count = 0;
-		x->xfrm_insert_trace.count = 0;
-#ifdef CONFIG_MTK_ENG_BUILD
-		x->xfrm_refcount_trace_idx = 0;
-		x->xfrm_refcount_trace_overwrite = 0;
-#endif
 	}
 	return x;
 }
 EXPORT_SYMBOL(xfrm_state_alloc);
 
-void __xfrm_state_destroy(struct xfrm_state *x)
+void __xfrm_state_destroy(struct xfrm_state *x, bool sync)
 {
 	WARN_ON(x->km.state != XFRM_STATE_DEAD);
 
-	spin_lock_bh(&xfrm_state_gc_lock);
-	hlist_add_head(&x->gclist, &xfrm_state_gc_list);
-	spin_unlock_bh(&xfrm_state_gc_lock);
-	schedule_work(&xfrm_state_gc_work);
+	if (sync) {
+		synchronize_rcu();
+		___xfrm_state_destroy(x);
+	} else {
+		spin_lock_bh(&xfrm_state_gc_lock);
+		hlist_add_head(&x->gclist, &xfrm_state_gc_list);
+		spin_unlock_bh(&xfrm_state_gc_lock);
+		schedule_work(&xfrm_state_gc_work);
+	}
 }
 EXPORT_SYMBOL(__xfrm_state_destroy);
 
@@ -677,14 +627,8 @@ int __xfrm_state_delete(struct xfrm_state *x)
 		list_del(&x->km.all);
 		hlist_del_rcu(&x->bydst);
 		hlist_del_rcu(&x->bysrc);
-		if (x->id.spi) {
-			xfrm_state_check_del_byspi_hlish(x, NULL);
+		if (x->id.spi)
 			hlist_del_rcu(&x->byspi);
-#ifdef CONFIG_MTK_ENG_BUILD
-			pr_info("[mtk_net][xfrm_state] %s delete x %px from byspi list\n",
-				__func__, x);
-#endif
-		}
 		net->xfrm.state_num--;
 		spin_unlock(&net->xfrm.xfrm_state_lock);
 
@@ -771,7 +715,7 @@ xfrm_dev_state_flush_secctx_check(struct net *net, struct net_device *dev, bool 
 }
 #endif
 
-int xfrm_state_flush(struct net *net, u8 proto, bool task_valid)
+int xfrm_state_flush(struct net *net, u8 proto, bool task_valid, bool sync)
 {
 	int i, err = 0, cnt = 0;
 
@@ -793,7 +737,10 @@ restart:
 				err = xfrm_state_delete(x);
 				xfrm_audit_state_delete(x, err ? 0 : 1,
 							task_valid);
-				xfrm_state_put(x);
+				if (sync)
+					xfrm_state_put_sync(x);
+				else
+					xfrm_state_put(x);
 				if (!err)
 					cnt++;
 
@@ -884,248 +831,6 @@ xfrm_init_tempstate(struct xfrm_state *x, const struct flowi *fl,
 	afinfo->init_temprop(x, tmpl, daddr, saddr);
 }
 
-static void xfrm_state_get_back_trace(struct xfrm_state_trace *trace)
-{
-#ifdef CONFIG_MTK_ENG_BUILD
-	struct stack_trace stack_trace;
-	u64 ts_nsc = sched_clock();
-
-	if (!trace || trace->count) //avoid overwrite the backtrace
-		return;
-	stack_trace.max_entries = XFRM_TRACK_ADDRS_COUNT;
-	stack_trace.nr_entries = 0;
-	stack_trace.entries = trace->addrs;
-	stack_trace.skip = 0;
-	save_stack_trace(&stack_trace);
-	trace->cpu = smp_processor_id();
-	trace->pid = current->pid;
-	trace->count++;
-	trace->when_nsec = do_div(ts_nsc, 1000000000);
-	trace->when_sec = ts_nsc;
-#endif
-}
-
-static void __printf_back_trace(struct xfrm_state_trace *trace, char *tag)
-{
-#ifdef CONFIG_MTK_ENG_BUILD
-	int i;
-
-	if (!trace->count) {
-		pr_info("[xfrm_state] %s [%s]\n", __func__, tag);
-		return;
-	}
-	pr_info("[xfrm_state][%s][time %5lu.%06lu] [pid %d] [cpu %d]\n", tag,
-		trace->when_sec, trace->when_nsec / 1000, trace->pid, trace->cpu);
-	for (i = 0; i < XFRM_TRACK_ADDRS_COUNT; i++) {
-		if (trace->addrs[i] != 0)
-			pr_info("[xfrm_state][%d][<%p>] %pS\n", trace->count
-				, (void *)trace->addrs[i], (void *)trace->addrs[i]);
-	}
-#endif
-}
-
-static void xfrm_state_print_back_trace(struct xfrm_state *x)
-{
-	char *logtag = "alloc";
-
-	__printf_back_trace(&x->xfrm_alloc_trace, logtag);
-	logtag = "free";
-	__printf_back_trace(&x->xfrm_free_trace, logtag);
-	logtag = "transfer";
-	__printf_back_trace(&x->xfrm_transfer_trace, logtag);
-	logtag = "find";
-	__printf_back_trace(&x->xfrm_find_trace, logtag);
-	logtag = "insert";
-	__printf_back_trace(&x->xfrm_insert_trace, logtag);
-}
-
-static void xfrm_state_print_refcount_back_trace(struct xfrm_state *x)
-{
-#ifdef CONFIG_MTK_ENG_BUILD
-	int i, idx, size;
-	unsigned int tmp, pid;
-	struct xfrm_state_trace *trace;
-
-	if (!x->xfrm_refcount_trace_idx && !x->xfrm_refcount_trace_overwrite) {
-		pr_info("[xfrm_state]  %s no backtrace\n", __func__);
-		return;
-	}
-
-	if (!x->xfrm_refcount_trace_overwrite)
-		size = x->xfrm_refcount_trace_idx;
-	else
-		size = MAX_TRACE_LEN;
-
-	pr_info("[xfrm_state] ====[ xfrm refcnt backtrace begin x :%px ]===========\n", x);
-	for (idx = 0; idx < size; idx++) {
-		trace = &x->xfrm_refcount_trace[idx];
-		pid = trace->pid;
-		tmp = (pid & 0xf0000000) >> 28;
-		pr_info("[xfrm_state][%s][time %5lu.%06lu] [pid %d] [cpu %d] [refcount %d]\n",
-			tmp == 1 ? "xfrm_put" :	"xfrm_hold",
-			trace->when_sec, trace->when_nsec / 1000,
-			(trace->pid & 0xfffffff), trace->cpu, trace->count);
-		for (i = 0; i < XFRM_TRACK_ADDRS_COUNT; i++) {
-			if (trace->addrs[i] != 0)
-				pr_info("[xfrm_state][%d][<%p>] %pS\n", trace->count,
-					(void *)trace->addrs[i], (void *)trace->addrs[i]);
-		}
-	}
-	pr_info("[xfrm_state]====[ xfrm refcnt backtrace end x :%px ]===========\n", x);
-#endif
-}
-
-static  void
-xfrm_state_check_add_byspi_hlish(struct hlist_head *head, struct xfrm_state *new, char *func_name)
-{
-#ifdef CONFIG_MTK_ENG_BUILD
-	int i = 0;
-	struct xfrm_state *x;
-	struct hlist_node *next;
-
-	rcu_read_lock();
-	hlist_for_each_entry_rcu(x, head, byspi) {
-		i++;
-		next = x->byspi.next;
-		pr_info("[mtk_net][xfrm_state]check_add %s x[%d] %px; pre %px next %px n->n %px\n",
-			func_name, i, x, x->byspi.pprev, x->byspi.next, next ? next->next : NULL);
-		if (x == new) { //add 2 times in the same list ;
-			pr_info("[mtk_net][xfrm_state] [%d]check_add %s WARNING2", i, func_name);
-			xfrm_state_print_back_trace(x);
-			BUG_ON(1);
-		}
-		//check HWT
-		if ((x->byspi.next == &x->byspi) || //case1
-		   (next && (next->next == next)) ||
-		   (next && (next->next == &x->byspi) && (x->byspi.next == next))) { //case2
-			pr_info("[mtk_net][xfrm_state] [%d]check_add %s WARNING", i, func_name);
-			xfrm_state_print_back_trace(x);
-			BUG_ON(1);
-		} //case2
-		if (i > 10)
-			break;
-	}
-	rcu_read_unlock();
-#endif
-}
-
-static  void xfrm_state_check_del_byspi_hlish(struct xfrm_state *x, char *func_name)
-{
-#ifdef CONFIG_MTK_ENG_BUILD
-	struct hlist_node *next;
-	struct hlist_node **pprev;
-
-	next = x->byspi.next;
-	pprev = x->byspi.pprev;
-
-	pr_info("[mtk_net][xfrm_state] check_del1_byspi %s x %px :  prev %px next %px\n",
-		func_name, x, x->byspi.pprev, x->byspi.next);
-	if (*pprev)
-		pr_info("[mtk_net][xfrm_state] check_del1 %s: x %px ; pre %px; (*ppre)->next %px\n",
-			func_name, x, pprev, (*pprev)->next);
-	//check HWT
-	if ((next && (next->next == next)) ||
-	    ((*pprev) && ((*pprev) == pprev)) ||
-	    (x->byspi.next == &x->byspi)) {
-		pr_info("[mtk_net][xfrm_state] check_del1_byspi %s: WARNING......", func_name);
-		BUG_ON(1);
-	}
-	//check end
-#endif
-}
-
-#ifdef CONFIG_MTK_ENG_BUILD
-static int trace1;
-static int trace2;
-static int trace3;
-static int trace4;
-static int print_count;
-
-static ktime_t xfrm_state_t1;
-static ktime_t xfrm_state_t2;
-
-static void xfrm_state_print_btrace(struct net *net, unsigned int h, struct xfrm_state *x)
-{
-	ktime_t xfrm_state_deltatime;
-	ktime_t  xfrm_state_duration;
-
-	xfrm_state_deltatime = ktime_sub(xfrm_state_t2, xfrm_state_t1);
-	xfrm_state_duration = //micro-second
-	(unsigned long long)ktime_to_ns(xfrm_state_deltatime) >> 10;
-
-	if ((xfrm_state_duration > 2000000) && (print_count < 10)) {
-		pr_info("[mtk_net][xfrm_state] trace:[%d][%d][%d][%d]\n",
-			trace1, trace2, trace3, trace4);
-		pr_info("[mtk_net][xfrm_state] dutation [%d]\n",
-			xfrm_state_duration);
-		pr_info("[mtk_net][xfrm_state] hmask %d lookup x_num %d net %px\n",
-			net->xfrm.state_hmask, net->xfrm.state_num, net);
-		pr_info("[mtk_net][xfrm_state] byspi %px h %d x %px\n",
-			net->xfrm.state_byspi, h, x);
-		print_count++;
-	}
-	if (xfrm_state_duration > 3000000) {
-		pr_info("[mtk_net][xfrm_state] trace:[%d][%d][%d][%d]\n",
-			trace1, trace2, trace3, trace4);
-		pr_info("[mtk_net][xfrm_state] dutation [%d]\n",
-			xfrm_state_duration);
-		pr_info("[mtk_net][xfrm_state] hmask %d lookup x_num %d net %px\n",
-			net->xfrm.state_hmask, net->xfrm.state_num, net);
-		pr_info("[mtk_net][xfrm_state] byspi %px h %d x %px\n",
-			net->xfrm.state_byspi, h, x);
-			BUG_ON(1);
-		}
-}
-
-static void xfrm_state_clear_btrace(void)
-{
-	trace1 = 0;
-	trace2 = 0;
-	trace3 = 0;
-	trace4 = 0;
-	print_count = 0;
-}
-
-static struct xfrm_state *__xfrm_state_lookup(struct net *net, u32 mark,
-					      const xfrm_address_t *daddr,
-					      __be32 spi, u8 proto,
-					      unsigned short family)
-{
-	unsigned int h = xfrm_spi_hash(net, daddr, spi, proto, family);
-	struct xfrm_state *x;
-	bool hold_rcu;
-
-	xfrm_state_t1 = ktime_get();
-	pr_info("[mtk_net][xfrm_state] hmask %d lookup x_num %d net %px byspi %px h %d\n",
-		net->xfrm.state_hmask, net->xfrm.state_num, net, net->xfrm.state_byspi, h);
-	hlist_for_each_entry_rcu(x, net->xfrm.state_byspi + h, byspi) {
-		trace1++;
-		xfrm_state_t2 = ktime_get();
-		xfrm_state_print_btrace(net, h, x);
-		if (x->props.family != family ||
-		    x->id.spi       != spi ||
-		    x->id.proto     != proto ||
-		    !xfrm_addr_equal(&x->id.daddr, daddr, family))
-			continue;
-		trace2++;
-		if ((mark & x->mark.m) != x->mark.v)
-			continue;
-		trace3++;
-		hold_rcu = xfrm_state_hold_rcu(x);
-		if (!hold_rcu) {
-			trace4++;
-			continue;
-		}
-
-		xfrm_state_clear_btrace();
-		return x;
-	}
-	xfrm_state_clear_btrace();
-	return NULL;
-}
-
-#else
-
 static struct xfrm_state *__xfrm_state_lookup(struct net *net, u32 mark,
 					      const xfrm_address_t *daddr,
 					      __be32 spi, u8 proto,
@@ -1150,8 +855,6 @@ static struct xfrm_state *__xfrm_state_lookup(struct net *net, u32 mark,
 
 	return NULL;
 }
-
-#endif //#ifdef CONFIG_MTK_ENG_BUILD
 
 static struct xfrm_state *__xfrm_state_lookup_byaddr(struct net *net, u32 mark,
 						     const xfrm_address_t *daddr,
@@ -1220,7 +923,8 @@ static void xfrm_state_look_at(struct xfrm_policy *pol, struct xfrm_state *x,
 	 */
 	if (x->km.state == XFRM_STATE_VALID) {
 		if ((x->sel.family &&
-		     !xfrm_selector_match(&x->sel, fl, x->sel.family)) ||
+		     (x->sel.family != family ||
+		      !xfrm_selector_match(&x->sel, fl, family))) ||
 		    !security_xfrm_state_pol_flow_match(x, pol, fl))
 			return;
 
@@ -1233,7 +937,9 @@ static void xfrm_state_look_at(struct xfrm_policy *pol, struct xfrm_state *x,
 		*acq_in_progress = 1;
 	} else if (x->km.state == XFRM_STATE_ERROR ||
 		   x->km.state == XFRM_STATE_EXPIRED) {
-		if (xfrm_selector_match(&x->sel, fl, x->sel.family) &&
+		if ((!x->sel.family ||
+		     (x->sel.family == family &&
+		      xfrm_selector_match(&x->sel, fl, family))) &&
 		    security_xfrm_state_pol_flow_match(x, pol, fl))
 			*error = -ESRCH;
 	}
@@ -1273,7 +979,7 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
 		    tmpl->mode == x->props.mode &&
 		    tmpl->id.proto == x->id.proto &&
 		    (tmpl->id.spi == x->id.spi || !tmpl->id.spi))
-			xfrm_state_look_at(pol, x, fl, encap_family,
+			xfrm_state_look_at(pol, x, fl, family,
 					   &best, &acquire_in_progress, &error);
 	}
 	if (best || acquire_in_progress)
@@ -1290,7 +996,7 @@ xfrm_state_find(const xfrm_address_t *daddr, const xfrm_address_t *saddr,
 		    tmpl->mode == x->props.mode &&
 		    tmpl->id.proto == x->id.proto &&
 		    (tmpl->id.spi == x->id.spi || !tmpl->id.spi))
-			xfrm_state_look_at(pol, x, fl, encap_family,
+			xfrm_state_look_at(pol, x, fl, family,
 					   &best, &acquire_in_progress, &error);
 	}
 
@@ -1343,16 +1049,7 @@ found:
 			hlist_add_head_rcu(&x->bysrc, net->xfrm.state_bysrc + h);
 			if (x->id.spi) {
 				h = xfrm_spi_hash(net, &x->id.daddr, x->id.spi, x->id.proto, encap_family);
-				xfrm_state_get_back_trace(&x->xfrm_find_trace);
-				format_trace_info();
-				xfrm_state_check_add_byspi_hlish(net->xfrm.state_byspi + h, x, dmsg);
 				hlist_add_head_rcu(&x->byspi, net->xfrm.state_byspi + h);
-#ifdef CONFIG_MTK_ENG_BUILD
-				pr_info("[mtk_net][xfrm_state] add list %s x %px byspi %px  h %d\n",
-					__func__, x, net->xfrm.state_byspi, h);
-#endif
-				format_trace_info();
-				xfrm_state_check_add_byspi_hlish(net->xfrm.state_byspi + h, NULL, dmsg);
 			}
 			x->lft.hard_add_expires_seconds = net->xfrm.sysctl_acq_expires;
 			tasklet_hrtimer_start(&x->mtimer, ktime_set(net->xfrm.sysctl_acq_expires, 0), HRTIMER_MODE_REL);
@@ -1463,16 +1160,8 @@ static void __xfrm_state_insert(struct xfrm_state *x)
 	if (x->id.spi) {
 		h = xfrm_spi_hash(net, &x->id.daddr, x->id.spi, x->id.proto,
 				  x->props.family);
-		xfrm_state_get_back_trace(&x->xfrm_insert_trace);
-		format_trace_info();
-		xfrm_state_check_add_byspi_hlish(net->xfrm.state_byspi + h, x, dmsg);
+
 		hlist_add_head_rcu(&x->byspi, net->xfrm.state_byspi + h);
-#ifdef CONFIG_MTK_ENG_BUILD
-		pr_info("[mtk_net][xfrm_state] add list  %s x %px byspi %px  h %d\n",
-			__func__, x, net->xfrm.state_byspi, h);
-#endif
-		format_trace_info();
-		xfrm_state_check_add_byspi_hlish(net->xfrm.state_byspi + h, NULL, dmsg);
 	}
 
 	tasklet_hrtimer_start(&x->mtimer, ktime_set(1, 0), HRTIMER_MODE_REL);
@@ -1655,6 +1344,30 @@ out:
 EXPORT_SYMBOL(xfrm_state_add);
 
 #ifdef CONFIG_XFRM_MIGRATE
+static inline int clone_security(struct xfrm_state *x, struct xfrm_sec_ctx *security)
+{
+	struct xfrm_user_sec_ctx *uctx;
+	int size = sizeof(*uctx) + security->ctx_len;
+	int err;
+
+	uctx = kmalloc(size, GFP_KERNEL);
+	if (!uctx)
+		return -ENOMEM;
+
+	uctx->exttype = XFRMA_SEC_CTX;
+	uctx->len = size;
+	uctx->ctx_doi = security->ctx_doi;
+	uctx->ctx_alg = security->ctx_alg;
+	uctx->ctx_len = security->ctx_len;
+	memcpy(uctx + 1, security->ctx_str, security->ctx_len);
+	err = security_xfrm_state_alloc(x, uctx);
+	kfree(uctx);
+	if (err)
+		return err;
+
+	return 0;
+}
+
 static struct xfrm_state *xfrm_state_clone(struct xfrm_state *orig,
 					   struct xfrm_encap_tmpl *encap)
 {
@@ -1711,6 +1424,10 @@ static struct xfrm_state *xfrm_state_clone(struct xfrm_state *orig,
 			goto error;
 	}
 
+	if (orig->security)
+		if (clone_security(x, orig->security))
+			goto error;
+
 	if (orig->coaddr) {
 		x->coaddr = kmemdup(orig->coaddr, sizeof(*x->coaddr),
 				    GFP_KERNEL);
@@ -1724,9 +1441,7 @@ static struct xfrm_state *xfrm_state_clone(struct xfrm_state *orig,
 	}
 
 	memcpy(&x->mark, &orig->mark, sizeof(x->mark));
-
-	if (xfrm_init_state(x) < 0)
-		goto error;
+	memcpy(&x->props.smark, &orig->props.smark, sizeof(x->props.smark));
 
 	x->props.flags = orig->props.flags;
 	x->props.extra_flags = orig->props.extra_flags;
@@ -1735,7 +1450,7 @@ static struct xfrm_state *xfrm_state_clone(struct xfrm_state *orig,
 	x->tfcpad = orig->tfcpad;
 	x->replay_maxdiff = orig->replay_maxdiff;
 	x->replay_maxage = orig->replay_maxage;
-	x->curlft.add_time = orig->curlft.add_time;
+	memcpy(&x->curlft, &orig->curlft, sizeof(x->curlft));
 	x->km.state = orig->km.state;
 	x->km.seq = orig->km.seq;
 	x->replay = orig->replay;
@@ -1749,7 +1464,8 @@ out:
 	return NULL;
 }
 
-struct xfrm_state *xfrm_migrate_state_find(struct xfrm_migrate *m, struct net *net)
+struct xfrm_state *xfrm_migrate_state_find(struct xfrm_migrate *m, struct net *net,
+						u32 if_id)
 {
 	unsigned int h;
 	struct xfrm_state *x = NULL;
@@ -1765,6 +1481,8 @@ struct xfrm_state *xfrm_migrate_state_find(struct xfrm_migrate *m, struct net *n
 				continue;
 			if (m->reqid && x->props.reqid != m->reqid)
 				continue;
+			if (if_id != 0 && x->if_id != if_id)
+				continue;
 			if (!xfrm_addr_equal(&x->id.daddr, &m->old_daddr,
 					     m->old_family) ||
 			    !xfrm_addr_equal(&x->props.saddr, &m->old_saddr,
@@ -1779,6 +1497,8 @@ struct xfrm_state *xfrm_migrate_state_find(struct xfrm_migrate *m, struct net *n
 		hlist_for_each_entry(x, net->xfrm.state_bysrc+h, bysrc) {
 			if (x->props.mode != m->mode ||
 			    x->id.proto != m->proto)
+				continue;
+			if (if_id != 0 && x->if_id != if_id)
 				continue;
 			if (!xfrm_addr_equal(&x->id.daddr, &m->old_daddr,
 					     m->old_family) ||
@@ -1805,6 +1525,11 @@ struct xfrm_state *xfrm_state_migrate(struct xfrm_state *x,
 	xc = xfrm_state_clone(x, encap);
 	if (!xc)
 		return NULL;
+
+	xc->props.family = m->new_family;
+
+	if (xfrm_init_state(xc) < 0)
+		goto error;
 
 	memcpy(&xc->id.daddr, &m->new_daddr, sizeof(xc->id.daddr));
 	memcpy(&xc->props.saddr, &m->new_saddr, sizeof(xc->props.saddr));
@@ -1873,8 +1598,12 @@ out:
 	err = -EINVAL;
 	spin_lock_bh(&x1->lock);
 	if (likely(x1->km.state == XFRM_STATE_VALID)) {
-		if (x->encap && x1->encap)
+		if (x->encap && x1->encap &&
+		    x->encap->encap_type == x1->encap->encap_type)
 			memcpy(x1->encap, x->encap, sizeof(*x1->encap));
+		else if (x->encap || x1->encap)
+			goto fail;
+
 		if (x->coaddr && x1->coaddr) {
 			memcpy(x1->coaddr, x->coaddr, sizeof(*x1->coaddr));
 		}
@@ -1904,6 +1633,8 @@ out:
 		x->km.state = XFRM_STATE_DEAD;
 		__xfrm_state_put(x);
 	}
+
+fail:
 	spin_unlock_bh(&x1->lock);
 
 	xfrm_state_put(x1);
@@ -1915,7 +1646,7 @@ EXPORT_SYMBOL(xfrm_state_update);
 int xfrm_state_check_expire(struct xfrm_state *x)
 {
 	if (!x->curlft.use_time)
-		x->curlft.use_time = get_seconds();
+		x->curlft.use_time = ktime_get_real_seconds();
 
 	if (x->curlft.bytes >= x->lft.hard_byte_limit ||
 	    x->curlft.packets >= x->lft.hard_packet_limit) {
@@ -2137,16 +1868,7 @@ int xfrm_alloc_spi(struct xfrm_state *x, u32 low, u32 high)
 		spin_lock_bh(&net->xfrm.xfrm_state_lock);
 		x->id.spi = newspi;
 		h = xfrm_spi_hash(net, &x->id.daddr, x->id.spi, x->id.proto, x->props.family);
-#ifdef CONFIG_MTK_ENG_BUILD
-		pr_info("[mtk_net][xfrm_state]add list  %s x %px byspi %px  h %d\n",
-			__func__, x, net->xfrm.state_byspi, h);
-#endif
-		xfrm_state_get_back_trace(&x->xfrm_alloc_trace);
-		format_trace_info();
-		xfrm_state_check_add_byspi_hlish(net->xfrm.state_byspi + h, x, dmsg);
 		hlist_add_head_rcu(&x->byspi, net->xfrm.state_byspi + h);
-		format_trace_info();
-		xfrm_state_check_add_byspi_hlish(net->xfrm.state_byspi + h, NULL, dmsg);
 		spin_unlock_bh(&net->xfrm.xfrm_state_lock);
 
 		err = 0;
@@ -2242,9 +1964,9 @@ void xfrm_state_walk_done(struct xfrm_state_walk *walk, struct net *net)
 }
 EXPORT_SYMBOL(xfrm_state_walk_done);
 
-static void xfrm_replay_timer_handler(unsigned long data)
+static void xfrm_replay_timer_handler(struct timer_list *t)
 {
-	struct xfrm_state *x = (struct xfrm_state *)data;
+	struct xfrm_state *x = from_timer(x, t, rtimer);
 
 	spin_lock(&x->lock);
 
@@ -2405,6 +2127,66 @@ bool km_is_alive(const struct km_event *c)
 }
 EXPORT_SYMBOL(km_is_alive);
 
+#if IS_ENABLED(CONFIG_XFRM_USER_COMPAT)
+static DEFINE_SPINLOCK(xfrm_translator_lock);
+static struct xfrm_translator __rcu *xfrm_translator;
+
+struct xfrm_translator *xfrm_get_translator(void)
+{
+	struct xfrm_translator *xtr;
+
+	rcu_read_lock();
+	xtr = rcu_dereference(xfrm_translator);
+	if (unlikely(!xtr))
+		goto out;
+	if (!try_module_get(xtr->owner))
+		xtr = NULL;
+out:
+	rcu_read_unlock();
+	return xtr;
+}
+EXPORT_SYMBOL_GPL(xfrm_get_translator);
+
+void xfrm_put_translator(struct xfrm_translator *xtr)
+{
+	module_put(xtr->owner);
+}
+EXPORT_SYMBOL_GPL(xfrm_put_translator);
+
+int xfrm_register_translator(struct xfrm_translator *xtr)
+{
+	int err = 0;
+
+	spin_lock_bh(&xfrm_translator_lock);
+	if (unlikely(xfrm_translator != NULL))
+		err = -EEXIST;
+	else
+		rcu_assign_pointer(xfrm_translator, xtr);
+	spin_unlock_bh(&xfrm_translator_lock);
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(xfrm_register_translator);
+
+int xfrm_unregister_translator(struct xfrm_translator *xtr)
+{
+	int err = 0;
+
+	spin_lock_bh(&xfrm_translator_lock);
+	if (likely(xfrm_translator != NULL)) {
+		if (rcu_access_pointer(xfrm_translator) != xtr)
+			err = -EINVAL;
+		else
+			RCU_INIT_POINTER(xfrm_translator, NULL);
+	}
+	spin_unlock_bh(&xfrm_translator_lock);
+	synchronize_rcu();
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(xfrm_unregister_translator);
+#endif
+
 int xfrm_user_policy(struct sock *sk, int optname, u8 __user *optval, int optlen)
 {
 	int err;
@@ -2425,6 +2207,25 @@ int xfrm_user_policy(struct sock *sk, int optname, u8 __user *optval, int optlen
 	data = memdup_user(optval, optlen);
 	if (IS_ERR(data))
 		return PTR_ERR(data);
+
+	/* Use the 64-bit / untranslated format on Android, even for compat */
+	if (!IS_ENABLED(CONFIG_ANDROID) || IS_ENABLED(CONFIG_XFRM_USER_COMPAT)) {
+		if (in_compat_syscall()) {
+			struct xfrm_translator *xtr = xfrm_get_translator();
+
+			if (!xtr) {
+				kfree(data);
+				return -EOPNOTSUPP;
+			}
+
+			err = xtr->xlate_user_policy_sockptr(&data, optlen);
+			xfrm_put_translator(xtr);
+			if (err) {
+				kfree(data);
+				return err;
+			}
+		}
+	}
 
 	err = -EINVAL;
 	rcu_read_lock();
@@ -2526,6 +2327,12 @@ struct xfrm_state_afinfo *xfrm_state_get_afinfo(unsigned int family)
 	return afinfo;
 }
 
+void xfrm_flush_gc(void)
+{
+	flush_work(&xfrm_state_gc_work);
+}
+EXPORT_SYMBOL(xfrm_flush_gc);
+
 /* Temporarily located here until net/xfrm/xfrm_tunnel.c is created */
 void xfrm_state_delete_tunnel(struct xfrm_state *x)
 {
@@ -2535,7 +2342,7 @@ void xfrm_state_delete_tunnel(struct xfrm_state *x)
 		if (atomic_read(&t->tunnel_users) == 2)
 			xfrm_state_delete(t);
 		atomic_dec(&t->tunnel_users);
-		xfrm_state_put(t);
+		xfrm_state_put_sync(t);
 		x->tunnel = NULL;
 	}
 }
@@ -2635,8 +2442,6 @@ int __xfrm_init_state(struct xfrm_state *x, bool init_replay, bool offload)
 			goto error;
 	}
 
-	x->km.state = XFRM_STATE_VALID;
-
 error:
 	return err;
 }
@@ -2645,7 +2450,13 @@ EXPORT_SYMBOL(__xfrm_init_state);
 
 int xfrm_init_state(struct xfrm_state *x)
 {
-	return __xfrm_init_state(x, true, false);
+	int err;
+
+	err = __xfrm_init_state(x, true, false);
+	if (!err)
+		x->km.state = XFRM_STATE_VALID;
+
+	return err;
 }
 
 EXPORT_SYMBOL(xfrm_init_state);
@@ -2653,6 +2464,10 @@ EXPORT_SYMBOL(xfrm_init_state);
 int __net_init xfrm_state_init(struct net *net)
 {
 	unsigned int sz;
+
+	if (net_eq(net, &init_net))
+		xfrm_state_cache = KMEM_CACHE(xfrm_state,
+					      SLAB_HWCACHE_ALIGN | SLAB_PANIC);
 
 	INIT_LIST_HEAD(&net->xfrm.state_all);
 
@@ -2687,8 +2502,8 @@ void xfrm_state_fini(struct net *net)
 	unsigned int sz;
 
 	flush_work(&net->xfrm.state_hash_work);
-	xfrm_state_flush(net, 0, false);
 	flush_work(&xfrm_state_gc_work);
+	xfrm_state_flush(net, 0, false, true);
 
 	WARN_ON(!list_empty(&net->xfrm.state_all));
 

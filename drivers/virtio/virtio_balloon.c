@@ -27,7 +27,6 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/balloon_compaction.h>
-#include <linux/oom.h>
 #include <linux/wait.h>
 #include <linux/mm.h>
 #include <linux/mount.h>
@@ -40,12 +39,7 @@
  */
 #define VIRTIO_BALLOON_PAGES_PER_PAGE (unsigned)(PAGE_SIZE >> VIRTIO_BALLOON_PFN_SHIFT)
 #define VIRTIO_BALLOON_ARRAY_PFNS_MAX 256
-#define OOM_VBALLOON_DEFAULT_PAGES 256
 #define VIRTBALLOON_OOM_NOTIFY_PRIORITY 80
-
-static int oom_pages = OOM_VBALLOON_DEFAULT_PAGES;
-module_param(oom_pages, int, S_IRUSR | S_IWUSR);
-MODULE_PARM_DESC(oom_pages, "pages to free on OOM");
 
 #ifdef CONFIG_BALLOON_COMPACTION
 static struct vfsmount *balloon_mnt;
@@ -86,8 +80,8 @@ struct virtio_balloon {
 	/* Memory statistics */
 	struct virtio_balloon_stat stats[VIRTIO_BALLOON_S_NR];
 
-	/* To register callback in oom notifier call chain */
-	struct notifier_block nb;
+	/* To register a shrinker to shrink memory upon memory pressure */
+	struct shrinker shrinker;
 };
 
 static struct virtio_device_id id_table[] = {
@@ -259,11 +253,13 @@ static unsigned int update_balloon_stats(struct virtio_balloon *vb)
 	struct sysinfo i;
 	unsigned int idx = 0;
 	long available;
+	unsigned long caches;
 
 	all_vm_events(events);
 	si_meminfo(&i);
 
 	available = si_mem_available();
+	caches = global_node_page_state(NR_FILE_PAGES);
 
 #ifdef CONFIG_VM_EVENT_COUNTERS
 	update_stat(vb, idx++, VIRTIO_BALLOON_S_SWAP_IN,
@@ -272,6 +268,12 @@ static unsigned int update_balloon_stats(struct virtio_balloon *vb)
 				pages_to_bytes(events[PSWPOUT]));
 	update_stat(vb, idx++, VIRTIO_BALLOON_S_MAJFLT, events[PGMAJFAULT]);
 	update_stat(vb, idx++, VIRTIO_BALLOON_S_MINFLT, events[PGFAULT]);
+#ifdef CONFIG_HUGETLB_PAGE
+	update_stat(vb, idx++, VIRTIO_BALLOON_S_HTLB_PGALLOC,
+		    events[HTLB_BUDDY_PGALLOC]);
+	update_stat(vb, idx++, VIRTIO_BALLOON_S_HTLB_PGFAIL,
+		    events[HTLB_BUDDY_PGALLOC_FAIL]);
+#endif
 #endif
 	update_stat(vb, idx++, VIRTIO_BALLOON_S_MEMFREE,
 				pages_to_bytes(i.freeram));
@@ -279,6 +281,8 @@ static unsigned int update_balloon_stats(struct virtio_balloon *vb)
 				pages_to_bytes(i.totalram));
 	update_stat(vb, idx++, VIRTIO_BALLOON_S_AVAIL,
 				pages_to_bytes(available));
+	update_stat(vb, idx++, VIRTIO_BALLOON_S_CACHES,
+				pages_to_bytes(caches));
 
 	return idx;
 }
@@ -341,7 +345,11 @@ static inline s64 towards_target(struct virtio_balloon *vb)
 	if (!virtio_has_feature(vb->vdev, VIRTIO_F_VERSION_1))
 		num_pages = le32_to_cpu((__force __le32)num_pages);
 
-	target = num_pages;
+	/*
+	 * Aligned up to guest page size to avoid inflating and deflating
+	 * balloon endlessly.
+	 */
+	target = ALIGN(num_pages, VIRTIO_BALLOON_PAGES_PER_PAGE);
 	return target - vb->num_pages;
 }
 
@@ -355,38 +363,6 @@ static void update_balloon_size(struct virtio_balloon *vb)
 
 	virtio_cwrite(vb->vdev, struct virtio_balloon_config, actual,
 		      &actual);
-}
-
-/*
- * virtballoon_oom_notify - release pages when system is under severe
- *			    memory pressure (called from out_of_memory())
- * @self : notifier block struct
- * @dummy: not used
- * @parm : returned - number of freed pages
- *
- * The balancing of memory by use of the virtio balloon should not cause
- * the termination of processes while there are pages in the balloon.
- * If virtio balloon manages to release some memory, it will make the
- * system return and retry the allocation that forced the OOM killer
- * to run.
- */
-static int virtballoon_oom_notify(struct notifier_block *self,
-				  unsigned long dummy, void *parm)
-{
-	struct virtio_balloon *vb;
-	unsigned long *freed;
-	unsigned num_freed_pages;
-
-	vb = container_of(self, struct virtio_balloon, nb);
-	if (!virtio_has_feature(vb->vdev, VIRTIO_BALLOON_F_DEFLATE_ON_OOM))
-		return NOTIFY_OK;
-
-	freed = parm;
-	num_freed_pages = leak_balloon(vb, oom_pages);
-	update_balloon_size(vb);
-	*freed += num_freed_pages;
-
-	return NOTIFY_OK;
 }
 
 static void update_balloon_stats_func(struct work_struct *work)
@@ -447,9 +423,13 @@ static int init_vqs(struct virtio_balloon *vb)
 		num_stats = update_balloon_stats(vb);
 
 		sg_init_one(&sg, vb->stats, sizeof(vb->stats[0]) * num_stats);
-		if (virtqueue_add_outbuf(vb->stats_vq, &sg, 1, vb, GFP_KERNEL)
-		    < 0)
-			BUG();
+		err = virtqueue_add_outbuf(vb->stats_vq, &sg, 1, vb,
+					   GFP_KERNEL);
+		if (err) {
+			dev_warn(&vb->vdev->dev, "%s: add stat_vq failed\n",
+				 __func__);
+			return err;
+		}
 		virtqueue_kick(vb->stats_vq);
 	}
 	return 0;
@@ -549,6 +529,52 @@ static struct file_system_type balloon_fs = {
 
 #endif /* CONFIG_BALLOON_COMPACTION */
 
+static unsigned long virtio_balloon_shrinker_scan(struct shrinker *shrinker,
+						  struct shrink_control *sc)
+{
+	unsigned long pages_to_free, pages_freed = 0;
+	struct virtio_balloon *vb = container_of(shrinker,
+					struct virtio_balloon, shrinker);
+
+	pages_to_free = sc->nr_to_scan * VIRTIO_BALLOON_PAGES_PER_PAGE;
+
+	/*
+	 * One invocation of leak_balloon can deflate at most
+	 * VIRTIO_BALLOON_ARRAY_PFNS_MAX balloon pages, so we call it
+	 * multiple times to deflate pages till reaching pages_to_free.
+	 */
+	while (vb->num_pages && pages_to_free) {
+		pages_to_free -= pages_freed;
+		pages_freed += leak_balloon(vb, pages_to_free);
+	}
+	update_balloon_size(vb);
+
+	return pages_freed / VIRTIO_BALLOON_PAGES_PER_PAGE;
+}
+
+static unsigned long virtio_balloon_shrinker_count(struct shrinker *shrinker,
+						   struct shrink_control *sc)
+{
+	struct virtio_balloon *vb = container_of(shrinker,
+					struct virtio_balloon, shrinker);
+
+	return vb->num_pages / VIRTIO_BALLOON_PAGES_PER_PAGE;
+}
+
+static void virtio_balloon_unregister_shrinker(struct virtio_balloon *vb)
+{
+	unregister_shrinker(&vb->shrinker);
+}
+
+static int virtio_balloon_register_shrinker(struct virtio_balloon *vb)
+{
+	vb->shrinker.scan_objects = virtio_balloon_shrinker_scan;
+	vb->shrinker.count_objects = virtio_balloon_shrinker_count;
+	vb->shrinker.seeks = DEFAULT_SEEKS;
+
+	return register_shrinker(&vb->shrinker);
+}
+
 static int virtballoon_probe(struct virtio_device *vdev)
 {
 	struct virtio_balloon *vb;
@@ -560,7 +586,7 @@ static int virtballoon_probe(struct virtio_device *vdev)
 		return -EINVAL;
 	}
 
-	vdev->priv = vb = kmalloc(sizeof(*vb), GFP_KERNEL);
+	vdev->priv = vb = kzalloc(sizeof(*vb), GFP_KERNEL);
 	if (!vb) {
 		err = -ENOMEM;
 		goto out;
@@ -569,8 +595,6 @@ static int virtballoon_probe(struct virtio_device *vdev)
 	INIT_WORK(&vb->update_balloon_stats_work, update_balloon_stats_func);
 	INIT_WORK(&vb->update_balloon_size_work, update_balloon_size_func);
 	spin_lock_init(&vb->stop_update_lock);
-	vb->stop_update = false;
-	vb->num_pages = 0;
 	mutex_init(&vb->balloon_lock);
 	init_waitqueue_head(&vb->acked);
 	vb->vdev = vdev;
@@ -581,17 +605,10 @@ static int virtballoon_probe(struct virtio_device *vdev)
 	if (err)
 		goto out_free_vb;
 
-	vb->nb.notifier_call = virtballoon_oom_notify;
-	vb->nb.priority = VIRTBALLOON_OOM_NOTIFY_PRIORITY;
-	err = register_oom_notifier(&vb->nb);
-	if (err < 0)
-		goto out_del_vqs;
-
 #ifdef CONFIG_BALLOON_COMPACTION
 	balloon_mnt = kern_mount(&balloon_fs);
 	if (IS_ERR(balloon_mnt)) {
 		err = PTR_ERR(balloon_mnt);
-		unregister_oom_notifier(&vb->nb);
 		goto out_del_vqs;
 	}
 
@@ -600,13 +617,19 @@ static int virtballoon_probe(struct virtio_device *vdev)
 	if (IS_ERR(vb->vb_dev_info.inode)) {
 		err = PTR_ERR(vb->vb_dev_info.inode);
 		kern_unmount(balloon_mnt);
-		unregister_oom_notifier(&vb->nb);
-		vb->vb_dev_info.inode = NULL;
 		goto out_del_vqs;
 	}
 	vb->vb_dev_info.inode->i_mapping->a_ops = &balloon_aops;
 #endif
-
+	/*
+	 * We continue to use VIRTIO_BALLOON_F_DEFLATE_ON_OOM to decide if a
+	 * shrinker needs to be registered to relieve memory pressure.
+	 */
+	if (virtio_has_feature(vb->vdev, VIRTIO_BALLOON_F_DEFLATE_ON_OOM)) {
+		err = virtio_balloon_register_shrinker(vb);
+		if (err)
+			goto out_del_vqs;
+	}
 	virtio_device_ready(vdev);
 
 	if (towards_target(vb))
@@ -638,8 +661,8 @@ static void virtballoon_remove(struct virtio_device *vdev)
 {
 	struct virtio_balloon *vb = vdev->priv;
 
-	unregister_oom_notifier(&vb->nb);
-
+	if (virtio_has_feature(vb->vdev, VIRTIO_BALLOON_F_DEFLATE_ON_OOM))
+		virtio_balloon_unregister_shrinker(vb);
 	spin_lock_irq(&vb->stop_update_lock);
 	vb->stop_update = true;
 	spin_unlock_irq(&vb->stop_update_lock);

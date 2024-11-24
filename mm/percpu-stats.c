@@ -144,7 +144,7 @@ alloc_buffer:
 	spin_unlock_irq(&pcpu_lock);
 
 	/* there can be at most this many free and allocated fragments */
-	buffer = vmalloc((2 * max_nr_alloc + 1) * sizeof(int));
+	buffer = vmalloc(array_size(sizeof(int), (2 * max_nr_alloc + 1)));
 	if (!buffer)
 		return -ENOMEM;
 
@@ -223,18 +223,7 @@ alloc_buffer:
 
 	return 0;
 }
-
-static int percpu_stats_open(struct inode *inode, struct file *filp)
-{
-	return single_open(filp, percpu_stats_show, NULL);
-}
-
-static const struct file_operations percpu_stats_fops = {
-	.open		= percpu_stats_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(percpu_stats);
 
 static int __init init_percpu_stats_debugfs(void)
 {

@@ -102,9 +102,40 @@
 #define CMN_PLL1_SS_CTRL1		(0xb8 << 2)
 #define CMN_PLL1_SS_CTRL2		(0xb9 << 2)
 #define CMN_RXCAL_OVRD			(0xd1 << 2)
+
 #define CMN_TXPUCAL_CTRL		(0xe0 << 2)
 #define CMN_TXPUCAL_OVRD		(0xe1 << 2)
+#define CMN_TXPDCAL_CTRL		(0xf0 << 2)
 #define CMN_TXPDCAL_OVRD		(0xf1 << 2)
+
+/* For CMN_TXPUCAL_CTRL, CMN_TXPDCAL_CTRL */
+#define CMN_TXPXCAL_START		BIT(15)
+#define CMN_TXPXCAL_DONE		BIT(14)
+#define CMN_TXPXCAL_NO_RESPONSE		BIT(13)
+#define CMN_TXPXCAL_CURRENT_RESPONSE	BIT(12)
+
+#define CMN_TXPU_ADJ_CTRL		(0x108 << 2)
+#define CMN_TXPD_ADJ_CTRL		(0x10c << 2)
+
+/*
+ * For CMN_TXPUCAL_CTRL, CMN_TXPDCAL_CTRL,
+ *     CMN_TXPU_ADJ_CTRL, CMN_TXPDCAL_CTRL
+ *
+ * NOTE: some of these registers are documented to be 2's complement
+ * signed numbers, but then documented to be always positive.  Weird.
+ * In such a case, using CMN_CALIB_CODE_POS() avoids the unnecessary
+ * sign extension.
+ */
+#define CMN_CALIB_CODE_WIDTH	7
+#define CMN_CALIB_CODE_OFFSET	0
+#define CMN_CALIB_CODE_MASK	GENMASK(CMN_CALIB_CODE_WIDTH, 0)
+#define CMN_CALIB_CODE(x)	\
+	sign_extend32((x) >> CMN_CALIB_CODE_OFFSET, CMN_CALIB_CODE_WIDTH)
+
+#define CMN_CALIB_CODE_POS_MASK	GENMASK(CMN_CALIB_CODE_WIDTH - 1, 0)
+#define CMN_CALIB_CODE_POS(x)	\
+	(((x) >> CMN_CALIB_CODE_OFFSET) & CMN_CALIB_CODE_POS_MASK)
+
 #define CMN_DIAG_PLL0_FBH_OVRD		(0x1c0 << 2)
 #define CMN_DIAG_PLL0_FBL_OVRD		(0x1c1 << 2)
 #define CMN_DIAG_PLL0_OVRD		(0x1c2 << 2)
@@ -138,6 +169,15 @@
 #define TX_TXCC_MGNFS_MULT_101(n)	((0x4055 | ((n) << 9)) << 2)
 #define TX_TXCC_MGNFS_MULT_110(n)	((0x4056 | ((n) << 9)) << 2)
 #define TX_TXCC_MGNFS_MULT_111(n)	((0x4057 | ((n) << 9)) << 2)
+#define TX_TXCC_MGNLS_MULT_000(n)	((0x4058 | ((n) << 9)) << 2)
+#define TX_TXCC_MGNLS_MULT_001(n)	((0x4059 | ((n) << 9)) << 2)
+#define TX_TXCC_MGNLS_MULT_010(n)	((0x405a | ((n) << 9)) << 2)
+#define TX_TXCC_MGNLS_MULT_011(n)	((0x405b | ((n) << 9)) << 2)
+#define TX_TXCC_MGNLS_MULT_100(n)	((0x405c | ((n) << 9)) << 2)
+#define TX_TXCC_MGNLS_MULT_101(n)	((0x405d | ((n) << 9)) << 2)
+#define TX_TXCC_MGNLS_MULT_110(n)	((0x405e | ((n) << 9)) << 2)
+#define TX_TXCC_MGNLS_MULT_111(n)	((0x405f | ((n) << 9)) << 2)
+
 #define XCVR_DIAG_PLLDRC_CTRL(n)	((0x40e0 | ((n) << 9)) << 2)
 #define XCVR_DIAG_BIDI_CTRL(n)		((0x40e8 | ((n) << 9)) << 2)
 #define XCVR_DIAG_LANE_FCM_EN_MGN(n)	((0x40f2 | ((n) << 9)) << 2)
@@ -150,10 +190,63 @@
 #define TX_RCVDET_ST_TMR(n)		((0x4123 | ((n) << 9)) << 2)
 #define TX_DIAG_TX_DRV(n)		((0x41e1 | ((n) << 9)) << 2)
 #define TX_DIAG_BGREF_PREDRV_DELAY	(0x41e7 << 2)
+
+/* Use this for "n" in macros like "_MULT_XXX" to target the aux channel */
+#define AUX_CH_LANE			8
+
 #define TX_ANA_CTRL_REG_1		(0x5020 << 2)
+
+#define TXDA_DP_AUX_EN			BIT(15)
+#define AUXDA_SE_EN			BIT(14)
+#define TXDA_CAL_LATCH_EN		BIT(13)
+#define AUXDA_POLARITY			BIT(12)
+#define TXDA_DRV_POWER_ISOLATION_EN	BIT(11)
+#define TXDA_DRV_POWER_EN_PH_2_N	BIT(10)
+#define TXDA_DRV_POWER_EN_PH_1_N	BIT(9)
+#define TXDA_BGREF_EN			BIT(8)
+#define TXDA_DRV_LDO_EN			BIT(7)
+#define TXDA_DECAP_EN_DEL		BIT(6)
+#define TXDA_DECAP_EN			BIT(5)
+#define TXDA_UPHY_SUPPLY_EN_DEL		BIT(4)
+#define TXDA_UPHY_SUPPLY_EN		BIT(3)
+#define TXDA_LOW_LEAKAGE_EN		BIT(2)
+#define TXDA_DRV_IDLE_LOWI_EN		BIT(1)
+#define TXDA_DRV_CMN_MODE_EN		BIT(0)
+
 #define TX_ANA_CTRL_REG_2		(0x5021 << 2)
+
+#define AUXDA_DEBOUNCING_CLK		BIT(15)
+#define TXDA_LPBK_RECOVERED_CLK_EN	BIT(14)
+#define TXDA_LPBK_ISI_GEN_EN		BIT(13)
+#define TXDA_LPBK_SERIAL_EN		BIT(12)
+#define TXDA_LPBK_LINE_EN		BIT(11)
+#define TXDA_DRV_LDO_REDC_SINKIQ	BIT(10)
+#define XCVR_DECAP_EN_DEL		BIT(9)
+#define XCVR_DECAP_EN			BIT(8)
+#define TXDA_MPHY_ENABLE_HS_NT		BIT(7)
+#define TXDA_MPHY_SA_MODE		BIT(6)
+#define TXDA_DRV_LDO_RBYR_FB_EN		BIT(5)
+#define TXDA_DRV_RST_PULL_DOWN		BIT(4)
+#define TXDA_DRV_LDO_BG_FB_EN		BIT(3)
+#define TXDA_DRV_LDO_BG_REF_EN		BIT(2)
+#define TXDA_DRV_PREDRV_EN_DEL		BIT(1)
+#define TXDA_DRV_PREDRV_EN		BIT(0)
+
 #define TXDA_COEFF_CALC_CTRL		(0x5022 << 2)
+
+#define TX_HIGH_Z			BIT(6)
+#define TX_VMARGIN_OFFSET		3
+#define TX_VMARGIN_MASK			0x7
+#define LOW_POWER_SWING_EN		BIT(2)
+#define TX_FCM_DRV_MAIN_EN		BIT(1)
+#define TX_FCM_FULL_MARGIN		BIT(0)
+
 #define TX_DIG_CTRL_REG_2		(0x5024 << 2)
+
+#define TX_HIGH_Z_TM_EN			BIT(15)
+#define TX_RESCAL_CODE_OFFSET		0
+#define TX_RESCAL_CODE_MASK		0x3f
+
 #define TXDA_CYA_AUXDA_CYA		(0x5025 << 2)
 #define TX_ANA_CTRL_REG_3		(0x5026 << 2)
 #define TX_ANA_CTRL_REG_4		(0x5027 << 2)
@@ -262,11 +355,26 @@ struct usb3phy_reg {
 	u32 write_enable;
 };
 
+/**
+ * struct rockchip_usb3phy_port_cfg: usb3-phy port configuration.
+ * @reg: the base address for usb3-phy config.
+ * @typec_conn_dir: the register of type-c connector direction.
+ * @usb3tousb2_en: the register of type-c force usb2 to usb2 enable.
+ * @external_psm: the register of type-c phy external psm clock.
+ * @pipe_status: the register of type-c phy pipe status.
+ * @usb3_host_disable: the register of type-c usb3 host disable.
+ * @usb3_host_port: the register of type-c usb3 host port.
+ * @uphy_dp_sel: the register of type-c phy DP select control.
+ */
 struct rockchip_usb3phy_port_cfg {
+	unsigned int reg;
 	struct usb3phy_reg typec_conn_dir;
 	struct usb3phy_reg usb3tousb2_en;
 	struct usb3phy_reg external_psm;
 	struct usb3phy_reg pipe_status;
+	struct usb3phy_reg usb3_host_disable;
+	struct usb3phy_reg usb3_host_port;
+	struct usb3phy_reg uphy_dp_sel;
 };
 
 struct rockchip_typec_phy {
@@ -279,7 +387,7 @@ struct rockchip_typec_phy {
 	struct reset_control *uphy_rst;
 	struct reset_control *pipe_rst;
 	struct reset_control *tcphy_rst;
-	struct rockchip_usb3phy_port_cfg port_cfgs;
+	const struct rockchip_usb3phy_port_cfg *port_cfgs;
 	/* mutex to protect access to individual PHYs */
 	struct mutex lock;
 
@@ -329,6 +437,30 @@ struct phy_reg dp_pll_cfg[] = {
 	{ 0x100,	CMN_DIAG_PLL1_PTATIS_TUNE1 },
 	{ 0x7,		CMN_DIAG_PLL1_PTATIS_TUNE2 },
 	{ 0x4,		CMN_DIAG_PLL1_INCLK_CTRL },
+};
+
+static const struct rockchip_usb3phy_port_cfg rk3399_usb3phy_port_cfgs[] = {
+	{
+		.reg = 0xff7c0000,
+		.typec_conn_dir	= { 0xe580, 0, 16 },
+		.usb3tousb2_en	= { 0xe580, 3, 19 },
+		.external_psm	= { 0xe588, 14, 30 },
+		.pipe_status	= { 0xe5c0, 0, 0 },
+		.usb3_host_disable = { 0x2434, 0, 16 },
+		.usb3_host_port = { 0x2434, 12, 28 },
+		.uphy_dp_sel	= { 0x6268, 19, 19 },
+	},
+	{
+		.reg = 0xff800000,
+		.typec_conn_dir	= { 0xe58c, 0, 16 },
+		.usb3tousb2_en	= { 0xe58c, 3, 19 },
+		.external_psm	= { 0xe594, 14, 30 },
+		.pipe_status	= { 0xe5c0, 16, 16 },
+		.usb3_host_disable = { 0x2444, 0, 16 },
+		.usb3_host_port = { 0x2444, 12, 28 },
+		.uphy_dp_sel	= { 0x6268, 3, 19 },
+	},
+	{ /* sentinel */ }
 };
 
 static void tcphy_cfg_24m(struct rockchip_typec_phy *tcphy)
@@ -456,54 +588,72 @@ static void tcphy_dp_aux_set_flip(struct rockchip_typec_phy *tcphy)
 	 */
 	tx_ana_ctrl_reg_1 = readl(tcphy->base + TX_ANA_CTRL_REG_1);
 	if (!tcphy->flip)
-		tx_ana_ctrl_reg_1 |= BIT(12);
+		tx_ana_ctrl_reg_1 |= AUXDA_POLARITY;
 	else
-		tx_ana_ctrl_reg_1 &= ~BIT(12);
+		tx_ana_ctrl_reg_1 &= ~AUXDA_POLARITY;
 	writel(tx_ana_ctrl_reg_1, tcphy->base + TX_ANA_CTRL_REG_1);
 }
 
 static void tcphy_dp_aux_calibration(struct rockchip_typec_phy *tcphy)
 {
+	u16 val;
 	u16 tx_ana_ctrl_reg_1;
-	u16 rdata, rdata2, val;
+	u16 tx_ana_ctrl_reg_2;
+	s32 pu_calib_code, pd_calib_code;
+	s32 pu_adj, pd_adj;
+	u16 calib;
+
+	/*
+	 * Calculate calibration code as per docs: use an average of the
+	 * pull down and pull up.  Then add in adjustments.
+	 */
+	val = readl(tcphy->base + CMN_TXPUCAL_CTRL);
+	pu_calib_code = CMN_CALIB_CODE_POS(val);
+	val = readl(tcphy->base + CMN_TXPDCAL_CTRL);
+	pd_calib_code = CMN_CALIB_CODE_POS(val);
+	val = readl(tcphy->base + CMN_TXPU_ADJ_CTRL);
+	pu_adj = CMN_CALIB_CODE(val);
+	val = readl(tcphy->base + CMN_TXPD_ADJ_CTRL);
+	pd_adj = CMN_CALIB_CODE(val);
+	calib = (pu_calib_code + pd_calib_code) / 2 + pu_adj + pd_adj;
 
 	/* disable txda_cal_latch_en for rewrite the calibration values */
 	tx_ana_ctrl_reg_1 = readl(tcphy->base + TX_ANA_CTRL_REG_1);
-	tx_ana_ctrl_reg_1 &= ~BIT(13);
+	tx_ana_ctrl_reg_1 &= ~TXDA_CAL_LATCH_EN;
 	writel(tx_ana_ctrl_reg_1, tcphy->base + TX_ANA_CTRL_REG_1);
 
-	/*
-	 * read a resistor calibration code from CMN_TXPUCAL_CTRL[6:0] and
-	 * write it to TX_DIG_CTRL_REG_2[6:0], and delay 1ms to make sure it
-	 * works.
-	 */
-	rdata = readl(tcphy->base + TX_DIG_CTRL_REG_2);
-	rdata = rdata & 0xffc0;
-
-	rdata2 = readl(tcphy->base + CMN_TXPUCAL_CTRL);
-	rdata2 = rdata2 & 0x3f;
-
-	val = rdata | rdata2;
+	/* write the calibration, then delay 10 ms as sample in docs */
+	val = readl(tcphy->base + TX_DIG_CTRL_REG_2);
+	val &= ~(TX_RESCAL_CODE_MASK << TX_RESCAL_CODE_OFFSET);
+	val |= calib << TX_RESCAL_CODE_OFFSET;
 	writel(val, tcphy->base + TX_DIG_CTRL_REG_2);
-	usleep_range(1000, 1050);
+	usleep_range(10000, 10050);
 
 	/*
 	 * Enable signal for latch that sample and holds calibration values.
 	 * Activate this signal for 1 clock cycle to sample new calibration
 	 * values.
 	 */
-	tx_ana_ctrl_reg_1 |= BIT(13);
+	tx_ana_ctrl_reg_1 |= TXDA_CAL_LATCH_EN;
 	writel(tx_ana_ctrl_reg_1, tcphy->base + TX_ANA_CTRL_REG_1);
 	usleep_range(150, 200);
 
 	/* set TX Voltage Level and TX Deemphasis to 0 */
 	writel(0, tcphy->base + PHY_DP_TX_CTL);
+
 	/* re-enable decap */
-	writel(0x100, tcphy->base + TX_ANA_CTRL_REG_2);
-	writel(0x300, tcphy->base + TX_ANA_CTRL_REG_2);
-	tx_ana_ctrl_reg_1 |= BIT(3);
+	tx_ana_ctrl_reg_2 = XCVR_DECAP_EN;
+	writel(tx_ana_ctrl_reg_2, tcphy->base + TX_ANA_CTRL_REG_2);
+	udelay(1);
+	tx_ana_ctrl_reg_2 |= XCVR_DECAP_EN_DEL;
+	writel(tx_ana_ctrl_reg_2, tcphy->base + TX_ANA_CTRL_REG_2);
+
+	writel(0, tcphy->base + TX_ANA_CTRL_REG_3);
+
+	tx_ana_ctrl_reg_1 |= TXDA_UPHY_SUPPLY_EN;
 	writel(tx_ana_ctrl_reg_1, tcphy->base + TX_ANA_CTRL_REG_1);
-	tx_ana_ctrl_reg_1 |= BIT(4);
+	udelay(1);
+	tx_ana_ctrl_reg_1 |= TXDA_UPHY_SUPPLY_EN_DEL;
 	writel(tx_ana_ctrl_reg_1, tcphy->base + TX_ANA_CTRL_REG_1);
 
 	writel(0, tcphy->base + TX_ANA_CTRL_REG_5);
@@ -515,50 +665,72 @@ static void tcphy_dp_aux_calibration(struct rockchip_typec_phy *tcphy)
 	writel(0x1001, tcphy->base + TX_ANA_CTRL_REG_4);
 
 	/* re-enables Bandgap reference for LDO */
-	tx_ana_ctrl_reg_1 |= BIT(7);
+	tx_ana_ctrl_reg_1 |= TXDA_DRV_LDO_EN;
 	writel(tx_ana_ctrl_reg_1, tcphy->base + TX_ANA_CTRL_REG_1);
-	tx_ana_ctrl_reg_1 |= BIT(8);
+	udelay(5);
+	tx_ana_ctrl_reg_1 |= TXDA_BGREF_EN;
 	writel(tx_ana_ctrl_reg_1, tcphy->base + TX_ANA_CTRL_REG_1);
 
 	/*
 	 * re-enables the transmitter pre-driver, driver data selection MUX,
 	 * and receiver detect circuits.
 	 */
-	writel(0x301, tcphy->base + TX_ANA_CTRL_REG_2);
-	writel(0x303, tcphy->base + TX_ANA_CTRL_REG_2);
+	tx_ana_ctrl_reg_2 |= TXDA_DRV_PREDRV_EN;
+	writel(tx_ana_ctrl_reg_2, tcphy->base + TX_ANA_CTRL_REG_2);
+	udelay(1);
+	tx_ana_ctrl_reg_2 |= TXDA_DRV_PREDRV_EN_DEL;
+	writel(tx_ana_ctrl_reg_2, tcphy->base + TX_ANA_CTRL_REG_2);
 
 	/*
-	 * Do some magic undocumented stuff, some of which appears to
-	 * undo the "re-enables Bandgap reference for LDO" above.
+	 * Do all the undocumented magic:
+	 * - Turn on TXDA_DP_AUX_EN, whatever that is, even though sample
+	 *   never shows this going on.
+	 * - Turn on TXDA_DECAP_EN (and TXDA_DECAP_EN_DEL) even though
+	 *   docs say for aux it's always 0.
+	 * - Turn off the LDO and BGREF, which we just spent time turning
+	 *   on above (???).
+	 *
+	 * Without this magic, things seem worse.
 	 */
-	tx_ana_ctrl_reg_1 |=  BIT(15);
-	tx_ana_ctrl_reg_1 &= ~BIT(8);
-	tx_ana_ctrl_reg_1 &= ~BIT(7);
-	tx_ana_ctrl_reg_1 |=  BIT(6);
-	tx_ana_ctrl_reg_1 |=  BIT(5);
+	tx_ana_ctrl_reg_1 |= TXDA_DP_AUX_EN;
+	tx_ana_ctrl_reg_1 |= TXDA_DECAP_EN;
+	tx_ana_ctrl_reg_1 &= ~TXDA_DRV_LDO_EN;
+	tx_ana_ctrl_reg_1 &= ~TXDA_BGREF_EN;
+	writel(tx_ana_ctrl_reg_1, tcphy->base + TX_ANA_CTRL_REG_1);
+	udelay(1);
+	tx_ana_ctrl_reg_1 |= TXDA_DECAP_EN_DEL;
 	writel(tx_ana_ctrl_reg_1, tcphy->base + TX_ANA_CTRL_REG_1);
 
-	writel(0, tcphy->base + TX_ANA_CTRL_REG_3);
-	writel(0, tcphy->base + TX_ANA_CTRL_REG_4);
-	writel(0, tcphy->base + TX_ANA_CTRL_REG_5);
-
 	/*
-	 * Controls low_power_swing_en, don't set the voltage swing of the
-	 * driver to 400mv. The values below are peak to peak (differential)
-	 * values.
+	 * Undo the work we did to set the LDO voltage.
+	 * This doesn't seem to help nor hurt, but it kinda goes with the
+	 * undocumented magic above.
 	 */
+	writel(0, tcphy->base + TX_ANA_CTRL_REG_4);
+
+	/* Don't set voltage swing to 400 mV peak to peak (differential) */
 	writel(0, tcphy->base + TXDA_COEFF_CALC_CTRL);
+
+	/* Init TXDA_CYA_AUXDA_CYA for unknown magic reasons */
 	writel(0, tcphy->base + TXDA_CYA_AUXDA_CYA);
 
-	/* Controls tx_high_z_tm_en */
+	/*
+	 * More undocumented magic, presumably the goal of which is to
+	 * make the "auxda_source_aux_oen" be ignored and instead to decide
+	 * about "high impedance state" based on what software puts in the
+	 * register TXDA_COEFF_CALC_CTRL (see TX_HIGH_Z).  Since we only
+	 * program that register once and we don't set the bit TX_HIGH_Z,
+	 * presumably the goal here is that we should never put the analog
+	 * driver in high impedance state.
+	 */
 	val = readl(tcphy->base + TX_DIG_CTRL_REG_2);
-	val |= BIT(15);
+	val |= TX_HIGH_Z_TM_EN;
 	writel(val, tcphy->base + TX_DIG_CTRL_REG_2);
 }
 
 static int tcphy_phy_init(struct rockchip_typec_phy *tcphy, u8 mode)
 {
-	struct rockchip_usb3phy_port_cfg *cfg = &tcphy->port_cfgs;
+	const struct rockchip_usb3phy_port_cfg *cfg = tcphy->port_cfgs;
 	int ret, i;
 	u32 val;
 
@@ -645,9 +817,11 @@ static int tcphy_get_mode(struct rockchip_typec_phy *tcphy)
 	struct extcon_dev *edev = tcphy->extcon;
 	union extcon_property_value property;
 	unsigned int id;
-	bool ufp, dp;
 	u8 mode;
-	int ret;
+	int ret, ufp, dp;
+
+	if (!edev)
+		return MODE_DFP_USB;
 
 	ufp = extcon_get_state(edev, EXTCON_USB);
 	dp = extcon_get_state(edev, EXTCON_DISP_DP);
@@ -685,10 +859,22 @@ static int tcphy_get_mode(struct rockchip_typec_phy *tcphy)
 	return mode;
 }
 
+static int tcphy_cfg_usb3_to_usb2_only(struct rockchip_typec_phy *tcphy,
+				       bool value)
+{
+	const struct rockchip_usb3phy_port_cfg *cfg = tcphy->port_cfgs;
+
+	property_enable(tcphy, &cfg->usb3tousb2_en, value);
+	property_enable(tcphy, &cfg->usb3_host_disable, value);
+	property_enable(tcphy, &cfg->usb3_host_port, !value);
+
+	return 0;
+}
+
 static int rockchip_usb3_phy_power_on(struct phy *phy)
 {
 	struct rockchip_typec_phy *tcphy = phy_get_drvdata(phy);
-	struct rockchip_usb3phy_port_cfg *cfg = &tcphy->port_cfgs;
+	const struct rockchip_usb3phy_port_cfg *cfg = tcphy->port_cfgs;
 	const struct usb3phy_reg *reg = &cfg->pipe_status;
 	int timeout, new_mode, ret = 0;
 	u32 val;
@@ -702,8 +888,10 @@ static int rockchip_usb3_phy_power_on(struct phy *phy)
 	}
 
 	/* DP-only mode; fall back to USB2 */
-	if (!(new_mode & (MODE_DFP_USB | MODE_UFP_USB)))
+	if (!(new_mode & (MODE_DFP_USB | MODE_UFP_USB))) {
+		tcphy_cfg_usb3_to_usb2_only(tcphy, true);
 		goto unlock_ret;
+	}
 
 	if (tcphy->mode == new_mode)
 		goto unlock_ret;
@@ -719,6 +907,9 @@ static int rockchip_usb3_phy_power_on(struct phy *phy)
 		regmap_read(tcphy->grf_regs, reg->offset, &val);
 		if (!(val & BIT(reg->enable_bit))) {
 			tcphy->mode |= new_mode & (MODE_DFP_USB | MODE_UFP_USB);
+
+			/* enable usb3 host */
+			tcphy_cfg_usb3_to_usb2_only(tcphy, false);
 			goto unlock_ret;
 		}
 		usleep_range(10, 20);
@@ -739,6 +930,7 @@ static int rockchip_usb3_phy_power_off(struct phy *phy)
 	struct rockchip_typec_phy *tcphy = phy_get_drvdata(phy);
 
 	mutex_lock(&tcphy->lock);
+	tcphy_cfg_usb3_to_usb2_only(tcphy, false);
 
 	if (tcphy->mode == MODE_DISCONNECT)
 		goto unlock;
@@ -761,6 +953,7 @@ static const struct phy_ops rockchip_usb3_phy_ops = {
 static int rockchip_dp_phy_power_on(struct phy *phy)
 {
 	struct rockchip_typec_phy *tcphy = phy_get_drvdata(phy);
+	const struct rockchip_usb3phy_port_cfg *cfg = tcphy->port_cfgs;
 	int new_mode, ret = 0;
 	u32 val;
 
@@ -792,6 +985,8 @@ static int rockchip_dp_phy_power_on(struct phy *phy)
 	}
 	if (ret)
 		goto unlock_ret;
+
+	property_enable(tcphy, &cfg->uphy_dp_sel, 1);
 
 	ret = readx_poll_timeout(readl, tcphy->base + DP_MODE_CTL,
 				 val, val & DP_MODE_A2, 1000,
@@ -851,51 +1046,9 @@ static const struct phy_ops rockchip_dp_phy_ops = {
 	.owner		= THIS_MODULE,
 };
 
-static int tcphy_get_param(struct device *dev,
-			   struct usb3phy_reg *reg,
-			   const char *name)
-{
-	u32 buffer[3];
-	int ret;
-
-	ret = of_property_read_u32_array(dev->of_node, name, buffer, 3);
-	if (ret) {
-		dev_err(dev, "Can not parse %s\n", name);
-		return ret;
-	}
-
-	reg->offset = buffer[0];
-	reg->enable_bit = buffer[1];
-	reg->write_enable = buffer[2];
-	return 0;
-}
-
 static int tcphy_parse_dt(struct rockchip_typec_phy *tcphy,
 			  struct device *dev)
 {
-	struct rockchip_usb3phy_port_cfg *cfg = &tcphy->port_cfgs;
-	int ret;
-
-	ret = tcphy_get_param(dev, &cfg->typec_conn_dir,
-			      "rockchip,typec-conn-dir");
-	if (ret)
-		return ret;
-
-	ret = tcphy_get_param(dev, &cfg->usb3tousb2_en,
-			      "rockchip,usb3tousb2-en");
-	if (ret)
-		return ret;
-
-	ret = tcphy_get_param(dev, &cfg->external_psm,
-			      "rockchip,external-psm");
-	if (ret)
-		return ret;
-
-	ret = tcphy_get_param(dev, &cfg->pipe_status,
-			      "rockchip,pipe-status");
-	if (ret)
-		return ret;
-
 	tcphy->grf_regs = syscon_regmap_lookup_by_phandle(dev->of_node,
 							  "rockchip,grf");
 	if (IS_ERR(tcphy->grf_regs)) {
@@ -938,7 +1091,7 @@ static int tcphy_parse_dt(struct rockchip_typec_phy *tcphy,
 
 static void typec_phy_pre_init(struct rockchip_typec_phy *tcphy)
 {
-	struct rockchip_usb3phy_port_cfg *cfg = &tcphy->port_cfgs;
+	const struct rockchip_usb3phy_port_cfg *cfg = tcphy->port_cfgs;
 
 	reset_control_assert(tcphy->tcphy_rst);
 	reset_control_assert(tcphy->uphy_rst);
@@ -959,16 +1112,42 @@ static int rockchip_typec_phy_probe(struct platform_device *pdev)
 	struct rockchip_typec_phy *tcphy;
 	struct phy_provider *phy_provider;
 	struct resource *res;
-	int ret;
+	const struct rockchip_usb3phy_port_cfg *phy_cfgs;
+	const struct of_device_id *match;
+	int index, ret;
 
 	tcphy = devm_kzalloc(dev, sizeof(*tcphy), GFP_KERNEL);
 	if (!tcphy)
 		return -ENOMEM;
 
+	match = of_match_device(dev->driver->of_match_table, dev);
+	if (!match || !match->data) {
+		dev_err(dev, "phy configs are not assigned!\n");
+		return -EINVAL;
+	}
+
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	tcphy->base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(tcphy->base))
 		return PTR_ERR(tcphy->base);
+
+	phy_cfgs = match->data;
+	/* find out a proper config which can be matched with dt. */
+	index = 0;
+	while (phy_cfgs[index].reg) {
+		if (phy_cfgs[index].reg == res->start) {
+			tcphy->port_cfgs = &phy_cfgs[index];
+			break;
+		}
+
+		++index;
+	}
+
+	if (!tcphy->port_cfgs) {
+		dev_err(dev, "no phy-config can be matched with %s node\n",
+			np->name);
+		return -EINVAL;
+	}
 
 	ret = tcphy_parse_dt(tcphy, dev);
 	if (ret)
@@ -982,9 +1161,13 @@ static int rockchip_typec_phy_probe(struct platform_device *pdev)
 
 	tcphy->extcon = extcon_get_edev_by_phandle(dev, 0);
 	if (IS_ERR(tcphy->extcon)) {
-		if (PTR_ERR(tcphy->extcon) != -EPROBE_DEFER)
-			dev_err(dev, "Invalid or missing extcon\n");
-		return PTR_ERR(tcphy->extcon);
+		if (PTR_ERR(tcphy->extcon) == -ENODEV) {
+			tcphy->extcon = NULL;
+		} else {
+			if (PTR_ERR(tcphy->extcon) != -EPROBE_DEFER)
+				dev_err(dev, "Invalid or missing extcon\n");
+			return PTR_ERR(tcphy->extcon);
+		}
 	}
 
 	pm_runtime_enable(dev);
@@ -1004,6 +1187,7 @@ static int rockchip_typec_phy_probe(struct platform_device *pdev)
 		if (IS_ERR(phy)) {
 			dev_err(dev, "failed to create phy: %s\n",
 				child_np->name);
+			pm_runtime_disable(dev);
 			return PTR_ERR(phy);
 		}
 
@@ -1013,6 +1197,7 @@ static int rockchip_typec_phy_probe(struct platform_device *pdev)
 	phy_provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
 	if (IS_ERR(phy_provider)) {
 		dev_err(dev, "Failed to register phy provider\n");
+		pm_runtime_disable(dev);
 		return PTR_ERR(phy_provider);
 	}
 
@@ -1027,8 +1212,11 @@ static int rockchip_typec_phy_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id rockchip_typec_phy_dt_ids[] = {
-	{ .compatible = "rockchip,rk3399-typec-phy" },
-	{}
+	{
+		.compatible = "rockchip,rk3399-typec-phy",
+		.data = &rk3399_usb3phy_port_cfgs
+	},
+	{ /* sentinel */ }
 };
 
 MODULE_DEVICE_TABLE(of, rockchip_typec_phy_dt_ids);

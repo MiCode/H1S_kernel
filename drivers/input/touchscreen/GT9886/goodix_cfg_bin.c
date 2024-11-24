@@ -1,22 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Goodix Touchscreen Driver
- * Core layer of touchdriver architecture.
- *
- * Copyright (C) 2015 - 2016 Goodix, Inc.
- * Authors:  Yulong Cai <caiyulong@goodix.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be a reference
- * to you, when you are integrating the GOODiX's CTP IC into your system,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 #include "goodix_cfg_bin.h"
 #define CFG_TAG ""
 int goodix_start_cfg_bin(struct goodix_ts_core *ts_core)
@@ -577,7 +562,7 @@ int goodix_read_cfg_bin(struct device *dev, struct goodix_cfg_bin *cfg_bin)
 			ts_err("Cfg_bin image [%s] not available,error:%d,"
 				CFG_TAG"try_times:%d", cfg_bin_name, r, i + 1);
 
-			msleep(1000);
+			msleep(3000);
 		} else {
 			ts_info("Cfg_bin image [%s] is ready, try_times:%d",
 					cfg_bin_name, i + 1);

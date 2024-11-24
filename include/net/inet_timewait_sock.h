@@ -61,7 +61,7 @@ struct inet_timewait_sock {
 #define tw_cookie		__tw_common.skc_cookie
 #define tw_dr			__tw_common.skc_tw_dr
 
-	int			tw_timeout;
+	__u32			tw_mark;
 	volatile unsigned char	tw_substate;
 	unsigned char		tw_rcv_wscale;
 
@@ -94,8 +94,8 @@ struct inet_timewait_sock *inet_twsk_alloc(const struct sock *sk,
 					   struct inet_timewait_death_row *dr,
 					   const int state);
 
-void __inet_twsk_hashdance(struct inet_timewait_sock *tw, struct sock *sk,
-			   struct inet_hashinfo *hashinfo);
+void inet_twsk_hashdance(struct inet_timewait_sock *tw, struct sock *sk,
+			 struct inet_hashinfo *hashinfo);
 
 void __inet_twsk_schedule(struct inet_timewait_sock *tw, int timeo,
 			  bool rearm);

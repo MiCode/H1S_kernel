@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) "<ACCELEROMETER> " fmt
@@ -54,10 +46,10 @@ static void startTimer(struct hrtimer *timer, int delay_ms, bool first)
 	if (first) {
 		obj->target_ktime =
 			ktime_add_ns(ktime_get(), (int64_t)delay_ms * 1000000);
-#if 0
-		pr_debug("%d, cur_nt = %lld, delay_ms = %d, target_nt = %lld\n",
-		   count, getCurNT(), delay_ms, ktime_to_us(obj->target_ktime));
-#endif
+		/* pr_debug("%d, cur_nt = %lld, delay_ms = %d,
+		 * target_nt = %lld\n",count, getCurNT(),
+		 * delay_ms, ktime_to_us(obj->target_ktime));
+		 */
 		count = 0;
 	} else {
 		do {
@@ -65,10 +57,11 @@ static void startTimer(struct hrtimer *timer, int delay_ms, bool first)
 				obj->target_ktime, (int64_t)delay_ms * 1000000);
 		} while (ktime_to_ns(obj->target_ktime) <
 			 ktime_to_ns(ktime_get()));
-#if 0
-		pr_debug("%d, cur_nt = %lld, delay_ms = %d, target_nt = %lld\n",
-		   count, getCurNT(), delay_ms, ktime_to_us(obj->target_ktime));
-#endif
+		/* pr_debug("%d, cur_nt = %lld, delay_ms = %d,
+		 * target_nt = %lld\n",
+		 *  count, getCurNT(), delay_ms,
+		 * ktime_to_us(obj->target_ktime));
+		 */
 		count++;
 	}
 
@@ -286,7 +279,7 @@ static int acc_enable_and_batch(void)
 	return 0;
 }
 #endif
-static ssize_t acc_store_enable_nodata(struct device *dev,
+static ssize_t accenablenodata_store(struct device *dev,
 				       struct device_attribute *attr,
 				       const char *buf, size_t count)
 {
@@ -319,7 +312,7 @@ err_out:
 #endif
 }
 
-static ssize_t acc_show_enable_nodata(struct device *dev,
+static ssize_t accenablenodata_show(struct device *dev,
 				      struct device_attribute *attr, char *buf)
 {
 	int len = 0;
@@ -328,7 +321,7 @@ static ssize_t acc_show_enable_nodata(struct device *dev,
 	return len;
 }
 
-static ssize_t acc_store_active(struct device *dev,
+static ssize_t accactive_store(struct device *dev,
 				struct device_attribute *attr, const char *buf,
 				size_t count)
 {
@@ -377,7 +370,7 @@ err_out:
 }
 
 /*----------------------------------------------------------------------------*/
-static ssize_t acc_show_active(struct device *dev,
+static ssize_t accactive_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
 	struct acc_context *cxt = acc_context_obj;
@@ -389,13 +382,13 @@ static ssize_t acc_show_active(struct device *dev,
 }
 
 /* need work around again */
-static ssize_t acc_show_sensordevnum(struct device *dev,
+static ssize_t accdevnum_show(struct device *dev,
 				     struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-static ssize_t acc_store_batch(struct device *dev,
+static ssize_t accbatch_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
 {
@@ -429,12 +422,12 @@ static ssize_t acc_store_batch(struct device *dev,
 	else
 		return count;
 }
-static ssize_t acc_show_batch(struct device *dev, struct device_attribute *attr,
+static ssize_t accbatch_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
-static ssize_t acc_store_flush(struct device *dev,
+static ssize_t accflush_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
 {
@@ -462,19 +455,19 @@ static ssize_t acc_store_flush(struct device *dev,
 		return count;
 }
 
-static ssize_t acc_show_flush(struct device *dev, struct device_attribute *attr,
+static ssize_t accflush_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-static ssize_t acc_show_cali(struct device *dev, struct device_attribute *attr,
+static ssize_t acccali_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-static ssize_t acc_store_cali(struct device *dev, struct device_attribute *attr,
+static ssize_t acccali_store(struct device *dev, struct device_attribute *attr,
 			      const char *buf, size_t count)
 {
 	struct acc_context *cxt = NULL;
@@ -544,6 +537,33 @@ static int acc_real_driver_init(void)
 			err = gsensor_init_list[i]->init();
 			if (err == 0) {
 				pr_debug(" acc real driver %s probe ok\n",
+					gsensor_init_list[i]->name);
+				break;
+			}
+		}
+	}
+
+	if (i == MAX_CHOOSE_G_NUM) {
+		pr_debug("%s fail\n", __func__);
+		err = -1;
+	}
+	return err;
+}
+
+static int acc_real_driver_uninit(void)
+{
+	int i = 0;
+	int err = 0;
+
+	pr_debug("%s start\n", __func__);
+	for (i = 0; i < MAX_CHOOSE_G_NUM; i++) {
+		pr_debug(" i=%d\n", i);
+		if (gsensor_init_list[i] != 0) {
+			pr_debug(" acc try to init driver %s\n",
+				gsensor_init_list[i]->name);
+			err = gsensor_init_list[i]->uninit();
+			if (err == 0) {
+				pr_debug(" acc real driver %s uninit ok\n",
 					gsensor_init_list[i]->name);
 				break;
 			}
@@ -630,13 +650,12 @@ static int acc_misc_init(struct acc_context *cxt)
 	return err;
 }
 
-DEVICE_ATTR(accenablenodata, 0644, acc_show_enable_nodata,
-	    acc_store_enable_nodata);
-DEVICE_ATTR(accactive, 0644, acc_show_active, acc_store_active);
-DEVICE_ATTR(accbatch, 0644, acc_show_batch, acc_store_batch);
-DEVICE_ATTR(accflush, 0644, acc_show_flush, acc_store_flush);
-DEVICE_ATTR(acccali, 0644, acc_show_cali, acc_store_cali);
-DEVICE_ATTR(accdevnum, 0644, acc_show_sensordevnum, NULL);
+DEVICE_ATTR_RW(accenablenodata);
+DEVICE_ATTR_RW(accactive);
+DEVICE_ATTR_RW(accbatch);
+DEVICE_ATTR_RW(accflush);
+DEVICE_ATTR_RW(acccali);
+DEVICE_ATTR_RO(accdevnum);
 
 static struct attribute *acc_attributes[] = {
 	&dev_attr_accenablenodata.attr,
@@ -808,6 +827,8 @@ static int acc_remove(void)
 {
 	int err = 0;
 
+	acc_real_driver_uninit();
+
 	sysfs_remove_group(&acc_context_obj->mdev.this_device->kobj,
 			   &acc_attribute_group);
 
@@ -815,6 +836,8 @@ static int acc_remove(void)
 	if (err)
 		pr_err("misc_deregister fail: %d\n", err);
 	kfree(acc_context_obj);
+
+	platform_driver_unregister(&gsensor_driver);
 
 	return 0;
 }

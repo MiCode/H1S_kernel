@@ -257,6 +257,11 @@ static const struct fb_videomode modedb[] = {
 	{ NULL, 72, 480, 300, 33386, 40, 24, 11, 19, 80, 3, 0,
 		FB_VMODE_DOUBLE },
 
+	/* 1920x1080 @ 60 Hz, 67.3 kHz hsync */
+	{ NULL, 60, 1920, 1080, 6734, 148, 88, 36, 4, 44, 5, 0,
+		FB_SYNC_HOR_HIGH_ACT | FB_SYNC_VERT_HIGH_ACT,
+		FB_VMODE_NONINTERLACED },
+
 	/* 1920x1200 @ 60 Hz, 74.5 Khz hsync */
 	{ NULL, 60, 1920, 1200, 5177, 128, 336, 1, 38, 208, 3,
 		FB_SYNC_HOR_HIGH_ACT | FB_SYNC_VERT_HIGH_ACT,
@@ -571,45 +576,47 @@ static int fb_try_mode(struct fb_var_screeninfo *var, struct fb_info *info,
 }
 
 /**
- *     fb_find_mode - finds a valid video mode
- *     @var: frame buffer user defined part of display
- *     @info: frame buffer info structure
- *     @mode_option: string video mode to find
- *     @db: video mode database
- *     @dbsize: size of @db
- *     @default_mode: default video mode to fall back to
- *     @default_bpp: default color depth in bits per pixel
+ * fb_find_mode - finds a valid video mode
+ * @var: frame buffer user defined part of display
+ * @info: frame buffer info structure
+ * @mode_option: string video mode to find
+ * @db: video mode database
+ * @dbsize: size of @db
+ * @default_mode: default video mode to fall back to
+ * @default_bpp: default color depth in bits per pixel
  *
- *     Finds a suitable video mode, starting with the specified mode
- *     in @mode_option with fallback to @default_mode.  If
- *     @default_mode fails, all modes in the video mode database will
- *     be tried.
+ * Finds a suitable video mode, starting with the specified mode
+ * in @mode_option with fallback to @default_mode.  If
+ * @default_mode fails, all modes in the video mode database will
+ * be tried.
  *
- *     Valid mode specifiers for @mode_option:
+ * Valid mode specifiers for @mode_option::
  *
- *     <xres>x<yres>[M][R][-<bpp>][@<refresh>][i][p][m] or
+ *     <xres>x<yres>[M][R][-<bpp>][@<refresh>][i][p][m]
+ *
+ * or ::
+ *
  *     <name>[-<bpp>][@<refresh>]
  *
- *     with <xres>, <yres>, <bpp> and <refresh> decimal numbers and
- *     <name> a string.
+ * with <xres>, <yres>, <bpp> and <refresh> decimal numbers and
+ * <name> a string.
  *
- *      If 'M' is present after yres (and before refresh/bpp if present),
- *      the function will compute the timings using VESA(tm) Coordinated
- *      Video Timings (CVT).  If 'R' is present after 'M', will compute with
- *      reduced blanking (for flatpanels).  If 'i' or 'p' are present, compute
- *      interlaced or progressive mode.  If 'm' is present, add margins equal
- *      to 1.8% of xres rounded down to 8 pixels, and 1.8% of yres. The chars
- *      'i', 'p' and 'm' must be after 'M' and 'R'. Example:
+ * If 'M' is present after yres (and before refresh/bpp if present),
+ * the function will compute the timings using VESA(tm) Coordinated
+ * Video Timings (CVT).  If 'R' is present after 'M', will compute with
+ * reduced blanking (for flatpanels).  If 'i' or 'p' are present, compute
+ * interlaced or progressive mode.  If 'm' is present, add margins equal
+ * to 1.8% of xres rounded down to 8 pixels, and 1.8% of yres. The char
+ * 'i', 'p' and 'm' must be after 'M' and 'R'. Example::
  *
- *      1024x768MR-8@60m - Reduced blank with margins at 60Hz.
+ *     1024x768MR-8@60m - Reduced blank with margins at 60Hz.
  *
- *     NOTE: The passed struct @var is _not_ cleared!  This allows you
- *     to supply values for e.g. the grayscale and accel_flags fields.
+ * NOTE: The passed struct @var is _not_ cleared!  This allows you
+ * to supply values for e.g. the grayscale and accel_flags fields.
  *
- *     Returns zero for failure, 1 if using specified @mode_option,
- *     2 if using specified @mode_option with an ignored refresh rate,
- *     3 if default mode is used, 4 if fall back to any valid mode.
- *
+ * Returns zero for failure, 1 if using specified @mode_option,
+ * 2 if using specified @mode_option with an ignored refresh rate,
+ * 3 if default mode is used, 4 if fall back to any valid mode.
  */
 
 int fb_find_mode(struct fb_var_screeninfo *var,

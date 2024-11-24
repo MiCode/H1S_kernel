@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": %s: " fmt, __func__
@@ -121,7 +113,7 @@ static int lm3643_pinctrl_init(struct platform_device *pdev)
 	/* get pinctrl */
 	lm3643_pinctrl = devm_pinctrl_get(&pdev->dev);
 	if (IS_ERR(lm3643_pinctrl)) {
-		pr_err("Failed to get flashlight pinctrl.\n");
+		pr_info("Failed to get flashlight pinctrl.\n");
 		ret = PTR_ERR(lm3643_pinctrl);
 	}
 
@@ -129,13 +121,14 @@ static int lm3643_pinctrl_init(struct platform_device *pdev)
 	lm3643_hwen_high = pinctrl_lookup_state(
 			lm3643_pinctrl, LM3643_PINCTRL_STATE_HWEN_HIGH);
 	if (IS_ERR(lm3643_hwen_high)) {
-		pr_err("Failed to init (%s)\n", LM3643_PINCTRL_STATE_HWEN_HIGH);
+		pr_info("Failed to init (%s)\n",
+			LM3643_PINCTRL_STATE_HWEN_HIGH);
 		ret = PTR_ERR(lm3643_hwen_high);
 	}
 	lm3643_hwen_low = pinctrl_lookup_state(
 			lm3643_pinctrl, LM3643_PINCTRL_STATE_HWEN_LOW);
 	if (IS_ERR(lm3643_hwen_low)) {
-		pr_err("Failed to init (%s)\n", LM3643_PINCTRL_STATE_HWEN_LOW);
+		pr_info("Failed to init (%s)\n", LM3643_PINCTRL_STATE_HWEN_LOW);
 		ret = PTR_ERR(lm3643_hwen_low);
 	}
 
@@ -147,7 +140,7 @@ static int lm3643_pinctrl_set(int pin, int state)
 	int ret = 0;
 
 	if (IS_ERR(lm3643_pinctrl)) {
-		pr_err("pinctrl is not available\n");
+		pr_info("pinctrl is not available\n");
 		return -1;
 	}
 
@@ -160,10 +153,10 @@ static int lm3643_pinctrl_set(int pin, int state)
 				!IS_ERR(lm3643_hwen_high))
 			pinctrl_select_state(lm3643_pinctrl, lm3643_hwen_high);
 		else
-			pr_err("set err, pin(%d) state(%d)\n", pin, state);
+			pr_info("set err, pin(%d) state(%d)\n", pin, state);
 		break;
 	default:
-		pr_err("set err, pin(%d) state(%d)\n", pin, state);
+		pr_info("set err, pin(%d) state(%d)\n", pin, state);
 		break;
 	}
 	pr_debug("pin(%d) state(%d)\n", pin, state);
@@ -226,7 +219,7 @@ static int lm3643_write_reg(struct i2c_client *client, u8 reg, u8 val)
 	mutex_unlock(&chip->lock);
 
 	if (ret < 0)
-		pr_err("failed writing at 0x%02x\n", reg);
+		pr_info("failed writing at 0x%02x\n", reg);
 
 	return ret;
 }
@@ -285,7 +278,7 @@ static int lm3643_enable(int channel)
 	else if (channel == LM3643_CHANNEL_CH2)
 		lm3643_enable_ch2();
 	else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -334,7 +327,7 @@ static int lm3643_disable(int channel)
 	else if (channel == LM3643_CHANNEL_CH2)
 		lm3643_disable_ch2();
 	else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -393,7 +386,7 @@ static int lm3643_set_level(int channel, int level)
 	else if (channel == LM3643_CHANNEL_CH2)
 		lm3643_set_level_ch2(level);
 	else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -486,7 +479,7 @@ static int lm3643_timer_start(int channel, ktime_t ktime)
 	else if (channel == LM3643_CHANNEL_CH2)
 		hrtimer_start(&lm3643_timer_ch2, ktime, HRTIMER_MODE_REL);
 	else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -500,7 +493,7 @@ static int lm3643_timer_cancel(int channel)
 	else if (channel == LM3643_CHANNEL_CH2)
 		hrtimer_cancel(&lm3643_timer_ch2);
 	else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -524,7 +517,7 @@ static int lm3643_ioctl(unsigned int cmd, unsigned long arg)
 
 	/* verify channel */
 	if (channel < 0 || channel >= LM3643_CHANNEL_NUM) {
-		pr_err("Failed with error channel\n");
+		pr_info("Failed with error channel\n");
 		return -EINVAL;
 	}
 
@@ -736,7 +729,7 @@ static int lm3643_i2c_probe(
 
 	/* check i2c */
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
-		pr_err("Failed to check i2c functionality.\n");
+		pr_info("Failed to check i2c functionality.\n");
 		err = -ENODEV;
 		goto err_out;
 	}
@@ -949,14 +942,14 @@ static int __init flashlight_lm3643_init(void)
 #ifndef CONFIG_OF
 	ret = platform_device_register(&lm3643_platform_device);
 	if (ret) {
-		pr_err("Failed to register platform device\n");
+		pr_info("Failed to register platform device\n");
 		return ret;
 	}
 #endif
 
 	ret = platform_driver_register(&lm3643_platform_driver);
 	if (ret) {
-		pr_err("Failed to register platform driver\n");
+		pr_info("Failed to register platform driver\n");
 		return ret;
 	}
 

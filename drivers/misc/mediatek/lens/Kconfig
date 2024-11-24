@@ -1,27 +1,18 @@
 config MTK_LENS
-	bool CONFIG_MTK_LENS
-	default n
+	tristate "Mediatek lens driver"
 	help
-	  CONFIG_MTK_LENS
-
-config MTK_LENS_USE_MODULE
-	bool "Mediatek lens driver build as module"
-	default n
-	help
-	  Say Y here if you want to build touch driver as xxx.ko.
-
-	  If unsure, say N.
-
-	  To compile this dirver as a module,
-	  It will be called by insmod xxx.ko in init.rc.
+	  This is lens driver for camera
+	  Say Y here if you want to enable lens driver.
+	  If you have any questions about this, say Y here,
+	  only say N if you know exactly what you are doing.
 
 #
 # LENS
 #
 
 config MTK_LENS_DUMMYLENS_SUPPORT
-	bool "Dummy Lens Driver"
-	default n
+	tristate "Dummy Lens Driver"
+	depends on MTK_LENS
 	help
 	  Dummy Lens Driver
 	  This config is used to enable the corresponding
@@ -29,8 +20,8 @@ config MTK_LENS_DUMMYLENS_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_BU63165AF_SUPPORT
-	bool "BU63165AF Lens Driver"
-	default n
+	tristate "BU63165AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  BU63165AF Lens Driver
 	  This config is used to enable the corresponding
@@ -38,8 +29,8 @@ config MTK_LENS_BU63165AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_BU63169AF_SUPPORT
-	bool "BU63169AF Lens Driver"
-	default n
+	tristate "BU63169AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  BU63169AF Lens Driver
 	  This config is used to enable the corresponding
@@ -47,8 +38,8 @@ config MTK_LENS_BU63169AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_AD5820AF_SUPPORT
-	bool "AD5820AF Lens Driver"
-	default n
+	tristate "AD5820AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  AD5820AF Lens Driver
 	  This config is used to enable the corresponding
@@ -56,8 +47,8 @@ config MTK_LENS_AD5820AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_AD5823_SUPPORT
-	bool "AD5823 Lens Driver"
-	default n
+	tristate "AD5823 Lens Driver"
+        depends on MTK_LENS
 	help
 	  AD5823 Lens Driver
 	  This config is used to enable the corresponding
@@ -65,8 +56,8 @@ config MTK_LENS_AD5823_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_AD5823AF_SUPPORT
-	bool "AD5823AF Lens Driver"
-	default n
+	tristate "AD5823AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  AD5823AF Lens Driver
 	  This config is used to enable the corresponding
@@ -74,8 +65,8 @@ config MTK_LENS_AD5823AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_AK7345AF_SUPPORT
-	bool "AK7345AF Lens Driver"
-	default n
+	tristate "AK7345AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  AK7345AF Lens Driver
 	  This config is used to enable the corresponding
@@ -83,8 +74,8 @@ config MTK_LENS_AK7345AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_AK7371AF_SUPPORT
-	bool "AK7371AF Lens Driver"
-	default n
+	tristate "AK7371AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  AK7371AF Lens Driver
 	  This config is used to enable the corresponding
@@ -92,8 +83,8 @@ config MTK_LENS_AK7371AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_BU6424AF_SUPPORT
-	bool "BU6424AF Lens Driver"
-	default n
+	tristate "BU6424AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  BU6424AF Lens Driver
 	  This config is used to enable the corresponding
@@ -101,8 +92,8 @@ config MTK_LENS_BU6424AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_BU6429AF_SUPPORT
-	bool "BU6429AF Lens Driver"
-	default n
+	tristate "BU6429AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  BU6429AF Lens Driver
 	  This config is used to enable the corresponding
@@ -110,8 +101,8 @@ config MTK_LENS_BU6429AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_BU64745GWZAF_SUPPORT
-	bool "BU64745GWZAF Lens Driver"
-	default n
+	tristate "BU64745GWZAF Lens Driver"
+        depends on MTK_LENS
 	help
 	  BU64745GWZAF Lens Driver
 	  This config is used to enable the corresponding
@@ -119,26 +110,17 @@ config MTK_LENS_BU64745GWZAF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_AK7345AF_SUPPORT
-	bool "AK7345AF Lens Driver"
-	default n
+	tristate "AK7345AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  AK7345AF Lens Driver
 	  This config is used to enable the corresponding
 	  lens driver for the camera sensor module
 	  Set as y if the driver is used in this project
 
-config MTK_LENS_DW9800WAF_SUPPORT
-	bool "DW9800WAF Lens Driver"
-	default n
-	help
-	  DW9800WAF Lens Driver
-	  This config is used to enable the corresponding
-	  lens driver for the camera sensor module
-	  Set as y if the driver is used in this project
-
 config MTK_LENS_DW9718AF_SUPPORT
-	bool "DW9718AF Lens Driver"
-	default n
+	tristate "DW9718AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  DW9718AF Lens Driver
 	  This config is used to enable the corresponding
@@ -146,8 +128,8 @@ config MTK_LENS_DW9718AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_DW9718SAF_SUPPORT
-	bool "DW9718SAF Lens Driver"
-	default n
+	tristate "DW9718SAF Lens Driver"
+        depends on MTK_LENS
 	help
 	  DW9718SAF Lens Driver
 	  This config is used to enable the corresponding
@@ -155,8 +137,8 @@ config MTK_LENS_DW9718SAF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_DW9714AF_SUPPORT
-	bool "DW9714AF Lens Driver"
-	default n
+	tristate "DW9714AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  DW9714AF Lens Driver
 	  This config is used to enable the corresponding
@@ -164,8 +146,8 @@ config MTK_LENS_DW9714AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_DW9714A_SUPPORT
-	bool "DW9714A Lens Driver"
-	default n
+	tristate "DW9714A Lens Driver"
+        depends on MTK_LENS
 	help
 	  DW9714A Lens Driver
 	  This config is used to enable the corresponding
@@ -173,8 +155,8 @@ config MTK_LENS_DW9714A_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_DW9814AF_SUPPORT
-	bool "DW9814AF Lens Driver"
-	default n
+	tristate "DW9814AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  DW9814AF Lens Driver
 	  This config is used to enable the corresponding
@@ -182,8 +164,8 @@ config MTK_LENS_DW9814AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_LC898122AF_SUPPORT
-	bool "LC898122AF Lens Driver"
-	default n
+	tristate "LC898122AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  LC898122AF Lens Driver
 	  This config is used to enable the corresponding
@@ -191,8 +173,8 @@ config MTK_LENS_LC898122AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_LC898212AF_SUPPORT
-	bool "LC898212AF Lens Driver"
-	default n
+	tristate "LC898212AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  LC898212AF Lens Driver
 	  This config is used to enable the corresponding
@@ -200,8 +182,8 @@ config MTK_LENS_LC898212AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_LC898212XDAF_SUPPORT
-	bool "LC898212XDAF Lens Driver"
-	default n
+	tristate "LC898212XDAF Lens Driver"
+        depends on MTK_LENS
 	help
 	  LC898212XDAF Lens Driver
 	  This config is used to enable the corresponding
@@ -209,8 +191,8 @@ config MTK_LENS_LC898212XDAF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_LC898214AF_SUPPORT
-	bool "LC898214AF Lens Driver"
-	default n
+	tristate "LC898214AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  LC898212AF Lens Driver
 	  This config is used to enable the corresponding
@@ -218,8 +200,8 @@ config MTK_LENS_LC898214AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_FM50AF_SUPPORT
-	bool "FM50AF Lens Driver"
-	default n
+	tristate "FM50AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  FM50AF Lens Driver
 	  This config is used to enable the corresponding
@@ -227,8 +209,8 @@ config MTK_LENS_FM50AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_FP5510E2AF_SUPPORT
-	bool "FP5510E2AF Lens Driver"
-	default n
+	tristate "FP5510E2AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  FM50AF Lens Driver
 	  This config is used to enable the corresponding
@@ -236,8 +218,7 @@ config MTK_LENS_FP5510E2AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_MT9P017AF_SUPPORT
-	bool "MT9P017AF Lens Driver"
-	default n
+	tristate "MT9P017AF Lens Driver"
 	help
 	  MT9P017AF Lens Driver
 	  This config is used to enable the corresponding
@@ -245,8 +226,8 @@ config MTK_LENS_MT9P017AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_OV8825AF_SUPPORT
-	bool "OV8825AF Lens Driver"
-	default n
+	tristate "OV8825AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  OV8825AF Lens Driver
 	  This config is used to enable the corresponding
@@ -254,8 +235,8 @@ config MTK_LENS_OV8825AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_SENSORDRIVE_SUPPORT
-	bool "SENSORDRIVE Lens Driver"
-	default n
+	tristate "SENSORDRIVE Lens Driver"
+        depends on MTK_LENS
 	help
 	  SENSORDRIVE Lens Driver
 	  This config is used to enable the corresponding
@@ -263,8 +244,7 @@ config MTK_LENS_SENSORDRIVE_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_GAF001AF_SUPPORT
-	bool "GAF001AF Lens Driver"
-	default n
+	tristate "GAF001AF Lens Driver"
 	help
 	  GAF001AF Lens Driver
 	  This config is used to enable the corresponding
@@ -272,8 +252,8 @@ config MTK_LENS_GAF001AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_GAF002AF_SUPPORT
-	bool "GAF002AF Lens Driver"
-	default n
+	tristate "GAF002AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  GAF002AF Lens Driver
 	  This config is used to enable the corresponding
@@ -281,8 +261,8 @@ config MTK_LENS_GAF002AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_GAF008AF_SUPPORT
-	bool "GAF008AF Lens Driver"
-	default n
+	tristate "GAF008AF Lens Driver"
+        depends on MTK_LENS
 	help
 	  GAF008AF Lens Driver
 	  This config is used to enable the corresponding
@@ -290,8 +270,8 @@ config MTK_LENS_GAF008AF_SUPPORT
 	  Set as y if the driver is used in this project
 
 config MTK_LENS_WV511AAF_SUPPORT
-	bool "WV511AAF Lens Driver"
-	default n
+	tristate "WV511AAF Lens Driver"
+        depends on MTK_LENS
 	help
 	  WV511AAF Lens Driver
 	  This config is used to enable the corresponding

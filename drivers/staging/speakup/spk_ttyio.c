@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/types.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
@@ -46,19 +47,20 @@ static int spk_ttyio_ldisc_open(struct tty_struct *tty)
 {
 	struct spk_ldisc_data *ldisc_data;
 
+	if (tty != speakup_tty)
+		/* Somebody tried to use this line discipline outside speakup */
+		return -ENODEV;
+
 	if (tty->ops->write == NULL)
 		return -EOPNOTSUPP;
-	speakup_tty = tty;
 
 	ldisc_data = kmalloc(sizeof(struct spk_ldisc_data), GFP_KERNEL);
-	if (!ldisc_data) {
-		pr_err("speakup: Failed to allocate ldisc_data.\n");
+	if (!ldisc_data)
 		return -ENOMEM;
-	}
 
 	sema_init(&ldisc_data->sem, 0);
 	ldisc_data->buf_free = true;
-	speakup_tty->disc_data = ldisc_data;
+	tty->disc_data = ldisc_data;
 
 	return 0;
 }
@@ -72,7 +74,7 @@ static void spk_ttyio_ldisc_close(struct tty_struct *tty)
 }
 
 static int spk_ttyio_receive_buf2(struct tty_struct *tty,
-		const unsigned char *cp, char *fp, int count)
+				  const unsigned char *cp, char *fp, int count)
 {
 	struct spk_ldisc_data *ldisc_data = tty->disc_data;
 
@@ -86,11 +88,12 @@ static int spk_ttyio_receive_buf2(struct tty_struct *tty,
 	}
 
 	if (!ldisc_data->buf_free)
-		/* ttyio_in will tty_schedule_flip */
+		/* ttyio_in will tty_flip_buffer_push */
 		return 0;
 
 	/* Make sure the consumer has read buf before we have seen
-	 * buf_free == true and overwrite buf */
+	 * buf_free == true and overwrite buf
+	 */
 	mb();
 
 	ldisc_data->buf = cp[0];
@@ -110,6 +113,7 @@ static struct tty_ldisc_ops spk_ttyio_ldisc_ops = {
 };
 
 static int spk_ttyio_out(struct spk_synth *in_synth, const char ch);
+static int spk_ttyio_out_unicode(struct spk_synth *in_synth, u16 ch);
 static void spk_ttyio_send_xchar(char ch);
 static void spk_ttyio_tiocmset(unsigned int set, unsigned int clear);
 static unsigned char spk_ttyio_in(void);
@@ -118,6 +122,7 @@ static void spk_ttyio_flush_buffer(void);
 
 struct spk_io_ops spk_ttyio_ops = {
 	.synth_out = spk_ttyio_out,
+	.synth_out_unicode = spk_ttyio_out_unicode,
 	.send_xchar = spk_ttyio_send_xchar,
 	.tiocmset = spk_ttyio_tiocmset,
 	.synth_in = spk_ttyio_in,
@@ -175,9 +180,25 @@ static int spk_ttyio_initialise_ldisc(struct spk_synth *synth)
 
 	tty_unlock(tty);
 
+	mutex_lock(&speakup_tty_mutex);
+	speakup_tty = tty;
 	ret = tty_set_ldisc(tty, N_SPEAKUP);
 	if (ret)
-		pr_err("speakup: Failed to set N_SPEAKUP on tty\n");
+		speakup_tty = NULL;
+	mutex_unlock(&speakup_tty_mutex);
+
+	if (!ret)
+		/* Success */
+		return 0;
+
+	pr_err("speakup: Failed to set N_SPEAKUP on tty\n");
+
+	tty_lock(tty);
+	if (tty->ops->close)
+		tty->ops->close(tty, NULL);
+	tty_unlock(tty);
+
+	tty_kclose(tty);
 
 	return ret;
 }
@@ -219,6 +240,23 @@ static int spk_ttyio_out(struct spk_synth *in_synth, const char ch)
 
 	mutex_unlock(&speakup_tty_mutex);
 	return 0;
+}
+
+static int spk_ttyio_out_unicode(struct spk_synth *in_synth, u16 ch)
+{
+	int ret;
+
+	if (ch < 0x80)
+		ret = spk_ttyio_out(in_synth, ch);
+	else if (ch < 0x800) {
+		ret  = spk_ttyio_out(in_synth, 0xc0 | (ch >> 6));
+		ret &= spk_ttyio_out(in_synth, 0x80 | (ch & 0x3f));
+	} else {
+		ret  = spk_ttyio_out(in_synth, 0xe0 | (ch >> 12));
+		ret &= spk_ttyio_out(in_synth, 0x80 | ((ch >> 6) & 0x3f));
+		ret &= spk_ttyio_out(in_synth, 0x80 | (ch & 0x3f));
+	}
+	return ret;
 }
 
 static int check_tty(struct tty_struct *tty)
@@ -278,11 +316,12 @@ static unsigned char ttyio_in(int timeout)
 
 	rv = ldisc_data->buf;
 	/* Make sure we have read buf before we set buf_free to let
-	 * the producer overwrite it */
+	 * the producer overwrite it
+	 */
 	mb();
 	ldisc_data->buf_free = true;
 	/* Let TTY push more characters */
-	tty_schedule_flip(speakup_tty->port);
+	tty_flip_buffer_push(speakup_tty->port);
 
 	return rv;
 }

@@ -1564,6 +1564,11 @@ W: http://www.carumba.com/
 D: bug toaster (A1 sauce makes all the difference)
 D: Random linux hacker
 
+N: James Hogan
+E: jhogan@kernel.org
+D: Metag architecture maintainer
+D: TZ1090 SoC maintainer
+
 N: Tim Hockin
 E: thockin@hockin.org
 W: http://www.hockin.org/~thockin
@@ -2565,6 +2570,11 @@ S: Editorial Board iX Mag
 S: Helstorfer Str. 7
 S: D-30625 Hannover
 S: Germany
+
+N: Ron Minnich
+E: rminnich@sandia.gov
+E: rminnich@gmail.com
+D: 9p filesystem development
 
 N: Corey Minyard
 E: minyard@wf-rch.cirr.com

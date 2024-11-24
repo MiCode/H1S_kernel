@@ -26,6 +26,8 @@
 
 /* drm_file.c */
 extern struct mutex drm_global_mutex;
+struct drm_file *drm_file_alloc(struct drm_minor *minor);
+void drm_file_free(struct drm_file *file);
 void drm_lastclose(struct drm_device *dev);
 
 /* drm_pci.c */
@@ -55,7 +57,6 @@ int drm_clients_info(struct seq_file *m, void* data);
 int drm_gem_name_info(struct seq_file *m, void *data);
 
 /* drm_vblank.c */
-extern unsigned int drm_timestamp_monotonic;
 void drm_vblank_disable_and_save(struct drm_device *dev, unsigned int pipe);
 void drm_vblank_cleanup(struct drm_device *dev);
 
@@ -70,6 +71,12 @@ int drm_legacy_modeset_ctl_ioctl(struct drm_device *dev, void *data,
 /* IOCTLS */
 int drm_legacy_irq_control(struct drm_device *dev, void *data,
 			   struct drm_file *file_priv);
+
+int drm_crtc_get_sequence_ioctl(struct drm_device *dev, void *data,
+				struct drm_file *filp);
+
+int drm_crtc_queue_sequence_ioctl(struct drm_device *dev, void *data,
+				  struct drm_file *filp);
 
 /* drm_auth.c */
 int drm_getmagic(struct drm_device *dev, void *data,
@@ -92,6 +99,8 @@ struct device *drm_sysfs_minor_alloc(struct drm_minor *minor);
 int drm_sysfs_connector_add(struct drm_connector *connector);
 void drm_sysfs_connector_remove(struct drm_connector *connector);
 
+void drm_sysfs_lease_event(struct drm_device *dev);
+
 /* drm_gem.c */
 int drm_gem_init(struct drm_device *dev);
 void drm_gem_destroy(struct drm_device *dev);
@@ -106,6 +115,8 @@ int drm_gem_open_ioctl(struct drm_device *dev, void *data,
 		       struct drm_file *file_priv);
 void drm_gem_open(struct drm_device *dev, struct drm_file *file_private);
 void drm_gem_release(struct drm_device *dev, struct drm_file *file_private);
+void drm_gem_print_info(struct drm_printer *p, unsigned int indent,
+			const struct drm_gem_object *obj);
 
 /* drm_debugfs.c drm_debugfs_crc.c */
 #if defined(CONFIG_DEBUG_FS)
@@ -173,3 +184,8 @@ int drm_syncobj_reset_ioctl(struct drm_device *dev, void *data,
 			    struct drm_file *file_private);
 int drm_syncobj_signal_ioctl(struct drm_device *dev, void *data,
 			     struct drm_file *file_private);
+
+/* drm_framebuffer.c */
+void drm_framebuffer_print_info(struct drm_printer *p, unsigned int indent,
+				const struct drm_framebuffer *fb);
+int drm_framebuffer_debugfs_init(struct drm_minor *minor);

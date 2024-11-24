@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _MTK_DRM_SESSION_H_
 #define _MTK_DRM_SESSION_H_
@@ -58,5 +50,7 @@ int mtk_drm_session_destroy_ioctl(struct drm_device *dev, void *data,
 int mtk_session_get_mode(struct drm_device *dev, struct drm_crtc *crtc);
 int mtk_session_set_mode(struct drm_device *dev, unsigned int session_mode);
 int mtk_get_session_id(struct drm_crtc *crtc);
+int m4u_sec_init(void);
+int m4u_gz_sec_init(int mtk_iommu_sec_id);
 
 #endif

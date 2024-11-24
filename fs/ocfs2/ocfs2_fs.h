@@ -303,7 +303,7 @@
 #define OCFS2_MAX_SLOTS			255
 
 /* Slot map indicator for an empty slot */
-#define OCFS2_INVALID_SLOT		-1
+#define OCFS2_INVALID_SLOT		((u16)-1)
 
 #define OCFS2_VOL_UUID_LEN		16
 #define OCFS2_MAX_VOL_LABEL_LEN		64
@@ -339,8 +339,8 @@ struct ocfs2_system_inode_info {
 enum {
 	BAD_BLOCK_SYSTEM_INODE = 0,
 	GLOBAL_INODE_ALLOC_SYSTEM_INODE,
+#define OCFS2_FIRST_ONLINE_SYSTEM_INODE GLOBAL_INODE_ALLOC_SYSTEM_INODE
 	SLOT_MAP_SYSTEM_INODE,
-#define OCFS2_FIRST_ONLINE_SYSTEM_INODE SLOT_MAP_SYSTEM_INODE
 	HEARTBEAT_SYSTEM_INODE,
 	GLOBAL_BITMAP_SYSTEM_INODE,
 	USER_QUOTA_SYSTEM_INODE,
@@ -807,11 +807,11 @@ struct ocfs2_dir_block_trailer {
 						 * in this block. (unused) */
 /*10*/	__u8		db_signature[8];	/* Signature for verification */
 	__le64		db_reserved2;
-	__le64		db_free_next;		/* Next block in list (unused) */
-/*20*/	__le64		db_blkno;		/* Offset on disk, in blocks */
-	__le64		db_parent_dinode;	/* dinode which owns me, in
+/*20*/	__le64		db_free_next;		/* Next block in list (unused) */
+	__le64		db_blkno;		/* Offset on disk, in blocks */
+/*30*/	__le64		db_parent_dinode;	/* dinode which owns me, in
 						   blocks */
-/*30*/	struct ocfs2_block_check db_check;	/* Error checking */
+	struct ocfs2_block_check db_check;	/* Error checking */
 /*40*/
 };
 

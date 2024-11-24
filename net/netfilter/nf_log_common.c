@@ -132,9 +132,10 @@ int nf_log_dump_tcp_header(struct nf_log_buf *m, const struct sk_buff *skb,
 }
 EXPORT_SYMBOL_GPL(nf_log_dump_tcp_header);
 
-void nf_log_dump_sk_uid_gid(struct nf_log_buf *m, struct sock *sk)
+void nf_log_dump_sk_uid_gid(struct net *net, struct nf_log_buf *m,
+			    struct sock *sk)
 {
-	if (!sk || !sk_fullsock(sk))
+	if (!sk || !sk_fullsock(sk) || !net_eq(net, sock_net(sk)))
 		return;
 
 	read_lock_bh(&sk->sk_callback_lock);
@@ -174,6 +175,18 @@ nf_log_dump_packet_common(struct nf_log_buf *m, u_int8_t pf,
 #endif
 }
 EXPORT_SYMBOL_GPL(nf_log_dump_packet_common);
+
+void nf_log_dump_vlan(struct nf_log_buf *m, const struct sk_buff *skb)
+{
+	u16 vid;
+
+	if (!skb_vlan_tag_present(skb))
+		return;
+
+	vid = skb_vlan_tag_get(skb);
+	nf_log_buf_add(m, "VPROTO=%04x VID=%u ", ntohs(skb->vlan_proto), vid);
+}
+EXPORT_SYMBOL_GPL(nf_log_dump_vlan);
 
 /* bridge and netdev logging families share this code. */
 void nf_log_l2packet(struct net *net, u_int8_t pf,

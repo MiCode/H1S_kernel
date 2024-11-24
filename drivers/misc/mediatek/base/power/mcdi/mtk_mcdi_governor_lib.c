@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 #include <linux/kernel.h>
 #include <linux/delay.h>
@@ -20,8 +12,8 @@
 #include <mtk_mcdi_plat.h>
 #include <mtk_mcdi_reg.h>
 
-#include <mt-plat/mtk_secure_api.h>
-#include <trace/events/mtk_idle_event.h>
+/* #include <mt-plat/mtk_secure_api.h> */
+/* #include <trace/events/mtk_idle_event.h> */
 
 #ifdef MCDI_CPC_MODE
 
@@ -44,7 +36,6 @@ static void __release_last_core_prot(unsigned int clr)
 void release_last_core_prot(void)
 {
 	__release_last_core_prot(1U << 9);
-	mcdi_cpc_auto_off_counter_resume();
 }
 
 void release_cluster_last_core_prot(void)
@@ -78,7 +69,6 @@ int acquire_last_core_prot(int cpu)
 		udelay_and_update_wait_time(dur_us, 2);
 
 		if (!is_last_core_in_mcusys(cpu) || dur_us > 1000) {
-			__release_last_core_prot(1U << 9);
 			ret = CPC_RET_GIVE_UP;
 			break;
 		}
@@ -88,14 +78,10 @@ int acquire_last_core_prot(int cpu)
 
 	} while (ret == CPC_RET_RETRY);
 
-	if (ret == CPC_RET_SUCCESS) {
-		mcdi_cpc_auto_off_counter_suspend();
-		return 0;
-	} else if (ret == CPC_RET_GIVE_UP) {
+	if (ret == CPC_RET_GIVE_UP)
 		any_core_cpu_cond_inc(MULTI_CORE_CNT);
-	}
 
-	return -1;
+	return ret == CPC_RET_SUCCESS ? 0 : -1;
 }
 
 int acquire_cluster_last_core_prot(int cpu)
@@ -112,7 +98,6 @@ int acquire_cluster_last_core_prot(int cpu)
 		udelay_and_update_wait_time(dur_us, 2);
 
 		if (!is_last_core_in_cluster(cpu) || dur_us > 1000) {
-			__release_last_core_prot(1U << 8);
 			ret = CPC_RET_GIVE_UP;
 			break;
 		}
@@ -154,7 +139,7 @@ static bool mcdi_cpu_cluster_on_off_stat_check(int cpu)
 	if (on_off_stat == check_mask)
 		ret = true;
 
-	trace_mcdi_cpu_cluster_stat_rcuidle(cpu, on_off_stat, check_mask);
+	/* trace_mcdi_cpu_cluster_stat_rcuidle(cpu, on_off_stat, check_mask); */
 
 	return ret;
 }
@@ -279,7 +264,7 @@ static void dump_multi_core_state_ftrace(int cpu)
 
 	on_off_stat = mcdi_get_raw_pwr_sta();
 
-	trace_mcdi_multi_core_rcuidle(cpu, on_off_stat, check_mask);
+	/* trace_mcdi_multi_core_rcuidle(cpu, on_off_stat, check_mask); */
 }
 
 void release_last_core_prot(void)

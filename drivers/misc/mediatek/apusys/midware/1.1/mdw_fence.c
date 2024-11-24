@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/sync_file.h>
@@ -45,7 +37,7 @@ static unsigned int apu_file_poll(struct file *file, poll_table *wait)
 	struct apu_poll_desc *d = file->private_data;
 	struct mdw_usr *u;
 	struct mdw_apu_cmd *c;
-	struct list_head *tmp = NULL, *list_ptr = NULL;
+	int id = 0;
 
 	if (d == NULL)
 		return POLLIN;
@@ -62,20 +54,22 @@ static unsigned int apu_file_poll(struct file *file, poll_table *wait)
 
 	/* Check cmd */
 	mutex_lock(&u->mtx);
-	list_for_each_safe(list_ptr, tmp, &u->cmd_list) {
-		c = list_entry(list_ptr, struct mdw_apu_cmd, u_item);
-		mdw_flw_debug("poll cmd(0x%llx/0x%llx) matching...\n", c, d->c);
+	idr_for_each_entry(&u->cmds_idr, c, id) {
+		mdw_flw_debug("poll cmd(0x%llx/0x%llx) matching...\n",
+			(uint64_t)c, (uint64_t)d->c);
 
 		if (c == d->c)
 			break;
 		c = NULL;
 	}
+	if (c)
+		idr_remove(&u->cmds_idr, c->id);
 	mutex_unlock(&u->mtx);
 
 	if (c == NULL)
 		goto out;
 
-	mdw_wait_cmd(d->c);
+	mdw_wait_cmd(u, d->c);
 out:
 	mdw_usr_put(u);
 	return POLLIN;
@@ -103,7 +97,6 @@ int apu_sync_file_create(struct mdw_apu_cmd *c)
 	desc->c = c;
 	desc->u = c->usr;
 	c->file = anon_inode_getfile("apu_file", &apu_sync_file_fops, desc, 0);
-
 
 	if (c->file == NULL) {
 		put_unused_fd(fd);

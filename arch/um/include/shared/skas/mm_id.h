@@ -14,4 +14,6 @@ struct mm_id {
 	unsigned long stack;
 };
 
+void __switch_mm(struct mm_id *mm_idp);
+
 #endif

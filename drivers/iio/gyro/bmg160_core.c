@@ -27,7 +27,6 @@
 #include <linux/iio/trigger_consumer.h>
 #include <linux/iio/triggered_buffer.h>
 #include <linux/regmap.h>
-#include <linux/delay.h>
 #include "bmg160.h"
 
 #define BMG160_IRQ_NAME		"bmg160_event"
@@ -104,7 +103,11 @@ struct bmg160_data {
 	struct iio_trigger *dready_trig;
 	struct iio_trigger *motion_trig;
 	struct mutex mutex;
-	s16 buffer[8];
+	/* Ensure naturally aligned timestamp */
+	struct {
+		s16 chans[3];
+		s64 timestamp __aligned(8);
+	} scan;
 	u32 dps_range;
 	int ev_enable_state;
 	int slope_thres;
@@ -858,7 +861,6 @@ static const struct iio_info bmg160_info = {
 	.write_event_value	= bmg160_write_event,
 	.write_event_config	= bmg160_write_event_config,
 	.read_event_config	= bmg160_read_event_config,
-	.driver_module		= THIS_MODULE,
 };
 
 static const unsigned long bmg160_accel_scan_masks[] = {
@@ -874,12 +876,12 @@ static irqreturn_t bmg160_trigger_handler(int irq, void *p)
 
 	mutex_lock(&data->mutex);
 	ret = regmap_bulk_read(data->regmap, BMG160_REG_XOUT_L,
-			       data->buffer, AXIS_MAX * 2);
+			       data->scan.chans, AXIS_MAX * 2);
 	mutex_unlock(&data->mutex);
 	if (ret < 0)
 		goto err;
 
-	iio_push_to_buffers_with_timestamp(indio_dev, data->buffer,
+	iio_push_to_buffers_with_timestamp(indio_dev, &data->scan,
 					   pf->timestamp);
 err:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -956,7 +958,6 @@ static int bmg160_data_rdy_trigger_set_state(struct iio_trigger *trig,
 static const struct iio_trigger_ops bmg160_trigger_ops = {
 	.set_trigger_state = bmg160_data_rdy_trigger_set_state,
 	.try_reenable = bmg160_trig_try_reen,
-	.owner = THIS_MODULE,
 };
 
 static irqreturn_t bmg160_event_handler(int irq, void *private)

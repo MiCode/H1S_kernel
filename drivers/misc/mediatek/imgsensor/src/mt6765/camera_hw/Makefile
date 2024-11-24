@@ -18,6 +18,5 @@ ccflags-y += -I$(MTK_CUSTOM_PATH)/imgsensor/inc \
 
 obj-y		+= regulator/
 obj-y		+= gpio/
-#obj-y		+= mt6306/
 obj-y		+= mclk/
 obj-y		+= imgsensor_cfg_table.o

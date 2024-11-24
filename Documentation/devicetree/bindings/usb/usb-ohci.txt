@@ -13,13 +13,15 @@ Optional properties:
 - remote-wakeup-connected: remote wakeup is wired on the platform
 - num-ports : u32, to override the detected port count
 - clocks : a list of phandle + clock specifier pairs
-- phys : phandle + phy specifier pair
-- phy-names : "usb"
+- phys : see usb-hcd.txt in the current directory
 - resets : a list of phandle + reset specifier pairs
+
+additionally the properties from usb-hcd.txt (in the current directory) are
+supported.
 
 Example:
 
-	ohci0: usb@01c14400 {
+	ohci0: usb@1c14400 {
 		compatible = "allwinner,sun4i-a10-ohci", "generic-ohci";
 		reg = <0x01c14400 0x100>;
 		interrupts = <64>;

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -33,7 +25,8 @@
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include "mach/emi_mpu.h"
-#include <mt-plat/mtk_secure_api.h>
+#include <linux/arm-smccc.h>
+#include <linux/soc/mediatek/mtk_sip_svc.h> 
 
 static void __iomem *emi_base;
 
@@ -49,9 +42,11 @@ static int is_emi_mpu_reg(unsigned int offset)
 
 void mt_emi_reg_write(unsigned int data, unsigned int offset)
 {
+
 #if defined(CONFIG_ARM_PSCI) || defined(CONFIG_MTK_PSCI)
+	struct arm_smccc_res res;
 	if (is_emi_mpu_reg(offset)) {
-		emi_mpu_smc_write(offset, data);
+		arm_smccc_smc(MTK_SIP_KERNEL_EMIMPU_WRITE, offset,data, 0, 0, 0, 0, 0, &res);
 		return;
 	}
 #endif
@@ -61,9 +56,12 @@ void mt_emi_reg_write(unsigned int data, unsigned int offset)
 
 unsigned int mt_emi_reg_read(unsigned int offset)
 {
+
 #if defined(CONFIG_ARM_PSCI) || defined(CONFIG_MTK_PSCI)
+	struct arm_smccc_res res;
 	if (is_emi_mpu_reg(offset))
-		return (unsigned int)emi_mpu_smc_read(offset);
+		arm_smccc_smc(MTK_SIP_KERNEL_EMIMPU_READ, offset,0, 0, 0, 0, 0, 0, &res);
+		return res.a0;
 #endif
 	if (emi_base)
 		return readl((const void __iomem *)(emi_base + offset));
@@ -77,7 +75,9 @@ int mt_emi_mpu_set_region_protection(unsigned long long start,
 {
 #ifdef CONFIG_ARM64
 #if defined(CONFIG_ARM_PSCI) || defined(CONFIG_MTK_PSCI)
-	return emi_mpu_smc_set(start, end, region_permission);
+	struct arm_smccc_res res;
+	arm_smccc_smc(MTK_SIP_KERNEL_EMIMPU_SET, start,end, region_permission, 0, 0, 0, 0, &res);
+	return 0;
 #endif
 #endif
 	return 0;

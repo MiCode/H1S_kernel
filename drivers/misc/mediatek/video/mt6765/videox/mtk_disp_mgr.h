@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __H_MTK_DISP_MGR__
@@ -22,6 +14,11 @@ enum PREPARE_FENCE_TYPE {
 	PREPARE_PRESENT_FENCE
 };
 
+struct repaint_job_t {
+	struct list_head link;
+	unsigned int type;
+};
+
 long mtk_disp_mgr_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 int disp_create_session(struct disp_session_config *config);
 int disp_destroy_session(struct disp_session_config *config);
@@ -31,5 +28,5 @@ void dump_input_cfg_info(struct disp_input_config *input_cfg,
 	unsigned int session_id, int is_err);
 int disp_input_free_dirty_roi(struct disp_frame_cfg_t *cfg);
 int disp_validate_ioctl_params(struct disp_frame_cfg_t *cfg);
-
+void trigger_repaint(int type);
 #endif

@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Author: tong jun <tongjun@szroco.com>
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/of.h>
@@ -28,6 +19,10 @@
 		fmt, __func__, __LINE__, ##args)
 #define APS_LOG(fmt, args...)   pr_info(APS_TAG fmt, ##args)
 #define APS_DBG(fmt, args...)   pr_info(APS_TAG fmt, ##args)
+
+#define DRIVER_ATTR(_name, _mode, _show, _store) \
+		struct driver_attribute driver_attr_##_name = \
+		__ATTR(_name, _mode, _show, _store)
 
 static const struct i2c_device_id ltr303_i2c_id[] = {
 	{LTR303_DEV_NAME, 0},

@@ -123,11 +123,12 @@ static void msdc_crypto_program_key(struct mmc_host *host,
 	/* TKEY */
 	for (i = 0; i < 8; i++)
 		writel(tkey[i], ll_host->base + (MSDC_AES_TKEY_GP1 + i * 4));
+
 }
 
 /* set crypto information */
 static int msdc_prepare_mqr_crypto(struct mmc_host *host,
-		u64 data_unit_num, int ddir, int slot)
+		u64 data_unit_num, int ddir, int tag, int slot)
 {
 	u32 data_unit_size;
 	u32 aes_config;

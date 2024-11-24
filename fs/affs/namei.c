@@ -201,6 +201,7 @@ affs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 	struct super_block *sb = dir->i_sb;
 	struct buffer_head *bh;
 	struct inode *inode = NULL;
+	struct dentry *res;
 
 	pr_debug("%s(\"%pd\")\n", __func__, dentry);
 
@@ -223,14 +224,12 @@ affs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 		}
 		affs_brelse(bh);
 		inode = affs_iget(sb, ino);
-		if (IS_ERR(inode)) {
-			affs_unlock_dir(dir);
-			return ERR_CAST(inode);
-		}
 	}
-	d_add(dentry, inode);
+	res = d_splice_alias(inode, dentry);
+	if (!IS_ERR_OR_NULL(res))
+		res->d_fsdata = dentry->d_fsdata;
 	affs_unlock_dir(dir);
-	return NULL;
+	return res;
 }
 
 int
@@ -461,8 +460,10 @@ affs_xrename(struct inode *old_dir, struct dentry *old_dentry,
 		return -EIO;
 
 	bh_new = affs_bread(sb, d_inode(new_dentry)->i_ino);
-	if (!bh_new)
+	if (!bh_new) {
+		affs_brelse(bh_old);
 		return -EIO;
+	}
 
 	/* Remove old header from its parent directory. */
 	affs_lock_dir(old_dir);

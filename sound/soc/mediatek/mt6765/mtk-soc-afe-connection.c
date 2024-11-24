@@ -1,20 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- *
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- * You should have received a copy of the GNU General Public License
- * along with this program
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
+
 /*****************************************************************************
  *
  * Filename:
@@ -860,9 +849,9 @@ static const struct connection_link_t mConnectionLink[] = {
 
 static const int CONNECTION_LINK_NUM = ARRAY_SIZE(mConnectionLink);
 
-static bool CheckBitsandReg(short regaddr, char bits)
+static bool CheckBitsandReg(unsigned int regaddr, char bits)
 {
-	if (regaddr <= 0 || bits < 0) {
+	if (regaddr == 0 || bits < 0) {
 		pr_debug("regaddr = %x bits = %d\n", regaddr, bits);
 		return false;
 	}
@@ -889,10 +878,10 @@ bool SetConnectionState(unsigned int ConnectionState, unsigned int Input,
 			unsigned int Output)
 {
 	/*
-	 * printk("SetinputConnection ConnectionState = %d
+	 * pr_debug("SetinputConnection ConnectionState = %d
 	 * Input = %d Output = %d\n", ConnectionState, Input, Output);
 	 */
-	int connectReg = 0;
+	unsigned int connectReg = 0;
 	int set_bit = 0;
 
 	connectReg = (Input < Soc_Aud_InterConnectionInput_I32
@@ -904,7 +893,7 @@ bool SetConnectionState(unsigned int ConnectionState, unsigned int Input,
 
 	switch (ConnectionState) {
 	case Soc_Aud_InterCon_DisConnect: {
-		/* printk("nConnectionState = %d\n", ConnectionState); */
+		/* pr_debug("nConnectionState = %d\n", ConnectionState); */
 		if ((mConnectionState[Input][Output] &
 		     Soc_Aud_InterCon_Connection) ==
 		    Soc_Aud_InterCon_Connection) {
@@ -930,7 +919,7 @@ bool SetConnectionState(unsigned int ConnectionState, unsigned int Input,
 		break;
 	}
 	case Soc_Aud_InterCon_Connection: {
-		/* printk("nConnectionState = %d\n", ConnectionState); */
+		/* pr_debug("nConnectionState = %d\n", ConnectionState); */
 		if (CheckBitsandReg(connectReg, set_bit)) {
 			Afe_Set_Reg(connectReg, 1 << set_bit, 1 << set_bit);
 			mConnectionState[Input][Output] |=
@@ -939,7 +928,7 @@ bool SetConnectionState(unsigned int ConnectionState, unsigned int Input,
 		break;
 	}
 	case Soc_Aud_InterCon_ConnectionShift: {
-		/* printk("nConnectionState = %d\n", ConnectionState); */
+		/* pr_debug("nConnectionState = %d\n", ConnectionState); */
 		unsigned int shiftReg = GetConnectionShiftReg(Output);
 		unsigned int shiftOffset = GetConnectionShiftOffset(Output);
 

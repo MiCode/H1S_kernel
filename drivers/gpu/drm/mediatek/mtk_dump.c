@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include "mtk_drm_ddp_comp.h"
 #include "mtk_dump.h"
@@ -18,11 +10,14 @@ static const char * const ddp_comp_str[] = {DECLARE_DDP_COMP(DECLARE_STR)};
 
 const char *mtk_dump_comp_str(struct mtk_ddp_comp *comp)
 {
-	if (comp->id < 0) {
-		DDPPR_ERR("%s: Invalid ddp comp id:%d\n", __func__, comp->id);
-		comp->id = 0;
-	}
-	return ddp_comp_str[comp->id];
+	if (comp) {
+		if (comp->id < 0 || comp->id >= DDP_COMPONENT_ID_MAX) {
+			DDPPR_ERR("%s: Invalid ddp comp id:%d\n", __func__, comp->id);
+			comp->id = 0;
+		}
+		return ddp_comp_str[comp->id];
+	} else
+		return "invalid";
 }
 
 const char *mtk_dump_comp_str_id(unsigned int id)
@@ -182,7 +177,8 @@ void mtk_serial_dump_reg(void __iomem *base, unsigned int offset,
 void mtk_cust_dump_reg(void __iomem *base, int off1, int off2, int off3,
 		       int off4)
 {
-	unsigned int max_size = 84, i = 0, s = 0, l = 0;
+	unsigned int max_size = 84, i = 0;
+	int s = 0, l = 0;
 	int off[] = {off1, off2, off3, off4};
 	char buf[max_size];
 
@@ -191,10 +187,6 @@ void mtk_cust_dump_reg(void __iomem *base, int off1, int off2, int off3,
 			break;
 		s = snprintf(buf + l, max_size, "0x%03x:0x%08x ", off[i],
 			     readl(base + off[i]));
-		if (s < 0) {
-			/* Handle snprintf() error */
-			return;
-		}
 		l += s;
 	}
 

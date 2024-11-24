@@ -17,15 +17,30 @@
 #include <stdlib.h>
 
 #include <sys/wait.h>
-#include <sys/resource.h>
-
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <linux/bpf.h>
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+
 #include "bpf_util.h"
+#include "bpf_rlimit.h"
+
+#ifndef ENOTSUPP
+#define ENOTSUPP 524
+#endif
 
 static int map_flags;
+
+#define CHECK(condition, tag, format...) ({				\
+	int __ret = !!(condition);					\
+	if (__ret) {							\
+		printf("%s(%d):FAIL:%s ", __func__, __LINE__, tag);	\
+		printf(format);						\
+		exit(-1);						\
+	}								\
+})
 
 static void test_hashmap(int task, void *data)
 {
@@ -244,7 +259,7 @@ static void test_hashmap_percpu(int task, void *data)
 
 static void test_hashmap_walk(int task, void *data)
 {
-	int fd, i, max_entries = 100000;
+	int fd, i, max_entries = 1000;
 	long long key, value, next_key;
 	bool next_key_valid = true;
 
@@ -463,15 +478,17 @@ static void test_devmap(int task, void *data)
 #include <linux/err.h>
 #define SOCKMAP_PARSE_PROG "./sockmap_parse_prog.o"
 #define SOCKMAP_VERDICT_PROG "./sockmap_verdict_prog.o"
+#define SOCKMAP_TCP_MSG_PROG "./sockmap_tcp_msg_prog.o"
 static void test_sockmap(int tasks, void *data)
 {
-	int one = 1, map_fd_rx = 0, map_fd_tx = 0, map_fd_break, s, sc, rc;
-	struct bpf_map *bpf_map_rx, *bpf_map_tx, *bpf_map_break;
+	struct bpf_map *bpf_map_rx, *bpf_map_tx, *bpf_map_msg, *bpf_map_break;
+	int map_fd_msg = 0, map_fd_rx = 0, map_fd_tx = 0, map_fd_break;
 	int ports[] = {50200, 50201, 50202, 50204};
 	int err, i, fd, udp, sfd[6] = {0xdeadbeef};
 	u8 buf[20] = {0x0, 0x5, 0x3, 0x2, 0x1, 0x0};
-	int parse_prog, verdict_prog;
+	int parse_prog, verdict_prog, msg_prog;
 	struct sockaddr_in addr;
+	int one = 1, s, sc, rc;
 	struct bpf_object *obj;
 	struct timeval to;
 	__u32 key, value;
@@ -563,7 +580,11 @@ static void test_sockmap(int tasks, void *data)
 	/* Test update without programs */
 	for (i = 0; i < 6; i++) {
 		err = bpf_map_update_elem(fd, &i, &sfd[i], BPF_ANY);
-		if (err) {
+		if (i < 2 && !err) {
+			printf("Allowed update sockmap '%i:%i' not in ESTABLISHED\n",
+			       i, sfd[i]);
+			goto out_sockmap;
+		} else if (i >= 2 && err) {
 			printf("Failed noprog update sockmap '%i:%i'\n",
 			       i, sfd[i]);
 			goto out_sockmap;
@@ -580,6 +601,12 @@ static void test_sockmap(int tasks, void *data)
 	err = bpf_prog_attach(-1, fd, BPF_SK_SKB_STREAM_VERDICT, 0);
 	if (!err) {
 		printf("Failed invalid verdict prog attach\n");
+		goto out_sockmap;
+	}
+
+	err = bpf_prog_attach(-1, fd, BPF_SK_MSG_VERDICT, 0);
+	if (!err) {
+		printf("Failed invalid msg verdict prog attach\n");
 		goto out_sockmap;
 	}
 
@@ -601,6 +628,12 @@ static void test_sockmap(int tasks, void *data)
 		goto out_sockmap;
 	}
 
+	err = bpf_prog_detach(fd, BPF_SK_MSG_VERDICT);
+	if (err) {
+		printf("Failed empty msg verdict prog detach\n");
+		goto out_sockmap;
+	}
+
 	err = bpf_prog_detach(fd, __MAX_BPF_ATTACH_TYPE);
 	if (!err) {
 		printf("Detach invalid prog successful\n");
@@ -612,6 +645,13 @@ static void test_sockmap(int tasks, void *data)
 			    BPF_PROG_TYPE_SK_SKB, &obj, &parse_prog);
 	if (err) {
 		printf("Failed to load SK_SKB parse prog\n");
+		goto out_sockmap;
+	}
+
+	err = bpf_prog_load(SOCKMAP_TCP_MSG_PROG,
+			    BPF_PROG_TYPE_SK_MSG, &obj, &msg_prog);
+	if (err) {
+		printf("Failed to load SK_SKB msg prog\n");
 		goto out_sockmap;
 	}
 
@@ -630,7 +670,7 @@ static void test_sockmap(int tasks, void *data)
 
 	map_fd_rx = bpf_map__fd(bpf_map_rx);
 	if (map_fd_rx < 0) {
-		printf("Failed to get map fd\n");
+		printf("Failed to get map rx fd\n");
 		goto out_sockmap;
 	}
 
@@ -643,6 +683,18 @@ static void test_sockmap(int tasks, void *data)
 	map_fd_tx = bpf_map__fd(bpf_map_tx);
 	if (map_fd_tx < 0) {
 		printf("Failed to get map tx fd\n");
+		goto out_sockmap;
+	}
+
+	bpf_map_msg = bpf_object__find_map_by_name(obj, "sock_map_msg");
+	if (IS_ERR(bpf_map_msg)) {
+		printf("Failed to load map msg from msg_verdict prog\n");
+		goto out_sockmap;
+	}
+
+	map_fd_msg = bpf_map__fd(bpf_map_msg);
+	if (map_fd_msg < 0) {
+		printf("Failed to get map msg fd\n");
 		goto out_sockmap;
 	}
 
@@ -679,6 +731,12 @@ static void test_sockmap(int tasks, void *data)
 		goto out_sockmap;
 	}
 
+	err = bpf_prog_attach(msg_prog, map_fd_msg, BPF_SK_MSG_VERDICT, 0);
+	if (err) {
+		printf("Failed msg verdict bpf prog attach\n");
+		goto out_sockmap;
+	}
+
 	err = bpf_prog_attach(verdict_prog, map_fd_rx,
 			      __MAX_BPF_ATTACH_TYPE, 0);
 	if (!err) {
@@ -687,7 +745,7 @@ static void test_sockmap(int tasks, void *data)
 	}
 
 	/* Test map update elem afterwards fd lives in fd and map_fd */
-	for (i = 0; i < 6; i++) {
+	for (i = 2; i < 6; i++) {
 		err = bpf_map_update_elem(map_fd_rx, &i, &sfd[i], BPF_ANY);
 		if (err) {
 			printf("Failed map_fd_rx update sockmap %i '%i:%i'\n",
@@ -718,6 +776,14 @@ static void test_sockmap(int tasks, void *data)
 		}
 	}
 
+	/* Put sfd[2] (sending fd below) into msg map to test sendmsg bpf */
+	i = 0;
+	err = bpf_map_update_elem(map_fd_msg, &i, &sfd[2], BPF_ANY);
+	if (err) {
+		printf("Failed map_fd_msg update sockmap %i\n", err);
+		goto out_sockmap;
+	}
+
 	/* Test map send/recv */
 	for (i = 0; i < 2; i++) {
 		buf[0] = i;
@@ -730,7 +796,7 @@ static void test_sockmap(int tasks, void *data)
 
 		FD_ZERO(&w);
 		FD_SET(sfd[3], &w);
-		to.tv_sec = 1;
+		to.tv_sec = 30;
 		to.tv_usec = 0;
 		s = select(sfd[3] + 1, &w, NULL, NULL, &to);
 		if (s == -1) {
@@ -783,7 +849,7 @@ static void test_sockmap(int tasks, void *data)
 	}
 
 	/* Delete the elems without programs */
-	for (i = 0; i < 6; i++) {
+	for (i = 2; i < 6; i++) {
 		err = bpf_map_delete_elem(fd, &i);
 		if (err) {
 			printf("Failed delete sockmap %i '%i:%i'\n",
@@ -941,11 +1007,17 @@ static void test_map_large(void)
 	close(fd);
 }
 
-static void run_parallel(int tasks, void (*fn)(int task, void *data),
-			 void *data)
+#define run_parallel(N, FN, DATA) \
+	printf("Fork %d tasks to '" #FN "'\n", N); \
+	__run_parallel(N, FN, DATA)
+
+static void __run_parallel(int tasks, void (*fn)(int task, void *data),
+			   void *data)
 {
 	pid_t pid[tasks];
 	int i;
+
+	fflush(stdout);
 
 	for (i = 0; i < tasks; i++) {
 		pid[i] = fork();
@@ -982,7 +1054,7 @@ static void test_map_stress(void)
 #define DO_UPDATE 1
 #define DO_DELETE 0
 
-static void do_work(int fn, void *data)
+static void test_update_delete(int fn, void *data)
 {
 	int do_update = ((int *)data)[1];
 	int fd = ((int *)data)[0];
@@ -1022,7 +1094,7 @@ static void test_map_parallel(void)
 	 */
 	data[0] = fd;
 	data[1] = DO_UPDATE;
-	run_parallel(TASKS, do_work, data);
+	run_parallel(TASKS, test_update_delete, data);
 
 	/* Check that key=0 is already there. */
 	assert(bpf_map_update_elem(fd, &key, &value, BPF_NOEXIST) == -1 &&
@@ -1045,12 +1117,301 @@ static void test_map_parallel(void)
 
 	/* Now let's delete all elemenets in parallel. */
 	data[1] = DO_DELETE;
-	run_parallel(TASKS, do_work, data);
+	run_parallel(TASKS, test_update_delete, data);
 
 	/* Nothing should be left. */
 	key = -1;
 	assert(bpf_map_get_next_key(fd, NULL, &key) == -1 && errno == ENOENT);
 	assert(bpf_map_get_next_key(fd, &key, &key) == -1 && errno == ENOENT);
+}
+
+static void test_map_rdonly(void)
+{
+	int fd, key = 0, value = 0;
+
+	fd = bpf_create_map(BPF_MAP_TYPE_HASH, sizeof(key), sizeof(value),
+			    MAP_SIZE, map_flags | BPF_F_RDONLY);
+	if (fd < 0) {
+		printf("Failed to create map for read only test '%s'!\n",
+		       strerror(errno));
+		exit(1);
+	}
+
+	key = 1;
+	value = 1234;
+	/* Insert key=1 element. */
+	assert(bpf_map_update_elem(fd, &key, &value, BPF_ANY) == -1 &&
+	       errno == EPERM);
+
+	/* Check that key=2 is not found. */
+	assert(bpf_map_lookup_elem(fd, &key, &value) == -1 && errno == ENOENT);
+	assert(bpf_map_get_next_key(fd, &key, &value) == -1 && errno == ENOENT);
+}
+
+static void test_map_wronly(void)
+{
+	int fd, key = 0, value = 0;
+
+	fd = bpf_create_map(BPF_MAP_TYPE_HASH, sizeof(key), sizeof(value),
+			    MAP_SIZE, map_flags | BPF_F_WRONLY);
+	if (fd < 0) {
+		printf("Failed to create map for read only test '%s'!\n",
+		       strerror(errno));
+		exit(1);
+	}
+
+	key = 1;
+	value = 1234;
+	/* Insert key=1 element. */
+	assert(bpf_map_update_elem(fd, &key, &value, BPF_ANY) == 0);
+
+	/* Check that key=2 is not found. */
+	assert(bpf_map_lookup_elem(fd, &key, &value) == -1 && errno == EPERM);
+	assert(bpf_map_get_next_key(fd, &key, &value) == -1 && errno == EPERM);
+}
+
+static void prepare_reuseport_grp(int type, int map_fd,
+				  __s64 *fds64, __u64 *sk_cookies,
+				  unsigned int n)
+{
+	socklen_t optlen, addrlen;
+	struct sockaddr_in6 s6;
+	const __u32 index0 = 0;
+	const int optval = 1;
+	unsigned int i;
+	u64 sk_cookie;
+	__s64 fd64;
+	int err;
+
+	s6.sin6_family = AF_INET6;
+	s6.sin6_addr = in6addr_any;
+	s6.sin6_port = 0;
+	addrlen = sizeof(s6);
+	optlen = sizeof(sk_cookie);
+
+	for (i = 0; i < n; i++) {
+		fd64 = socket(AF_INET6, type, 0);
+		CHECK(fd64 == -1, "socket()",
+		      "sock_type:%d fd64:%lld errno:%d\n",
+		      type, fd64, errno);
+
+		err = setsockopt(fd64, SOL_SOCKET, SO_REUSEPORT,
+				 &optval, sizeof(optval));
+		CHECK(err == -1, "setsockopt(SO_REUSEPORT)",
+		      "err:%d errno:%d\n", err, errno);
+
+		/* reuseport_array does not allow unbound sk */
+		err = bpf_map_update_elem(map_fd, &index0, &fd64,
+					  BPF_ANY);
+		CHECK(err != -1 || errno != EINVAL,
+		      "reuseport array update unbound sk",
+		      "sock_type:%d err:%d errno:%d\n",
+		      type, err, errno);
+
+		err = bind(fd64, (struct sockaddr *)&s6, sizeof(s6));
+		CHECK(err == -1, "bind()",
+		      "sock_type:%d err:%d errno:%d\n", type, err, errno);
+
+		if (i == 0) {
+			err = getsockname(fd64, (struct sockaddr *)&s6,
+					  &addrlen);
+			CHECK(err == -1, "getsockname()",
+			      "sock_type:%d err:%d errno:%d\n",
+			      type, err, errno);
+		}
+
+		err = getsockopt(fd64, SOL_SOCKET, SO_COOKIE, &sk_cookie,
+				 &optlen);
+		CHECK(err == -1, "getsockopt(SO_COOKIE)",
+		      "sock_type:%d err:%d errno:%d\n", type, err, errno);
+
+		if (type == SOCK_STREAM) {
+			/*
+			 * reuseport_array does not allow
+			 * non-listening tcp sk.
+			 */
+			err = bpf_map_update_elem(map_fd, &index0, &fd64,
+						  BPF_ANY);
+			CHECK(err != -1 || errno != EINVAL,
+			      "reuseport array update non-listening sk",
+			      "sock_type:%d err:%d errno:%d\n",
+			      type, err, errno);
+			err = listen(fd64, 0);
+			CHECK(err == -1, "listen()",
+			      "sock_type:%d, err:%d errno:%d\n",
+			      type, err, errno);
+		}
+
+		fds64[i] = fd64;
+		sk_cookies[i] = sk_cookie;
+	}
+}
+
+static void test_reuseport_array(void)
+{
+#define REUSEPORT_FD_IDX(err, last) ({ (err) ? last : !last; })
+
+	const __u32 array_size = 4, index0 = 0, index3 = 3;
+	int types[2] = { SOCK_STREAM, SOCK_DGRAM }, type;
+	__u64 grpa_cookies[2], sk_cookie, map_cookie;
+	__s64 grpa_fds64[2] = { -1, -1 }, fd64 = -1;
+	const __u32 bad_index = array_size;
+	int map_fd, err, t, f;
+	__u32 fds_idx = 0;
+	int fd;
+
+	map_fd = bpf_create_map(BPF_MAP_TYPE_REUSEPORT_SOCKARRAY,
+				sizeof(__u32), sizeof(__u64), array_size, 0);
+	CHECK(map_fd == -1, "reuseport array create",
+	      "map_fd:%d, errno:%d\n", map_fd, errno);
+
+	/* Test lookup/update/delete with invalid index */
+	err = bpf_map_delete_elem(map_fd, &bad_index);
+	CHECK(err != -1 || errno != E2BIG, "reuseport array del >=max_entries",
+	      "err:%d errno:%d\n", err, errno);
+
+	err = bpf_map_update_elem(map_fd, &bad_index, &fd64, BPF_ANY);
+	CHECK(err != -1 || errno != E2BIG,
+	      "reuseport array update >=max_entries",
+	      "err:%d errno:%d\n", err, errno);
+
+	err = bpf_map_lookup_elem(map_fd, &bad_index, &map_cookie);
+	CHECK(err != -1 || errno != ENOENT,
+	      "reuseport array update >=max_entries",
+	      "err:%d errno:%d\n", err, errno);
+
+	/* Test lookup/delete non existence elem */
+	err = bpf_map_lookup_elem(map_fd, &index3, &map_cookie);
+	CHECK(err != -1 || errno != ENOENT,
+	      "reuseport array lookup not-exist elem",
+	      "err:%d errno:%d\n", err, errno);
+	err = bpf_map_delete_elem(map_fd, &index3);
+	CHECK(err != -1 || errno != ENOENT,
+	      "reuseport array del not-exist elem",
+	      "err:%d errno:%d\n", err, errno);
+
+	for (t = 0; t < ARRAY_SIZE(types); t++) {
+		type = types[t];
+
+		prepare_reuseport_grp(type, map_fd, grpa_fds64,
+				      grpa_cookies, ARRAY_SIZE(grpa_fds64));
+
+		/* Test BPF_* update flags */
+		/* BPF_EXIST failure case */
+		err = bpf_map_update_elem(map_fd, &index3, &grpa_fds64[fds_idx],
+					  BPF_EXIST);
+		CHECK(err != -1 || errno != ENOENT,
+		      "reuseport array update empty elem BPF_EXIST",
+		      "sock_type:%d err:%d errno:%d\n",
+		      type, err, errno);
+		fds_idx = REUSEPORT_FD_IDX(err, fds_idx);
+
+		/* BPF_NOEXIST success case */
+		err = bpf_map_update_elem(map_fd, &index3, &grpa_fds64[fds_idx],
+					  BPF_NOEXIST);
+		CHECK(err == -1,
+		      "reuseport array update empty elem BPF_NOEXIST",
+		      "sock_type:%d err:%d errno:%d\n",
+		      type, err, errno);
+		fds_idx = REUSEPORT_FD_IDX(err, fds_idx);
+
+		/* BPF_EXIST success case. */
+		err = bpf_map_update_elem(map_fd, &index3, &grpa_fds64[fds_idx],
+					  BPF_EXIST);
+		CHECK(err == -1,
+		      "reuseport array update same elem BPF_EXIST",
+		      "sock_type:%d err:%d errno:%d\n", type, err, errno);
+		fds_idx = REUSEPORT_FD_IDX(err, fds_idx);
+
+		/* BPF_NOEXIST failure case */
+		err = bpf_map_update_elem(map_fd, &index3, &grpa_fds64[fds_idx],
+					  BPF_NOEXIST);
+		CHECK(err != -1 || errno != EEXIST,
+		      "reuseport array update non-empty elem BPF_NOEXIST",
+		      "sock_type:%d err:%d errno:%d\n",
+		      type, err, errno);
+		fds_idx = REUSEPORT_FD_IDX(err, fds_idx);
+
+		/* BPF_ANY case (always succeed) */
+		err = bpf_map_update_elem(map_fd, &index3, &grpa_fds64[fds_idx],
+					  BPF_ANY);
+		CHECK(err == -1,
+		      "reuseport array update same sk with BPF_ANY",
+		      "sock_type:%d err:%d errno:%d\n", type, err, errno);
+
+		fd64 = grpa_fds64[fds_idx];
+		sk_cookie = grpa_cookies[fds_idx];
+
+		/* The same sk cannot be added to reuseport_array twice */
+		err = bpf_map_update_elem(map_fd, &index3, &fd64, BPF_ANY);
+		CHECK(err != -1 || errno != EBUSY,
+		      "reuseport array update same sk with same index",
+		      "sock_type:%d err:%d errno:%d\n",
+		      type, err, errno);
+
+		err = bpf_map_update_elem(map_fd, &index0, &fd64, BPF_ANY);
+		CHECK(err != -1 || errno != EBUSY,
+		      "reuseport array update same sk with different index",
+		      "sock_type:%d err:%d errno:%d\n",
+		      type, err, errno);
+
+		/* Test delete elem */
+		err = bpf_map_delete_elem(map_fd, &index3);
+		CHECK(err == -1, "reuseport array delete sk",
+		      "sock_type:%d err:%d errno:%d\n",
+		      type, err, errno);
+
+		/* Add it back with BPF_NOEXIST */
+		err = bpf_map_update_elem(map_fd, &index3, &fd64, BPF_NOEXIST);
+		CHECK(err == -1,
+		      "reuseport array re-add with BPF_NOEXIST after del",
+		      "sock_type:%d err:%d errno:%d\n", type, err, errno);
+
+		/* Test cookie */
+		err = bpf_map_lookup_elem(map_fd, &index3, &map_cookie);
+		CHECK(err == -1 || sk_cookie != map_cookie,
+		      "reuseport array lookup re-added sk",
+		      "sock_type:%d err:%d errno:%d sk_cookie:0x%llx map_cookie:0x%llxn",
+		      type, err, errno, sk_cookie, map_cookie);
+
+		/* Test elem removed by close() */
+		for (f = 0; f < ARRAY_SIZE(grpa_fds64); f++)
+			close(grpa_fds64[f]);
+		err = bpf_map_lookup_elem(map_fd, &index3, &map_cookie);
+		CHECK(err != -1 || errno != ENOENT,
+		      "reuseport array lookup after close()",
+		      "sock_type:%d err:%d errno:%d\n",
+		      type, err, errno);
+	}
+
+	/* Test SOCK_RAW */
+	fd64 = socket(AF_INET6, SOCK_RAW, IPPROTO_UDP);
+	CHECK(fd64 == -1, "socket(SOCK_RAW)", "err:%d errno:%d\n",
+	      err, errno);
+	err = bpf_map_update_elem(map_fd, &index3, &fd64, BPF_NOEXIST);
+	CHECK(err != -1 || errno != ENOTSUPP, "reuseport array update SOCK_RAW",
+	      "err:%d errno:%d\n", err, errno);
+	close(fd64);
+
+	/* Close the 64 bit value map */
+	close(map_fd);
+
+	/* Test 32 bit fd */
+	map_fd = bpf_create_map(BPF_MAP_TYPE_REUSEPORT_SOCKARRAY,
+				sizeof(__u32), sizeof(__u32), array_size, 0);
+	CHECK(map_fd == -1, "reuseport array create",
+	      "map_fd:%d, errno:%d\n", map_fd, errno);
+	prepare_reuseport_grp(SOCK_STREAM, map_fd, &fd64, &sk_cookie, 1);
+	fd = fd64;
+	err = bpf_map_update_elem(map_fd, &index3, &fd, BPF_NOEXIST);
+	CHECK(err == -1, "reuseport array update 32 bit fd",
+	      "err:%d errno:%d\n", err, errno);
+	err = bpf_map_lookup_elem(map_fd, &index3, &map_cookie);
+	CHECK(err != -1 || errno != ENOSPC,
+	      "reuseport array lookup 32 bit fd",
+	      "err:%d errno:%d\n", err, errno);
+	close(fd);
+	close(map_fd);
 }
 
 static void run_all_tests(void)
@@ -1070,14 +1431,15 @@ static void run_all_tests(void)
 	test_map_large();
 	test_map_parallel();
 	test_map_stress();
+
+	test_map_rdonly();
+	test_map_wronly();
+
+	test_reuseport_array();
 }
 
 int main(void)
 {
-	struct rlimit rinf = { RLIM_INFINITY, RLIM_INFINITY };
-
-	setrlimit(RLIMIT_MEMLOCK, &rinf);
-
 	map_flags = 0;
 	run_all_tests();
 

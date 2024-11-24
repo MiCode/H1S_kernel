@@ -77,7 +77,7 @@ u32 spi_speed = 1 * 1000000;
 static struct proc_dir_entry *proc_entry;
 int mtkfb_prim_panel_unblank(int timeout);
 static int cluster_num;
-static struct ppm_limit_data *freq_to_set;
+static struct cpu_ctrl_data *freq_to_set;
 static atomic_t boosted = ATOMIC_INIT(0);
 static struct timer_list release_timer;
 static struct work_struct fp_display_work;
@@ -96,8 +96,9 @@ struct fpc_data {
 	int irq_gpio;
 	int rst_gpio;
 	bool wakeup_enabled;
-	struct wakeup_source ttw_wl;
+	struct wakeup_source *ttw_wl;
 	bool clocks_enabled;
+	struct mutex lock;
 };
 //struct regulator *reg;
 static DEFINE_MUTEX(spidev_set_gpio_mutex);
@@ -301,7 +302,7 @@ static void freq_release(struct work_struct *work)
 	}
 }
 
-static void freq_release_timer(unsigned long arg)
+static void freq_release_timer(struct timer_list *t)
 {
 	pr_info(" entry %s line %d \n", __func__, __LINE__);
 	schedule_work(&fp_freq_work);
@@ -368,9 +369,11 @@ static irqreturn_t fpc_irq_handler(int irq, void *handle)
 	/* Make sure 'wakeup_enabled' is updated before using it
 	** since this is interrupt context (other thread...) */
 	smp_rmb();
+	mutex_lock(&fpc->lock);
 	if (fpc->wakeup_enabled) {
-		__pm_wakeup_event(&fpc->ttw_wl, FPC_TTW_HOLD_TIME);
+		__pm_wakeup_event(fpc->ttw_wl, FPC_TTW_HOLD_TIME);
 	}
+	mutex_unlock(&fpc->lock);
 
 	sysfs_notify(&fpc->dev->kobj, NULL, dev_attr_irq.attr.name);
 
@@ -549,11 +552,11 @@ static int mtk6765_probe(struct spi_device *spidev)
 		goto exit;
 	}
 
-	cluster_num = arch_get_nr_clusters();
+	cluster_num = 4;
 	dev_err(dev, "cluster_num = %d \n", cluster_num);
 
 	freq_to_set =
-	    kcalloc(cluster_num, sizeof(struct ppm_limit_data), GFP_KERNEL);
+	    kcalloc(cluster_num, sizeof(struct cpu_ctrl_data), GFP_KERNEL);
 
 	if (!freq_to_set) {
 		dev_err(dev, "kcalloc freq_to_set fail\n");
@@ -563,9 +566,7 @@ static int mtk6765_probe(struct spi_device *spidev)
 	INIT_WORK(&fp_freq_work, freq_release);
 	INIT_WORK(&fp_display_work, unblank_work);
 
-	init_timer(&release_timer);
-	release_timer.function = freq_release_timer;
-	release_timer.data = 0UL;
+	timer_setup(&release_timer, freq_release_timer, 0);
 
 	fpc->dev = dev;
 	dev_set_drvdata(dev, fpc);
@@ -656,7 +657,7 @@ static int mtk6765_probe(struct spi_device *spidev)
 
 	/* Request that the interrupt should be wakeable */
 	enable_irq_wake(irq_num);
-	wakeup_source_init(&fpc->ttw_wl, "fpc_ttw_wl");
+	fpc->ttw_wl = wakeup_source_register(dev, "fpc_ttw_wl");
 
 	rc = sysfs_create_group(&dev->kobj, &fpc_attribute_group);
 	if (rc) {
@@ -676,7 +677,7 @@ static int mtk6765_probe(struct spi_device *spidev)
 
 	dev_info(dev, "%s: ok\n", __func__);
 exit:
-	set_clks(fpc,false );
+	set_clks(fpc, false);
 	return rc;
 }
 
@@ -685,7 +686,7 @@ static int mtk6765_remove(struct spi_device *spidev)
 	struct  fpc_data *fpc = dev_get_drvdata(&spidev->dev);
 
 	sysfs_remove_group(&spidev->dev.kobj, &fpc_attribute_group);
-	wakeup_source_trash(&fpc->ttw_wl);
+	wakeup_source_unregister(fpc->ttw_wl);
 	remove_proc_entry(PROC_NAME,NULL);
 	dev_info(&spidev->dev, "%s\n", __func__);
 

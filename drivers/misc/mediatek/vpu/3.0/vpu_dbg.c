@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/vmalloc.h>
@@ -18,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/debugfs.h>
+#include <linux/proc_fs.h>
 #include <linux/delay.h>
 #include <linux/kthread.h>
 #include <linux/uaccess.h>
@@ -115,7 +109,7 @@ static const struct file_operations vpu_debug_ ## name ## _fops = { \
 	.open = vpu_debug_ ## name ## _open, \
 	.read = seq_read, \
 	.llseek = seq_lseek, \
-	.release = single_release, \
+	.release = seq_release, \
 }
 
 #define IMPLEMENT_VPU_DEBUGFS_RW(name)	\
@@ -125,7 +119,7 @@ static const struct file_operations vpu_debug_ ## name ## _fops = { \
 	.read = seq_read, \
 	.write = vpu_debug_ ## name ## _write, \
 	.llseek = seq_lseek, \
-	.release = single_release, \
+	.release = seq_release, \
 }
 
 IMPLEMENT_VPU_DEBUGFS(register);
@@ -192,8 +186,6 @@ static ssize_t vpu_debug_power_write(struct file *flip,
 		param = VPU_EARA_CTL;
 	else if (strcmp(token, "ct") == 0)
 		param = VPU_CT_INFO;
-	else if (strcmp(token, "disable_power_off") == 0)
-		param = VPU_POWER_PARAM_DISABLE_OFF;
 	else {
 		ret = -EINVAL;
 		LOG_ERR("no power param[%s]!\n", token);
@@ -278,6 +270,18 @@ int vpu_init_debug(struct vpu_device *vpu_dev)
 {
 	int ret;
 	struct dentry *debug_file;
+	struct proc_dir_entry *proc_root;
+
+	proc_root = proc_mkdir("vpu", NULL);
+
+	if (IS_ERR_OR_NULL(proc_root)) {
+		ret = PTR_ERR(proc_root);
+		pr_info("%s: failed to create procfs node: %d\n",
+			__func__, ret);
+		goto out;
+	}
+
+	vpu_dev->proc_root = proc_root;
 
 	vpu_dev->debug_root = debugfs_create_dir("vpu", NULL);
 
@@ -285,6 +289,19 @@ int vpu_init_debug(struct vpu_device *vpu_dev)
 	if (ret) {
 		LOG_ERR("failed to create debug dir.\n");
 		goto out;
+	}
+
+#define CREATE_VPU_PROCFS(name) \
+	{ \
+		proc_root = proc_create_data(#name, 0444, \
+			vpu_dev->proc_root, \
+			&vpu_debug_ ## name ## _fops, NULL); \
+		if (IS_ERR_OR_NULL(proc_root)) { \
+			ret = PTR_ERR(proc_root); \
+			pr_info("%s: " #name "): %d\n", \
+				__func__, ret); \
+			goto out; \
+		} \
 	}
 
 #define CREATE_VPU_DEBUGFS(name)                         \
@@ -302,15 +319,16 @@ int vpu_init_debug(struct vpu_device *vpu_dev)
 	CREATE_VPU_DEBUGFS(register);
 	CREATE_VPU_DEBUGFS(user);
 	CREATE_VPU_DEBUGFS(image_file);
-	CREATE_VPU_DEBUGFS(mesg);
+	CREATE_VPU_PROCFS(mesg);
 	CREATE_VPU_DEBUGFS(vpu);
 	CREATE_VPU_DEBUGFS(opp_table);
 	CREATE_VPU_DEBUGFS(power);
-	CREATE_VPU_DEBUGFS(device_dbg);
+	CREATE_VPU_PROCFS(device_dbg);
 	CREATE_VPU_DEBUGFS(user_algo);
-	CREATE_VPU_DEBUGFS(vpu_memory);
+	CREATE_VPU_PROCFS(vpu_memory);
 
 #undef CREATE_VPU_DEBUGFS
+#undef CREATE_VPU_PROCFS
 
 out:
 	return ret;

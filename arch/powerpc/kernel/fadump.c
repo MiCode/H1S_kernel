@@ -34,6 +34,7 @@
 #include <linux/crash_dump.h>
 #include <linux/kobject.h>
 #include <linux/sysfs.h>
+#include <linux/slab.h>
 
 #include <asm/debugfs.h>
 #include <asm/page.h>
@@ -343,6 +344,26 @@ static unsigned long get_fadump_area_size(void)
 	return size;
 }
 
+static void __init fadump_reserve_crash_area(unsigned long base,
+					     unsigned long size)
+{
+	struct memblock_region *reg;
+	unsigned long mstart, mend, msize;
+
+	for_each_memblock(memory, reg) {
+		mstart = max_t(unsigned long, base, reg->base);
+		mend = reg->base + reg->size;
+		mend = min(base + size, mend);
+
+		if (mstart < mend) {
+			msize = mend - mstart;
+			memblock_reserve(mstart, msize);
+			pr_info("Reserved %ldMB of memory at %#016lx for saving crash dump\n",
+				(msize >> 20), mstart);
+		}
+	}
+}
+
 int __init fadump_reserve_mem(void)
 {
 	unsigned long base, size, memory_boundary;
@@ -388,7 +409,16 @@ int __init fadump_reserve_mem(void)
 		memory_boundary = memblock_end_of_DRAM();
 
 	if (fw_dump.dump_active) {
-		printk(KERN_INFO "Firmware-assisted dump is active.\n");
+		pr_info("Firmware-assisted dump is active.\n");
+
+#ifdef CONFIG_HUGETLB_PAGE
+		/*
+		 * FADump capture kernel doesn't care much about hugepages.
+		 * In fact, handling hugepages in capture kernel is asking for
+		 * trouble. So, disable HugeTLB support when fadump is active.
+		 */
+		hugetlb_disabled = true;
+#endif
 		/*
 		 * If last boot has crashed then reserve all the memory
 		 * above boot_memory_size so that we don't touch it until
@@ -397,11 +427,7 @@ int __init fadump_reserve_mem(void)
 		 */
 		base = fw_dump.boot_memory_size;
 		size = memory_boundary - base;
-		memblock_reserve(base, size);
-		printk(KERN_INFO "Reserved %ldMB of memory at %ldMB "
-				"for saving crash dump\n",
-				(unsigned long)(size >> 20),
-				(unsigned long)(base >> 20));
+		fadump_reserve_crash_area(base, size);
 
 		fw_dump.fadumphdr_addr =
 				be64_to_cpu(fdm_active->rmr_region.destination_address) +
@@ -889,22 +915,41 @@ static int allocate_crash_memory_ranges(void)
 static inline int fadump_add_crash_memory(unsigned long long base,
 					  unsigned long long end)
 {
+	u64  start, size;
+	bool is_adjacent = false;
+
 	if (base == end)
 		return 0;
 
-	if (crash_mem_ranges == max_crash_mem_ranges) {
-		int ret;
+	/*
+	 * Fold adjacent memory ranges to bring down the memory ranges/
+	 * PT_LOAD segments count.
+	 */
+	if (crash_mem_ranges) {
+		start = crash_memory_ranges[crash_mem_ranges - 1].base;
+		size = crash_memory_ranges[crash_mem_ranges - 1].size;
 
-		ret = allocate_crash_memory_ranges();
-		if (ret)
-			return ret;
+		if ((start + size) == base)
+			is_adjacent = true;
+	}
+	if (!is_adjacent) {
+		/* resize the array on reaching the limit */
+		if (crash_mem_ranges == max_crash_mem_ranges) {
+			int ret;
+
+			ret = allocate_crash_memory_ranges();
+			if (ret)
+				return ret;
+		}
+
+		start = base;
+		crash_memory_ranges[crash_mem_ranges].base = start;
+		crash_mem_ranges++;
 	}
 
+	crash_memory_ranges[crash_mem_ranges - 1].size = (end - start);
 	pr_debug("crash_memory_range[%d] [%#016llx-%#016llx], %#llx bytes\n",
-		crash_mem_ranges, base, end - 1, (end - base));
-	crash_memory_ranges[crash_mem_ranges].base = base;
-	crash_memory_ranges[crash_mem_ranges].size = end - base;
-	crash_mem_ranges++;
+		(crash_mem_ranges - 1), start, end - 1, (end - start));
 	return 0;
 }
 
@@ -980,6 +1025,7 @@ static int fadump_setup_crash_memory_ranges(void)
 
 	pr_debug("Setup crash memory ranges.\n");
 	crash_mem_ranges = 0;
+
 	/*
 	 * add the first memory chunk (RMA_START through boot_memory_size) as
 	 * a separate memory chunk. The reason is, at the time crash firmware
@@ -1342,10 +1388,15 @@ static ssize_t fadump_release_memory_store(struct kobject *kobj,
 					struct kobj_attribute *attr,
 					const char *buf, size_t count)
 {
+	int input = -1;
+
 	if (!fw_dump.dump_active)
 		return -EPERM;
 
-	if (buf[0] == '1') {
+	if (kstrtoint(buf, 0, &input))
+		return -EINVAL;
+
+	if (input == 1) {
 		/*
 		 * Take away the '/proc/vmcore'. We are releasing the dump
 		 * memory, hence it will not be valid anymore.
@@ -1379,21 +1430,25 @@ static ssize_t fadump_register_store(struct kobject *kobj,
 					const char *buf, size_t count)
 {
 	int ret = 0;
+	int input = -1;
 
 	if (!fw_dump.fadump_enabled || fdm_active)
 		return -EPERM;
 
+	if (kstrtoint(buf, 0, &input))
+		return -EINVAL;
+
 	mutex_lock(&fadump_mutex);
 
-	switch (buf[0]) {
-	case '0':
+	switch (input) {
+	case 0:
 		if (fw_dump.dump_registered == 0) {
 			goto unlock_out;
 		}
 		/* Un-register Firmware-assisted dump */
 		fadump_unregister_dump(&fdm);
 		break;
-	case '1':
+	case 1:
 		if (fw_dump.dump_registered == 1) {
 			ret = -EEXIST;
 			goto unlock_out;

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /*****************************************************************************
@@ -71,7 +63,7 @@ struct imgsensor_struct {
 	kal_int32 dummy_line;	/* current dummline */
 	kal_uint16 current_fps;	/* current max fps */
 	kal_bool autoflicker_en;
-	kal_bool test_pattern;
+	kal_uint32 test_pattern;
 	enum MSDK_SCENARIO_ID_ENUM current_scenario_id;
 	kal_uint8 ihdr_en;
 	kal_uint8 i2c_write_id;

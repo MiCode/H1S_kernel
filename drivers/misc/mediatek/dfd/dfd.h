@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __DFD_H__
@@ -27,8 +19,16 @@ struct dfd_drv {
 	unsigned int cachedump_en;
 	unsigned int mem_reserve;
 	unsigned int l2c_trigger;
+	unsigned int check_dfd_support;
+	unsigned long dfd_infra_base;
+	unsigned int dfd_ap_addr_offset;
 };
 
+extern int mtk_dbgtop_dfd_count_en(int value);
+extern int mtk_dbgtop_dfd_therm1_dis(int value);
+extern int mtk_dbgtop_dfd_therm2_dis(int value);
+extern int mtk_dbgtop_dfd_timeout(int value);
+extern void get_dfd_base(void __iomem *dfd_base, unsigned int latch_offset);
 extern unsigned int check_dfd_support(void);
 extern unsigned int dfd_infra_base(void);
 extern unsigned int dfd_ap_addr_offset(void);

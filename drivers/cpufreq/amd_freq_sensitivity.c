@@ -14,12 +14,14 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/types.h>
+#include <linux/pci.h>
 #include <linux/percpu-defs.h>
 #include <linux/init.h>
 #include <linux/mod_devicetable.h>
 
 #include <asm/msr.h>
 #include <asm/cpufeature.h>
+#include <asm/cpu_device_id.h>
 
 #include "cpufreq_ondemand.h"
 
@@ -109,12 +111,20 @@ out:
 static int __init amd_freq_sensitivity_init(void)
 {
 	u64 val;
+	struct pci_dev *pcidev;
 
 	if (boot_cpu_data.x86_vendor != X86_VENDOR_AMD)
 		return -ENODEV;
 
-	if (!static_cpu_has(X86_FEATURE_PROC_FEEDBACK))
-		return -ENODEV;
+	pcidev = pci_get_device(PCI_VENDOR_ID_AMD,
+			PCI_DEVICE_ID_AMD_KERNCZ_SMBUS, NULL);
+
+	if (!pcidev) {
+		if (!static_cpu_has(X86_FEATURE_PROC_FEEDBACK))
+			return -ENODEV;
+	} else {
+		pci_dev_put(pcidev);
+	}
 
 	if (rdmsrl_safe(MSR_AMD64_FREQ_SENSITIVITY_ACTUAL, &val))
 		return -ENODEV;

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "LCM"
@@ -579,46 +571,6 @@ static void lcm_resume_power(void)
 	MDELAY(20);
 }
 
-#if 0
-static unsigned int lcm_compare_id(void)
-{
-	int   array[4];
-	char  buffer[3];
-	char  id0 = 0;
-	char  id1 = 0;
-	char  id2 = 0;
-
-	SET_RESET_PIN(1);
-	MDELAY(2);
-	SET_RESET_PIN(0);
-	UDELAY(11);
-	SET_RESET_PIN(1);
-	MDELAY(6);
-
-	array[0] = 0x00013700;
-	dsi_set_cmdq(array, 1, 1);
-	read_reg_v2(0xDA, buffer, 1);
-
-	array[0] = 0x00013700;
-	dsi_set_cmdq(array, 1, 1);
-	read_reg_v2(0xDB, buffer + 1, 1);
-
-	array[0] = 0x00013700;
-	dsi_set_cmdq(array, 1, 1);
-	read_reg_v2(0xDC, buffer + 2, 1);
-
-	id0 = buffer[0]; /* should be 0x40 */
-	id1 = buffer[1]; /* should be 0x00 */
-	id2 = buffer[2]; /* should be 0x00 */
-
-	pr_notice("%s, id0 = 0x%08x\n", __func__, id0);
-	pr_notice("%s, id1 = 0x%08x\n", __func__, id1);
-	pr_notice("%s, id2 = 0x%08x\n", __func__, id2);
-
-	return (id0 == 0x40 && id1 == 0x0 && id2 == 0x0) ? 1 : 0;
-}
-#endif
-
 static void lcm_init_lcm(void)
 {
 	push_table(init_setting,
@@ -669,32 +621,6 @@ static void lcm_update(unsigned int x, unsigned int y, unsigned int width,
 	data_array[0] = 0x002c3909;
 	dsi_set_cmdq(data_array, 1, 0);
 }
-
-#if 0
-/* return TRUE: need recovery */
-/* return FALSE: No need recovery */
-static unsigned int lcm_esd_check(void)
-{
-#ifndef BUILD_LK
-	char buffer[3];
-	int array[4];
-
-	array[0] = 0x00013700;
-	dsi_set_cmdq(array, 1, 1);
-
-	read_reg_v2(0x53, buffer, 1);
-
-	if (buffer[0] != 0x24) {
-		LCM_LOGI("[LCM ERROR] [0x53]=0x%02x\n", buffer[0]);
-		return TRUE;
-	}
-	LCM_LOGI("[LCM NORMAL] [0x53]=0x%02x\n", buffer[0]);
-	return FALSE;
-#else
-	return FALSE;
-#endif
-}
-#endif
 
 static unsigned int lcm_ata_check(unsigned char *buffer)
 {

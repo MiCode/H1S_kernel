@@ -82,18 +82,11 @@ ifeq ($(CONFIG_MACH_MT8173),y)
   ccflags-y += -DJPEG_PM_DOMAIN_ENABLE
 endif
 
-ifeq ($(CONFIG_MACH_MT8168),y)
-  ccflags-y += -DJPEG_ENC_DRIVER
-  ccflags-y += -DJPEG_PM_DOMAIN_ENABLE
-ifeq ($(CONFIG_MTK_IN_HOUSE_TEE_SUPPORT),y)
-  ccflags-y += -DCONFIG_MTK_SEC_JPEG_SUPPORT
-endif
-endif
-
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/smi/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/smi/$(MTK_PLATFORM)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/mmdvfs
-
+ccflags-y += -I$(srctree)/drivers/staging/android/mtk_ion
+ccflags-y += -I$(srctree)/drivers/staging/android/mtk_ion/mtk
 #obj-$(CONFIG_MTK_JPEG) += jpeg_driver.o
 obj-y += jpeg_driver.o
 
@@ -104,6 +97,6 @@ ifdef CONFIG_MTK_PSEUDO_M4U
 endif
 
 #jpeg_driver-objs := jpeg_cmdq.o jpeg_drv_enc.o jpeg_drv_dec.o jpeg_drv.o
-jpeg_driver-objs := jpeg_drv_enc.o jpeg_drv_dec.o jpeg_drv.o
+jpeg_driver-objs := jpeg_drv_enc.o jpeg_drv_dec.o jpeg_drv.o jpeg_ion.o
 
 # EOF

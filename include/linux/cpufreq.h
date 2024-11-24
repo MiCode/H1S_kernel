@@ -2,8 +2,8 @@
  * linux/include/linux/cpufreq.h
  *
  * Copyright (C) 2001 Russell King
- * Copyright (C) 2021 XiaoMi, Inc.
  *           (C) 2002 - 2003 Dominik Brodowski <linux@brodo.de>
+ * Copyright (C) 2021 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -426,10 +426,12 @@ static inline void cpufreq_resume(void) {}
 /* Transition notifiers */
 #define CPUFREQ_PRECHANGE		(0)
 #define CPUFREQ_POSTCHANGE		(1)
-#define CPUFREQ_THERMAL        (2)
+
 /* Policy Notifiers  */
 #define CPUFREQ_ADJUST			(0)
 #define CPUFREQ_NOTIFY			(1)
+
+#define CPUFREQ_THERMAL        (2)
 
 #ifdef CONFIG_CPU_FREQ
 int cpufreq_register_notifier(struct notifier_block *nb, unsigned int list);
@@ -564,17 +566,6 @@ struct governor_attr {
 			 size_t count);
 };
 
-static inline bool cpufreq_can_do_remote_dvfs(struct cpufreq_policy *policy)
-{
-	/*
-	 * Allow remote callbacks if:
-	 * - dvfs_possible_from_any_cpu flag is set
-	 * - the local and remote CPUs share cpufreq policy
-	 */
-	return policy->dvfs_possible_from_any_cpu ||
-		cpumask_test_cpu(smp_processor_id(), policy->cpus);
-}
-
 /*********************************************************************
  *                     FREQUENCY TABLE HELPERS                       *
  *********************************************************************/
@@ -622,6 +613,18 @@ static inline void dev_pm_opp_free_cpufreq_table(struct device *dev,
 	for (pos = table; pos->frequency != CPUFREQ_TABLE_END; pos++)
 
 /*
+ * cpufreq_for_each_entry_idx -	iterate over a cpufreq_frequency_table
+ *	with index
+ * @pos:	the cpufreq_frequency_table * to use as a loop cursor.
+ * @table:	the cpufreq_frequency_table * to iterate over.
+ * @idx:	the table entry currently being processed
+ */
+
+#define cpufreq_for_each_entry_idx(pos, table, idx)	\
+	for (pos = table, idx = 0; pos->frequency != CPUFREQ_TABLE_END; \
+		pos++, idx++)
+
+/*
  * cpufreq_for_each_valid_entry -     iterate over a cpufreq_frequency_table
  *	excluding CPUFREQ_ENTRY_INVALID frequencies.
  * @pos:        the cpufreq_frequency_table * to use as a loop cursor.
@@ -633,6 +636,21 @@ static inline void dev_pm_opp_free_cpufreq_table(struct device *dev,
 		if (pos->frequency == CPUFREQ_ENTRY_INVALID)		\
 			continue;					\
 		else
+
+/*
+ * cpufreq_for_each_valid_entry_idx -     iterate with index over a cpufreq
+ *	frequency_table excluding CPUFREQ_ENTRY_INVALID frequencies.
+ * @pos:	the cpufreq_frequency_table * to use as a loop cursor.
+ * @table:	the cpufreq_frequency_table * to iterate over.
+ * @idx:	the table entry currently being processed
+ */
+
+#define cpufreq_for_each_valid_entry_idx(pos, table, idx)		\
+	cpufreq_for_each_entry_idx(pos, table, idx)			\
+		if (pos->frequency == CPUFREQ_ENTRY_INVALID)		\
+			continue;					\
+		else
+
 
 int cpufreq_frequency_table_cpuinfo(struct cpufreq_policy *policy,
 				    struct cpufreq_frequency_table *table);
@@ -660,19 +678,20 @@ static inline int cpufreq_table_find_index_al(struct cpufreq_policy *policy,
 					      unsigned int target_freq)
 {
 	struct cpufreq_frequency_table *table = policy->freq_table;
-	struct cpufreq_frequency_table *pos, *best = table - 1;
+	struct cpufreq_frequency_table *pos;
 	unsigned int freq;
+	int idx, best = -1;
 
-	cpufreq_for_each_valid_entry(pos, table) {
+	cpufreq_for_each_valid_entry_idx(pos, table, idx) {
 		freq = pos->frequency;
 
 		if (freq >= target_freq)
-			return pos - table;
+			return idx;
 
-		best = pos;
+		best = idx;
 	}
 
-	return best - table;
+	return best;
 }
 
 /* Find lowest freq at or above target in a table in descending order */
@@ -680,28 +699,29 @@ static inline int cpufreq_table_find_index_dl(struct cpufreq_policy *policy,
 					      unsigned int target_freq)
 {
 	struct cpufreq_frequency_table *table = policy->freq_table;
-	struct cpufreq_frequency_table *pos, *best = table - 1;
+	struct cpufreq_frequency_table *pos;
 	unsigned int freq;
+	int idx, best = -1;
 
-	cpufreq_for_each_valid_entry(pos, table) {
+	cpufreq_for_each_valid_entry_idx(pos, table, idx) {
 		freq = pos->frequency;
 
 		if (freq == target_freq)
-			return pos - table;
+			return idx;
 
 		if (freq > target_freq) {
-			best = pos;
+			best = idx;
 			continue;
 		}
 
 		/* No freq found above target_freq */
-		if (best == table - 1)
-			return pos - table;
+		if (best == -1)
+			return idx;
 
-		return best - table;
+		return best;
 	}
 
-	return best - table;
+	return best;
 }
 
 /* Works only on sorted freq-tables */
@@ -721,28 +741,29 @@ static inline int cpufreq_table_find_index_ah(struct cpufreq_policy *policy,
 					      unsigned int target_freq)
 {
 	struct cpufreq_frequency_table *table = policy->freq_table;
-	struct cpufreq_frequency_table *pos, *best = table - 1;
+	struct cpufreq_frequency_table *pos;
 	unsigned int freq;
+	int idx, best = -1;
 
-	cpufreq_for_each_valid_entry(pos, table) {
+	cpufreq_for_each_valid_entry_idx(pos, table, idx) {
 		freq = pos->frequency;
 
 		if (freq == target_freq)
-			return pos - table;
+			return idx;
 
 		if (freq < target_freq) {
-			best = pos;
+			best = idx;
 			continue;
 		}
 
 		/* No freq found below target_freq */
-		if (best == table - 1)
-			return pos - table;
+		if (best == -1)
+			return idx;
 
-		return best - table;
+		return best;
 	}
 
-	return best - table;
+	return best;
 }
 
 /* Find highest freq at or below target in a table in descending order */
@@ -750,19 +771,20 @@ static inline int cpufreq_table_find_index_dh(struct cpufreq_policy *policy,
 					      unsigned int target_freq)
 {
 	struct cpufreq_frequency_table *table = policy->freq_table;
-	struct cpufreq_frequency_table *pos, *best = table - 1;
+	struct cpufreq_frequency_table *pos;
 	unsigned int freq;
+	int idx, best = -1;
 
-	cpufreq_for_each_valid_entry(pos, table) {
+	cpufreq_for_each_valid_entry_idx(pos, table, idx) {
 		freq = pos->frequency;
 
 		if (freq <= target_freq)
-			return pos - table;
+			return idx;
 
-		best = pos;
+		best = idx;
 	}
 
-	return best - table;
+	return best;
 }
 
 /* Works only on sorted freq-tables */
@@ -782,32 +804,33 @@ static inline int cpufreq_table_find_index_ac(struct cpufreq_policy *policy,
 					      unsigned int target_freq)
 {
 	struct cpufreq_frequency_table *table = policy->freq_table;
-	struct cpufreq_frequency_table *pos, *best = table - 1;
+	struct cpufreq_frequency_table *pos;
 	unsigned int freq;
+	int idx, best = -1;
 
-	cpufreq_for_each_valid_entry(pos, table) {
+	cpufreq_for_each_valid_entry_idx(pos, table, idx) {
 		freq = pos->frequency;
 
 		if (freq == target_freq)
-			return pos - table;
+			return idx;
 
 		if (freq < target_freq) {
-			best = pos;
+			best = idx;
 			continue;
 		}
 
 		/* No freq found below target_freq */
-		if (best == table - 1)
-			return pos - table;
+		if (best == -1)
+			return idx;
 
 		/* Choose the closest freq */
-		if (target_freq - best->frequency > freq - target_freq)
-			return pos - table;
+		if (target_freq - table[best].frequency > freq - target_freq)
+			return idx;
 
-		return best - table;
+		return best;
 	}
 
-	return best - table;
+	return best;
 }
 
 /* Find closest freq to target in a table in descending order */
@@ -815,32 +838,33 @@ static inline int cpufreq_table_find_index_dc(struct cpufreq_policy *policy,
 					      unsigned int target_freq)
 {
 	struct cpufreq_frequency_table *table = policy->freq_table;
-	struct cpufreq_frequency_table *pos, *best = table - 1;
+	struct cpufreq_frequency_table *pos;
 	unsigned int freq;
+	int idx, best = -1;
 
-	cpufreq_for_each_valid_entry(pos, table) {
+	cpufreq_for_each_valid_entry_idx(pos, table, idx) {
 		freq = pos->frequency;
 
 		if (freq == target_freq)
-			return pos - table;
+			return idx;
 
 		if (freq > target_freq) {
-			best = pos;
+			best = idx;
 			continue;
 		}
 
 		/* No freq found above target_freq */
-		if (best == table - 1)
-			return pos - table;
+		if (best == -1)
+			return idx;
 
 		/* Choose the closest freq */
-		if (best->frequency - target_freq > target_freq - freq)
-			return pos - table;
+		if (table[best].frequency - target_freq > target_freq - freq)
+			return idx;
 
-		return best - table;
+		return best;
 	}
 
-	return best - table;
+	return best;
 }
 
 /* Works only on sorted freq-tables */
@@ -910,6 +934,14 @@ static inline bool policy_has_boost_freq(struct cpufreq_policy *policy)
 }
 #endif
 
+#if defined(CONFIG_ENERGY_MODEL) && defined(CONFIG_CPU_FREQ_GOV_SCHEDUTIL)
+void sched_cpufreq_governor_change(struct cpufreq_policy *policy,
+			struct cpufreq_governor *old_gov);
+#else
+static inline void sched_cpufreq_governor_change(struct cpufreq_policy *policy,
+			struct cpufreq_governor *old_gov) { }
+#endif
+
 extern void arch_freq_prepare_all(void);
 extern unsigned int arch_freq_get_on_cpu(int cpu);
 
@@ -917,15 +949,12 @@ extern void arch_set_freq_scale(struct cpumask *cpus, unsigned long cur_freq,
 				unsigned long max_freq);
 extern void arch_set_max_freq_scale(struct cpumask *cpus,
 				    unsigned long policy_max_freq);
-extern void arch_set_min_freq_scale(struct cpumask *cpus,
-				    unsigned long policy_min_freq);
 
 /* the following are really really optional */
 extern struct freq_attr cpufreq_freq_attr_scaling_available_freqs;
 extern struct freq_attr cpufreq_freq_attr_scaling_boost_freqs;
 extern struct freq_attr *cpufreq_generic_attr[];
-int cpufreq_table_validate_and_show(struct cpufreq_policy *policy,
-				      struct cpufreq_frequency_table *table);
+int cpufreq_table_validate_and_sort(struct cpufreq_policy *policy);
 
 unsigned int cpufreq_generic_get(unsigned int cpu);
 int cpufreq_generic_init(struct cpufreq_policy *policy,

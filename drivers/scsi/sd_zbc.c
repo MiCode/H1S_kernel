@@ -28,38 +28,18 @@
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
-#include <scsi/scsi_dbg.h>
-#include <scsi/scsi_device.h>
-#include <scsi/scsi_driver.h>
-#include <scsi/scsi_host.h>
-#include <scsi/scsi_eh.h>
 
 #include "sd.h"
-#include "scsi_priv.h"
-
-enum zbc_zone_type {
-	ZBC_ZONE_TYPE_CONV = 0x1,
-	ZBC_ZONE_TYPE_SEQWRITE_REQ,
-	ZBC_ZONE_TYPE_SEQWRITE_PREF,
-	ZBC_ZONE_TYPE_RESERVED,
-};
-
-enum zbc_zone_cond {
-	ZBC_ZONE_COND_NO_WP,
-	ZBC_ZONE_COND_EMPTY,
-	ZBC_ZONE_COND_IMP_OPEN,
-	ZBC_ZONE_COND_EXP_OPEN,
-	ZBC_ZONE_COND_CLOSED,
-	ZBC_ZONE_COND_READONLY = 0xd,
-	ZBC_ZONE_COND_FULL,
-	ZBC_ZONE_COND_OFFLINE,
-};
 
 /**
- * Convert a zone descriptor to a zone struct.
+ * sd_zbc_parse_report - Convert a zone descriptor to a struct blk_zone,
+ * @sdkp: The disk the report originated from
+ * @buf: Address of the report zone descriptor
+ * @zone: the destination zone structure
+ *
+ * All LBA sized values are converted to 512B sectors unit.
  */
-static void sd_zbc_parse_report(struct scsi_disk *sdkp,
-				u8 *buf,
+static void sd_zbc_parse_report(struct scsi_disk *sdkp, u8 *buf,
 				struct blk_zone *zone)
 {
 	struct scsi_device *sdp = sdkp->device;
@@ -82,7 +62,13 @@ static void sd_zbc_parse_report(struct scsi_disk *sdkp,
 }
 
 /**
- * Issue a REPORT ZONES scsi command.
+ * sd_zbc_report_zones - Issue a REPORT ZONES scsi command.
+ * @sdkp: The target disk
+ * @buf: Buffer to use for the reply
+ * @buflen: the buffer size
+ * @lba: Start LBA of the report
+ *
+ * For internal use during device validation.
  */
 static int sd_zbc_report_zones(struct scsi_disk *sdkp, unsigned char *buf,
 			       unsigned int buflen, sector_t lba)
@@ -123,6 +109,12 @@ static int sd_zbc_report_zones(struct scsi_disk *sdkp, unsigned char *buf,
 	return 0;
 }
 
+/**
+ * sd_zbc_setup_report_cmnd - Prepare a REPORT ZONES scsi command
+ * @cmd: The command to setup
+ *
+ * Call in sd_init_command() for a REQ_OP_ZONE_REPORT request.
+ */
 int sd_zbc_setup_report_cmnd(struct scsi_cmnd *cmd)
 {
 	struct request *rq = cmd->request;
@@ -156,15 +148,17 @@ int sd_zbc_setup_report_cmnd(struct scsi_cmnd *cmd)
 	cmd->transfersize = sdkp->device->sector_size;
 	cmd->allowed = 0;
 
-	/*
-	 * Report may return less bytes than requested. Make sure
-	 * to report completion on the entire initial request.
-	 */
-	rq->__data_len = nr_bytes;
-
 	return BLKPREP_OK;
 }
 
+/**
+ * sd_zbc_report_zones_complete - Process a REPORT ZONES scsi command reply.
+ * @scmd: The completed report zones command
+ * @good_bytes: reply size in bytes
+ *
+ * Convert all reported zone descriptors to struct blk_zone. The conversion
+ * is done in-place, directly in the request specified sg buffer.
+ */
 static void sd_zbc_report_zones_complete(struct scsi_cmnd *scmd,
 					 unsigned int good_bytes)
 {
@@ -220,17 +214,21 @@ static void sd_zbc_report_zones_complete(struct scsi_cmnd *scmd,
 	local_irq_restore(flags);
 }
 
+/**
+ * sd_zbc_zone_sectors - Get the device zone size in number of 512B sectors.
+ * @sdkp: The target disk
+ */
 static inline sector_t sd_zbc_zone_sectors(struct scsi_disk *sdkp)
 {
 	return logical_to_sectors(sdkp->device, sdkp->zone_blocks);
 }
 
-static inline unsigned int sd_zbc_zone_no(struct scsi_disk *sdkp,
-					  sector_t sector)
-{
-	return sectors_to_logical(sdkp->device, sector) >> sdkp->zone_shift;
-}
-
+/**
+ * sd_zbc_setup_reset_cmnd - Prepare a RESET WRITE POINTER scsi command.
+ * @cmd: the command to setup
+ *
+ * Called from sd_init_command() for a REQ_OP_ZONE_RESET request.
+ */
 int sd_zbc_setup_reset_cmnd(struct scsi_cmnd *cmd)
 {
 	struct request *rq = cmd->request;
@@ -263,59 +261,16 @@ int sd_zbc_setup_reset_cmnd(struct scsi_cmnd *cmd)
 	return BLKPREP_OK;
 }
 
-int sd_zbc_write_lock_zone(struct scsi_cmnd *cmd)
-{
-	struct request *rq = cmd->request;
-	struct scsi_disk *sdkp = scsi_disk(rq->rq_disk);
-	sector_t sector = blk_rq_pos(rq);
-	sector_t zone_sectors = sd_zbc_zone_sectors(sdkp);
-	unsigned int zno = sd_zbc_zone_no(sdkp, sector);
-
-	/*
-	 * Note: Checks of the alignment of the write command on
-	 * logical blocks is done in sd.c
-	 */
-
-	/* Do not allow zone boundaries crossing on host-managed drives */
-	if (blk_queue_zoned_model(sdkp->disk->queue) == BLK_ZONED_HM &&
-	    (sector & (zone_sectors - 1)) + blk_rq_sectors(rq) > zone_sectors)
-		return BLKPREP_KILL;
-
-	/*
-	 * Do not issue more than one write at a time per
-	 * zone. This solves write ordering problems due to
-	 * the unlocking of the request queue in the dispatch
-	 * path in the non scsi-mq case. For scsi-mq, this
-	 * also avoids potential write reordering when multiple
-	 * threads running on different CPUs write to the same
-	 * zone (with a synchronized sequential pattern).
-	 */
-	if (sdkp->zones_wlock &&
-	    test_and_set_bit(zno, sdkp->zones_wlock))
-		return BLKPREP_DEFER;
-
-	WARN_ON_ONCE(cmd->flags & SCMD_ZONE_WRITE_LOCK);
-	cmd->flags |= SCMD_ZONE_WRITE_LOCK;
-
-	return BLKPREP_OK;
-}
-
-void sd_zbc_write_unlock_zone(struct scsi_cmnd *cmd)
-{
-	struct request *rq = cmd->request;
-	struct scsi_disk *sdkp = scsi_disk(rq->rq_disk);
-
-	if (sdkp->zones_wlock && cmd->flags & SCMD_ZONE_WRITE_LOCK) {
-		unsigned int zno = sd_zbc_zone_no(sdkp, blk_rq_pos(rq));
-		WARN_ON_ONCE(!test_bit(zno, sdkp->zones_wlock));
-		cmd->flags &= ~SCMD_ZONE_WRITE_LOCK;
-		clear_bit_unlock(zno, sdkp->zones_wlock);
-		smp_mb__after_atomic();
-	}
-}
-
-void sd_zbc_complete(struct scsi_cmnd *cmd,
-		     unsigned int good_bytes,
+/**
+ * sd_zbc_complete - ZBC command post processing.
+ * @cmd: Completed command
+ * @good_bytes: Command reply bytes
+ * @sshdr: command sense header
+ *
+ * Called from sd_done(). Process report zones reply and handle reset zone
+ * and write commands errors.
+ */
+void sd_zbc_complete(struct scsi_cmnd *cmd, unsigned int good_bytes,
 		     struct scsi_sense_hdr *sshdr)
 {
 	int result = cmd->result;
@@ -338,16 +293,6 @@ void sd_zbc_complete(struct scsi_cmnd *cmd,
 	case REQ_OP_WRITE:
 	case REQ_OP_WRITE_ZEROES:
 	case REQ_OP_WRITE_SAME:
-
-		if (result &&
-		    sshdr->sense_key == ILLEGAL_REQUEST &&
-		    sshdr->asc == 0x21)
-			/*
-			 * INVALID ADDRESS FOR WRITE error: It is unlikely that
-			 * retrying write requests failed with any kind of
-			 * alignement error will result in success. So don't.
-			 */
-			cmd->allowed = 0;
 		break;
 
 	case REQ_OP_ZONE_REPORT:
@@ -360,7 +305,11 @@ void sd_zbc_complete(struct scsi_cmnd *cmd,
 }
 
 /**
- * Read zoned block device characteristics (VPD page B6).
+ * sd_zbc_read_zoned_characteristics - Read zoned block device characteristics
+ * @sdkp: Target disk
+ * @buf: Buffer where to store the VPD page data
+ *
+ * Read VPD page B6.
  */
 static int sd_zbc_read_zoned_characteristics(struct scsi_disk *sdkp,
 					     unsigned char *buf)
@@ -390,10 +339,16 @@ static int sd_zbc_read_zoned_characteristics(struct scsi_disk *sdkp,
 }
 
 /**
- * Check reported capacity.
+ * sd_zbc_check_capacity - Check reported capacity.
+ * @sdkp: Target disk
+ * @buf: Buffer to use for commands
+ *
+ * ZBC drive may report only the capacity of the first conventional zones at
+ * LBA 0. This is indicated by the RC_BASIS field of the read capacity reply.
+ * Check this here. If the disk reported only its conventional zones capacity,
+ * get the total capacity by doing a report zones.
  */
-static int sd_zbc_check_capacity(struct scsi_disk *sdkp,
-				 unsigned char *buf)
+static int sd_zbc_check_capacity(struct scsi_disk *sdkp, unsigned char *buf)
 {
 	sector_t lba;
 	int ret;
@@ -421,7 +376,7 @@ static int sd_zbc_check_capacity(struct scsi_disk *sdkp,
 	return 0;
 }
 
-#define SD_ZBC_BUF_SIZE 131072
+#define SD_ZBC_BUF_SIZE 131072U
 
 /**
  * sd_zbc_check_zone_size - Check the device zone sizes
@@ -471,10 +426,7 @@ static s64 sd_zbc_check_zone_size(struct scsi_disk *sdkp)
 		/* Parse REPORT ZONES header */
 		list_length = get_unaligned_be32(&buf[0]) + 64;
 		rec = buf + 64;
-		if (list_length < SD_ZBC_BUF_SIZE)
-			buf_len = list_length;
-		else
-			buf_len = SD_ZBC_BUF_SIZE;
+		buf_len = min(list_length, SD_ZBC_BUF_SIZE);
 
 		/* Parse zone descriptors */
 		while (rec < buf + buf_len) {
@@ -529,11 +481,127 @@ out_free:
 	return ret;
 }
 
+/**
+ * sd_zbc_alloc_zone_bitmap - Allocate a zone bitmap (one bit per zone).
+ * @nr_zones: Number of zones to allocate space for.
+ * @numa_node: NUMA node to allocate the memory from.
+ */
+static inline unsigned long *
+sd_zbc_alloc_zone_bitmap(u32 nr_zones, int numa_node)
+{
+	return kcalloc_node(BITS_TO_LONGS(nr_zones), sizeof(unsigned long),
+			    GFP_KERNEL, numa_node);
+}
+
+/**
+ * sd_zbc_get_seq_zones - Parse report zones reply to identify sequential zones
+ * @sdkp: disk used
+ * @buf: report reply buffer
+ * @buflen: length of @buf
+ * @zone_shift: logarithm base 2 of the number of blocks in a zone
+ * @seq_zones_bitmap: bitmap of sequential zones to set
+ *
+ * Parse reported zone descriptors in @buf to identify sequential zones and
+ * set the reported zone bit in @seq_zones_bitmap accordingly.
+ * Since read-only and offline zones cannot be written, do not
+ * mark them as sequential in the bitmap.
+ * Return the LBA after the last zone reported.
+ */
+static sector_t sd_zbc_get_seq_zones(struct scsi_disk *sdkp, unsigned char *buf,
+				     unsigned int buflen, u32 zone_shift,
+				     unsigned long *seq_zones_bitmap)
+{
+	sector_t lba, next_lba = sdkp->capacity;
+	unsigned int buf_len, list_length;
+	unsigned char *rec;
+	u8 type, cond;
+
+	list_length = get_unaligned_be32(&buf[0]) + 64;
+	buf_len = min(list_length, buflen);
+	rec = buf + 64;
+
+	while (rec < buf + buf_len) {
+		type = rec[0] & 0x0f;
+		cond = (rec[1] >> 4) & 0xf;
+		lba = get_unaligned_be64(&rec[16]);
+		if (type != ZBC_ZONE_TYPE_CONV &&
+		    cond != ZBC_ZONE_COND_READONLY &&
+		    cond != ZBC_ZONE_COND_OFFLINE)
+			set_bit(lba >> zone_shift, seq_zones_bitmap);
+		next_lba = lba + get_unaligned_be64(&rec[8]);
+		rec += 64;
+	}
+
+	return next_lba;
+}
+
+/**
+ * sd_zbc_setup_seq_zones_bitmap - Initialize a seq zone bitmap.
+ * @sdkp: target disk
+ * @zone_shift: logarithm base 2 of the number of blocks in a zone
+ * @nr_zones: number of zones to set up a seq zone bitmap for
+ *
+ * Allocate a zone bitmap and initialize it by identifying sequential zones.
+ */
+static unsigned long *
+sd_zbc_setup_seq_zones_bitmap(struct scsi_disk *sdkp, u32 zone_shift,
+			      u32 nr_zones)
+{
+	struct request_queue *q = sdkp->disk->queue;
+	unsigned long *seq_zones_bitmap;
+	sector_t lba = 0;
+	unsigned char *buf;
+	int ret = -ENOMEM;
+
+	seq_zones_bitmap = sd_zbc_alloc_zone_bitmap(nr_zones, q->node);
+	if (!seq_zones_bitmap)
+		return ERR_PTR(-ENOMEM);
+
+	buf = kmalloc(SD_ZBC_BUF_SIZE, GFP_KERNEL);
+	if (!buf)
+		goto out;
+
+	while (lba < sdkp->capacity) {
+		ret = sd_zbc_report_zones(sdkp, buf, SD_ZBC_BUF_SIZE, lba);
+		if (ret)
+			goto out;
+		lba = sd_zbc_get_seq_zones(sdkp, buf, SD_ZBC_BUF_SIZE,
+					   zone_shift, seq_zones_bitmap);
+	}
+
+	if (lba != sdkp->capacity) {
+		/* Something went wrong */
+		ret = -EIO;
+	}
+
+out:
+	kfree(buf);
+	if (ret) {
+		kfree(seq_zones_bitmap);
+		return ERR_PTR(ret);
+	}
+	return seq_zones_bitmap;
+}
+
+static void sd_zbc_cleanup(struct scsi_disk *sdkp)
+{
+	struct request_queue *q = sdkp->disk->queue;
+
+	kfree(q->seq_zones_bitmap);
+	q->seq_zones_bitmap = NULL;
+
+	kfree(q->seq_zones_wlock);
+	q->seq_zones_wlock = NULL;
+
+	q->nr_zones = 0;
+}
+
 static int sd_zbc_setup(struct scsi_disk *sdkp, u32 zone_blocks)
 {
 	struct request_queue *q = sdkp->disk->queue;
 	u32 zone_shift = ilog2(zone_blocks);
 	u32 nr_zones;
+	int ret;
 
 	/* chunk_sectors indicates the zone size */
 	blk_queue_chunk_sectors(q,
@@ -541,39 +609,61 @@ static int sd_zbc_setup(struct scsi_disk *sdkp, u32 zone_blocks)
 	nr_zones = round_up(sdkp->capacity, zone_blocks) >> zone_shift;
 
 	/*
-	 * Initialize the disk zone write lock bitmap if the number
+	 * Initialize the device request queue information if the number
 	 * of zones changed.
 	 */
-	if (nr_zones != sdkp->nr_zones) {
-		unsigned long *zones_wlock = NULL;
+	if (nr_zones != sdkp->nr_zones || nr_zones != q->nr_zones) {
+		unsigned long *seq_zones_wlock = NULL, *seq_zones_bitmap = NULL;
+		size_t zone_bitmap_size;
 
 		if (nr_zones) {
-			zones_wlock = kcalloc(BITS_TO_LONGS(nr_zones),
-					      sizeof(unsigned long),
-					      GFP_KERNEL);
-			if (!zones_wlock)
-				return -ENOMEM;
+			seq_zones_wlock = sd_zbc_alloc_zone_bitmap(nr_zones,
+								   q->node);
+			if (!seq_zones_wlock) {
+				ret = -ENOMEM;
+				goto err;
+			}
+
+			seq_zones_bitmap = sd_zbc_setup_seq_zones_bitmap(sdkp,
+							zone_shift, nr_zones);
+			if (IS_ERR(seq_zones_bitmap)) {
+				ret = PTR_ERR(seq_zones_bitmap);
+				kfree(seq_zones_wlock);
+				goto err;
+			}
 		}
-
+		zone_bitmap_size = BITS_TO_LONGS(nr_zones) *
+			sizeof(unsigned long);
 		blk_mq_freeze_queue(q);
-		sdkp->zone_blocks = zone_blocks;
-		sdkp->zone_shift = zone_shift;
-		sdkp->nr_zones = nr_zones;
-		swap(sdkp->zones_wlock, zones_wlock);
+		if (q->nr_zones != nr_zones) {
+			/* READ16/WRITE16 is mandatory for ZBC disks */
+			sdkp->device->use_16_for_rw = 1;
+			sdkp->device->use_10_for_rw = 0;
+
+			sdkp->zone_blocks = zone_blocks;
+			sdkp->zone_shift = zone_shift;
+			sdkp->nr_zones = nr_zones;
+			q->nr_zones = nr_zones;
+			swap(q->seq_zones_wlock, seq_zones_wlock);
+			swap(q->seq_zones_bitmap, seq_zones_bitmap);
+		} else if (memcmp(q->seq_zones_bitmap, seq_zones_bitmap,
+				  zone_bitmap_size) != 0) {
+			memcpy(q->seq_zones_bitmap, seq_zones_bitmap,
+			       zone_bitmap_size);
+		}
 		blk_mq_unfreeze_queue(q);
-
-		kfree(zones_wlock);
-
-		/* READ16/WRITE16 is mandatory for ZBC disks */
-		sdkp->device->use_16_for_rw = 1;
-		sdkp->device->use_10_for_rw = 0;
+		kfree(seq_zones_wlock);
+		kfree(seq_zones_bitmap);
 	}
 
 	return 0;
+
+err:
+	sd_zbc_cleanup(sdkp);
+	return ret;
 }
 
-int sd_zbc_read_zones(struct scsi_disk *sdkp,
-		      unsigned char *buf)
+int sd_zbc_read_zones(struct scsi_disk *sdkp, unsigned char *buf)
 {
 	int64_t zone_blocks;
 	int ret;
@@ -584,7 +674,6 @@ int sd_zbc_read_zones(struct scsi_disk *sdkp,
 		 * no special handling required
 		 */
 		return 0;
-
 
 	/* Get zoned block device characteristics */
 	ret = sd_zbc_read_zoned_characteristics(sdkp, buf);
@@ -630,15 +719,14 @@ int sd_zbc_read_zones(struct scsi_disk *sdkp,
 
 err:
 	sdkp->capacity = 0;
+	sd_zbc_cleanup(sdkp);
 
 	return ret;
 }
 
 void sd_zbc_remove(struct scsi_disk *sdkp)
 {
-	kfree(sdkp->zones_wlock);
-	sdkp->zones_wlock = NULL;
-	sdkp->nr_zones = 0;
+	sd_zbc_cleanup(sdkp);
 }
 
 void sd_zbc_print_zones(struct scsi_disk *sdkp)

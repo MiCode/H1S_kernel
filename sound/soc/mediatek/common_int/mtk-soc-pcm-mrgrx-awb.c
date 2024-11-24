@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -69,7 +58,7 @@ static void StartAudioMrgrxAWBHardware(struct snd_pcm_substream *substream);
 static void StopAudioAWBHardware(struct snd_pcm_substream *substream);
 static int mtk_mrgrx_awb_probe(struct platform_device *pdev);
 static int mtk_mrgrx_awb_pcm_close(struct snd_pcm_substream *substream);
-static int mtk_afe_mrgrx_awb_probe(struct snd_soc_platform *platform);
+static int mtk_afe_mrgrx_awb_component_probe(struct snd_soc_component *component);
 
 static struct snd_pcm_hardware mtk_mgrrx_awb_hardware = {
 	.info = (SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
@@ -89,6 +78,8 @@ static struct snd_pcm_hardware mtk_mgrrx_awb_hardware = {
 
 static void StopAudioAWBHardware(struct snd_pcm_substream *substream)
 {
+	pr_debug("StopAudioAWBHardware\n");
+
 	SetMemoryPathEnable(Soc_Aud_Digital_Block_MEM_AWB, false);
 
 	/* here to set interrupt */
@@ -109,6 +100,8 @@ static void StopAudioAWBHardware(struct snd_pcm_substream *substream)
 
 static void StartAudioMrgrxAWBHardware(struct snd_pcm_substream *substream)
 {
+	pr_debug("StartAudioMrgrxAWBHardware\n");
+
 	/* here to set interrupt */
 	irq_add_user(
 		substream, irq_request_number(Soc_Aud_Digital_Block_MEM_AWB),
@@ -139,7 +132,7 @@ static int mtk_mrgrx_awb_pcm_prepare(struct snd_pcm_substream *substream)
 
 static int mtk_mrgrx_awb_alsa_stop(struct snd_pcm_substream *substream)
 {
-	pr_debug("mrgrx_awb_alsa_stop\n");
+	pr_debug("mtk_mrgrx_awb_alsa_stop\n");
 	StopAudioAWBHardware(substream);
 	RemoveMemifSubStream(Soc_Aud_Digital_Block_MEM_AWB, substream);
 
@@ -165,14 +158,14 @@ static int mtk_mgrrx_awb_pcm_hw_params(struct snd_pcm_substream *substream,
 	dma_buf->private_data = NULL;
 
 	if (Awb_Capture_dma_buf->area) {
-		pr_debug("mgrrx_awb_pcm_hw_params Awb_Capture_dma_buf->area\n");
+		pr_debug("mtk_mgrrx_awb_pcm_hw_params Awb_Capture_dma_buf->area\n");
 		runtime->dma_bytes = params_buffer_bytes(hw_params);
 		runtime->dma_area = Awb_Capture_dma_buf->area;
 		runtime->dma_addr = Awb_Capture_dma_buf->addr;
 		SetHighAddr(Soc_Aud_Digital_Block_MEM_AWB, true,
 			    runtime->dma_addr);
 	} else {
-		pr_debug("mgrrx_awb_pcm_hw_params snd_pcm_lib_malloc_pages\n");
+		pr_debug("mtk_mgrrx_awb_pcm_hw_params snd_pcm_lib_malloc_pages\n");
 		ret = snd_pcm_lib_malloc_pages(substream,
 					       params_buffer_bytes(hw_params));
 	}
@@ -187,7 +180,7 @@ static int mtk_mgrrx_awb_pcm_hw_params(struct snd_pcm_substream *substream,
 
 static int mtk_mrgrx_capture_pcm_hw_free(struct snd_pcm_substream *substream)
 {
-	pr_debug("mrgrx_capture_pcm_hw_free\n");
+	pr_debug("mtk_mrgrx_capture_pcm_hw_free\n");
 	if (Awb_Capture_dma_buf->area)
 		return 0;
 	else
@@ -204,7 +197,7 @@ static int mtk_mrgrx_awb_pcm_open(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int ret = 0;
 
-	pr_debug("mrgrx_awb_pcm_open\n");
+	pr_debug("mtk_mrgrx_awb_pcm_open\n");
 	Mrgrx_AWB_Control_context =
 		Get_Mem_ControlT(Soc_Aud_Digital_Block_MEM_AWB);
 	runtime->hw = mtk_mgrrx_awb_hardware;
@@ -225,11 +218,11 @@ static int mtk_mrgrx_awb_pcm_open(struct snd_pcm_substream *substream)
 	AudDrv_Emi_Clk_On();
 
 	if (ret < 0) {
-		pr_err("mrgrx_awb_pcm_close\n");
+		pr_err("mtk_mrgrx_awb_pcm_close\n");
 		mtk_mrgrx_awb_pcm_close(substream);
 		return ret;
 	}
-	pr_debug("mrgrx_awb_pcm_open return\n");
+	pr_debug("mtk_mrgrx_awb_pcm_open return\n");
 	return 0;
 }
 
@@ -242,7 +235,7 @@ static int mtk_mrgrx_awb_pcm_close(struct snd_pcm_substream *substream)
 
 static int mtk_mrgrx_awb_alsa_start(struct snd_pcm_substream *substream)
 {
-	pr_debug("mrgrx_awb_alsa_start\n");
+	pr_debug("mtk_mrgrx_awb_alsa_start\n");
 	SetMemifSubStream(Soc_Aud_Digital_Block_MEM_AWB, substream);
 	StartAudioMrgrxAWBHardware(substream);
 	return 0;
@@ -251,7 +244,7 @@ static int mtk_mrgrx_awb_alsa_start(struct snd_pcm_substream *substream)
 static int mtk_capture_mrgrx_pcm_trigger(struct snd_pcm_substream *substream,
 					 int cmd)
 {
-	pr_debug("capture_mrgrx_pcm_trigger cmd = %d\n", cmd);
+	pr_debug("mtk_capture_mrgrx_pcm_trigger cmd = %d\n", cmd);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -265,12 +258,22 @@ static int mtk_capture_mrgrx_pcm_trigger(struct snd_pcm_substream *substream,
 }
 
 static int mtk_mrgrx_awb_pcm_copy(struct snd_pcm_substream *substream,
-				  int channel, unsigned long pos,
-				  void __user *dst, unsigned long count)
+				 int channel,
+				 unsigned long pos,
+				 void __user *buf,
+				 unsigned long bytes)
 {
-	return mtk_memblk_copy(substream, channel, pos, dst, count,
+	return mtk_memblk_copy(substream, channel, pos, buf, bytes,
 			       Mrgrx_AWB_Control_context,
 			       Soc_Aud_Digital_Block_MEM_AWB);
+}
+
+static int mtk_capture_pcm_silence(struct snd_pcm_substream *substream,
+				   int channel,
+				   unsigned long pos,
+				   unsigned long bytes)
+{
+	return 0; /* do nothing */
 }
 
 static void *dummy_page[2];
@@ -292,32 +295,39 @@ static struct snd_pcm_ops mtk_mrgrx_awb_ops = {
 	.trigger = mtk_capture_mrgrx_pcm_trigger,
 	.pointer = mtk_awb_pcm_pointer,
 	.copy_user = mtk_mrgrx_awb_pcm_copy,
+	.fill_silence = mtk_capture_pcm_silence,
 	.page = mtk_mrgrx_capture_pcm_page,
 };
 
-static struct snd_soc_platform_driver mtk_soc_platform = {
-	.ops = &mtk_mrgrx_awb_ops, .probe = mtk_afe_mrgrx_awb_probe,
+static struct snd_soc_component_driver mtk_soc_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_mrgrx_awb_ops,
+	.probe = mtk_afe_mrgrx_awb_component_probe,
 };
 
 static int mtk_mrgrx_awb_probe(struct platform_device *pdev)
 {
-	pr_debug("mrgrx_awb_probe\n");
+	pr_debug("%s\n", __func__);
 
-	if (pdev->dev.of_node) {
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_MRGRX_AWB_PCM);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
-	return snd_soc_register_platform(&pdev->dev, &mtk_soc_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_soc_component,
+					  NULL,
+					  0);
 }
 
-static int mtk_afe_mrgrx_awb_probe(struct snd_soc_platform *platform)
+static int mtk_afe_mrgrx_awb_component_probe(struct snd_soc_component *component)
 {
-	pr_debug("afe_mrgrx_awb_probe\n");
-	AudDrv_Allocate_mem_Buffer(platform->dev, Soc_Aud_Digital_Block_MEM_AWB,
+	pr_debug("%s\n", __func__);
+	AudDrv_Allocate_mem_Buffer(component->dev, Soc_Aud_Digital_Block_MEM_AWB,
 				   MRGRX_MAX_BUFFER_SIZE);
 	Awb_Capture_dma_buf = Get_Mem_Buffer(Soc_Aud_Digital_Block_MEM_AWB);
 	if (Mrgrx_Awb_Capture_dma_buf == NULL) {
@@ -325,7 +335,7 @@ static int mtk_afe_mrgrx_awb_probe(struct snd_soc_platform *platform)
 			kzalloc(sizeof(struct snd_dma_buffer), GFP_KERNEL);
 		if (Mrgrx_Awb_Capture_dma_buf != NULL) {
 			Mrgrx_Awb_Capture_dma_buf->area = dma_alloc_coherent(
-				platform->dev, MRGRX_MAX_BUFFER_SIZE,
+				component->dev, MRGRX_MAX_BUFFER_SIZE,
 				&Mrgrx_Awb_Capture_dma_buf->addr, GFP_KERNEL);
 			if (Mrgrx_Awb_Capture_dma_buf->area)
 				Mrgrx_Awb_Capture_dma_buf->bytes =
@@ -339,7 +349,7 @@ static int mtk_afe_mrgrx_awb_probe(struct snd_soc_platform *platform)
 static int mtk_mrgrx_awb_remove(struct platform_device *pdev)
 {
 	pr_debug("%s\n", __func__);
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

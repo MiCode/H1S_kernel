@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2020 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 
 #ifndef __DRTX_TYPE_H__
@@ -90,8 +82,6 @@
 enum DP_ATF_CMD {
 	DP_ATF_DUMP = 0x20,
 	DP_ATF_VIDEO_UNMUTE,
-	DP_ATF_REG_WRITE,
-	DP_ATF_REG_READ,
 	DP_ATF_CMD_COUNT
 };
 

@@ -53,6 +53,7 @@
 #include <linux/uaccess.h>
 #include <linux/hashtable.h>
 
+#include "auth_gss_internal.h"
 #include "../netns.h"
 
 static const struct rpc_authops authgss_ops;
@@ -145,35 +146,6 @@ gss_cred_set_ctx(struct rpc_cred *cred, struct gss_cl_ctx *ctx)
 	set_bit(RPCAUTH_CRED_UPTODATE, &cred->cr_flags);
 	smp_mb__before_atomic();
 	clear_bit(RPCAUTH_CRED_NEW, &cred->cr_flags);
-}
-
-static const void *
-simple_get_bytes(const void *p, const void *end, void *res, size_t len)
-{
-	const void *q = (const void *)((const char *)p + len);
-	if (unlikely(q > end || q < p))
-		return ERR_PTR(-EFAULT);
-	memcpy(res, p, len);
-	return q;
-}
-
-static inline const void *
-simple_get_netobj(const void *p, const void *end, struct xdr_netobj *dest)
-{
-	const void *q;
-	unsigned int len;
-
-	p = simple_get_bytes(p, end, &len, sizeof(len));
-	if (IS_ERR(p))
-		return p;
-	q = (const void *)((const char *)p + len);
-	if (unlikely(q > end || q < p))
-		return ERR_PTR(-EFAULT);
-	dest->data = kmemdup(p, len, GFP_NOFS);
-	if (unlikely(dest->data == NULL))
-		return ERR_PTR(-ENOMEM);
-	dest->len = len;
-	return q;
 }
 
 static struct gss_cl_ctx *
@@ -284,7 +256,12 @@ err:
 	return p;
 }
 
-#define UPCALL_BUF_LEN 128
+/* XXX: Need some documentation about why UPCALL_BUF_LEN is so small.
+ *	Is user space expecting no more than UPCALL_BUF_LEN bytes?
+ *	Note that there are now _two_ NI_MAXHOST sized data items
+ *	being passed in this string.
+ */
+#define UPCALL_BUF_LEN	256
 
 struct gss_upcall_msg {
 	refcount_t count;
@@ -346,7 +323,7 @@ __gss_find_upcall(struct rpc_pipe *pipe, kuid_t uid, const struct gss_auth *auth
 	list_for_each_entry(pos, &pipe->in_downcall, list) {
 		if (!uid_eq(pos->uid, uid))
 			continue;
-		if (auth && pos->auth->service != auth->service)
+		if (pos->auth->service != auth->service)
 			continue;
 		refcount_inc(&pos->count);
 		dprintk("RPC:       %s found msg %p\n", __func__, pos);
@@ -456,18 +433,44 @@ static int gss_encode_v1_msg(struct gss_upcall_msg *gss_msg,
 	buflen -= len;
 	p += len;
 	gss_msg->msg.len = len;
+
+	/*
+	 * target= is a full service principal that names the remote
+	 * identity that we are authenticating to.
+	 */
 	if (target_name) {
 		len = scnprintf(p, buflen, "target=%s ", target_name);
 		buflen -= len;
 		p += len;
 		gss_msg->msg.len += len;
 	}
-	if (service_name != NULL) {
-		len = scnprintf(p, buflen, "service=%s ", service_name);
+
+	/*
+	 * gssd uses service= and srchost= to select a matching key from
+	 * the system's keytab to use as the source principal.
+	 *
+	 * service= is the service name part of the source principal,
+	 * or "*" (meaning choose any).
+	 *
+	 * srchost= is the hostname part of the source principal. When
+	 * not provided, gssd uses the local hostname.
+	 */
+	if (service_name) {
+		char *c = strchr(service_name, '@');
+
+		if (!c)
+			len = scnprintf(p, buflen, "service=%s ",
+					service_name);
+		else
+			len = scnprintf(p, buflen,
+					"service=%.*s srchost=%s ",
+					(int)(c - service_name),
+					service_name, c + 1);
 		buflen -= len;
 		p += len;
 		gss_msg->msg.len += len;
 	}
+
 	if (mech->gm_upcall_enctypes) {
 		len = scnprintf(p, buflen, "enctypes=%s ",
 				mech->gm_upcall_enctypes);
@@ -517,7 +520,7 @@ gss_alloc_msg(struct gss_auth *gss_auth,
 		err = gss_encode_v1_msg(gss_msg, service_name, gss_auth->target_name);
 		if (err)
 			goto err_put_pipe_version;
-	};
+	}
 	kref_get(&gss_auth->kref);
 	return gss_msg;
 err_put_pipe_version:
@@ -674,6 +677,21 @@ out:
 	return err;
 }
 
+static struct gss_upcall_msg *
+gss_find_downcall(struct rpc_pipe *pipe, kuid_t uid)
+{
+	struct gss_upcall_msg *pos;
+	list_for_each_entry(pos, &pipe->in_downcall, list) {
+		if (!uid_eq(pos->uid, uid))
+			continue;
+		if (!rpc_msg_is_inflight(&pos->msg))
+			continue;
+		refcount_inc(&pos->count);
+		return pos;
+	}
+	return NULL;
+}
+
 #define MSG_BUF_MAXSIZE 1024
 
 static ssize_t
@@ -720,7 +738,7 @@ gss_pipe_downcall(struct file *filp, const char __user *src, size_t mlen)
 	err = -ENOENT;
 	/* Find a matching upcall */
 	spin_lock(&pipe->lock);
-	gss_msg = __gss_find_upcall(pipe, uid, NULL);
+	gss_msg = gss_find_downcall(pipe, uid);
 	if (gss_msg == NULL) {
 		spin_unlock(&pipe->lock);
 		goto err_put_ctx;
@@ -985,7 +1003,7 @@ static void gss_pipe_free(struct gss_pipe *p)
  * parameters based on the input flavor (which must be a pseudoflavor)
  */
 static struct gss_auth *
-gss_create_new(struct rpc_auth_create_args *args, struct rpc_clnt *clnt)
+gss_create_new(const struct rpc_auth_create_args *args, struct rpc_clnt *clnt)
 {
 	rpc_authflavor_t flavor = args->pseudoflavor;
 	struct gss_auth *gss_auth;
@@ -1132,7 +1150,7 @@ gss_destroy(struct rpc_auth *auth)
  * (which is guaranteed to last as long as any of its descendants).
  */
 static struct gss_auth *
-gss_auth_find_or_add_hashed(struct rpc_auth_create_args *args,
+gss_auth_find_or_add_hashed(const struct rpc_auth_create_args *args,
 		struct rpc_clnt *clnt,
 		struct gss_auth *new)
 {
@@ -1169,7 +1187,8 @@ out:
 }
 
 static struct gss_auth *
-gss_create_hashed(struct rpc_auth_create_args *args, struct rpc_clnt *clnt)
+gss_create_hashed(const struct rpc_auth_create_args *args,
+		  struct rpc_clnt *clnt)
 {
 	struct gss_auth *gss_auth;
 	struct gss_auth *new;
@@ -1188,7 +1207,7 @@ out:
 }
 
 static struct rpc_auth *
-gss_create(struct rpc_auth_create_args *args, struct rpc_clnt *clnt)
+gss_create(const struct rpc_auth_create_args *args, struct rpc_clnt *clnt)
 {
 	struct gss_auth *gss_auth;
 	struct rpc_xprt_switch *xps = rcu_access_pointer(clnt->cl_xpi.xpi_xpswitch);
@@ -1571,7 +1590,7 @@ static int gss_cred_is_negative_entry(struct rpc_cred *cred)
 	if (test_bit(RPCAUTH_CRED_NEGATIVE, &cred->cr_flags)) {
 		unsigned long now = jiffies;
 		unsigned long begin, expire;
-		struct gss_cred *gss_cred; 
+		struct gss_cred *gss_cred;
 
 		gss_cred = container_of(cred, struct gss_cred, gc_base);
 		begin = gss_cred->gc_upcall_timestamp;
@@ -1757,7 +1776,8 @@ alloc_enc_pages(struct rpc_rqst *rqstp)
 	last = (snd_buf->page_base + snd_buf->page_len - 1) >> PAGE_SHIFT;
 	rqstp->rq_enc_pages_num = last - first + 1 + 1;
 	rqstp->rq_enc_pages
-		= kmalloc(rqstp->rq_enc_pages_num * sizeof(struct page *),
+		= kmalloc_array(rqstp->rq_enc_pages_num,
+				sizeof(struct page *),
 				GFP_NOFS);
 	if (!rqstp->rq_enc_pages)
 		goto out;

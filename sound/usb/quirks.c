@@ -66,8 +66,12 @@ static int create_composite_quirk(struct snd_usb_audio *chip,
 		if (!iface)
 			continue;
 		if (quirk->ifnum != probed_ifnum &&
-		    !usb_interface_claimed(iface))
-			usb_driver_claim_interface(driver, iface, (void *)-1L);
+		    !usb_interface_claimed(iface)) {
+			err = usb_driver_claim_interface(driver, iface,
+							 USB_AUDIO_IFACE_UNUSED);
+			if (err < 0)
+				return err;
+		}
 	}
 
 	return 0;
@@ -259,6 +263,9 @@ static int create_yamaha_midi_quirk(struct snd_usb_audio *chip,
 					NULL, USB_MS_MIDI_OUT_JACK);
 	if (!injd && !outjd)
 		return -ENODEV;
+	if ((injd && !snd_usb_validate_midi_desc(injd)) ||
+	    (outjd && !snd_usb_validate_midi_desc(outjd)))
+		return -ENODEV;
 	if (injd && (injd->bLength < 5 ||
 		     (injd->bJackType != USB_MS_EMBEDDED &&
 		      injd->bJackType != USB_MS_EXTERNAL)))
@@ -398,8 +405,12 @@ static int create_autodetect_quirks(struct snd_usb_audio *chip,
 			continue;
 
 		err = create_autodetect_quirk(chip, iface, driver);
-		if (err >= 0)
-			usb_driver_claim_interface(driver, iface, (void *)-1L);
+		if (err >= 0) {
+			err = usb_driver_claim_interface(driver, iface,
+							 USB_AUDIO_IFACE_UNUSED);
+			if (err < 0)
+				return err;
+		}
 	}
 
 	return 0;
@@ -516,6 +527,16 @@ static int create_standard_mixer_quirk(struct snd_usb_audio *chip,
 	return snd_usb_create_mixer(chip, quirk->ifnum, 0);
 }
 
+
+static int setup_fmt_after_resume_quirk(struct snd_usb_audio *chip,
+				       struct usb_interface *iface,
+				       struct usb_driver *driver,
+				       const struct snd_usb_audio_quirk *quirk)
+{
+	chip->setup_fmt_after_resume_quirk = 1;
+	return 1;	/* Continue with creating streams and mixer */
+}
+
 /*
  * audio-interface quirks
  *
@@ -554,6 +575,7 @@ int snd_usb_create_quirk(struct snd_usb_audio *chip,
 		[QUIRK_AUDIO_EDIROL_UAXX] = create_uaxx_quirk,
 		[QUIRK_AUDIO_ALIGN_TRANSFER] = create_align_transfer_quirk,
 		[QUIRK_AUDIO_STANDARD_MIXER] = create_standard_mixer_quirk,
+		[QUIRK_SETUP_FMT_AFTER_RESUME] = setup_fmt_after_resume_quirk,
 	};
 
 	if (quirk->type < QUIRK_TYPE_COUNT) {
@@ -721,11 +743,13 @@ static int snd_usb_novation_boot_quirk(struct usb_device *dev)
 static int snd_usb_accessmusic_boot_quirk(struct usb_device *dev)
 {
 	int err, actual_length;
-
 	/* "midi send" enable */
 	static const u8 seq[] = { 0x4e, 0x73, 0x52, 0x01 };
+	void *buf;
 
-	void *buf = kmemdup(seq, ARRAY_SIZE(seq), GFP_KERNEL);
+	if (snd_usb_pipe_sanity_check(dev, usb_sndintpipe(dev, 0x05)))
+		return -EINVAL;
+	buf = kmemdup(seq, ARRAY_SIZE(seq), GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 	err = usb_interrupt_msg(dev, usb_sndintpipe(dev, 0x05), buf,
@@ -750,7 +774,11 @@ static int snd_usb_accessmusic_boot_quirk(struct usb_device *dev)
 
 static int snd_usb_nativeinstruments_boot_quirk(struct usb_device *dev)
 {
-	int ret = usb_control_msg(dev, usb_sndctrlpipe(dev, 0),
+	int ret;
+
+	if (snd_usb_pipe_sanity_check(dev, usb_sndctrlpipe(dev, 0)))
+		return -EINVAL;
+	ret = usb_control_msg(dev, usb_sndctrlpipe(dev, 0),
 				  0xaf, USB_TYPE_VENDOR | USB_RECIP_DEVICE,
 				  1, 0, NULL, 0, 1000);
 
@@ -849,6 +877,38 @@ static int snd_usb_mbox2_boot_quirk(struct usb_device *dev)
 	dev_info(&dev->dev, "Digidesign Mbox 2: 24bit 48kHz");
 
 	return 0; /* Successful boot */
+}
+
+static int snd_usb_axefx3_boot_quirk(struct usb_device *dev)
+{
+	int err;
+
+	dev_dbg(&dev->dev, "Waiting for Axe-Fx III to boot up...\n");
+
+	if (snd_usb_pipe_sanity_check(dev, usb_sndctrlpipe(dev, 0)))
+		return -EINVAL;
+	/* If the Axe-Fx III has not fully booted, it will timeout when trying
+	 * to enable the audio streaming interface. A more generous timeout is
+	 * used here to detect when the Axe-Fx III has finished booting as the
+	 * set interface message will be acked once it has
+	 */
+	err = usb_control_msg(dev, usb_sndctrlpipe(dev, 0),
+				USB_REQ_SET_INTERFACE, USB_RECIP_INTERFACE,
+				1, 1, NULL, 0, 120000);
+	if (err < 0) {
+		dev_err(&dev->dev,
+			"failed waiting for Axe-Fx III to boot: %d\n", err);
+		return err;
+	}
+
+	dev_dbg(&dev->dev, "Axe-Fx III is now ready\n");
+
+	err = usb_set_interface(dev, 1, 0);
+	if (err < 0)
+		dev_dbg(&dev->dev,
+			"error stopping Axe-Fx III interface: %d\n", err);
+
+	return 0;
 }
 
 /*
@@ -1026,6 +1086,8 @@ int snd_usb_apply_boot_quirk(struct usb_device *dev,
 		return snd_usb_fasttrackpro_boot_quirk(dev);
 	case USB_ID(0x047f, 0xc010): /* Plantronics Gamecom 780 */
 		return snd_usb_gamecon780_boot_quirk(dev);
+	case USB_ID(0x2466, 0x8010): /* Fractal Audio Axe-Fx 3 */
+		return snd_usb_axefx3_boot_quirk(dev);
 	}
 
 	return 0;
@@ -1128,18 +1190,6 @@ bool snd_usb_get_sample_rate_quirk(struct snd_usb_audio *chip)
 	/* devices which do not support reading the sample rate. */
 	switch (chip->usb_id) {
 	case USB_ID(0x041E, 0x4080): /* Creative Live Cam VF0610 */
-	case USB_ID(0x045E, 0x075D): /* MS Lifecam Cinema  */
-	case USB_ID(0x045E, 0x076D): /* MS Lifecam HD-5000 */
-	case USB_ID(0x045E, 0x076E): /* MS Lifecam HD-5001 */
-	case USB_ID(0x045E, 0x076F): /* MS Lifecam HD-6000 */
-	case USB_ID(0x045E, 0x0772): /* MS Lifecam Studio */
-	case USB_ID(0x045E, 0x0779): /* MS Lifecam HD-3000 */
-	case USB_ID(0x047F, 0x02F7): /* Plantronics BT-600 */
-	case USB_ID(0x047F, 0x0415): /* Plantronics BT-300 */
-	case USB_ID(0x047F, 0xAA05): /* Plantronics DA45 */
-	case USB_ID(0x047F, 0xC022): /* Plantronics C310 */
-	case USB_ID(0x047F, 0xC02F): /* Plantronics P610 */
-	case USB_ID(0x047F, 0xC036): /* Plantronics C520-M */
 	case USB_ID(0x04D8, 0xFEEA): /* Benchmark DAC1 Pre */
 	case USB_ID(0x0556, 0x0014): /* Phoenix Audio TMX320VC */
 	case USB_ID(0x05A3, 0x9420): /* ELP HD USB Camera */
@@ -1147,40 +1197,36 @@ bool snd_usb_get_sample_rate_quirk(struct snd_usb_audio *chip)
 	case USB_ID(0x074D, 0x3553): /* Outlaw RR2150 (Micronas UAC3553B) */
 	case USB_ID(0x1395, 0x740a): /* Sennheiser DECT */
 	case USB_ID(0x1901, 0x0191): /* GE B850V3 CP2114 audio interface */
-	case USB_ID(0x1de7, 0x0013): /* Phoenix Audio MT202exe */
-	case USB_ID(0x1de7, 0x0014): /* Phoenix Audio TMX320 */
-	case USB_ID(0x1de7, 0x0114): /* Phoenix Audio MT202pcs */
 	case USB_ID(0x21B4, 0x0081): /* AudioQuest DragonFly */
 	case USB_ID(0x2912, 0x30c8): /* Audioengine D1 */
+	case USB_ID(0x413c, 0xa506): /* Dell AE515 sound bar */
+	case USB_ID(0x046d, 0x084c): /* Logitech ConferenceCam Connect */
 		return true;
 	}
+
+	/* devices of these vendors don't support reading rate, either */
+	switch (USB_ID_VENDOR(chip->usb_id)) {
+	case 0x045E: /* MS Lifecam */
+	case 0x047F: /* Plantronics */
+	case 0x1de7: /* Phoenix Audio */
+		return true;
+	}
+
 	return false;
 }
 
 /* ITF-USB DSD based DACs need a vendor cmd to switch
  * between PCM and native DSD mode
- * (2 altsets version)
  */
-static bool is_itf_usb_dsd_2alts_dac(unsigned int id)
+static bool is_itf_usb_dsd_dac(unsigned int id)
 {
 	switch (id) {
+	case USB_ID(0x154e, 0x1002): /* Denon DCD-1500RE */
 	case USB_ID(0x154e, 0x1003): /* Denon DA-300USB */
 	case USB_ID(0x154e, 0x3005): /* Marantz HD-DAC1 */
 	case USB_ID(0x154e, 0x3006): /* Marantz SA-14S1 */
 	case USB_ID(0x1852, 0x5065): /* Luxman DA-06 */
-		return true;
-	}
-	return false;
-}
-
-/* ITF-USB DSD based DACs need a vendor cmd to switch
- * between PCM and native DSD mode
- * (3 altsets version)
- */
-static bool is_itf_usb_dsd_3alts_dac(unsigned int id)
-{
-	switch (id) {
-	case USB_ID(0x0644, 0x8043): /* TEAC UD-501/UD-503/NT-503 */
+	case USB_ID(0x0644, 0x8043): /* TEAC UD-501/UD-501V2/UD-503/NT-503 */
 	case USB_ID(0x0644, 0x8044): /* Esoteric D-05X */
 	case USB_ID(0x0644, 0x804a): /* TEAC UD-301 */
 		return true;
@@ -1194,7 +1240,7 @@ int snd_usb_select_mode_quirk(struct snd_usb_substream *subs,
 	struct usb_device *dev = subs->dev;
 	int err;
 
-	if (is_itf_usb_dsd_2alts_dac(subs->stream->chip->usb_id)) {
+	if (is_itf_usb_dsd_dac(subs->stream->chip->usb_id)) {
 		/* First switch to alt set 0, otherwise the mode switch cmd
 		 * will not be accepted by the DAC
 		 */
@@ -1202,39 +1248,28 @@ int snd_usb_select_mode_quirk(struct snd_usb_substream *subs,
 		if (err < 0)
 			return err;
 
-		mdelay(20); /* Delay needed after setting the interface */
+		msleep(20); /* Delay needed after setting the interface */
 
-		switch (fmt->altsetting) {
-		case 2: /* DSD mode requested */
-		case 1: /* PCM mode requested */
-			err = snd_usb_ctl_msg(dev, usb_sndctrlpipe(dev, 0), 0,
-					      USB_DIR_OUT|USB_TYPE_VENDOR|USB_RECIP_INTERFACE,
-					      fmt->altsetting - 1, 1, NULL, 0);
-			if (err < 0)
-				return err;
-			break;
-		}
-		mdelay(20);
-	} else if (is_itf_usb_dsd_3alts_dac(subs->stream->chip->usb_id)) {
 		/* Vendor mode switch cmd is required. */
-		switch (fmt->altsetting) {
-		case 3: /* DSD mode (DSD_U32) requested */
+		if (fmt->formats & SNDRV_PCM_FMTBIT_DSD_U32_BE) {
+			/* DSD mode (DSD_U32) requested */
 			err = snd_usb_ctl_msg(dev, usb_sndctrlpipe(dev, 0), 0,
 					      USB_DIR_OUT|USB_TYPE_VENDOR|USB_RECIP_INTERFACE,
 					      1, 1, NULL, 0);
 			if (err < 0)
 				return err;
-			break;
 
-		case 2: /* PCM or DOP mode (S32) requested */
-		case 1: /* PCM mode (S16) requested */
+		} else {
+			/* PCM or DOP mode (S32) requested */
+			/* PCM mode (S16) requested */
 			err = snd_usb_ctl_msg(dev, usb_sndctrlpipe(dev, 0), 0,
 					      USB_DIR_OUT|USB_TYPE_VENDOR|USB_RECIP_INTERFACE,
 					      0, 1, NULL, 0);
 			if (err < 0)
 				return err;
-			break;
+
 		}
+		msleep(20);
 	}
 	return 0;
 }
@@ -1281,7 +1316,7 @@ void snd_usb_set_interface_quirk(struct usb_device *dev)
 	switch (USB_ID_VENDOR(chip->usb_id)) {
 	case 0x23ba: /* Playback Design */
 	case 0x0644: /* TEAC Corp. */
-		mdelay(50);
+		msleep(50);
 		break;
 	}
 }
@@ -1301,7 +1336,7 @@ void snd_usb_ctl_msg_quirk(struct usb_device *dev, unsigned int pipe,
 	 */
 	if (USB_ID_VENDOR(chip->usb_id) == 0x23ba &&
 	    (requesttype & USB_TYPE_MASK) == USB_TYPE_CLASS)
-		mdelay(20);
+		msleep(20);
 
 	/*
 	 * "TEAC Corp." products need a 20ms delay after each
@@ -1309,29 +1344,42 @@ void snd_usb_ctl_msg_quirk(struct usb_device *dev, unsigned int pipe,
 	 */
 	if (USB_ID_VENDOR(chip->usb_id) == 0x0644 &&
 	    (requesttype & USB_TYPE_MASK) == USB_TYPE_CLASS)
-		mdelay(20);
+		msleep(20);
 
 	/* ITF-USB DSD based DACs functionality need a delay
 	 * after each class compliant request
 	 */
-	if (is_itf_usb_dsd_2alts_dac(chip->usb_id)
+	if (is_itf_usb_dsd_dac(chip->usb_id)
 	    && (requesttype & USB_TYPE_MASK) == USB_TYPE_CLASS)
-		mdelay(20);
+		msleep(20);
 
-	/* Zoom R16/24, Logitech H650e, Jabra 550a, Kingston HyperX needs a tiny
-	 * delay here, otherwise requests like get/set frequency return as
-	 * failed despite actually succeeding.
+	/*
+	 * Plantronics headsets (C320, C320-M, etc) need a delay to avoid
+	 * random microhpone failures.
+	 */
+	if (USB_ID_VENDOR(chip->usb_id) == 0x047f &&
+	    (requesttype & USB_TYPE_MASK) == USB_TYPE_CLASS)
+		msleep(20);
+
+	/* Zoom R16/24, many Logitech(at least H650e/H570e/BCC950),
+	 * Jabra 550a, Kingston HyperX needs a tiny delay here,
+	 * otherwise requests like get/set frequency return
+	 * as failed despite actually succeeding.
 	 */
 	if ((chip->usb_id == USB_ID(0x1686, 0x00dd) ||
-	     chip->usb_id == USB_ID(0x046d, 0x0a46) ||
+	     USB_ID_VENDOR(chip->usb_id) == 0x046d  || /* Logitech */
 	     chip->usb_id == USB_ID(0x0b0e, 0x0349) ||
 	     chip->usb_id == USB_ID(0x0951, 0x16ad)) &&
 	    (requesttype & USB_TYPE_MASK) == USB_TYPE_CLASS)
-		mdelay(1);
+		usleep_range(1000, 2000);
 
+	/*
+	 * Samsung USBC Headset (AKG) need a tiny delay after each
+	 * class compliant request. (Model number: AAM625R or AAM627R)
+	 */
 	if (chip->usb_id == USB_ID(0x04e8, 0xa051) &&
-	     (requesttype & USB_TYPE_MASK) == USB_TYPE_CLASS)
-		mdelay(5);
+	    (requesttype & USB_TYPE_MASK) == USB_TYPE_CLASS)
+		usleep_range(5000, 6000);
 }
 
 /*
@@ -1345,8 +1393,11 @@ u64 snd_usb_interface_dsd_format_quirks(struct snd_usb_audio *chip,
 					struct audioformat *fp,
 					unsigned int sample_bytes)
 {
+	struct usb_interface *iface;
+
 	/* Playback Designs */
-	if (USB_ID_VENDOR(chip->usb_id) == 0x23ba) {
+	if (USB_ID_VENDOR(chip->usb_id) == 0x23ba &&
+	    USB_ID_PRODUCT(chip->usb_id) < 0x0110) {
 		switch (fp->altsetting) {
 		case 1:
 			fp->dsd_dop = true;
@@ -1362,20 +1413,28 @@ u64 snd_usb_interface_dsd_format_quirks(struct snd_usb_audio *chip,
 
 	/* XMOS based USB DACs */
 	switch (chip->usb_id) {
-	case USB_ID(0x20b1, 0x3008): /* iFi Audio micro/nano iDSD */
-	case USB_ID(0x20b1, 0x2008): /* Matrix Audio X-Sabre */
-	case USB_ID(0x20b1, 0x300a): /* Matrix Audio Mini-i Pro */
-	case USB_ID(0x22d9, 0x0416): /* OPPO HA-1 */
+	case USB_ID(0x1511, 0x0037): /* AURALiC VEGA */
+	case USB_ID(0x21ed, 0xd75a): /* Accuphase DAC-60 option card */
+	case USB_ID(0x2522, 0x0012): /* LH Labs VI DAC Infinity */
 	case USB_ID(0x2772, 0x0230): /* Pro-Ject Pre Box S2 Digital */
 		if (fp->altsetting == 2)
 			return SNDRV_PCM_FMTBIT_DSD_U32_BE;
 		break;
 
-	case USB_ID(0x20b1, 0x000a): /* Gustard DAC-X20U */
-	case USB_ID(0x20b1, 0x2009): /* DIYINHK DSD DXD 384kHz USB to I2S/DSD */
-	case USB_ID(0x20b1, 0x2023): /* JLsounds I2SoverUSB */
-	case USB_ID(0x20b1, 0x3023): /* Aune X1S 32BIT/384 DSD DAC */
+	case USB_ID(0x0d8c, 0x0316): /* Hegel HD12 DSD */
+	case USB_ID(0x10cb, 0x0103): /* The Bit Opus #3; with fp->dsd_raw */
+	case USB_ID(0x16d0, 0x06b2): /* NuPrime DAC-10 */
+	case USB_ID(0x16d0, 0x09dd): /* Encore mDSD */
+	case USB_ID(0x16d0, 0x0733): /* Furutech ADL Stratos */
+	case USB_ID(0x16d0, 0x09db): /* NuPrime Audio DAC-9 */
+	case USB_ID(0x1db5, 0x0003): /* Bryston BDA3 */
+	case USB_ID(0x22e1, 0xca01): /* HDTA Serenade DSD */
+	case USB_ID(0x249c, 0x9326): /* M2Tech Young MkIII */
 	case USB_ID(0x2616, 0x0106): /* PS Audio NuWave DAC */
+	case USB_ID(0x2622, 0x0041): /* Audiolab M-DAC+ */
+	case USB_ID(0x27f7, 0x3002): /* W4S DAC-2v2SE */
+	case USB_ID(0x29a2, 0x0086): /* Mutec MC3+ USB */
+	case USB_ID(0x6b42, 0x0042): /* MSB Technology */
 		if (fp->altsetting == 3)
 			return SNDRV_PCM_FMTBIT_DSD_U32_BE;
 		break;
@@ -1406,17 +1465,133 @@ u64 snd_usb_interface_dsd_format_quirks(struct snd_usb_audio *chip,
 		break;
 	}
 
-	/* ITF-USB DSD based DACs (2 altsets version) */
-	if (is_itf_usb_dsd_2alts_dac(chip->usb_id)) {
-		if (fp->altsetting == 2)
+	/* ITF-USB DSD based DACs */
+	if (is_itf_usb_dsd_dac(chip->usb_id)) {
+		iface = usb_ifnum_to_if(chip->dev, fp->iface);
+
+		/* Altsetting 2 support native DSD if the num of altsets is
+		 * three (0-2),
+		 * Altsetting 3 support native DSD if the num of altsets is
+		 * four (0-3).
+		 */
+		if (fp->altsetting == iface->num_altsetting - 1)
 			return SNDRV_PCM_FMTBIT_DSD_U32_BE;
 	}
 
-	/* ITF-USB DSD based DACs (3 altsets version) */
-	if (is_itf_usb_dsd_3alts_dac(chip->usb_id)) {
-		if (fp->altsetting == 3)
+	/* Mostly generic method to detect many DSD-capable implementations -
+	 * from XMOS/Thesycon
+	 */
+	switch (USB_ID_VENDOR(chip->usb_id)) {
+	case 0x152a:  /* Thesycon devices */
+	case 0x20b1:  /* XMOS based devices */
+	case 0x22d9:  /* Oppo */
+	case 0x23ba:  /* Playback Designs */
+	case 0x25ce:  /* Mytek devices */
+	case 0x278b:  /* Rotel? */
+	case 0x292b:  /* Gustard/Ess based devices */
+	case 0x2972:  /* FiiO devices */
+	case 0x2ab6:  /* T+A devices */
+	case 0x3353:  /* Khadas devices */
+	case 0x3842:  /* EVGA */
+	case 0xc502:  /* HiBy devices */
+		if (fp->dsd_raw)
 			return SNDRV_PCM_FMTBIT_DSD_U32_BE;
+		break;
+	default:
+		break;
+
 	}
 
 	return 0;
+}
+
+void snd_usb_audioformat_attributes_quirk(struct snd_usb_audio *chip,
+					  struct audioformat *fp,
+					  int stream)
+{
+	switch (chip->usb_id) {
+	case USB_ID(0x0a92, 0x0053): /* AudioTrak Optoplay */
+		/* Optoplay sets the sample rate attribute although
+		 * it seems not supporting it in fact.
+		 */
+		fp->attributes &= ~UAC_EP_CS_ATTR_SAMPLE_RATE;
+		break;
+	case USB_ID(0x041e, 0x3020): /* Creative SB Audigy 2 NX */
+	case USB_ID(0x0763, 0x2003): /* M-Audio Audiophile USB */
+		/* doesn't set the sample rate attribute, but supports it */
+		fp->attributes |= UAC_EP_CS_ATTR_SAMPLE_RATE;
+		break;
+	case USB_ID(0x0763, 0x2001):  /* M-Audio Quattro USB */
+	case USB_ID(0x0763, 0x2012):  /* M-Audio Fast Track Pro USB */
+	case USB_ID(0x047f, 0x0ca1): /* plantronics headset */
+	case USB_ID(0x077d, 0x07af): /* Griffin iMic (note that there is
+					an older model 77d:223) */
+	/*
+	 * plantronics headset and Griffin iMic have set adaptive-in
+	 * although it's really not...
+	 */
+		fp->ep_attr &= ~USB_ENDPOINT_SYNCTYPE;
+		if (stream == SNDRV_PCM_STREAM_PLAYBACK)
+			fp->ep_attr |= USB_ENDPOINT_SYNC_ADAPTIVE;
+		else
+			fp->ep_attr |= USB_ENDPOINT_SYNC_SYNC;
+		break;
+	}
+}
+
+bool snd_usb_support_autosuspend_quirk(struct usb_device *dev)
+{
+	struct snd_usb_audio *chip = dev_get_drvdata(&dev->dev);
+
+	if (!chip)
+		return false;
+
+	switch (chip->usb_id) {
+	case USB_ID(0x1963, 0x0020):
+		dev_info(&dev->dev, "snd device not support autosuspend");
+		return false;
+	}
+	return true;
+}
+
+/*
+ * registration quirk:
+ * the registration is skipped if a device matches with the given ID,
+ * unless the interface reaches to the defined one.  This is for delaying
+ * the registration until the last known interface, so that the card and
+ * devices appear at the same time.
+ */
+
+struct registration_quirk {
+	unsigned int usb_id;	/* composed via USB_ID() */
+	unsigned int interface;	/* the interface to trigger register */
+};
+
+#define REG_QUIRK_ENTRY(vendor, product, iface) \
+	{ .usb_id = USB_ID(vendor, product), .interface = (iface) }
+
+static const struct registration_quirk registration_quirks[] = {
+	REG_QUIRK_ENTRY(0x0951, 0x16d8, 2),	/* Kingston HyperX AMP */
+	REG_QUIRK_ENTRY(0x0951, 0x16ed, 2),	/* Kingston HyperX Cloud Alpha S */
+	REG_QUIRK_ENTRY(0x0951, 0x16ea, 2),	/* Kingston HyperX Cloud Flight S */
+	REG_QUIRK_ENTRY(0x0ecb, 0x1f46, 2),	/* JBL Quantum 600 */
+	REG_QUIRK_ENTRY(0x0ecb, 0x1f47, 2),	/* JBL Quantum 800 */
+	REG_QUIRK_ENTRY(0x0ecb, 0x1f4c, 2),	/* JBL Quantum 400 */
+	REG_QUIRK_ENTRY(0x0ecb, 0x2039, 2),	/* JBL Quantum 400 */
+	REG_QUIRK_ENTRY(0x0ecb, 0x203c, 2),	/* JBL Quantum 600 */
+	REG_QUIRK_ENTRY(0x0ecb, 0x203e, 2),	/* JBL Quantum 800 */
+	{ 0 }					/* terminator */
+};
+
+/* return true if skipping registration */
+bool snd_usb_registration_quirk(struct snd_usb_audio *chip, int iface)
+{
+	const struct registration_quirk *q;
+
+	for (q = registration_quirks; q->usb_id; q++)
+		if (chip->usb_id == q->usb_id)
+			return iface != q->interface;
+
+	/* Register as normal */
+	return false;
 }

@@ -1,15 +1,8 @@
-/* Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2011-2012, The Linux Foundation. All rights reserved.
  *
  * Description: CoreSight Program Flow Trace driver
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/kernel.h>
@@ -237,10 +230,8 @@ void etm_set_default(struct etm_config *config)
 
 	config->seq_curr_state = 0x0;
 	config->ctxid_idx = 0x0;
-	for (i = 0; i < ETM_MAX_CTXID_CMP; i++) {
+	for (i = 0; i < ETM_MAX_CTXID_CMP; i++)
 		config->ctxid_pid[i] = 0x0;
-		config->ctxid_vpid[i] = 0x0;
-	}
 
 	config->ctxid_mask = 0x0;
 	/* Setting default to 1024 as per TRM recommendation */
@@ -925,33 +916,33 @@ static const struct dev_pm_ops etm_dev_pm_ops = {
 
 static const struct amba_id etm_ids[] = {
 	{	/* ETM 3.3 */
-		.id	= 0x0003b921,
-		.mask	= 0x0003ffff,
+		.id	= 0x000bb921,
+		.mask	= 0x000fffff,
 		.data	= "ETM 3.3",
 	},
 	{	/* ETM 3.5 - Cortex-A5 */
-		.id	= 0x0003b955,
-		.mask	= 0x0003ffff,
+		.id	= 0x000bb955,
+		.mask	= 0x000fffff,
 		.data	= "ETM 3.5",
 	},
 	{	/* ETM 3.5 */
-		.id	= 0x0003b956,
-		.mask	= 0x0003ffff,
+		.id	= 0x000bb956,
+		.mask	= 0x000fffff,
 		.data	= "ETM 3.5",
 	},
 	{	/* PTM 1.0 */
-		.id	= 0x0003b950,
-		.mask	= 0x0003ffff,
+		.id	= 0x000bb950,
+		.mask	= 0x000fffff,
 		.data	= "PTM 1.0",
 	},
 	{	/* PTM 1.1 */
-		.id	= 0x0003b95f,
-		.mask	= 0x0003ffff,
+		.id	= 0x000bb95f,
+		.mask	= 0x000fffff,
 		.data	= "PTM 1.1",
 	},
 	{	/* PTM 1.1 Qualcomm */
-		.id	= 0x0003006f,
-		.mask	= 0x0003ffff,
+		.id	= 0x000b006f,
+		.mask	= 0x000fffff,
 		.data	= "PTM 1.1",
 	},
 	{ 0, 0},

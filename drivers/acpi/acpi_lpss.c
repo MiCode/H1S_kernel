@@ -16,12 +16,14 @@
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/mutex.h>
+#include <linux/pci.h>
 #include <linux/platform_device.h>
 #include <linux/platform_data/clk-lpss.h>
 #include <linux/platform_data/x86/pmc_atom.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 #include <linux/pwm.h>
+#include <linux/suspend.h>
 #include <linux/delay.h>
 
 #include "internal.h"
@@ -82,6 +84,7 @@ struct lpss_device_desc {
 	size_t prv_size_override;
 	struct property_entry *properties;
 	void (*setup)(struct lpss_private_data *pdata);
+	bool resume_from_noirq;
 };
 
 static const struct lpss_device_desc lpss_dma_desc = {
@@ -291,12 +294,14 @@ static const struct lpss_device_desc byt_i2c_dev_desc = {
 	.flags = LPSS_CLK | LPSS_SAVE_CTX,
 	.prv_offset = 0x800,
 	.setup = byt_i2c_setup,
+	.resume_from_noirq = true,
 };
 
 static const struct lpss_device_desc bsw_i2c_dev_desc = {
 	.flags = LPSS_CLK | LPSS_SAVE_CTX | LPSS_NO_D3_DELAY,
 	.prv_offset = 0x800,
 	.setup = byt_i2c_setup,
+	.resume_from_noirq = true,
 };
 
 static const struct lpss_device_desc bsw_spi_dev_desc = {
@@ -388,13 +393,16 @@ static int register_device_clock(struct acpi_device *adev,
 {
 	const struct lpss_device_desc *dev_desc = pdata->dev_desc;
 	const char *devname = dev_name(&adev->dev);
-	struct clk *clk = ERR_PTR(-ENODEV);
+	struct clk *clk;
 	struct lpss_clk_data *clk_data;
 	const char *parent, *clk_name;
 	void __iomem *prv_base;
 
 	if (!lpss_clk_dev)
 		lpt_register_clock_device();
+
+	if (IS_ERR(lpss_clk_dev))
+		return PTR_ERR(lpss_clk_dev);
 
 	clk_data = platform_get_drvdata(lpss_clk_dev);
 	if (!clk_data)
@@ -451,6 +459,148 @@ out:
 	pdata->clk = clk;
 	clk_register_clkdev(clk, dev_desc->clk_con_id, devname);
 	return 0;
+}
+
+struct lpss_device_links {
+	const char *supplier_hid;
+	const char *supplier_uid;
+	const char *consumer_hid;
+	const char *consumer_uid;
+	u32 flags;
+};
+
+/*
+ * The _DEP method is used to identify dependencies but instead of creating
+ * device links for every handle in _DEP, only links in the following list are
+ * created. That is necessary because, in the general case, _DEP can refer to
+ * devices that might not have drivers, or that are on different buses, or where
+ * the supplier is not enumerated until after the consumer is probed.
+ */
+static const struct lpss_device_links lpss_device_links[] = {
+	{"808622C1", "7", "80860F14", "3", DL_FLAG_PM_RUNTIME},
+};
+
+static bool hid_uid_match(const char *hid1, const char *uid1,
+			  const char *hid2, const char *uid2)
+{
+	return !strcmp(hid1, hid2) && uid1 && uid2 && !strcmp(uid1, uid2);
+}
+
+static bool acpi_lpss_is_supplier(struct acpi_device *adev,
+				  const struct lpss_device_links *link)
+{
+	return hid_uid_match(acpi_device_hid(adev), acpi_device_uid(adev),
+			     link->supplier_hid, link->supplier_uid);
+}
+
+static bool acpi_lpss_is_consumer(struct acpi_device *adev,
+				  const struct lpss_device_links *link)
+{
+	return hid_uid_match(acpi_device_hid(adev), acpi_device_uid(adev),
+			     link->consumer_hid, link->consumer_uid);
+}
+
+struct hid_uid {
+	const char *hid;
+	const char *uid;
+};
+
+static int match_hid_uid(struct device *dev, void *data)
+{
+	struct acpi_device *adev = ACPI_COMPANION(dev);
+	struct hid_uid *id = data;
+
+	if (!adev)
+		return 0;
+
+	return hid_uid_match(acpi_device_hid(adev), acpi_device_uid(adev),
+			     id->hid, id->uid);
+}
+
+static struct device *acpi_lpss_find_device(const char *hid, const char *uid)
+{
+	struct device *dev;
+
+	struct hid_uid data = {
+		.hid = hid,
+		.uid = uid,
+	};
+
+	dev = bus_find_device(&platform_bus_type, NULL, &data, match_hid_uid);
+	if (dev)
+		return dev;
+
+	return bus_find_device(&pci_bus_type, NULL, &data, match_hid_uid);
+}
+
+static bool acpi_lpss_dep(struct acpi_device *adev, acpi_handle handle)
+{
+	struct acpi_handle_list dep_devices;
+	acpi_status status;
+	int i;
+
+	if (!acpi_has_method(adev->handle, "_DEP"))
+		return false;
+
+	status = acpi_evaluate_reference(adev->handle, "_DEP", NULL,
+					 &dep_devices);
+	if (ACPI_FAILURE(status)) {
+		dev_dbg(&adev->dev, "Failed to evaluate _DEP.\n");
+		return false;
+	}
+
+	for (i = 0; i < dep_devices.count; i++) {
+		if (dep_devices.handles[i] == handle)
+			return true;
+	}
+
+	return false;
+}
+
+static void acpi_lpss_link_consumer(struct device *dev1,
+				    const struct lpss_device_links *link)
+{
+	struct device *dev2;
+
+	dev2 = acpi_lpss_find_device(link->consumer_hid, link->consumer_uid);
+	if (!dev2)
+		return;
+
+	if (acpi_lpss_dep(ACPI_COMPANION(dev2), ACPI_HANDLE(dev1)))
+		device_link_add(dev2, dev1, link->flags);
+
+	put_device(dev2);
+}
+
+static void acpi_lpss_link_supplier(struct device *dev1,
+				    const struct lpss_device_links *link)
+{
+	struct device *dev2;
+
+	dev2 = acpi_lpss_find_device(link->supplier_hid, link->supplier_uid);
+	if (!dev2)
+		return;
+
+	if (acpi_lpss_dep(ACPI_COMPANION(dev1), ACPI_HANDLE(dev2)))
+		device_link_add(dev1, dev2, link->flags);
+
+	put_device(dev2);
+}
+
+static void acpi_lpss_create_device_links(struct acpi_device *adev,
+					  struct platform_device *pdev)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(lpss_device_links); i++) {
+		const struct lpss_device_links *link = &lpss_device_links[i];
+
+		if (acpi_lpss_is_supplier(adev, link))
+			acpi_lpss_link_consumer(&pdev->dev, link);
+
+		if (acpi_lpss_is_consumer(adev, link))
+			acpi_lpss_link_supplier(&pdev->dev, link);
+	}
 }
 
 static int acpi_lpss_create_device(struct acpi_device *adev,
@@ -523,6 +673,7 @@ static int acpi_lpss_create_device(struct acpi_device *adev,
 	adev->driver_data = pdata;
 	pdev = acpi_create_platform_device(adev, dev_desc->properties);
 	if (!IS_ERR_OR_NULL(pdev)) {
+		acpi_lpss_create_device_links(adev, pdev);
 		return 1;
 	}
 
@@ -716,7 +867,7 @@ static int acpi_lpss_activate(struct device *dev)
 	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
 	int ret;
 
-	ret = acpi_dev_runtime_resume(dev);
+	ret = acpi_dev_resume(dev);
 	if (ret)
 		return ret;
 
@@ -736,42 +887,8 @@ static int acpi_lpss_activate(struct device *dev)
 
 static void acpi_lpss_dismiss(struct device *dev)
 {
-	acpi_dev_runtime_suspend(dev);
+	acpi_dev_suspend(dev, false);
 }
-
-#ifdef CONFIG_PM_SLEEP
-static int acpi_lpss_suspend_late(struct device *dev)
-{
-	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
-	int ret;
-
-	ret = pm_generic_suspend_late(dev);
-	if (ret)
-		return ret;
-
-	if (pdata->dev_desc->flags & LPSS_SAVE_CTX)
-		acpi_lpss_save_ctx(dev, pdata);
-
-	return acpi_dev_suspend_late(dev);
-}
-
-static int acpi_lpss_resume_early(struct device *dev)
-{
-	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
-	int ret;
-
-	ret = acpi_dev_resume_early(dev);
-	if (ret)
-		return ret;
-
-	acpi_lpss_d3_to_d0_delay(pdata);
-
-	if (pdata->dev_desc->flags & LPSS_SAVE_CTX)
-		acpi_lpss_restore_ctx(dev, pdata);
-
-	return pm_generic_resume_early(dev);
-}
-#endif /* CONFIG_PM_SLEEP */
 
 /* IOSF SB for LPSS island */
 #define LPSS_IOSF_UNIT_LPIOEP		0xA0
@@ -790,6 +907,7 @@ static int acpi_lpss_resume_early(struct device *dev)
 #define LPSS_GPIODEF0_DMA_LLP		BIT(13)
 
 static DEFINE_MUTEX(lpss_iosf_mutex);
+static bool lpss_iosf_d3_entered = true;
 
 static void lpss_iosf_enter_d3_state(void)
 {
@@ -832,6 +950,9 @@ static void lpss_iosf_enter_d3_state(void)
 
 	iosf_mbi_modify(LPSS_IOSF_UNIT_LPIOEP, MBI_CR_WRITE,
 			LPSS_IOSF_GPIODEF0, value1, mask1);
+
+	lpss_iosf_d3_entered = true;
+
 exit:
 	mutex_unlock(&lpss_iosf_mutex);
 }
@@ -846,6 +967,11 @@ static void lpss_iosf_exit_d3_state(void)
 
 	mutex_lock(&lpss_iosf_mutex);
 
+	if (!lpss_iosf_d3_entered)
+		goto exit;
+
+	lpss_iosf_d3_entered = false;
+
 	iosf_mbi_modify(LPSS_IOSF_UNIT_LPIOEP, MBI_CR_WRITE,
 			LPSS_IOSF_GPIODEF0, value1, mask1);
 
@@ -855,35 +981,33 @@ static void lpss_iosf_exit_d3_state(void)
 	iosf_mbi_modify(LPSS_IOSF_UNIT_LPIO1, MBI_CFG_WRITE,
 			LPSS_IOSF_PMCSR, value2, mask2);
 
+exit:
 	mutex_unlock(&lpss_iosf_mutex);
 }
 
-static int acpi_lpss_runtime_suspend(struct device *dev)
+static int acpi_lpss_suspend(struct device *dev, bool wakeup)
 {
 	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
 	int ret;
 
-	ret = pm_generic_runtime_suspend(dev);
-	if (ret)
-		return ret;
-
 	if (pdata->dev_desc->flags & LPSS_SAVE_CTX)
 		acpi_lpss_save_ctx(dev, pdata);
 
-	ret = acpi_dev_runtime_suspend(dev);
+	ret = acpi_dev_suspend(dev, wakeup);
 
 	/*
 	 * This call must be last in the sequence, otherwise PMC will return
 	 * wrong status for devices being about to be powered off. See
 	 * lpss_iosf_enter_d3_state() for further information.
 	 */
-	if (lpss_quirks & LPSS_QUIRK_ALWAYS_POWER_ON && iosf_mbi_available())
+	if (acpi_target_system_state() == ACPI_STATE_S0 &&
+	    lpss_quirks & LPSS_QUIRK_ALWAYS_POWER_ON && iosf_mbi_available())
 		lpss_iosf_enter_d3_state();
 
 	return ret;
 }
 
-static int acpi_lpss_runtime_resume(struct device *dev)
+static int acpi_lpss_resume(struct device *dev)
 {
 	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
 	int ret;
@@ -895,7 +1019,7 @@ static int acpi_lpss_runtime_resume(struct device *dev)
 	if (lpss_quirks & LPSS_QUIRK_ALWAYS_POWER_ON && iosf_mbi_available())
 		lpss_iosf_exit_d3_state();
 
-	ret = acpi_dev_runtime_resume(dev);
+	ret = acpi_dev_resume(dev);
 	if (ret)
 		return ret;
 
@@ -904,7 +1028,181 @@ static int acpi_lpss_runtime_resume(struct device *dev)
 	if (pdata->dev_desc->flags & LPSS_SAVE_CTX)
 		acpi_lpss_restore_ctx(dev, pdata);
 
-	return pm_generic_runtime_resume(dev);
+	return 0;
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int acpi_lpss_do_suspend_late(struct device *dev)
+{
+	int ret;
+
+	if (dev_pm_smart_suspend_and_suspended(dev))
+		return 0;
+
+	ret = pm_generic_suspend_late(dev);
+	return ret ? ret : acpi_lpss_suspend(dev, device_may_wakeup(dev));
+}
+
+static int acpi_lpss_suspend_late(struct device *dev)
+{
+	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
+
+	if (pdata->dev_desc->resume_from_noirq)
+		return 0;
+
+	return acpi_lpss_do_suspend_late(dev);
+}
+
+static int acpi_lpss_suspend_noirq(struct device *dev)
+{
+	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
+	int ret;
+
+	if (pdata->dev_desc->resume_from_noirq) {
+		/*
+		 * The driver's ->suspend_late callback will be invoked by
+		 * acpi_lpss_do_suspend_late(), with the assumption that the
+		 * driver really wanted to run that code in ->suspend_noirq, but
+		 * it could not run after acpi_dev_suspend() and the driver
+		 * expected the latter to be called in the "late" phase.
+		 */
+		ret = acpi_lpss_do_suspend_late(dev);
+		if (ret)
+			return ret;
+	}
+
+	return acpi_subsys_suspend_noirq(dev);
+}
+
+static int acpi_lpss_do_resume_early(struct device *dev)
+{
+	int ret = acpi_lpss_resume(dev);
+
+	return ret ? ret : pm_generic_resume_early(dev);
+}
+
+static int acpi_lpss_resume_early(struct device *dev)
+{
+	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
+
+	if (pdata->dev_desc->resume_from_noirq)
+		return 0;
+
+	return acpi_lpss_do_resume_early(dev);
+}
+
+static int acpi_lpss_resume_noirq(struct device *dev)
+{
+	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
+	int ret;
+
+	/* Follow acpi_subsys_resume_noirq(). */
+	if (dev_pm_may_skip_resume(dev))
+		return 0;
+
+	if (dev_pm_smart_suspend_and_suspended(dev))
+		pm_runtime_set_active(dev);
+
+	ret = pm_generic_resume_noirq(dev);
+	if (ret)
+		return ret;
+
+	if (!pdata->dev_desc->resume_from_noirq)
+		return 0;
+
+	/*
+	 * The driver's ->resume_early callback will be invoked by
+	 * acpi_lpss_do_resume_early(), with the assumption that the driver
+	 * really wanted to run that code in ->resume_noirq, but it could not
+	 * run before acpi_dev_resume() and the driver expected the latter to be
+	 * called in the "early" phase.
+	 */
+	return acpi_lpss_do_resume_early(dev);
+}
+
+static int acpi_lpss_do_restore_early(struct device *dev)
+{
+	int ret = acpi_lpss_resume(dev);
+
+	return ret ? ret : pm_generic_restore_early(dev);
+}
+
+static int acpi_lpss_restore_early(struct device *dev)
+{
+	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
+
+	if (pdata->dev_desc->resume_from_noirq)
+		return 0;
+
+	return acpi_lpss_do_restore_early(dev);
+}
+
+static int acpi_lpss_restore_noirq(struct device *dev)
+{
+	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
+	int ret;
+
+	ret = pm_generic_restore_noirq(dev);
+	if (ret)
+		return ret;
+
+	if (!pdata->dev_desc->resume_from_noirq)
+		return 0;
+
+	/* This is analogous to what happens in acpi_lpss_resume_noirq(). */
+	return acpi_lpss_do_restore_early(dev);
+}
+
+static int acpi_lpss_do_poweroff_late(struct device *dev)
+{
+	int ret = pm_generic_poweroff_late(dev);
+
+	return ret ? ret : acpi_lpss_suspend(dev, device_may_wakeup(dev));
+}
+
+static int acpi_lpss_poweroff_late(struct device *dev)
+{
+	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
+
+	if (dev_pm_smart_suspend_and_suspended(dev))
+		return 0;
+
+	if (pdata->dev_desc->resume_from_noirq)
+		return 0;
+
+	return acpi_lpss_do_poweroff_late(dev);
+}
+
+static int acpi_lpss_poweroff_noirq(struct device *dev)
+{
+	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
+
+	if (dev_pm_smart_suspend_and_suspended(dev))
+		return 0;
+
+	if (pdata->dev_desc->resume_from_noirq) {
+		/* This is analogous to the acpi_lpss_suspend_noirq() case. */
+		int ret = acpi_lpss_do_poweroff_late(dev);
+		if (ret)
+			return ret;
+	}
+
+	return pm_generic_poweroff_noirq(dev);
+}
+#endif /* CONFIG_PM_SLEEP */
+
+static int acpi_lpss_runtime_suspend(struct device *dev)
+{
+	int ret = pm_generic_runtime_suspend(dev);
+
+	return ret ? ret : acpi_lpss_suspend(dev, true);
+}
+
+static int acpi_lpss_runtime_resume(struct device *dev)
+{
+	int ret = acpi_lpss_resume(dev);
+
+	return ret ? ret : pm_generic_runtime_resume(dev);
 }
 #endif /* CONFIG_PM */
 
@@ -917,14 +1215,18 @@ static struct dev_pm_domain acpi_lpss_pm_domain = {
 #ifdef CONFIG_PM
 #ifdef CONFIG_PM_SLEEP
 		.prepare = acpi_subsys_prepare,
-		.complete = pm_complete_with_resume_check,
+		.complete = acpi_subsys_complete,
 		.suspend = acpi_subsys_suspend,
 		.suspend_late = acpi_lpss_suspend_late,
+		.suspend_noirq = acpi_lpss_suspend_noirq,
+		.resume_noirq = acpi_lpss_resume_noirq,
 		.resume_early = acpi_lpss_resume_early,
 		.freeze = acpi_subsys_freeze,
-		.poweroff = acpi_subsys_suspend,
-		.poweroff_late = acpi_lpss_suspend_late,
-		.restore_early = acpi_lpss_resume_early,
+		.poweroff = acpi_subsys_poweroff,
+		.poweroff_late = acpi_lpss_poweroff_late,
+		.poweroff_noirq = acpi_lpss_poweroff_noirq,
+		.restore_noirq = acpi_lpss_restore_noirq,
+		.restore_early = acpi_lpss_restore_early,
 #endif
 		.runtime_suspend = acpi_lpss_runtime_suspend,
 		.runtime_resume = acpi_lpss_runtime_resume,

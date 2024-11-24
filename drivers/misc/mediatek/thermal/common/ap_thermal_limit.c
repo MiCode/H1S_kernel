@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/version.h>
@@ -25,18 +17,15 @@
 #include <tscpu_settings.h> /* needed by tscpu_warn */
 #include <ap_thermal_limit.h>
 #include <mt-plat/aee.h>
-#if (CONFIG_THERMAL_AEE_RR_REC == 1)
-#include <mtk_ram_console.h>
-#endif
+
 
 #if defined(ATM_USES_PPM)
+#if defined(CONFIG_MTK_PPM)
 #include "mtk_ppm_api.h"
+#endif
 #else
-#ifndef CONFIG_MACH_MT8168
 #include "mt_cpufreq.h"
 #endif
-#endif
-
 #if defined(THERMAL_VPU_SUPPORT)
 #if defined(CONFIG_MTK_APUSYS_SUPPORT)
 #include "apu_power_table.h"
@@ -52,7 +41,6 @@
 #include "mdla_dvfs.h"
 #endif
 #endif
-
 
 /*=============================================================
  * Local variable definition

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 #include <linux/cdev.h>
 #include <linux/device.h>
@@ -21,12 +13,123 @@
 #ifdef CONFIG_COMPAT
 #include <linux/compat.h>
 #endif
-#include <mt-plat/mtk_ccci_common.h>
+#include "mt-plat/mtk_ccci_common.h"
 #include "ccci_fsm.h"
 #include "port_smem.h"
 
 #define TAG SMEM
 
+#define DUMMY_PAGE_SIZE (128)
+#define DUMMY_PADDING_CNT (5)
+
+#define CTRL_PAGE_SIZE (1024)
+#define CTRL_PAGE_NUM (32)
+
+#define MD_EX_PAGE_SIZE (20*1024)
+#define MD_EX_PAGE_NUM  (6)
+
+
+/*
+ *  Note : Moidy this size will affect dhl frame size in this page
+ *  Minimum : 352B to reserve 256B for header frame
+ */
+#define MD_HW_PAGE_SIZE (512)
+
+/* replace with HW page */
+#define MD_BUF1_PAGE_SIZE (MD_HW_PAGE_SIZE)
+#define MD_BUF1_PAGE_NUM  (72)
+#define AP_BUF1_PAGE_SIZE (1024)
+#define AP_BUF1_PAGE_NUM  (32)
+
+#define MD_BUF2_0_PAGE_SIZE (MD_HW_PAGE_SIZE)
+#define MD_BUF2_1_PAGE_SIZE (MD_HW_PAGE_SIZE)
+#define MD_BUF2_2_PAGE_SIZE (MD_HW_PAGE_SIZE)
+
+#define MD_BUF2_0_PAGE_NUM (64)
+#define MD_BUF2_1_PAGE_NUM (64)
+#define MD_BUF2_2_PAGE_NUM (256)
+
+#define MD_MDM_PAGE_SIZE (MD_HW_PAGE_SIZE)
+#define MD_MDM_PAGE_NUM  (32)
+
+#define AP_MDM_PAGE_SIZE (1024)
+#define AP_MDM_PAGE_NUM  (16)
+
+#define MD_META_PAGE_SIZE (65*1024)
+#define MD_META_PAGE_NUM (8)
+
+#define AP_META_PAGE_SIZE (63*1024)
+
+/*kernel 4.14 diff kernel 4.19
+kernel4.14中
+MT6765-----GEN93
+MT6833-----GEN97
+MT6853 (MT6877)------GEN97
+#define AP_META_PAGE_SIZE (65*1024)
+
+其他部分
+#define AP_META_PAGE_SIZE (63*1024)
+kernel4.19中
+#define AP_META_PAGE_SIZE (63*1024)
+*/
+
+#define AP_META_PAGE_NUM (8)
+
+struct ccci_ccb_config ccb_configs[] = {
+	{SMEM_USER_CCB_DHL, P_CORE, CTRL_PAGE_SIZE,
+			CTRL_PAGE_SIZE, CTRL_PAGE_SIZE*CTRL_PAGE_NUM,
+			CTRL_PAGE_SIZE*CTRL_PAGE_NUM}, /* Ctrl */
+	{SMEM_USER_CCB_DHL, P_CORE, MD_EX_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, MD_EX_PAGE_SIZE*MD_EX_PAGE_NUM,
+			DUMMY_PAGE_SIZE},			/* exception */
+	{SMEM_USER_CCB_DHL, P_CORE, MD_BUF1_PAGE_SIZE,
+	 AP_BUF1_PAGE_SIZE, (MD_BUF1_PAGE_SIZE*MD_BUF1_PAGE_NUM),
+			AP_BUF1_PAGE_SIZE*AP_BUF1_PAGE_NUM},/* PS */
+	{SMEM_USER_CCB_DHL, P_CORE, MD_BUF2_0_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, MD_BUF2_0_PAGE_SIZE*MD_BUF2_0_PAGE_NUM,
+			DUMMY_PAGE_SIZE},     /* HWLOGGER1 */
+	{SMEM_USER_CCB_DHL, P_CORE, MD_BUF2_1_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, MD_BUF2_1_PAGE_SIZE*MD_BUF2_1_PAGE_NUM,
+			DUMMY_PAGE_SIZE},     /* HWLOGGER2  */
+	{SMEM_USER_CCB_DHL, P_CORE, MD_BUF2_2_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, MD_BUF2_2_PAGE_SIZE*MD_BUF2_2_PAGE_NUM,
+			DUMMY_PAGE_SIZE},     /* HWLOGGER3 */
+	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
+	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
+	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
+	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
+	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
+	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
+	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
+	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
+	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
+	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
+	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
+	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
+		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE*DUMMY_PADDING_CNT,
+		DUMMY_PAGE_SIZE},
+	{SMEM_USER_CCB_MD_MONITOR, P_CORE, MD_MDM_PAGE_SIZE,
+		 AP_MDM_PAGE_SIZE, MD_MDM_PAGE_SIZE*MD_MDM_PAGE_NUM,
+		AP_MDM_PAGE_SIZE*AP_MDM_PAGE_NUM},     /* MDM */
+	{SMEM_USER_CCB_META, P_CORE, MD_META_PAGE_SIZE,
+		AP_META_PAGE_SIZE, MD_META_PAGE_SIZE*MD_META_PAGE_NUM,
+		AP_META_PAGE_SIZE*AP_META_PAGE_NUM},   /* META */
+};
+unsigned int ccb_configs_len =
+			sizeof(ccb_configs)/sizeof(struct ccci_ccb_config);
+			
+			
 #ifdef DEBUG_FOR_CCB
 static struct buffer_header *s_ccb_ctl_head_tbl;
 static unsigned int *s_dl_last_w;
@@ -35,7 +138,7 @@ static unsigned int s_dl_active_bitmap;
 static unsigned int dl_active_scan(void)
 {
 	unsigned int i;
-	struct buffer_header *ptr;
+	struct buffer_header *ptr = NULL;
 	unsigned int bit_mask;
 
 	if (!s_ccb_ctl_head_tbl)
@@ -115,7 +218,7 @@ static enum hrtimer_restart smem_tx_timer_func(struct hrtimer *timer)
 static void collect_ccb_info(int md_id, struct ccci_smem_port *smem_port)
 {
 	unsigned int i, j, len, curr_size;
-	struct ccci_smem_region *prev, *curr;
+	struct ccci_smem_region *prev = NULL, *curr = NULL;
 
 	if (md_id != MD_SYS1)
 		return;
@@ -330,7 +433,7 @@ int port_smem_rx_wakeup(struct port_t *port)
 	smem_port->wakeup = 0xFFFFFFFF;
 	spin_unlock_irqrestore(&smem_port->write_lock, flags);
 
-	__pm_wakeup_event(&port->rx_wakelock, jiffies_to_msecs(HZ));
+	__pm_wakeup_event(port->rx_wakelock, jiffies_to_msecs(HZ));
 	CCCI_DEBUG_LOG(md_id, TAG, "wakeup port.\n");
 #ifdef DEBUG_FOR_CCB
 	s_dl_active_bitmap |= dl_active_scan();
@@ -400,7 +503,7 @@ long port_ccb_ioctl(struct port_t *port, unsigned int cmd, unsigned long arg)
 	struct ccci_smem_region *ccb_ctl =
 		ccci_md_get_smem_by_user_id(md_id, SMEM_USER_RAW_CCB_CTRL);
 	struct ccb_ctrl_info ctrl_info;
-	struct port_t *s_port;
+	struct port_t *s_port = NULL;
 	struct ccci_smem_port *smem_port =
 		(struct ccci_smem_port *)port->private_data;
 
@@ -483,7 +586,7 @@ long port_ccb_ioctl(struct port_t *port, unsigned int cmd, unsigned long arg)
 		/* use user_id as input param, which is the array index,
 		 * and it will override user space's ID value
 		 */
-		if (in_ccb.user_id > ccb_configs_len) {
+		if (in_ccb.user_id >= ccb_configs_len) {
 			ret = -EINVAL;
 			break;
 		}
@@ -512,51 +615,8 @@ long port_smem_ioctl(struct port_t *port, unsigned int cmd, unsigned long arg)
 	unsigned int data;
 	struct ccci_smem_port *smem_port =
 		(struct ccci_smem_port *)port->private_data;
-	unsigned char *ptr;
-	struct ccci_ccb_debug debug_in, debug_out;
-	struct ccci_smem_region *ccb_dhl =
-		ccci_md_get_smem_by_user_id(md_id, SMEM_USER_CCB_DHL);
-
-	ptr = NULL;
 
 	switch (cmd) {
-	case CCCI_IOC_GET_CCB_DEBUG_VAL:
-		if ((smem_port->addr_phy == 0)
-			|| (smem_port->length == 0)) {
-			ret = -EFAULT;
-			break;
-		}
-		if (copy_from_user(&debug_in, (void __user *)arg,
-			sizeof(struct ccci_ccb_debug))) {
-			CCCI_ERROR_LOG(md_id, TAG,
-				"set user_id fail: copy_from_user fail!\n");
-		} else {
-			CCCI_DEBUG_LOG(md_id, TAG,
-				"get buf_num=%d, page_num=%d\n",
-				debug_in.buffer_id, debug_in.page_id);
-		}
-		memset(&debug_out, 0, sizeof(debug_out));
-		if (debug_in.buffer_id == 0) {
-			ptr = (char *)ccb_dhl->base_ap_view_vir +
-			ccb_configs[0].dl_buff_size +
-			debug_in.page_id*ccb_configs[0].ul_page_size + 8;
-			debug_out.value = *ptr;
-		} else if (debug_in.buffer_id == 1) {
-			ptr  = (char *)ccb_dhl->base_ap_view_vir +
-			ccb_configs[0].dl_buff_size +
-			ccb_configs[0].ul_buff_size +
-			ccb_configs[1].dl_buff_size +
-			debug_in.page_id*ccb_configs[1].ul_page_size + 8;
-			debug_out.value = *ptr;
-		} else
-			CCCI_ERROR_LOG(md_id, TAG, "wrong buffer num\n");
-
-		if (copy_to_user((void __user *)arg, &debug_out,
-			sizeof(struct ccci_ccb_debug)))
-			CCCI_ERROR_LOG(md_id, TAG,
-				"copy_to_user ccb failed !!\n");
-
-		break;
 	case CCCI_IOC_SMEM_BASE:
 		smem_port = (struct ccci_smem_port *)port->private_data;
 		CCCI_NORMAL_LOG(md_id, TAG, "smem_port->addr_phy=%lx\n",
@@ -761,10 +821,10 @@ static const struct file_operations smem_dev_fops = {
 
 int port_smem_init(struct port_t *port)
 {
-	struct cdev *dev;
+	struct cdev *dev = NULL;
 	int ret = 0;
 	int md_id = port->md_id;
-	struct ccci_smem_port *smem_port;
+	struct ccci_smem_port *smem_port = NULL;
 	struct ccci_smem_region *smem_region =
 		ccci_md_get_smem_by_user_id(md_id, port->minor);
 
@@ -797,6 +857,11 @@ int port_smem_init(struct port_t *port)
 
 	port->private_data = smem_port =
 		kzalloc(sizeof(struct ccci_smem_port), GFP_KERNEL);
+	if (smem_port == NULL) {
+		CCCI_ERROR_LOG(port->md_id, CHAR,
+			"alloc ccci_smem_port fail\n");
+		return -1;
+	}
 	kmemleak_ignore(smem_port);
 	/*user ID is from 0*/
 	smem_port->user_id = port->minor - CCCI_SMEM_MINOR_BASE;
@@ -822,8 +887,15 @@ int port_smem_init(struct port_t *port)
 	smem_port->poll_save_idx = 0;
 }
 	s_dl_last_w = kmalloc(sizeof(int) * ccb_configs_len, GFP_KERNEL);
+	if (!s_dl_last_w) {
+		CCCI_ERROR_LOG(port->md_id, CHAR,
+			"%s:kmalloc s_dl_last_w fail\n",
+			__func__);
+		return -1;
+	}
 	kmemleak_ignore(s_dl_last_w);
 #endif
+
 	return 0;
 }
 

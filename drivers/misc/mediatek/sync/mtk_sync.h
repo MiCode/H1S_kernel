@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Joey Pan <joey.pan@mediatek.com>
  */
 
 
@@ -27,6 +20,7 @@
 
 #include <linux/version.h>
 #include <linux/dma-fence.h>
+//#include <../drivers/staging/android/sw_sync.h>
 
 /**
  * struct sync_timeline - sync object
@@ -64,14 +58,11 @@ struct sync_pt {
 	struct rb_node node;
 };
 
-
-//#include <../drivers/staging/android/sw_sync.h>
-
 /*
  * sync_timeline, sync_fence data structure
  */
 
-struct fence_data {
+struct mtk_sync_create_fence_data {
 	__u32 value;
 	char name[32];
 	__s32 fence;	/* fd of new fence */
@@ -81,6 +72,7 @@ struct fence_data {
 /*
  * sync_timeline, sync_fence API
  */
+//extern struct sync_timeline *sync_timeline_create(const char *name); //cc
 
 /**
  * timeline_create() - creates a sync object
@@ -122,7 +114,8 @@ void timeline_inc(struct sync_timeline *obj, u32 value);
  * and assign the sync point to a newly created fence named @data->name.
  * A file descriptor binded with the fence is stored in @data->fence.
  */
-int fence_create(struct sync_timeline *obj, struct fence_data *data);
+int fence_create(struct sync_timeline *obj,
+		 struct mtk_sync_create_fence_data *data);
 
 #endif /* __KERNEL __ */
 

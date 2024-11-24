@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: CY Huang <cy_huang@richtek.com>
  */
 
 #ifndef __RT5509_H
@@ -18,7 +11,7 @@
 #include <mt-plat/rt-regmap.h>
 
 #define RT5509_DEVICE_NAME		"rt5509"
-#define RT5509_DRV_VER			"1.0.15_M"
+#define RT5509_DRV_VER			"1.0.14_M"
 
 #ifdef CONFIG_RT_REGMAP
 #define RT5509_SIMULATE_DEVICE	0
@@ -70,16 +63,16 @@ struct rt5509_calib_classdev {
 	int32_t rspkmin;
 	int32_t rspkmax;
 	int32_t alphaspk;
-	int (*trigger_read)(struct rt5509_calib_classdev *);
-	int (*trigger_write)(struct rt5509_calib_classdev *);
-	int (*trigger_calculation)(struct rt5509_calib_classdev *);
+	int (*trigger_read)(struct rt5509_calib_classdev *calib_dev);
+	int (*trigger_write)(struct rt5509_calib_classdev *calib_dev);
+	int (*trigger_calculation)(struct rt5509_calib_classdev *calib_dev);
 };
 
 struct rt5509_chip {
 	struct i2c_client *i2c;
 	struct device *dev;
 	struct rt5509_pdata *pdata;
-	struct snd_soc_codec *codec;
+	struct snd_soc_component *component;
 	struct platform_device *pdev;
 	struct rt5509_calib_classdev calib_dev;
 	struct rt_regmap_device *rd;
@@ -87,9 +80,9 @@ struct rt5509_chip {
 	void *sim;
 #endif /* #if RT5509_SIMULATE_DEVICE */
 	struct semaphore io_semaphore;
-	struct mutex var_lock;
-	int power_count;
+	atomic_t power_count;
 	u8 chip_rev;
+	u8 mode_store;
 	u8 func_en;
 	u8 spk_prot_en;
 	u8 alc_gain;

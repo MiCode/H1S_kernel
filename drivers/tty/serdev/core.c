@@ -1,31 +1,73 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016-2017 Linaro Ltd., Rob Herring <robh@kernel.org>
  *
  * Based on drivers/spmi/spmi.c:
  * Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
+#include <linux/acpi.h>
 #include <linux/errno.h>
 #include <linux/idr.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 #include <linux/serdev.h>
 #include <linux/slab.h>
 
 static bool is_registered;
 static DEFINE_IDA(ctrl_ida);
+
+static ssize_t modalias_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
+{
+	int len;
+
+	len = acpi_device_modalias(dev, buf, PAGE_SIZE - 1);
+	if (len != -ENODEV)
+		return len;
+
+	len = of_device_modalias(dev, buf, PAGE_SIZE);
+	if (len != -ENODEV)
+		return len;
+
+	if (dev->parent->parent->bus == &platform_bus_type) {
+		struct platform_device *pdev =
+			to_platform_device(dev->parent->parent);
+
+		len = snprintf(buf, PAGE_SIZE, "platform:%s\n", pdev->name);
+	}
+
+	return len;
+}
+static DEVICE_ATTR_RO(modalias);
+
+static struct attribute *serdev_device_attrs[] = {
+	&dev_attr_modalias.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(serdev_device);
+
+static int serdev_device_uevent(struct device *dev, struct kobj_uevent_env *env)
+{
+	int rc;
+
+	rc = acpi_device_uevent_modalias(dev, env);
+	if (rc != -ENODEV)
+		return rc;
+
+	rc = of_device_uevent_modalias(dev, env);
+	if (rc != -ENODEV)
+		return rc;
+
+	if (dev->parent->parent->bus == &platform_bus_type)
+		rc = dev->parent->parent->bus->uevent(dev->parent->parent, env);
+
+	return rc;
+}
 
 static void serdev_device_release(struct device *dev)
 {
@@ -34,8 +76,15 @@ static void serdev_device_release(struct device *dev)
 }
 
 static const struct device_type serdev_device_type = {
+	.groups		= serdev_device_groups,
+	.uevent		= serdev_device_uevent,
 	.release	= serdev_device_release,
 };
+
+static bool is_serdev_device(const struct device *dev)
+{
+	return dev->type == &serdev_device_type;
+}
 
 static void serdev_ctrl_release(struct device *dev)
 {
@@ -50,7 +99,11 @@ static const struct device_type serdev_ctrl_type = {
 
 static int serdev_device_match(struct device *dev, struct device_driver *drv)
 {
-	/* TODO: ACPI matching */
+	if (!is_serdev_device(dev))
+		return 0;
+
+	if (acpi_driver_match_device(dev, drv))
+		return 1;
 
 	if (of_driver_match_device(dev, drv))
 		return 1;
@@ -60,22 +113,6 @@ static int serdev_device_match(struct device *dev, struct device_driver *drv)
 		return 1;
 
 	return 0;
-}
-
-static int serdev_uevent(struct device *dev, struct kobj_uevent_env *env)
-{
-	int rc;
-
-	/* TODO: ACPI modalias */
-
-	rc = of_device_uevent_modalias(dev, env);
-	if (rc != -ENODEV)
-		return rc;
-
-	if (dev->parent->parent->bus == &platform_bus_type)
-		rc = dev->parent->parent->bus->uevent(dev->parent->parent, env);
-
-	return rc;
 }
 
 /**
@@ -130,11 +167,28 @@ EXPORT_SYMBOL_GPL(serdev_device_remove);
 int serdev_device_open(struct serdev_device *serdev)
 {
 	struct serdev_controller *ctrl = serdev->ctrl;
+	int ret;
 
 	if (!ctrl || !ctrl->ops->open)
 		return -EINVAL;
 
-	return ctrl->ops->open(ctrl);
+	ret = ctrl->ops->open(ctrl);
+	if (ret)
+		return ret;
+
+	ret = pm_runtime_get_sync(&ctrl->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(&ctrl->dev);
+		goto err_close;
+	}
+
+	return 0;
+
+err_close:
+	if (ctrl->ops->close)
+		ctrl->ops->close(ctrl);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(serdev_device_open);
 
@@ -145,9 +199,38 @@ void serdev_device_close(struct serdev_device *serdev)
 	if (!ctrl || !ctrl->ops->close)
 		return;
 
+	pm_runtime_put(&ctrl->dev);
+
 	ctrl->ops->close(ctrl);
 }
 EXPORT_SYMBOL_GPL(serdev_device_close);
+
+static void devm_serdev_device_release(struct device *dev, void *dr)
+{
+	serdev_device_close(*(struct serdev_device **)dr);
+}
+
+int devm_serdev_device_open(struct device *dev, struct serdev_device *serdev)
+{
+	struct serdev_device **dr;
+	int ret;
+
+	dr = devres_alloc(devm_serdev_device_release, sizeof(*dr), GFP_KERNEL);
+	if (!dr)
+		return -ENOMEM;
+
+	ret = serdev_device_open(serdev);
+	if (ret) {
+		devres_free(dr);
+		return ret;
+	}
+
+	*dr = serdev;
+	devres_add(dev, dr);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(devm_serdev_device_open);
 
 void serdev_device_write_wakeup(struct serdev_device *serdev)
 {
@@ -172,7 +255,6 @@ int serdev_device_write(struct serdev_device *serdev,
 			unsigned long timeout)
 {
 	struct serdev_controller *ctrl = serdev->ctrl;
-	int written = 0;
 	int ret;
 
 	if (!ctrl || !ctrl->ops->write_buf ||
@@ -187,21 +269,14 @@ int serdev_device_write(struct serdev_device *serdev,
 		if (ret < 0)
 			break;
 
-		written += ret;
 		buf += ret;
 		count -= ret;
+
 	} while (count &&
 		 (timeout = wait_for_completion_timeout(&serdev->write_comp,
 							timeout)));
 	mutex_unlock(&serdev->write_lock);
-
-	if (ret < 0)
-		return ret;
-
-	if (timeout == 0 && written == 0)
-		return -ETIMEDOUT;
-
-	return written;
+	return ret < 0 ? ret : (count ? -ETIMEDOUT : 0);
 }
 EXPORT_SYMBOL_GPL(serdev_device_write);
 
@@ -250,6 +325,18 @@ void serdev_device_set_flow_control(struct serdev_device *serdev, bool enable)
 }
 EXPORT_SYMBOL_GPL(serdev_device_set_flow_control);
 
+int serdev_device_set_parity(struct serdev_device *serdev,
+			     enum serdev_parity parity)
+{
+	struct serdev_controller *ctrl = serdev->ctrl;
+
+	if (!ctrl || !ctrl->ops->set_parity)
+		return -ENOTSUPP;
+
+	return ctrl->ops->set_parity(ctrl, parity);
+}
+EXPORT_SYMBOL_GPL(serdev_device_set_parity);
+
 void serdev_device_wait_until_sent(struct serdev_device *serdev, long timeout)
 {
 	struct serdev_controller *ctrl = serdev->ctrl;
@@ -286,42 +373,39 @@ EXPORT_SYMBOL_GPL(serdev_device_set_tiocm);
 static int serdev_drv_probe(struct device *dev)
 {
 	const struct serdev_device_driver *sdrv = to_serdev_device_driver(dev->driver);
+	int ret;
 
-	return sdrv->probe(to_serdev_device(dev));
+	ret = dev_pm_domain_attach(dev, true);
+	if (ret)
+		return ret;
+
+	ret = sdrv->probe(to_serdev_device(dev));
+	if (ret)
+		dev_pm_domain_detach(dev, true);
+
+	return ret;
 }
 
 static int serdev_drv_remove(struct device *dev)
 {
 	const struct serdev_device_driver *sdrv = to_serdev_device_driver(dev->driver);
+	if (sdrv->remove)
+		sdrv->remove(to_serdev_device(dev));
 
-	sdrv->remove(to_serdev_device(dev));
+	dev_pm_domain_detach(dev, true);
+
 	return 0;
 }
-
-static ssize_t modalias_show(struct device *dev,
-			     struct device_attribute *attr, char *buf)
-{
-	return of_device_modalias(dev, buf, PAGE_SIZE);
-}
-DEVICE_ATTR_RO(modalias);
-
-static struct attribute *serdev_device_attrs[] = {
-	&dev_attr_modalias.attr,
-	NULL,
-};
-ATTRIBUTE_GROUPS(serdev_device);
 
 static struct bus_type serdev_bus_type = {
 	.name		= "serial",
 	.match		= serdev_device_match,
 	.probe		= serdev_drv_probe,
 	.remove		= serdev_drv_remove,
-	.uevent		= serdev_uevent,
-	.dev_groups	= serdev_device_groups,
 };
 
 /**
- * serdev_controller_alloc() - Allocate a new serdev device
+ * serdev_device_alloc() - Allocate a new serdev device
  * @ctrl:	associated controller
  *
  * Caller is responsible for either calling serdev_device_add() to add the
@@ -369,6 +453,15 @@ struct serdev_controller *serdev_controller_alloc(struct device *parent,
 	if (!ctrl)
 		return NULL;
 
+	id = ida_simple_get(&ctrl_ida, 0, 0, GFP_KERNEL);
+	if (id < 0) {
+		dev_err(parent,
+			"unable to allocate serdev controller identifier.\n");
+		goto err_free;
+	}
+
+	ctrl->nr = id;
+
 	device_initialize(&ctrl->dev);
 	ctrl->dev.type = &serdev_ctrl_type;
 	ctrl->dev.bus = &serdev_bus_type;
@@ -376,19 +469,18 @@ struct serdev_controller *serdev_controller_alloc(struct device *parent,
 	ctrl->dev.of_node = parent->of_node;
 	serdev_controller_set_drvdata(ctrl, &ctrl[1]);
 
-	id = ida_simple_get(&ctrl_ida, 0, 0, GFP_KERNEL);
-	if (id < 0) {
-		dev_err(parent,
-			"unable to allocate serdev controller identifier.\n");
-		serdev_controller_put(ctrl);
-		return NULL;
-	}
-
-	ctrl->nr = id;
 	dev_set_name(&ctrl->dev, "serial%d", id);
+
+	pm_runtime_no_callbacks(&ctrl->dev);
+	pm_suspend_ignore_children(&ctrl->dev, true);
 
 	dev_dbg(&ctrl->dev, "allocated controller 0x%p id %d\n", ctrl, id);
 	return ctrl;
+
+err_free:
+	kfree(ctrl);
+
+	return NULL;
 }
 EXPORT_SYMBOL_GPL(serdev_controller_alloc);
 
@@ -424,6 +516,85 @@ static int of_serdev_register_devices(struct serdev_controller *ctrl)
 
 	return 0;
 }
+
+#ifdef CONFIG_ACPI
+static acpi_status acpi_serdev_register_device(struct serdev_controller *ctrl,
+					    struct acpi_device *adev)
+{
+	struct serdev_device *serdev = NULL;
+	int err;
+
+	if (acpi_bus_get_status(adev) || !adev->status.present ||
+	    acpi_device_enumerated(adev))
+		return AE_OK;
+
+	serdev = serdev_device_alloc(ctrl);
+	if (!serdev) {
+		dev_err(&ctrl->dev, "failed to allocate serdev device for %s\n",
+			dev_name(&adev->dev));
+		return AE_NO_MEMORY;
+	}
+
+	ACPI_COMPANION_SET(&serdev->dev, adev);
+	acpi_device_set_enumerated(adev);
+
+	err = serdev_device_add(serdev);
+	if (err) {
+		dev_err(&serdev->dev,
+			"failure adding ACPI serdev device. status %d\n", err);
+		serdev_device_put(serdev);
+	}
+
+	return AE_OK;
+}
+
+static const struct acpi_device_id serdev_acpi_devices_blacklist[] = {
+	{ "INT3511", 0 },
+	{ "INT3512", 0 },
+	{ },
+};
+
+static acpi_status acpi_serdev_add_device(acpi_handle handle, u32 level,
+				       void *data, void **return_value)
+{
+	struct serdev_controller *ctrl = data;
+	struct acpi_device *adev;
+
+	if (acpi_bus_get_device(handle, &adev))
+		return AE_OK;
+
+	/* Skip if black listed */
+	if (!acpi_match_device_ids(adev, serdev_acpi_devices_blacklist))
+		return AE_OK;
+
+	return acpi_serdev_register_device(ctrl, adev);
+}
+
+static int acpi_serdev_register_devices(struct serdev_controller *ctrl)
+{
+	acpi_status status;
+	acpi_handle handle;
+
+	handle = ACPI_HANDLE(ctrl->dev.parent);
+	if (!handle)
+		return -ENODEV;
+
+	status = acpi_walk_namespace(ACPI_TYPE_DEVICE, handle, 1,
+				     acpi_serdev_add_device, NULL, ctrl, NULL);
+	if (ACPI_FAILURE(status))
+		dev_dbg(&ctrl->dev, "failed to enumerate serdev slaves\n");
+
+	if (!ctrl->serdev)
+		return -ENODEV;
+
+	return 0;
+}
+#else
+static inline int acpi_serdev_register_devices(struct serdev_controller *ctrl)
+{
+	return -ENODEV;
+}
+#endif /* CONFIG_ACPI */
 
 static int platform_serdev_register_devices(struct serdev_controller *ctrl)
 {
@@ -463,7 +634,7 @@ static int platform_serdev_register_devices(struct serdev_controller *ctrl)
  */
 int serdev_controller_add_platform(struct serdev_controller *ctrl, bool platform)
 {
-	int ret, ret_of, ret_platform = -ENODEV;
+	int ret, ret_of, ret_acpi, ret_platform = -ENODEV;
 
 	/* Can't register until after driver model init */
 	if (WARN_ON(!is_registered))
@@ -473,22 +644,26 @@ int serdev_controller_add_platform(struct serdev_controller *ctrl, bool platform
 	if (ret)
 		return ret;
 
+	pm_runtime_enable(&ctrl->dev);
+
 	ret_of = of_serdev_register_devices(ctrl);
+	ret_acpi = acpi_serdev_register_devices(ctrl);
 	if (platform)
 		ret_platform = platform_serdev_register_devices(ctrl);
-	if (ret_of && ret_platform) {
-		dev_dbg(&ctrl->dev, "no devices registered: of:%d "
+	if (ret_of && ret_acpi && ret_platform) {
+		dev_dbg(&ctrl->dev, "no devices registered: of:%d acpi:%d "
 				    "platform:%d\n",
-				    ret_of, ret_platform);
+				    ret_of, ret_acpi, ret_platform);
 		ret = -ENODEV;
-		goto out_dev_del;
+		goto err_rpm_disable;
 	}
 
 	dev_dbg(&ctrl->dev, "serdev%d registered: dev:%p\n",
 		ctrl->nr, &ctrl->dev);
 	return 0;
 
-out_dev_del:
+err_rpm_disable:
+	pm_runtime_disable(&ctrl->dev);
 	device_del(&ctrl->dev);
 	return ret;
 };
@@ -519,6 +694,7 @@ void serdev_controller_remove(struct serdev_controller *ctrl)
 
 	dummy = device_for_each_child(&ctrl->dev, NULL,
 				      serdev_remove_device);
+	pm_runtime_disable(&ctrl->dev);
 	device_del(&ctrl->dev);
 }
 EXPORT_SYMBOL_GPL(serdev_controller_remove);

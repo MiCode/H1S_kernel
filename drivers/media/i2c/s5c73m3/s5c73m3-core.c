@@ -248,17 +248,17 @@ static int s5c73m3_check_status(struct s5c73m3 *state, unsigned int value)
 {
 	unsigned long start = jiffies;
 	unsigned long end = start + msecs_to_jiffies(2000);
-	int ret = 0;
+	int ret;
 	u16 status;
 	int count = 0;
 
-	while (time_is_after_jiffies(end)) {
+	do {
 		ret = s5c73m3_read(state, REG_STATUS, &status);
 		if (ret < 0 || status == value)
 			break;
 		usleep_range(500, 1000);
 		++count;
-	}
+	} while (time_is_after_jiffies(end));
 
 	if (count > 0)
 		v4l2_dbg(1, s5c73m3_dbg, &state->sensor_sd,
@@ -1394,7 +1394,7 @@ static int __s5c73m3_power_on(struct s5c73m3 *state)
 	s5c73m3_gpio_deassert(state, STBY);
 	usleep_range(100, 200);
 
-	s5c73m3_gpio_deassert(state, RST);
+	s5c73m3_gpio_deassert(state, RSET);
 	usleep_range(50, 100);
 
 	return 0;
@@ -1409,7 +1409,7 @@ static int __s5c73m3_power_off(struct s5c73m3 *state)
 {
 	int i, ret;
 
-	if (s5c73m3_gpio_assert(state, RST))
+	if (s5c73m3_gpio_assert(state, RSET))
 		usleep_range(10, 50);
 
 	if (s5c73m3_gpio_assert(state, STBY))
@@ -1614,7 +1614,7 @@ static int s5c73m3_get_platform_data(struct s5c73m3 *state)
 
 		state->mclk_frequency = pdata->mclk_frequency;
 		state->gpio[STBY] = pdata->gpio_stby;
-		state->gpio[RST] = pdata->gpio_reset;
+		state->gpio[RSET] = pdata->gpio_reset;
 		return 0;
 	}
 

@@ -1,15 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 #include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -26,19 +19,18 @@
 #include "mach/mtk_thermal.h"
 #include <linux/uidgid.h>
 #include <linux/slab.h>
-#include <mt-plat/mtk_charger.h>
-
+#include <linux/power_supply.h>
 
 #define mtktscharger2_TEMP_CRIT (150000) /* 150.000 degree Celsius */
 
 #define mtktscharger2_dprintk(fmt, args...) \
 do { \
 	if (mtktscharger2_debug_log) \
-		pr_debug("[Thermal/tzcharger2]" fmt, ##args); \
+		pr_notice("[Thermal/tzcharger2]" fmt, ##args); \
 } while (0)
 
 #define mtktscharger2_dprintk_always(fmt, args...) \
-	pr_debug("[Thermal/tzcharger2]" fmt, ##args)
+	pr_notice("[Thermal/tzcharger2]" fmt, ##args)
 
 #define mtktscharger2_pr_notice(fmt, args...) \
 	pr_notice("[Thermal/tzcharger2]" fmt, ##args)
@@ -79,6 +71,7 @@ static int mtktscharger2_debug_log;
  */
 static unsigned long prev_temp = 30000;
 
+
 /**
  * If curr_temp >= polling_trip_temp1, use interval
  * else if cur_temp >= polling_trip_temp2 && curr_temp < polling_trip_temp1,
@@ -89,26 +82,40 @@ static int polling_trip_temp1 = 40000;
 static int polling_trip_temp2 = 20000;
 static int polling_factor1 = 5000;
 static int polling_factor2 = 10000;
+static int charger_type;
 
-static struct charger_consumer *pthermal_consumer;
-
-struct charger_consumer __attribute__ ((weak))
-*charger_manager_get_by_name(struct device *dev,
-	const char *supply_name)
+/*return 0:single charger*/
+/*return 1,2:dual charger*/
+static int get_charger_type(void)
 {
-	mtktscharger2_dprintk_always("%s not found.\n", __func__);
+	struct device_node *node = NULL;
+	u32 val = 0;
+
+	node = of_find_compatible_node(NULL, NULL, "mediatek,charger");
+	WARN_ON_ONCE(node == 0);
+
+	if (of_property_read_u32(node, "charger_configuration", &val))
+		return 0;
+
+	return val;
+}
+static struct power_supply *get_charger2_handle(void)
+{
+	static struct power_supply *m_psy;
+
+/*check if support slave charger*/
+	if (charger_type != 0) {
+		if (m_psy == NULL)
+			m_psy = power_supply_get_by_name("mtk-master-charger");
+		if (m_psy)
+			return m_psy;
+	}
+	pr_notice("%s is not dual charger project\n",
+				__func__);
 	return NULL;
 }
 
-int __attribute__ ((weak))
-charger_manager_get_charger_temperature(struct charger_consumer *consumer,
-	int idx, int *tchg_min, int *tchg_max)
-{
-	mtktscharger2_dprintk_always("%s not found.\n", __func__);
-	return -ENODEV;
-}
-
-
+#define MAIN_CHARGER 0
 /**
  * Use new GM30 API to get charger temperatures.
  * When nothing is defined, main charger temperature is read.
@@ -120,28 +127,25 @@ charger_manager_get_charger_temperature(struct charger_consumer *consumer,
  */
 static int mtktscharger2_get_hw_temp(void)
 {
-	int charger_idx = MAIN_CHARGER;
-	int tmax = 0, tmin = 0;
 	int ret = -1;
 	int t = -127000;
+	union power_supply_propval prop;
+	struct power_supply *chg_psy;
 
-	if (!pthermal_consumer)
+
+	chg_psy = get_charger2_handle();
+	if (chg_psy == NULL)
 		return t;
-
-
-	ret = charger_manager_get_charger_temperature(pthermal_consumer,
-		charger_idx, &tmin, &tmax);
-
-	if (ret >= 0) {
-		t = tmax * 1000;
+	ret = power_supply_get_property(chg_psy,
+			POWER_SUPPLY_PROP_TEMP, &prop);
+	if (ret == 0) {
+		t = 1000 * prop.intval;
 		prev_temp = t;
-	} else if (ret == -ENODEV) {
-	} else {
+	} else
 		t = prev_temp;
-	}
 
-	mtktscharger2_dprintk_always("%s t=%d min=%d max=%d ret=%d\n", __func__,
-							t, tmin, tmax, ret);
+	mtktscharger2_dprintk_always("%s t=%d ret=%d\n", __func__,
+							t, ret);
 
 	return t;
 }
@@ -570,15 +574,10 @@ static int mtktscharger2_pdrv_probe(struct platform_device *pdev)
 	struct proc_dir_entry *mtktscharger2_dir = NULL;
 
 	mtktscharger2_dprintk_always("%s\n", __func__);
-
-	pthermal_consumer = charger_manager_get_by_name(&pdev->dev, "charger");
-
-	if (!pthermal_consumer) {
-		mtktscharger2_pr_notice("%s get get_by_name fails.\n",
-								__func__);
-		return -EPERM;
-	}
-
+	charger_type = get_charger_type();
+/*check if support dual charger*/
+	if (charger_type == 0)
+		return 0;
 	err = mtktscharger2_register_thermal();
 	if (err)
 		goto err_unreg;

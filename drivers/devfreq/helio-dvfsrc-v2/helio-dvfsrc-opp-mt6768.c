@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/kernel.h>
 
@@ -139,6 +131,7 @@ void dvfsrc_opp_level_mapping(void)
 	switch (spm_get_spmfw_idx()) {
 		/* fall through*/
 	case SPMFW_LP4X_2CH_3600:
+	case SPMFW_LP4X_2CH_3200:
 	case SPMFW_LP4_2CH_3200:
 		set_vcore_opp(VCORE_DVFS_OPP_0, VCORE_OPP_0);
 		set_vcore_opp(VCORE_DVFS_OPP_1, VCORE_OPP_0);

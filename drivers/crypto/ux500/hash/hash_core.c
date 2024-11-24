@@ -21,6 +21,7 @@
 #include <linux/klist.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/crypto.h>
 
@@ -1006,6 +1007,7 @@ static int hash_hw_final(struct ahash_request *req)
 			goto out;
 		}
 	} else if (req->nbytes == 0 && ctx->keylen > 0) {
+		ret = -EPERM;
 		dev_err(device_data->dev, "%s: Empty message with keylength > 0, NOT supported\n",
 			__func__);
 		goto out;
@@ -1403,6 +1405,16 @@ out:
 	return ret1 ? ret1 : ret2;
 }
 
+static int ahash_noimport(struct ahash_request *req, const void *in)
+{
+	return -ENOSYS;
+}
+
+static int ahash_noexport(struct ahash_request *req, void *out)
+{
+	return -ENOSYS;
+}
+
 static int hmac_sha1_init(struct ahash_request *req)
 {
 	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
@@ -1507,13 +1519,14 @@ static struct hash_algo_template hash_algs[] = {
 			.update = ahash_update,
 			.final = ahash_final,
 			.digest = ahash_sha1_digest,
+			.export = ahash_noexport,
+			.import = ahash_noimport,
 			.halg.digestsize = SHA1_DIGEST_SIZE,
 			.halg.statesize = sizeof(struct hash_ctx),
 			.halg.base = {
 				.cra_name = "sha1",
 				.cra_driver_name = "sha1-ux500",
-				.cra_flags = (CRYPTO_ALG_TYPE_AHASH |
-					      CRYPTO_ALG_ASYNC),
+				.cra_flags = CRYPTO_ALG_ASYNC,
 				.cra_blocksize = SHA1_BLOCK_SIZE,
 				.cra_ctxsize = sizeof(struct hash_ctx),
 				.cra_init = hash_cra_init,
@@ -1529,16 +1542,16 @@ static struct hash_algo_template hash_algs[] = {
 			.update	= ahash_update,
 			.final = ahash_final,
 			.digest = ahash_sha256_digest,
+			.export = ahash_noexport,
+			.import = ahash_noimport,
 			.halg.digestsize = SHA256_DIGEST_SIZE,
 			.halg.statesize = sizeof(struct hash_ctx),
 			.halg.base = {
 				.cra_name = "sha256",
 				.cra_driver_name = "sha256-ux500",
-				.cra_flags = (CRYPTO_ALG_TYPE_AHASH |
-					      CRYPTO_ALG_ASYNC),
+				.cra_flags = CRYPTO_ALG_ASYNC,
 				.cra_blocksize = SHA256_BLOCK_SIZE,
 				.cra_ctxsize = sizeof(struct hash_ctx),
-				.cra_type = &crypto_ahash_type,
 				.cra_init = hash_cra_init,
 				.cra_module = THIS_MODULE,
 			}
@@ -1553,16 +1566,16 @@ static struct hash_algo_template hash_algs[] = {
 			.final = ahash_final,
 			.digest = hmac_sha1_digest,
 			.setkey = hmac_sha1_setkey,
+			.export = ahash_noexport,
+			.import = ahash_noimport,
 			.halg.digestsize = SHA1_DIGEST_SIZE,
 			.halg.statesize = sizeof(struct hash_ctx),
 			.halg.base = {
 				.cra_name = "hmac(sha1)",
 				.cra_driver_name = "hmac-sha1-ux500",
-				.cra_flags = (CRYPTO_ALG_TYPE_AHASH |
-					      CRYPTO_ALG_ASYNC),
+				.cra_flags = CRYPTO_ALG_ASYNC,
 				.cra_blocksize = SHA1_BLOCK_SIZE,
 				.cra_ctxsize = sizeof(struct hash_ctx),
-				.cra_type = &crypto_ahash_type,
 				.cra_init = hash_cra_init,
 				.cra_module = THIS_MODULE,
 			}
@@ -1577,16 +1590,16 @@ static struct hash_algo_template hash_algs[] = {
 			.final = ahash_final,
 			.digest = hmac_sha256_digest,
 			.setkey = hmac_sha256_setkey,
+			.export = ahash_noexport,
+			.import = ahash_noimport,
 			.halg.digestsize = SHA256_DIGEST_SIZE,
 			.halg.statesize = sizeof(struct hash_ctx),
 			.halg.base = {
 				.cra_name = "hmac(sha256)",
 				.cra_driver_name = "hmac-sha256-ux500",
-				.cra_flags = (CRYPTO_ALG_TYPE_AHASH |
-					      CRYPTO_ALG_ASYNC),
+				.cra_flags = CRYPTO_ALG_ASYNC,
 				.cra_blocksize = SHA256_BLOCK_SIZE,
 				.cra_ctxsize = sizeof(struct hash_ctx),
-				.cra_type = &crypto_ahash_type,
 				.cra_init = hash_cra_init,
 				.cra_module = THIS_MODULE,
 			}

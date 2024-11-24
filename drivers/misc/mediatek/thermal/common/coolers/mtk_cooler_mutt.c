@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/version.h>
@@ -21,7 +13,7 @@
 #include <linux/err.h>
 #include <linux/syscalls.h>
 #include "mt-plat/mtk_thermal_monitor.h"
-#include <mtk_ccci_common.h>
+#include "mt-plat/mtk_ccci_common.h"
 #include <linux/uidgid.h>
 #include <mtk_cooler_setting.h>
 #include <linux/debugfs.h>
@@ -517,7 +509,7 @@ static int mtk_cl_mdoff_get_cur_state(struct thermal_cooling_device *cdev,
 static int mtk_cl_mdoff_set_cur_state(struct thermal_cooling_device *cdev,
 				unsigned long state)
 {
-	if ((state >= 0) && (state <= 1))
+	if (state <= 1)
 		mtk_cooler_mutt_dprintk(
 			"[%s] %s %lu (0: md on;  1: md off)\n", __func__,
 			cdev->type, state);
@@ -689,7 +681,7 @@ static int mtk_cl_noIMS_set_cur_state(struct thermal_cooling_device *cdev,
 		return 0;
 	}
 
-	if ((state >= 0) && (state <= 1))
+	if (state <= 1)
 		mtk_cooler_mutt_dprintk(
 			"%s() %s %lu (0: md IMS OK;	1: md no IMS)\n",
 			__func__,
@@ -1537,7 +1529,7 @@ unsigned int level_selection(int lv)
 static ssize_t _mtk_cl_mutt_tuning_write(
 struct file *filp, const char __user *buffer, size_t count, loff_t *data)
 {
-	int len = 0;
+	unsigned int len = 0;
 	char desc[128];
 	int klog_on = 0, mutt_a = 0, mutt_s = 0;
 	int mutt_off1pa = 0, mutt_off1ca = 0, mutt_noIMS = 0, mutt_level = 0;
@@ -1547,6 +1539,7 @@ struct file *filp, const char __user *buffer, size_t count, loff_t *data)
 	char arg_name[32] = { 0 };
 
 	len = (count < (sizeof(desc) - 1)) ? count : (sizeof(desc) - 1);
+
 	if (copy_from_user(desc, buffer, len))
 		return 0;
 
@@ -1681,16 +1674,15 @@ struct file *filp, const char __user *buffer, size_t count, loff_t *data)
 				ID_THROTTLING_CFG,
 				(char *)&cl_mutt_tuning_param, 4);
 			mtk_cooler_mutt_dprintk_always(
-				"[%s]2 ret %d param %x bcnt %lul\n", __func__,
-				ret,
-				cl_mutt_tuning_param,
+				"[%s]2 ret %d param %x bcnt %lul\n",
+				__func__, ret, cl_mutt_tuning_param,
 				last_md_tuning_boot_cnt);
 		} else {/*Throttle disable*/
 			ret = exec_ccci_kern_func_by_md_id(MD_SYS1,
 				ID_THROTTLING_CFG,
 				(char *)&cl_mutt_tuning_param, 4);
 			mtk_cooler_mutt_dprintk_always(
-			"[%s]Throttle disable: ret %d param %x bcnt %lul\n",
+				"[%s]Throttle disable: ret %d param %x bcnt %lul\n",
 				__func__, ret, cl_mutt_tuning_param,
 				last_md_tuning_boot_cnt);
 		}
@@ -1703,8 +1695,7 @@ struct file *filp, const char __user *buffer, size_t count, loff_t *data)
 
 			mtk_cooler_mutt_dprintk_always(
 				"[%s]3 ret_pa %d param %x bcnt %lul\n",
-				__func__,
-				ret_pa, cl_mutt_tuning_param_pa,
+				__func__, ret_pa, cl_mutt_tuning_param_pa,
 				last_md_tuning_boot_cnt);
 		}
 
@@ -1714,17 +1705,18 @@ struct file *filp, const char __user *buffer, size_t count, loff_t *data)
 				ID_THROTTLING_CFG,
 				(char *)&cl_mutt_tuning_param_ca, 4);
 			mtk_cooler_mutt_dprintk_always(
-			"[%s]4 ret_ca %d param %x bcnt %lul\n", __func__,
-			ret_ca, cl_mutt_tuning_param_ca,
+			"[%s]4 ret_ca %d param %x bcnt %lul\n",
+			__func__, ret_ca, cl_mutt_tuning_param_ca,
 			last_md_tuning_boot_cnt);
 		}
 
 		return len;
-	}
+	} /* scan_count >= 1 */
 #else
 #error	\
 "Change correspondent part when changing MAX_NUM_INSTANCE_MTK_COOLER_MUTT!"
 #endif
+
 	mtk_cooler_mutt_dprintk("[%s] bad arg\n", __func__);
 	return -EINVAL;
 }

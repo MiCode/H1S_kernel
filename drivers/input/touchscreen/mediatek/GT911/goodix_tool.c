@@ -1,19 +1,7 @@
-/*
- *  Driver for Goodix Touchscreens
- *
- *  Copyright (c) 2014 Red Hat Inc.
- *  Copyright (c) 2015 K. Merker <merker@debian.org>
- *
- *  This code is based on gt9xx.c authored by andrew@goodix.com:
- *
- *  2010 - 2012 Goodix Technology.
- */
-
-/*
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; version 2 of the License.
- */
+/* SPDX-License-Identifier: GPL-2.0 */	
+/*	
+ * Copyright (c) 2019 MediaTek Inc.	
+*/
 
 #include "tpd.h"
 #include <linux/delay.h>

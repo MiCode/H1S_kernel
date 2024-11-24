@@ -1,5 +1,5 @@
 # Include mtk_idle_internal.h for MTK_IDLE_OPT_XXX
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/spm/common/
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/spm/common_v1/
 # Include mt-plat/upmu_common.h
 # Include mt-plat/mtk_ccci_common.h
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/
@@ -8,8 +8,7 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/include/cpuidle_v3/
 # Include dram header "mtk_dramc.h"
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/dramc/$(MTK_PLATFORM)/
 # Include sspm header "sspm_ipi.h"
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/$(MTK_PLATFORM)/
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/v1/
 # Include mtk idle headers and cpuidle driver header for external modules
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/include/
 # Include mtk_eem.h
@@ -24,6 +23,7 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/dramc/$(MTK_PLATFORM)/
 endif
 # Include sspm header "sspm_ipi.h"
 ifeq ($(CONFIG_MTK_TINYSYS_SSPM_SUPPORT), y)
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/v1/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/$(MTK_PLATFORM)/
 endif

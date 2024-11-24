@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTK_UDI_MT6768__
 #define __MTK_UDI_MT6768__
@@ -39,6 +31,10 @@ static void __iomem  *udipin_base;
 #define UDIPIN_UDI_MUX2			(UDIPIN_BASE+0x450)
 #define UDIPIN_UDI_MUX2_VALUE	(0x00003300)
 
+#define UDIPIN_UDI_MUX3			(UDIPIN_BASE+0x3F0)
+#define UDIPIN_UDI_MUX3_VALUE	(0x00404000)
+#define UDIPIN_UDI_MUX4			(UDIPIN_BASE+0x480)
+#define UDIPIN_UDI_MUX4_VALUE	(0x00444000)
 
 
 #endif /* __MTK_UDI_MT6768__ */

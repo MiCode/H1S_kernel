@@ -59,10 +59,14 @@ enum FH_DEVCTL_CMD_ID {
 	FH_DCTL_CMD_SSC_TBL_CONFIG = 0x100A,
 	FH_DCTL_CMD_PLL_PAUSE = 0x100E,
 	FH_DCTL_CMD_MAX,
-	FH_DBG_CMD_TR_BEGIN_LOW = 0x2001,
-	FH_DBG_CMD_TR_BEGIN_HIGH = 0x2002,
-	FH_DBG_CMD_TR_END_LOW = 0x2003,
-	FH_DBG_CMD_TR_END_HIGH = 0x2004,
+	FH_DBG_CMD_TR_BEGIN64_LOW = 0x2001,
+	FH_DBG_CMD_TR_BEGIN64_HIGH = 0x2002,
+	FH_DBG_CMD_TR_END64_LOW = 0x2003,
+	FH_DBG_CMD_TR_END64_HIGH = 0x2004,
+	FH_DBG_CMD_TR_ID = 0x2005,
+	FH_DBG_CMD_TR_VAL = 0x2006,
+	FH_DBG_CMD_TR_BEGIN32 = 0x2007,
+	FH_DBG_CMD_TR_END32 = 0x2008,
 };
 #define FHCTL_D_LEN (sizeof(struct fhctl_ipi_data)/\
 	sizeof(unsigned int))
@@ -169,10 +173,14 @@ static int mcupm_hopping_v1(void *priv_data, char *domain_name, int fh_id,
 		}
 
 		/* time via SW */
-		ipi_get_data(FH_DBG_CMD_TR_BEGIN_LOW);
-		ipi_get_data(FH_DBG_CMD_TR_BEGIN_HIGH);
-		ipi_get_data(FH_DBG_CMD_TR_END_LOW);
-		ipi_get_data(FH_DBG_CMD_TR_END_HIGH);
+		ipi_get_data(FH_DBG_CMD_TR_BEGIN64_LOW);
+		ipi_get_data(FH_DBG_CMD_TR_BEGIN64_HIGH);
+		ipi_get_data(FH_DBG_CMD_TR_END64_LOW);
+		ipi_get_data(FH_DBG_CMD_TR_END64_HIGH);
+		ipi_get_data(FH_DBG_CMD_TR_ID);
+		ipi_get_data(FH_DBG_CMD_TR_VAL);
+		ipi_get_data(FH_DBG_CMD_TR_BEGIN32);
+		ipi_get_data(FH_DBG_CMD_TR_END32);
 
 		FHDBG("tr_id_local<%x>\n",
 				++tr_id_local);
@@ -338,13 +346,51 @@ static struct match mt6853_match = {
 	.hdlr = &mcupm_hdlr_6853,
 	.init = &mcupm_init_v1,
 };
+struct hdlr_data_v1 hdlr_data_6877 = {
+	.reg_tr = (void __iomem *)(0x90), /* MEMPL Up/Down Limit */
+};
+static struct fh_hdlr mcupm_hdlr_6877 = {
+	.ops = &mcupm_ops_v1,
+	.data = &hdlr_data_6877,
+};
+static struct match mt6877_match = {
+	.name = "mediatek,mt6877-fhctl",
+	.hdlr = &mcupm_hdlr_6877,
+	.init = &mcupm_init_v1,
+};
+struct hdlr_data_v1 hdlr_data_6873 = {
+	.reg_tr = NULL,
+};
+static struct fh_hdlr mcupm_hdlr_6873 = {
+	.ops = &mcupm_ops_v1,
+	.data = &hdlr_data_6873,
+};
+static struct match mt6873_match = {
+	.name = "mediatek,mt6873-fhctl",
+	.hdlr = &mcupm_hdlr_6873,
+	.init = &mcupm_init_v1,
+};
+struct hdlr_data_v1 hdlr_data_6885 = {
+	.reg_tr = NULL,
+};
+static struct fh_hdlr mcupm_hdlr_6885 = {
+	.ops = &mcupm_ops_v1,
+	.data = &hdlr_data_6885,
+};
+static struct match mt6885_match = {
+	.name = "mediatek,mt6885-fhctl",
+	.hdlr = &mcupm_hdlr_6885,
+	.init = &mcupm_init_v1,
+};
 static struct match *matches[] = {
 	&mt6853_match,
+	&mt6877_match,
+	&mt6873_match,
+	&mt6885_match,
 	NULL,
 };
 
-int fhctl_mcupm_init(struct platform_device *pdev,
-		struct pll_dts *array)
+int fhctl_mcupm_init(struct pll_dts *array)
 {
 	int i;
 	int num_pll;

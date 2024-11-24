@@ -20,7 +20,6 @@
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
 #include <asm/smp.h>
-#include <asm/reset.h>
 #include <asm/ipl.h>
 #include <asm/diag.h>
 #include <asm/elf.h>
@@ -106,7 +105,7 @@ static void __do_machine_kdump(void *image)
 static noinline void __machine_kdump(void *image)
 {
 	struct mcesa *mcesa;
-	unsigned long cr2_old, cr2_new;
+	union ctlreg2 cr2_old, cr2_new;
 	int this_cpu, cpu;
 
 	lgr_info_log();
@@ -123,11 +122,12 @@ static noinline void __machine_kdump(void *image)
 	if (MACHINE_HAS_VX)
 		save_vx_regs((__vector128 *) mcesa->vector_save_area);
 	if (MACHINE_HAS_GS) {
-		__ctl_store(cr2_old, 2, 2);
-		cr2_new = cr2_old | (1UL << 4);
-		__ctl_load(cr2_new, 2, 2);
+		__ctl_store(cr2_old.val, 2, 2);
+		cr2_new = cr2_old;
+		cr2_new.gse = 1;
+		__ctl_load(cr2_new.val, 2, 2);
 		save_gs_cb((struct gs_cb *) mcesa->guarded_storage_save_area);
-		__ctl_load(cr2_old, 2, 2);
+		__ctl_load(cr2_old.val, 2, 2);
 	}
 	/*
 	 * To create a good backchain for this CPU in the dump store_status
@@ -145,7 +145,7 @@ static noinline void __machine_kdump(void *image)
 /*
  * Check if kdump checksums are valid: We call purgatory with parameter "0"
  */
-static int kdump_csum_valid(struct kimage *image)
+static bool kdump_csum_valid(struct kimage *image)
 {
 #ifdef CONFIG_CRASH_DUMP
 	int (*start_kdump)(int) = (void *)image->start;
@@ -154,9 +154,9 @@ static int kdump_csum_valid(struct kimage *image)
 	__arch_local_irq_stnsm(0xfb); /* disable DAT */
 	rc = start_kdump(0);
 	__arch_local_irq_stosm(0x04); /* enable DAT */
-	return rc ? 0 : -EINVAL;
+	return rc == 0;
 #else
-	return -EINVAL;
+	return false;
 #endif
 }
 
@@ -219,10 +219,6 @@ int machine_kexec_prepare(struct kimage *image)
 {
 	void *reboot_code_buffer;
 
-	/* Can't replace kernel image since it is read-only. */
-	if (ipl_flags & IPL_NSS_VALID)
-		return -EOPNOTSUPP;
-
 	if (image->type == KEXEC_TYPE_CRASH)
 		return machine_kexec_prepare_kdump();
 
@@ -256,6 +252,7 @@ void machine_shutdown(void)
 
 void machine_crash_shutdown(struct pt_regs *regs)
 {
+	set_os_info_reipl_block();
 }
 
 /*

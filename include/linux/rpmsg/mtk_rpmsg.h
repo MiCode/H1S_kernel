@@ -1,20 +1,39 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
-#ifndef __LINUX_MTK_RPMSG_H
-#define __LINUX_MTK_RPMSG_H
+* Copyright (c) 2019 MediaTek Inc.
+*/
 
-#include <linux/device.h>
-#include <linux/rpmsg.h>
+#ifndef __LINUX_RPMSG_MTK_RPMSG_H
+#define __LINUX_RPMSG_MTK_RPMSG_H
+
+#include <linux/platform_device.h>
+#include <linux/remoteproc.h>
+
+typedef void (*ipi_handler_t)(void *data, unsigned int len, void *priv);
+
+/*
+ * struct mtk_rpmsg_info - IPI functions tied to the rpmsg device.
+ * @register_ipi: register IPI handler for an IPI id.
+ * @unregister_ipi: unregister IPI handler for a registered IPI id.
+ * @send_ipi: send IPI to an IPI id. wait is the timeout (in msecs) to wait
+ *            until response, or 0 if there's no timeout.
+ * @ns_ipi_id: the IPI id used for name service, or -1 if name service isn't
+ *             supported.
+ */
+struct mtk_rpmsg_info {
+	int (*register_ipi)(struct platform_device *pdev, u32 id,
+			    ipi_handler_t handler, void *priv);
+	void (*unregister_ipi)(struct platform_device *pdev, u32 id);
+	int (*send_ipi)(struct platform_device *pdev, u32 id,
+			void *buf, unsigned int len, unsigned int wait);
+	int ns_ipi_id;
+};
+
+struct rproc_subdev *
+mtk_rpmsg_create_rproc_subdev(struct platform_device *pdev,
+			      struct mtk_rpmsg_info *info);
+
+void mtk_rpmsg_destroy_rproc_subdev(struct rproc_subdev *subdev);
 
 struct mtk_rpmsg_channel_info {
 	struct rpmsg_channel_info info;
@@ -40,14 +59,6 @@ struct mtk_rpmsg_endpoint {
 };
 
 struct mtk_rpmsg_operations {
-#if 0
-	int (*register_ipi)(struct platform_device *pdev, enum scp_ipi_id id,
-			    scp_ipi_handler_t handler, void *priv);
-	void (*unregister_ipi)(struct platform_device *pdev,
-			       enum scp_ipi_id id);
-	int (*send_ipi)(struct platform_device *pdev, enum scp_ipi_id id,
-			void *buf, unsigned int len, unsigned int wait);
-#endif
 	int (*mbox_send)(struct mtk_rpmsg_endpoint *mept,
 		struct mtk_rpmsg_channel_info *mchan,
 		void *buf, unsigned int len, unsigned int wait);

@@ -157,7 +157,7 @@ EXPORT_SYMBOL(blk_set_stacking_limits);
  * Caveat:
  *    The driver that does this *must* be able to deal appropriately
  *    with buffers in "highmemory". This can be accomplished by either calling
- *    __bio_kmap_atomic() to get a temporary kernel mapping, or by calling
+ *    kmap_atomic() to get a temporary kernel mapping, or by calling
  *    blk_queue_bounce() to create a buffer in normal memory.
  **/
 void blk_queue_make_request(struct request_queue *q, make_request_fn *mfn)
@@ -513,6 +513,14 @@ void blk_queue_io_opt(struct request_queue *q, unsigned int opt)
 }
 EXPORT_SYMBOL(blk_queue_io_opt);
 
+static unsigned int blk_round_down_sectors(unsigned int sectors, unsigned int lbs)
+{
+	sectors = round_down(sectors, lbs >> SECTOR_SHIFT);
+	if (sectors < PAGE_SIZE >> SECTOR_SHIFT)
+		sectors = PAGE_SIZE >> SECTOR_SHIFT;
+	return sectors;
+}
+
 /**
  * blk_queue_stack_limits - inherit underlying queue limits for stacked drivers
  * @t:	the stacking driver (top)
@@ -638,6 +646,10 @@ int blk_stack_limits(struct queue_limits *t, struct queue_limits *b,
 		t->misaligned = 1;
 		ret = -1;
 	}
+
+	t->max_sectors = blk_round_down_sectors(t->max_sectors, t->logical_block_size);
+	t->max_hw_sectors = blk_round_down_sectors(t->max_hw_sectors, t->logical_block_size);
+	t->max_dev_sectors = blk_round_down_sectors(t->max_dev_sectors, t->logical_block_size);
 
 	/* Discard alignment and granularity */
 	if (b->discard_granularity) {
@@ -862,12 +874,10 @@ EXPORT_SYMBOL(blk_queue_update_dma_alignment);
 
 void blk_queue_flush_queueable(struct request_queue *q, bool queueable)
 {
-	spin_lock_irq(q->queue_lock);
 	if (queueable)
-		clear_bit(QUEUE_FLAG_FLUSH_NQ, &q->queue_flags);
+		blk_queue_flag_clear(QUEUE_FLAG_FLUSH_NQ, q);
 	else
-		set_bit(QUEUE_FLAG_FLUSH_NQ, &q->queue_flags);
-	spin_unlock_irq(q->queue_lock);
+		blk_queue_flag_set(QUEUE_FLAG_FLUSH_NQ, q);
 }
 EXPORT_SYMBOL_GPL(blk_queue_flush_queueable);
 
@@ -880,7 +890,7 @@ EXPORT_SYMBOL_GPL(blk_queue_flush_queueable);
 void blk_set_queue_depth(struct request_queue *q, unsigned int depth)
 {
 	q->queue_depth = depth;
-	wbt_set_queue_depth(q->rq_wb, depth);
+	wbt_set_queue_depth(q, depth);
 }
 EXPORT_SYMBOL(blk_set_queue_depth);
 
@@ -905,7 +915,7 @@ void blk_queue_write_cache(struct request_queue *q, bool wc, bool fua)
 		queue_flag_clear(QUEUE_FLAG_FUA, q);
 	spin_unlock_irq(q->queue_lock);
 
-	wbt_set_write_cache(q->rq_wb, test_bit(QUEUE_FLAG_WC, &q->queue_flags));
+	wbt_set_write_cache(q, test_bit(QUEUE_FLAG_WC, &q->queue_flags));
 }
 EXPORT_SYMBOL_GPL(blk_queue_write_cache);
 

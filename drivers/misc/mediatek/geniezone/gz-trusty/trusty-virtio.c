@@ -1,16 +1,27 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Trusty Virtio driver
+ * Copyright (c) 2019 MediaTek Inc.
+ */
+
+/*
+ * GenieZone (hypervisor-based seucrity platform) enables hardware protected
+ * and isolated security execution environment, includes
+ * 1. GZ hypervisor
+ * 2. Hypervisor-TEE OS (built-in Trusty OS)
+ * 3. Drivers (ex: debug, communication and interrupt) for GZ and
+ *    hypervisor-TEE OS
+ * 4. GZ and hypervisor-TEE and GZ framework (supporting multiple TEE
+ *    ecosystem, ex: M-TEE, Trusty, GlobalPlatform, ...)
+ */
+/*
+ * This is IPC driver
  *
- * Copyright (C) 2015 Google, Inc.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * For communication between client OS and hypervisor-TEE OS, IPC driver
+ * is provided, including:
+ * 1. standard call interface for communication and entering hypervisor-TEE
+ * 2. virtio for message/command passing by shared memory
+ * 3. IPC driver
  */
 /* #define DEBUG */
 #include <linux/device.h>
@@ -110,8 +121,8 @@ static void check_all_vqs(struct trusty_ctx *tctx)
 
 	list_for_each_entry(tvdev, &tctx->vdev_list, node) {
 		for (i = 0; i < tvdev->vring_num; i++) {
-			/* vq->vq.callback(&vq->vq);  trusty_virtio_notify */
-			vring_interrupt(0, tvdev->vrings[i].vq);
+			if (tvdev->vrings[i].vq)
+				vring_interrupt(0, tvdev->vrings[i].vq);
 		}
 	}
 }
@@ -253,6 +264,22 @@ static void kick_vqs(struct trusty_ctx *tctx)
 	mutex_unlock(&tctx->mlock);
 }
 
+static int trusty_vqueue_to_cpu(struct trusty_ctx *tctx, struct virtqueue *vq)
+{
+	struct trusty_vring *tvr = vq->priv;
+	u32 api_ver = trusty_get_api_version(tctx->trusty_dev);
+	int cpu = -1;
+
+	if (unlikely(api_ver < TRUSTY_API_VERSION_MULTI_VQUEUE))
+		return -1;
+
+	/* TXVQs are binded on specific CPU */
+	if (tvr->notifyid >= TIPC_TXVQ_NOTIFYID_START)
+		cpu = tvr->notifyid - TIPC_TXVQ_NOTIFYID_START;
+
+	return cpu_possible(cpu) ? cpu : -1;
+}
+
 static bool trusty_virtio_notify(struct virtqueue *vq)
 {
 	struct trusty_vring *tvr = vq->priv;
@@ -264,7 +291,8 @@ static bool trusty_virtio_notify(struct virtqueue *vq)
 		atomic_set(&tvr->needs_kick, 1);
 		complete(&tctx->task_info[TRUSTY_TASK_KICK_ID].run);
 	} else {
-		trusty_enqueue_nop(tctx->trusty_dev, &tvr->kick_nop);
+		trusty_enqueue_nop(tctx->trusty_dev, &tvr->kick_nop,
+				   trusty_vqueue_to_cpu(tctx, vq));
 	}
 
 	return true;
@@ -308,7 +336,7 @@ static void trusty_virtio_stop(struct trusty_ctx *tctx, void *va, size_t sz)
 
 static int trusty_virtio_start(struct trusty_ctx *tctx, void *va, size_t sz)
 {
-	int ret;
+	int ret, cpu;
 	u32 smcnr_virtio_start = MTEE_SMCNR(SMCF_SC_VIRTIO_START,
 					    tctx->trusty_dev);
 
@@ -321,6 +349,13 @@ static int trusty_virtio_start(struct trusty_ctx *tctx, void *va, size_t sz)
 			 __func__, ret);
 		return -ENODEV;
 	}
+
+	/* Send NOP to secure world to init per-cpu resource */
+	for_each_online_cpu(cpu) {
+		dev_dbg(tctx->dev, "%s: init per cpu %d\n", __func__, cpu);
+		trusty_enqueue_nop(tctx->trusty_dev, NULL, cpu);
+	}
+
 	return 0;
 }
 

@@ -1,20 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2011-2014 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify it under
- * the terms of the
- * GNU General Public License version 2 as published by the Free Software
- * Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY;
- * without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
- * PARTICULAR PURPOSE.
- * See the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (C) 2016 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) "<HWMSEN> " fmt
@@ -120,14 +106,16 @@ int sensor_attr_deregister(struct sensor_attr_t *misc)
 	sensor_event_deregister(misc->minor);
 	return 0;
 }
-#if 0
-static char *sensor_attr_devnode(struct device *dev, umode_t *mode)
-{
-	pr_debug("sensor_attr: name :%s\n", dev_name(dev));
-	return kasprintf(GFP_KERNEL, "sensor/%s", dev_name(dev));
-}
-#endif
-static int __init sensor_attr_init(void)
+
+/*
+ *static char *sensor_attr_devnode(struct device *dev, umode_t *mode)
+ *{
+ *	pr_debug("sensor_attr: name :%s\n", dev_name(dev));
+ *	return kasprintf(GFP_KERNEL, "sensor/%s", dev_name(dev));
+ *}
+ */
+
+int __init sensor_attr_init(void)
 {
 	int err;
 

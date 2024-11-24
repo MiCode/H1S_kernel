@@ -26,10 +26,8 @@
 
 static struct irq_domain *msi_default_domain;
 
-static void irq_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
+static void __irq_msi_compose_msg(struct irq_cfg *cfg, struct msi_msg *msg)
 {
-	struct irq_cfg *cfg = irqd_cfg(data);
-
 	msg->address_hi = MSI_ADDR_BASE_HI;
 
 	if (x2apic_enabled())
@@ -40,18 +38,137 @@ static void irq_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
 		((apic->irq_dest_mode == 0) ?
 			MSI_ADDR_DEST_MODE_PHYSICAL :
 			MSI_ADDR_DEST_MODE_LOGICAL) |
-		((apic->irq_delivery_mode != dest_LowestPrio) ?
-			MSI_ADDR_REDIRECTION_CPU :
-			MSI_ADDR_REDIRECTION_LOWPRI) |
+		MSI_ADDR_REDIRECTION_CPU |
 		MSI_ADDR_DEST_ID(cfg->dest_apicid);
 
 	msg->data =
 		MSI_DATA_TRIGGER_EDGE |
 		MSI_DATA_LEVEL_ASSERT |
-		((apic->irq_delivery_mode != dest_LowestPrio) ?
-			MSI_DATA_DELIVERY_FIXED :
-			MSI_DATA_DELIVERY_LOWPRI) |
+		MSI_DATA_DELIVERY_FIXED |
 		MSI_DATA_VECTOR(cfg->vector);
+}
+
+static void irq_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
+{
+	__irq_msi_compose_msg(irqd_cfg(data), msg);
+}
+
+static void irq_msi_update_msg(struct irq_data *irqd, struct irq_cfg *cfg)
+{
+	struct msi_msg msg[2] = { [1] = { }, };
+
+	__irq_msi_compose_msg(cfg, msg);
+	irq_data_get_irq_chip(irqd)->irq_write_msi_msg(irqd, msg);
+}
+
+static int
+msi_set_affinity(struct irq_data *irqd, const struct cpumask *mask, bool force)
+{
+	struct irq_cfg old_cfg, *cfg = irqd_cfg(irqd);
+	struct irq_data *parent = irqd->parent_data;
+	unsigned int cpu;
+	int ret;
+
+	/* Save the current configuration */
+	cpu = cpumask_first(irq_data_get_effective_affinity_mask(irqd));
+	old_cfg = *cfg;
+
+	/* Allocate a new target vector */
+	ret = parent->chip->irq_set_affinity(parent, mask, force);
+	if (ret < 0 || ret == IRQ_SET_MASK_OK_DONE)
+		return ret;
+
+	/*
+	 * For non-maskable and non-remapped MSI interrupts the migration
+	 * to a different destination CPU and a different vector has to be
+	 * done careful to handle the possible stray interrupt which can be
+	 * caused by the non-atomic update of the address/data pair.
+	 *
+	 * Direct update is possible when:
+	 * - The MSI is maskable (remapped MSI does not use this code path)).
+	 *   The quirk bit is not set in this case.
+	 * - The new vector is the same as the old vector
+	 * - The old vector is MANAGED_IRQ_SHUTDOWN_VECTOR (interrupt starts up)
+	 * - The interrupt is not yet started up
+	 * - The new destination CPU is the same as the old destination CPU
+	 */
+	if (!irqd_msi_nomask_quirk(irqd) ||
+	    cfg->vector == old_cfg.vector ||
+	    old_cfg.vector == MANAGED_IRQ_SHUTDOWN_VECTOR ||
+	    !irqd_is_started(irqd) ||
+	    cfg->dest_apicid == old_cfg.dest_apicid) {
+		irq_msi_update_msg(irqd, cfg);
+		return ret;
+	}
+
+	/*
+	 * Paranoia: Validate that the interrupt target is the local
+	 * CPU.
+	 */
+	if (WARN_ON_ONCE(cpu != smp_processor_id())) {
+		irq_msi_update_msg(irqd, cfg);
+		return ret;
+	}
+
+	/*
+	 * Redirect the interrupt to the new vector on the current CPU
+	 * first. This might cause a spurious interrupt on this vector if
+	 * the device raises an interrupt right between this update and the
+	 * update to the final destination CPU.
+	 *
+	 * If the vector is in use then the installed device handler will
+	 * denote it as spurious which is no harm as this is a rare event
+	 * and interrupt handlers have to cope with spurious interrupts
+	 * anyway. If the vector is unused, then it is marked so it won't
+	 * trigger the 'No irq handler for vector' warning in do_IRQ().
+	 *
+	 * This requires to hold vector lock to prevent concurrent updates to
+	 * the affected vector.
+	 */
+	lock_vector_lock();
+
+	/*
+	 * Mark the new target vector on the local CPU if it is currently
+	 * unused. Reuse the VECTOR_RETRIGGERED state which is also used in
+	 * the CPU hotplug path for a similar purpose. This cannot be
+	 * undone here as the current CPU has interrupts disabled and
+	 * cannot handle the interrupt before the whole set_affinity()
+	 * section is done. In the CPU unplug case, the current CPU is
+	 * about to vanish and will not handle any interrupts anymore. The
+	 * vector is cleaned up when the CPU comes online again.
+	 */
+	if (IS_ERR_OR_NULL(this_cpu_read(vector_irq[cfg->vector])))
+		this_cpu_write(vector_irq[cfg->vector], VECTOR_RETRIGGERED);
+
+	/* Redirect it to the new vector on the local CPU temporarily */
+	old_cfg.vector = cfg->vector;
+	irq_msi_update_msg(irqd, &old_cfg);
+
+	/* Now transition it to the target CPU */
+	irq_msi_update_msg(irqd, cfg);
+
+	/*
+	 * All interrupts after this point are now targeted at the new
+	 * vector/CPU.
+	 *
+	 * Drop vector lock before testing whether the temporary assignment
+	 * to the local CPU was hit by an interrupt raised in the device,
+	 * because the retrigger function acquires vector lock again.
+	 */
+	unlock_vector_lock();
+
+	/*
+	 * Check whether the transition raced with a device interrupt and
+	 * is pending in the local APICs IRR. It is safe to do this outside
+	 * of vector lock as the irq_desc::lock of this interrupt is still
+	 * held and interrupts are disabled: The check is not accessing the
+	 * underlying vector store. It's just checking the local APIC's
+	 * IRR.
+	 */
+	if (lapic_vector_set_in_irr(cfg->vector))
+		irq_data_get_irq_chip(irqd)->irq_retrigger(irqd);
+
+	return ret;
 }
 
 /*
@@ -65,7 +182,9 @@ static struct irq_chip pci_msi_controller = {
 	.irq_ack		= irq_chip_ack_parent,
 	.irq_retrigger		= irq_chip_retrigger_hierarchy,
 	.irq_compose_msi_msg	= irq_msi_compose_msg,
-	.flags			= IRQCHIP_SKIP_SET_WAKE,
+	.irq_set_affinity	= msi_set_affinity,
+	.flags			= IRQCHIP_SKIP_SET_WAKE |
+				  IRQCHIP_AFFINITY_PRE_STARTUP,
 };
 
 int native_setup_msi_irqs(struct pci_dev *dev, int nvec, int type)
@@ -149,10 +268,13 @@ void __init arch_init_msi_domain(struct irq_domain *parent)
 		msi_default_domain =
 			pci_msi_create_irq_domain(fn, &pci_msi_domain_info,
 						  parent);
-		irq_domain_free_fwnode(fn);
 	}
-	if (!msi_default_domain)
+	if (!msi_default_domain) {
+		irq_domain_free_fwnode(fn);
 		pr_warn("failed to initialize irqdomain for MSI/MSI-x.\n");
+	} else {
+		msi_default_domain->flags |= IRQ_DOMAIN_MSI_NOMASK_QUIRK;
+	}
 }
 
 #ifdef CONFIG_IRQ_REMAP
@@ -163,7 +285,8 @@ static struct irq_chip pci_msi_ir_controller = {
 	.irq_ack		= irq_chip_ack_parent,
 	.irq_retrigger		= irq_chip_retrigger_hierarchy,
 	.irq_set_vcpu_affinity	= irq_chip_set_vcpu_affinity_parent,
-	.flags			= IRQCHIP_SKIP_SET_WAKE,
+	.flags			= IRQCHIP_SKIP_SET_WAKE |
+				  IRQCHIP_AFFINITY_PRE_STARTUP,
 };
 
 static struct msi_domain_info pci_msi_ir_domain_info = {
@@ -185,7 +308,8 @@ struct irq_domain *arch_create_remap_msi_irq_domain(struct irq_domain *parent,
 	if (!fn)
 		return NULL;
 	d = pci_msi_create_irq_domain(fn, &pci_msi_ir_domain_info, parent);
-	irq_domain_free_fwnode(fn);
+	if (!d)
+		irq_domain_free_fwnode(fn);
 	return d;
 }
 #endif
@@ -205,7 +329,8 @@ static struct irq_chip dmar_msi_controller = {
 	.irq_retrigger		= irq_chip_retrigger_hierarchy,
 	.irq_compose_msi_msg	= irq_msi_compose_msg,
 	.irq_write_msi_msg	= dmar_msi_write_msg,
-	.flags			= IRQCHIP_SKIP_SET_WAKE,
+	.flags			= IRQCHIP_SKIP_SET_WAKE |
+				  IRQCHIP_AFFINITY_PRE_STARTUP,
 };
 
 static irq_hw_number_t dmar_msi_get_hwirq(struct msi_domain_info *info,
@@ -248,7 +373,8 @@ static struct irq_domain *dmar_get_irq_domain(void)
 	if (fn) {
 		dmar_domain = msi_create_irq_domain(fn, &dmar_msi_domain_info,
 						    x86_vector_domain);
-		irq_domain_free_fwnode(fn);
+		if (!dmar_domain)
+			irq_domain_free_fwnode(fn);
 	}
 out:
 	mutex_unlock(&dmar_lock);
@@ -302,7 +428,7 @@ static struct irq_chip hpet_msi_controller __ro_after_init = {
 	.irq_retrigger = irq_chip_retrigger_hierarchy,
 	.irq_compose_msi_msg = irq_msi_compose_msg,
 	.irq_write_msi_msg = hpet_msi_write_msg,
-	.flags = IRQCHIP_SKIP_SET_WAKE,
+	.flags = IRQCHIP_SKIP_SET_WAKE | IRQCHIP_AFFINITY_PRE_STARTUP,
 };
 
 static irq_hw_number_t hpet_msi_get_hwirq(struct msi_domain_info *info,
@@ -373,7 +499,10 @@ struct irq_domain *hpet_create_irq_domain(int hpet_id)
 	}
 
 	d = msi_create_irq_domain(fn, domain_info, parent);
-	irq_domain_free_fwnode(fn);
+	if (!d) {
+		irq_domain_free_fwnode(fn);
+		kfree(domain_info);
+	}
 	return d;
 }
 

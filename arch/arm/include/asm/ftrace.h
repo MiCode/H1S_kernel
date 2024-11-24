@@ -16,8 +16,8 @@ extern void __gnu_mcount_nc(void);
 
 #ifdef CONFIG_DYNAMIC_FTRACE
 struct dyn_arch_ftrace {
-#ifdef CONFIG_OLD_MCOUNT
-	bool	old_mcount;
+#ifdef CONFIG_ARM_MODULE_PLTS
+	struct module *mod;
 #endif
 };
 

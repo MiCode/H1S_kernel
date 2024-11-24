@@ -306,4 +306,3 @@ module_init(ant_div_init);
 module_exit(ant_div_exit);
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("lisuyang");
-

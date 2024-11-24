@@ -38,7 +38,7 @@
  *                       Competence Center for Advanced Satellite Communications.
  *                     Bugfixes and robustness improvements.
  *                     Filtering on dest MAC addresses, if present (D-Bit = 0)
- *                     ULE_DEBUG compile-time option.
+ *                     DVB_ULE_DEBUG compile-time option.
  * Apr 2006: cp v3:    Bugfixes and compliency with RFC 4326 (ULE) by
  *                       Christian Praehauser <cpraehaus@cosy.sbg.ac.at>,
  *                       Paris Lodron University of Salzburg.
@@ -56,6 +56,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/netdevice.h>
+#include <linux/nospec.h>
 #include <linux/etherdevice.h>
 #include <linux/dvb/net.h>
 #include <linux/uio.h>
@@ -64,8 +65,8 @@
 #include <linux/mutex.h>
 #include <linux/sched.h>
 
-#include "dvb_demux.h"
-#include "dvb_net.h"
+#include <media/dvb_demux.h>
+#include <media/dvb_net.h>
 
 static inline __u32 iov_crc32( __u32 c, struct kvec *iov, unsigned int cnt )
 {
@@ -78,15 +79,18 @@ static inline __u32 iov_crc32( __u32 c, struct kvec *iov, unsigned int cnt )
 
 #define DVB_NET_MULTICAST_MAX 10
 
-#undef ULE_DEBUG
-
-#ifdef ULE_DEBUG
+#ifdef DVB_ULE_DEBUG
+/*
+ * The code inside DVB_ULE_DEBUG keeps a history of the
+ * last 100 TS cells processed.
+ */
+static unsigned char ule_hist[100*TS_SZ] = { 0 };
+static unsigned char *ule_where = ule_hist, ule_dump;
 
 static void hexdump(const unsigned char *buf, unsigned short len)
 {
 	print_hex_dump_debug("", DUMP_PREFIX_OFFSET, 16, 1, buf, len, true);
 }
-
 #endif
 
 struct dvb_net_priv {
@@ -125,7 +129,7 @@ struct dvb_net_priv {
 };
 
 
-/**
+/*
  *	Determine the packet's protocol ID. The rule here is that we
  *	assume 802.3 if the type field is short enough to be a length.
  *	This is normal practice and works for any 'now in use' protocol.
@@ -155,7 +159,7 @@ static __be16 dvb_net_eth_type_trans(struct sk_buff *skb,
 
 	rawp = skb->data;
 
-	/**
+	/*
 	 *	This is a magic hack to spot IPX packets. Older Novell breaks
 	 *	the protocol design and runs IPX over 802.3 without an 802.2 LLC
 	 *	layer. We look for FFFF which isn't a used 802.2 SSAP/DSAP. This
@@ -164,7 +168,7 @@ static __be16 dvb_net_eth_type_trans(struct sk_buff *skb,
 	if (*(unsigned short *)rawp == 0xFFFF)
 		return htons(ETH_P_802_3);
 
-	/**
+	/*
 	 *	Real 802.2 LLC
 	 */
 	return htons(ETH_P_802_2);
@@ -215,7 +219,8 @@ static int ule_exthdr_padding(struct dvb_net_priv *p)
 	return 0;
 }
 
-/** Handle ULE extension headers.
+/*
+ * Handle ULE extension headers.
  *  Function is called after a successful CRC32 verification of an ULE SNDU to complete its decoding.
  *  Returns: >= 0: nr. of bytes consumed by next extension header
  *	     -1:   Mandatory extension header that is not recognized or TEST SNDU; discard.
@@ -279,11 +284,9 @@ static int handle_ule_extensions( struct dvb_net_priv *p )
 		if (l < 0)
 			return l;	/* Stop extension header processing and discard SNDU. */
 		total_ext_len += l;
-#ifdef ULE_DEBUG
 		pr_debug("ule_next_hdr=%p, ule_sndu_type=%i, l=%i, total_ext_len=%i\n",
 			 p->ule_next_hdr, (int)p->ule_sndu_type,
 			 l, total_ext_len);
-#endif
 
 	} while (p->ule_sndu_type < ETH_P_802_3_MIN);
 
@@ -291,7 +294,7 @@ static int handle_ule_extensions( struct dvb_net_priv *p )
 }
 
 
-/** Prepare for a new ULE SNDU: reset the decoder state. */
+/* Prepare for a new ULE SNDU: reset the decoder state. */
 static inline void reset_ule( struct dvb_net_priv *p )
 {
 	p->ule_skb = NULL;
@@ -304,7 +307,7 @@ static inline void reset_ule( struct dvb_net_priv *p )
 	p->ule_bridged = 0;
 }
 
-/**
+/*
  * Decode ULE SNDUs according to draft-ietf-ipdvb-ule-03.txt from a sequence of
  * TS cells of a single PID.
  */
@@ -319,29 +322,21 @@ struct dvb_net_ule_handle {
 	const u8 *ts, *ts_end, *from_where;
 	u8 ts_remain, how_much, new_ts;
 	bool error;
-#ifdef ULE_DEBUG
-	/*
-	 * The code inside ULE_DEBUG keeps a history of the
-	 * last 100 TS cells processed.
-	 */
-	static unsigned char ule_hist[100*TS_SZ];
-	static unsigned char *ule_where = ule_hist, ule_dump;
-#endif
 };
 
 static int dvb_net_ule_new_ts_cell(struct dvb_net_ule_handle *h)
 {
 	/* We are about to process a new TS cell. */
 
-#ifdef ULE_DEBUG
-	if (h->ule_where >= &h->ule_hist[100*TS_SZ])
-		h->ule_where = h->ule_hist;
-	memcpy(h->ule_where, h->ts, TS_SZ);
-	if (h->ule_dump) {
-		hexdump(h->ule_where, TS_SZ);
-		h->ule_dump = 0;
+#ifdef DVB_ULE_DEBUG
+	if (ule_where >= &ule_hist[100*TS_SZ])
+		ule_where = ule_hist;
+	memcpy(ule_where, h->ts, TS_SZ);
+	if (ule_dump) {
+		hexdump(ule_where, TS_SZ);
+		ule_dump = 0;
 	}
-	h->ule_where += TS_SZ;
+	ule_where += TS_SZ;
 #endif
 
 	/*
@@ -659,6 +654,7 @@ static int dvb_net_ule_should_drop(struct dvb_net_ule_handle *h)
 
 
 static void dvb_net_ule_check_crc(struct dvb_net_ule_handle *h,
+				  struct kvec iov[3],
 				  u32 ule_crc, u32 expected_crc)
 {
 	u8 dest_addr[ETH_ALEN];
@@ -671,22 +667,22 @@ static void dvb_net_ule_check_crc(struct dvb_net_ule_handle *h,
 			h->ts_remain > 2 ?
 				*(unsigned short *)h->from_where : 0);
 
-	#ifdef ULE_DEBUG
+	#ifdef DVB_ULE_DEBUG
 		hexdump(iov[0].iov_base, iov[0].iov_len);
 		hexdump(iov[1].iov_base, iov[1].iov_len);
 		hexdump(iov[2].iov_base, iov[2].iov_len);
 
-		if (h->ule_where == h->ule_hist) {
-			hexdump(&h->ule_hist[98*TS_SZ], TS_SZ);
-			hexdump(&h->ule_hist[99*TS_SZ], TS_SZ);
-		} else if (h->ule_where == &h->ule_hist[TS_SZ]) {
-			hexdump(&h->ule_hist[99*TS_SZ], TS_SZ);
-			hexdump(h->ule_hist, TS_SZ);
+		if (ule_where == ule_hist) {
+			hexdump(&ule_hist[98*TS_SZ], TS_SZ);
+			hexdump(&ule_hist[99*TS_SZ], TS_SZ);
+		} else if (ule_where == &ule_hist[TS_SZ]) {
+			hexdump(&ule_hist[99*TS_SZ], TS_SZ);
+			hexdump(ule_hist, TS_SZ);
 		} else {
-			hexdump(h->ule_where - TS_SZ - TS_SZ, TS_SZ);
-			hexdump(h->ule_where - TS_SZ, TS_SZ);
+			hexdump(ule_where - TS_SZ - TS_SZ, TS_SZ);
+			hexdump(ule_where - TS_SZ, TS_SZ);
 		}
-		h->ule_dump = 1;
+		ule_dump = 1;
 	#endif
 
 		h->dev->stats.rx_errors++;
@@ -704,11 +700,9 @@ static void dvb_net_ule_check_crc(struct dvb_net_ule_handle *h,
 
 	if (!h->priv->ule_dbit) {
 		if (dvb_net_ule_should_drop(h)) {
-#ifdef ULE_DEBUG
 			netdev_dbg(h->dev,
 				   "Dropping SNDU: MAC destination address does not match: dest addr: %pM, h->dev addr: %pM\n",
 				   h->priv->ule_skb->data, h->dev->dev_addr);
-#endif
 			dev_kfree_skb(h->priv->ule_skb);
 			return;
 		}
@@ -778,6 +772,8 @@ static void dvb_net_ule(struct net_device *dev, const u8 *buf, size_t buf_len)
 	int ret;
 	struct dvb_net_ule_handle h = {
 		.dev = dev,
+		.priv = netdev_priv(dev),
+		.ethh = NULL,
 		.buf = buf,
 		.buf_len = buf_len,
 		.skipped = 0L,
@@ -787,11 +783,7 @@ static void dvb_net_ule(struct net_device *dev, const u8 *buf, size_t buf_len)
 		.ts_remain = 0,
 		.how_much = 0,
 		.new_ts = 1,
-		.ethh = NULL,
 		.error = false,
-#ifdef ULE_DEBUG
-		.ule_where = ule_hist,
-#endif
 	};
 
 	/*
@@ -859,7 +851,7 @@ static void dvb_net_ule(struct net_device *dev, const u8 *buf, size_t buf_len)
 				       *(tail - 2) << 8 |
 				       *(tail - 1);
 
-			dvb_net_ule_check_crc(&h, ule_crc, expected_crc);
+			dvb_net_ule_check_crc(&h, iov, ule_crc, expected_crc);
 
 			/* Prepare for next SNDU. */
 			reset_ule(h.priv);
@@ -892,7 +884,8 @@ static void dvb_net_ule(struct net_device *dev, const u8 *buf, size_t buf_len)
 
 static int dvb_net_ts_callback(const u8 *buffer1, size_t buffer1_len,
 			       const u8 *buffer2, size_t buffer2_len,
-			       struct dmx_ts_feed *feed)
+			       struct dmx_ts_feed *feed,
+			       u32 *buffer_flags)
 {
 	struct net_device *dev = feed->priv;
 
@@ -1001,11 +994,11 @@ static void dvb_net_sec(struct net_device *dev,
 
 static int dvb_net_sec_callback(const u8 *buffer1, size_t buffer1_len,
 		 const u8 *buffer2, size_t buffer2_len,
-		 struct dmx_section_filter *filter)
+		 struct dmx_section_filter *filter, u32 *buffer_flags)
 {
 	struct net_device *dev = filter->priv;
 
-	/**
+	/*
 	 * we rely on the DVB API definition where exactly one complete
 	 * section is delivered in buffer1
 	 */
@@ -1013,7 +1006,7 @@ static int dvb_net_sec_callback(const u8 *buffer1, size_t buffer1_len,
 	return 0;
 }
 
-static int dvb_net_tx(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t dvb_net_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
@@ -1481,14 +1474,20 @@ static int dvb_net_do_ioctl(struct file *file,
 		struct net_device *netdev;
 		struct dvb_net_priv *priv_data;
 		struct dvb_net_if *dvbnetif = parg;
+		int if_num = dvbnetif->if_num;
 
-		if (dvbnetif->if_num >= DVB_NET_DEVICES_MAX ||
-		    !dvbnet->state[dvbnetif->if_num]) {
+		if (if_num >= DVB_NET_DEVICES_MAX) {
+			ret = -EINVAL;
+			goto ioctl_error;
+		}
+		if_num = array_index_nospec(if_num, DVB_NET_DEVICES_MAX);
+
+		if (!dvbnet->state[if_num]) {
 			ret = -EINVAL;
 			goto ioctl_error;
 		}
 
-		netdev = dvbnet->device[dvbnetif->if_num];
+		netdev = dvbnet->device[if_num];
 
 		priv_data = netdev_priv(netdev);
 		dvbnetif->pid=priv_data->pid;
@@ -1541,14 +1540,20 @@ static int dvb_net_do_ioctl(struct file *file,
 		struct net_device *netdev;
 		struct dvb_net_priv *priv_data;
 		struct __dvb_net_if_old *dvbnetif = parg;
+		int if_num = dvbnetif->if_num;
 
-		if (dvbnetif->if_num >= DVB_NET_DEVICES_MAX ||
-		    !dvbnet->state[dvbnetif->if_num]) {
+		if (if_num >= DVB_NET_DEVICES_MAX) {
+			ret = -EINVAL;
+			goto ioctl_error;
+		}
+		if_num = array_index_nospec(if_num, DVB_NET_DEVICES_MAX);
+
+		if (!dvbnet->state[if_num]) {
 			ret = -EINVAL;
 			goto ioctl_error;
 		}
 
-		netdev = dvbnet->device[dvbnetif->if_num];
+		netdev = dvbnet->device[if_num];
 
 		priv_data = netdev_priv(netdev);
 		dvbnetif->pid=priv_data->pid;
@@ -1570,15 +1575,43 @@ static long dvb_net_ioctl(struct file *file,
 	return dvb_usercopy(file, cmd, arg, dvb_net_do_ioctl);
 }
 
+static int locked_dvb_net_open(struct inode *inode, struct file *file)
+{
+	struct dvb_device *dvbdev = file->private_data;
+	struct dvb_net *dvbnet = dvbdev->priv;
+	int ret;
+
+	if (mutex_lock_interruptible(&dvbnet->remove_mutex))
+		return -ERESTARTSYS;
+
+	if (dvbnet->exit) {
+		mutex_unlock(&dvbnet->remove_mutex);
+		return -ENODEV;
+	}
+
+	ret = dvb_generic_open(inode, file);
+
+	mutex_unlock(&dvbnet->remove_mutex);
+
+	return ret;
+}
+
 static int dvb_net_close(struct inode *inode, struct file *file)
 {
 	struct dvb_device *dvbdev = file->private_data;
 	struct dvb_net *dvbnet = dvbdev->priv;
 
+	mutex_lock(&dvbnet->remove_mutex);
+
 	dvb_generic_release(inode, file);
 
-	if(dvbdev->users == 1 && dvbnet->exit == 1)
+	if (dvbdev->users == 1 && dvbnet->exit == 1) {
+		mutex_unlock(&dvbnet->remove_mutex);
 		wake_up(&dvbdev->wait_queue);
+	} else {
+		mutex_unlock(&dvbnet->remove_mutex);
+	}
+
 	return 0;
 }
 
@@ -1586,7 +1619,7 @@ static int dvb_net_close(struct inode *inode, struct file *file)
 static const struct file_operations dvb_net_fops = {
 	.owner = THIS_MODULE,
 	.unlocked_ioctl = dvb_net_ioctl,
-	.open =	dvb_generic_open,
+	.open =	locked_dvb_net_open,
 	.release = dvb_net_close,
 	.llseek = noop_llseek,
 };
@@ -1605,10 +1638,13 @@ void dvb_net_release (struct dvb_net *dvbnet)
 {
 	int i;
 
+	mutex_lock(&dvbnet->remove_mutex);
 	dvbnet->exit = 1;
+	mutex_unlock(&dvbnet->remove_mutex);
+
 	if (dvbnet->dvbdev->users < 1)
 		wait_event(dvbnet->dvbdev->wait_queue,
-				dvbnet->dvbdev->users==1);
+				dvbnet->dvbdev->users == 1);
 
 	dvb_unregister_device(dvbnet->dvbdev);
 
@@ -1627,6 +1663,7 @@ int dvb_net_init (struct dvb_adapter *adap, struct dvb_net *dvbnet,
 	int i;
 
 	mutex_init(&dvbnet->ioctl_mutex);
+	mutex_init(&dvbnet->remove_mutex);
 	dvbnet->demux = dmx;
 
 	for (i=0; i<DVB_NET_DEVICES_MAX; i++)

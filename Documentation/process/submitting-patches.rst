@@ -133,7 +133,7 @@ as you intend it to.
 
 The maintainer will thank you if you write your patch description in a
 form which can be easily pulled into Linux's source code management
-system, ``git``, as a "commit log".  See :ref:`explicit_in_reply_to`.
+system, ``git``, as a "commit log".  See :ref:`the_canonical_patch_format`.
 
 Solve only one problem per patch.  If your description starts to get
 long, that's a sign that you probably need to split up your patch.
@@ -510,8 +510,8 @@ tracking your trees, and to people trying to troubleshoot bugs in your
 tree.
 
 
-12) When to use Acked-by: and Cc:
----------------------------------
+12) When to use Acked-by:, Cc:, and Co-Developed-by:
+-------------------------------------------------------
 
 The Signed-off-by: tag indicates that the signer was involved in the
 development of the patch, or that he/she was in the patch's delivery path.
@@ -542,6 +542,11 @@ This is the only tag which might be added without an explicit action by the
 person it names - but it should indicate that this person was copied on the
 patch.  This tag documents that potentially interested parties
 have been included in the discussion.
+
+A Co-Developed-by: states that the patch was also created by another developer
+along with the original author.  This is useful at times when multiple people
+work on a single patch.  Note, this person also needs to have a Signed-off-by:
+line in the patch as well.
 
 
 13) Using Reported-by:, Tested-by:, Reviewed-by:, Suggested-by: and Fixes:
@@ -606,6 +611,7 @@ which stable kernel versions should receive your fix. This is the preferred
 method for indicating a bug fixed by the patch. See :ref:`describe_changes`
 for more details.
 
+.. _the_canonical_patch_format:
 
 14) The canonical patch format
 ------------------------------
@@ -621,13 +627,13 @@ The canonical patch subject line is::
 
 The canonical patch message body contains the following:
 
-  - A ``from`` line specifying the patch author (only needed if the person
-    sending the patch is not the author).
-
-  - An empty line.
+  - A ``from`` line specifying the patch author, followed by an empty
+    line (only needed if the person sending the patch is not the author).
 
   - The body of the explanation, line wrapped at 75 columns, which will
     be copied to the permanent changelog to describe this patch.
+
+  - An empty line.
 
   - The ``Signed-off-by:`` lines, described above, which will
     also go in the changelog.
@@ -756,7 +762,7 @@ requests, especially from new, unknown developers.  If in doubt you can use
 the pull request as the cover letter for a normal posting of the patch
 series, giving the maintainer the option of using either.
 
-A pull request should have [GIT] or [PULL] in the subject line.  The
+A pull request should have [GIT PULL] in the subject line.  The
 request itself should include the repository name and the branch of
 interest on a single line; it should look something like::
 

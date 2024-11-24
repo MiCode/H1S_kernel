@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -54,7 +43,6 @@
 #include <linux/of.h>
 #include <linux/of_fdt.h>
 
-#if 1
 struct pinctrl *pinctrlaud;
 
 #define MT6755_PIN 1
@@ -150,7 +138,6 @@ static struct audio_gpio_attr aud_gpios[GPIO_NUM] = {
 		NULL
 	},
 };
-#endif
 
 static unsigned int extbuck_fan53526_exist;
 
@@ -158,7 +145,6 @@ static DEFINE_MUTEX(gpio_request_mutex);
 
 void AudDrv_GPIO_probe(void *dev)
 {
-#if 1
 	int ret;
 	int i = 0;
 
@@ -175,7 +161,7 @@ void AudDrv_GPIO_probe(void *dev)
 	 * which may be used by hpdepop
 	 */
 	pr_debug("%s(), extbuck_fan53526_exist = %d\n", __func__,
-		 extbuck_fan53526_exist);
+		extbuck_fan53526_exist);
 	if (extbuck_fan53526_exist) { /* is e2 */
 		struct audio_gpio_attr gpio_hpdepop_high = {
 			"hpdepop-pullhigh_e2", false, NULL
@@ -188,8 +174,8 @@ void AudDrv_GPIO_probe(void *dev)
 		aud_gpios[GPIO_HPDEPOP_LOW] = gpio_hpdepop_low;
 
 		pr_debug("%s(), e2 PCB, update gpio name, high = %s, low = %s\n",
-			 __func__, aud_gpios[GPIO_HPDEPOP_HIGH].name,
-			 aud_gpios[GPIO_HPDEPOP_LOW].name);
+			__func__, aud_gpios[GPIO_HPDEPOP_HIGH].name,
+			aud_gpios[GPIO_HPDEPOP_LOW].name);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(aud_gpios); i++) {
@@ -203,7 +189,6 @@ void AudDrv_GPIO_probe(void *dev)
 			aud_gpios[i].gpio_prepare = true;
 		}
 	}
-#endif
 }
 
 static int AudDrv_GPIO_Select(enum audio_system_gpio_type _type)
@@ -251,10 +236,10 @@ static bool AudDrv_GPIO_IsValid(enum audio_system_gpio_type _type)
 
 static int set_aud_clk_mosi(bool _enable)
 {
-	/*
-	 * scp also need this gpio on mt6797,
-	 * don't switch gpio if they exist.
-	 */
+/*
+ * scp also need this gpio on mt6797,
+ * don't switch gpio if they exist.
+ */
 #ifndef CONFIG_MTK_TINYSYS_SCP_SUPPORT
 	static int aud_clk_mosi_counter;
 
@@ -401,23 +386,7 @@ int AudDrv_GPIO_TDM_Select(int mode)
 	int retval = 0;
 
 	mutex_lock(&gpio_request_mutex);
-#if 0
-	switch (mode) {
-	case 0:
-		mt_set_gpio_mode(135 | 0x80000000, GPIO_MODE_00);
-		mt_set_gpio_mode(136 | 0x80000000, GPIO_MODE_00);
-		mt_set_gpio_mode(138 | 0x80000000, GPIO_MODE_00);
-		break;
-	case 1:
-		mt_set_gpio_mode(135 | 0x80000000, GPIO_MODE_01);
-		mt_set_gpio_mode(136 | 0x80000000, GPIO_MODE_01);
-		mt_set_gpio_mode(138 | 0x80000000, GPIO_MODE_01);
-		break;
-	default:
-		pr_err("%s(), invalid mode = %d", __func__, mode);
-		retval = -1;
-	}
-#else
+
 	switch (mode) {
 	case 0:
 		AudDrv_GPIO_Select(GPIO_TDM_MODE0);
@@ -429,7 +398,7 @@ int AudDrv_GPIO_TDM_Select(int mode)
 		pr_err("%s(), invalid mode = %d", __func__, mode);
 		retval = -1;
 	}
-#endif
+
 	mutex_unlock(&gpio_request_mutex);
 	return retval;
 }
@@ -443,16 +412,16 @@ int AudDrv_GPIO_PMIC_Select(int bEnable)
 	if (bEnable == 1) {
 		if (aud_gpios[GPIO_PMIC_MODE1].gpio_prepare) {
 			retval = pinctrl_select_state(
-					 pinctrlaud,
-					 aud_gpios[GPIO_PMIC_MODE1].gpioctrl);
+				pinctrlaud,
+				aud_gpios[GPIO_PMIC_MODE1].gpioctrl);
 			if (retval)
 				pr_info("could not set aud_gpios[GPIO_PMIC_MODE1] pins\n");
 		}
 	} else {
 		if (aud_gpios[GPIO_PMIC_MODE0].gpio_prepare) {
 			retval = pinctrl_select_state(
-					 pinctrlaud,
-					 aud_gpios[GPIO_PMIC_MODE0].gpioctrl);
+				pinctrlaud,
+				aud_gpios[GPIO_PMIC_MODE0].gpioctrl);
 			if (retval)
 				pr_info("could not set aud_gpios[GPIO_PMIC_MODE0] pins\n");
 		}
@@ -471,16 +440,14 @@ int AudDrv_GPIO_I2S_Select(int bEnable)
 	if (bEnable == 1) {
 		if (aud_gpios[GPIO_I2S_MODE1].gpio_prepare) {
 			retval = pinctrl_select_state(
-					 pinctrlaud,
-					 aud_gpios[GPIO_I2S_MODE1].gpioctrl);
+				pinctrlaud, aud_gpios[GPIO_I2S_MODE1].gpioctrl);
 			if (retval)
 				pr_info("could not set aud_gpios[GPIO_I2S_MODE1] pins\n");
 		}
 	} else {
 		if (aud_gpios[GPIO_I2S_MODE0].gpio_prepare) {
 			retval = pinctrl_select_state(
-					 pinctrlaud,
-					 aud_gpios[GPIO_I2S_MODE0].gpioctrl);
+				pinctrlaud, aud_gpios[GPIO_I2S_MODE0].gpioctrl);
 			if (retval)
 				pr_info("could not set aud_gpios[GPIO_I2S_MODE0] pins\n");
 		}
@@ -526,8 +493,8 @@ int AudDrv_GPIO_EXTAMP_Select(int bEnable, int mode)
 	} else {
 		if (aud_gpios[GPIO_EXTAMP_LOW].gpio_prepare) {
 			retval = pinctrl_select_state(
-					 pinctrlaud,
-					 aud_gpios[GPIO_EXTAMP_LOW].gpioctrl);
+				pinctrlaud,
+				aud_gpios[GPIO_EXTAMP_LOW].gpioctrl);
 			if (retval)
 				pr_info("could not set aud_gpios[GPIO_EXTAMP_LOW] pins\n");
 		}
@@ -557,8 +524,8 @@ int AudDrv_GPIO_EXTAMP2_Select(int bEnable, int mode)
 		if (aud_gpios[GPIO_EXTAMP2_HIGH].gpio_prepare) {
 			for (i = 0; i < extamp_mode; i++) {
 				retval = pinctrl_select_state(
-					 pinctrlaud,
-					 aud_gpios[GPIO_EXTAMP2_LOW].gpioctrl);
+					pinctrlaud,
+					aud_gpios[GPIO_EXTAMP2_LOW].gpioctrl);
 				if (retval)
 					pr_info("could not set aud_gpios[GPIO_EXTAMP2_LOW] pins\n");
 				udelay(2);
@@ -573,8 +540,8 @@ int AudDrv_GPIO_EXTAMP2_Select(int bEnable, int mode)
 	} else {
 		if (aud_gpios[GPIO_EXTAMP2_LOW].gpio_prepare) {
 			retval = pinctrl_select_state(
-					 pinctrlaud,
-					 aud_gpios[GPIO_EXTAMP2_LOW].gpioctrl);
+				pinctrlaud,
+				aud_gpios[GPIO_EXTAMP2_LOW].gpioctrl);
 			if (retval)
 				pr_info("could not set aud_gpios[GPIO_EXTAMP2_LOW] pins\n");
 		}
@@ -593,16 +560,16 @@ int AudDrv_GPIO_RCVSPK_Select(int bEnable)
 	if (bEnable == 1) {
 		if (aud_gpios[GPIO_RCVSPK_HIGH].gpio_prepare) {
 			retval = pinctrl_select_state(
-					 pinctrlaud,
-					 aud_gpios[GPIO_RCVSPK_HIGH].gpioctrl);
+				pinctrlaud,
+				aud_gpios[GPIO_RCVSPK_HIGH].gpioctrl);
 			if (retval)
 				pr_info("could not set aud_gpios[GPIO_RCVSPK_HIGH] pins\n");
 		}
 	} else {
 		if (aud_gpios[GPIO_RCVSPK_LOW].gpio_prepare) {
 			retval = pinctrl_select_state(
-					 pinctrlaud,
-					 aud_gpios[GPIO_RCVSPK_LOW].gpioctrl);
+				pinctrlaud,
+				aud_gpios[GPIO_RCVSPK_LOW].gpioctrl);
 			if (retval)
 				pr_info("could not set aud_gpios[GPIO_RCVSPK_LOW] pins\n");
 		}
@@ -655,7 +622,7 @@ static int __init dt_get_extbuck_info(unsigned long node, const char *uname,
 		return 0;
 
 	tags = (struct devinfo_extbuck_tag *)of_get_flat_dt_prop(
-		       node, "atag,extbuck_fan53526", &size);
+		node, "atag,extbuck_fan53526", &size);
 
 	if (tags) {
 		extbuck_fan53526_exist = tags->extbuck_fan53526_exist;

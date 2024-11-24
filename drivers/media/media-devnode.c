@@ -4,7 +4,7 @@
  * Copyright (C) 2010 Nokia Corporation
  *
  * Based on drivers/media/video/v4l2_dev.c code authored by
- *	Mauro Carvalho Chehab <mchehab@infradead.org> (version 2)
+ *	Mauro Carvalho Chehab <mchehab@kernel.org> (version 2)
  *	Alan Cox, <alan@lxorguk.ukuu.org.uk> (version 1)
  *
  * Contacts: Laurent Pinchart <laurent.pinchart@ideasonboard.com>
@@ -99,13 +99,13 @@ static ssize_t media_write(struct file *filp, const char __user *buf,
 	return devnode->fops->write(filp, buf, sz, off);
 }
 
-static unsigned int media_poll(struct file *filp,
+static __poll_t media_poll(struct file *filp,
 			       struct poll_table_struct *poll)
 {
 	struct media_devnode *devnode = media_devnode_data(filp);
 
 	if (!media_devnode_is_registered(devnode))
-		return POLLERR | POLLHUP;
+		return EPOLLERR | EPOLLHUP;
 	if (!devnode->fops->poll)
 		return DEFAULT_POLLMASK;
 	return devnode->fops->poll(filp, poll);
@@ -253,14 +253,13 @@ int __must_check media_devnode_register(struct media_device *mdev,
 	devnode->cdev.owner = owner;
 
 	/* Part 3: Add the media and char device */
+	set_bit(MEDIA_FLAG_REGISTERED, &devnode->flags);
 	ret = cdev_device_add(&devnode->cdev, &devnode->dev);
 	if (ret < 0) {
+		clear_bit(MEDIA_FLAG_REGISTERED, &devnode->flags);
 		pr_err("%s: cdev_device_add failed\n", __func__);
 		goto cdev_add_error;
 	}
-
-	/* Part 4: Activate this minor. The char device can now be used. */
-	set_bit(MEDIA_FLAG_REGISTERED, &devnode->flags);
 
 	return 0;
 

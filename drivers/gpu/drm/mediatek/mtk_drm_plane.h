@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015 MediaTek Inc.
- * Author: CK Hu <ck.hu@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _MTK_DRM_PLANE_H_
 #define _MTK_DRM_PLANE_H_
@@ -119,6 +110,8 @@ enum MTK_PLANE_PROP {
 	PLANE_PROP_VPITCH,
 	PLANE_PROP_COMPRESS,
 	PLANE_PROP_DIM_COLOR,
+	PLANE_PROP_IS_MML,
+	PLANE_PROP_MML_SUBMIT,
 	PLANE_PROP_MAX,
 };
 
@@ -145,6 +138,7 @@ struct mtk_plane_pending_state {
 	unsigned int height;
 	bool dirty;
 	bool is_sec;
+	int sec_id;
 	unsigned int prop_val[PLANE_PROP_MAX];
 };
 

@@ -1,24 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2013 Red Hat
- * Author: Rob Clark <robdclark@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (C) 2014-2018 Etnaviv Project
  */
 
 #include <linux/dma-buf.h>
 #include "etnaviv_drv.h"
 #include "etnaviv_gem.h"
 
+static struct lock_class_key etnaviv_prime_lock_class;
 
 struct sg_table *etnaviv_gem_prime_get_sg_table(struct drm_gem_object *obj)
 {
@@ -102,7 +91,15 @@ static void *etnaviv_gem_prime_vmap_impl(struct etnaviv_gem_object *etnaviv_obj)
 static int etnaviv_gem_prime_mmap_obj(struct etnaviv_gem_object *etnaviv_obj,
 		struct vm_area_struct *vma)
 {
-	return dma_buf_mmap(etnaviv_obj->base.dma_buf, vma, 0);
+	int ret;
+
+	ret = dma_buf_mmap(etnaviv_obj->base.dma_buf, vma, 0);
+	if (!ret) {
+		/* Drop the reference acquired by drm_gem_mmap_obj(). */
+		drm_gem_object_put_unlocked(&etnaviv_obj->base);
+	}
+
+	return ret;
 }
 
 static const struct etnaviv_gem_ops etnaviv_gem_prime_ops = {
@@ -125,6 +122,8 @@ struct drm_gem_object *etnaviv_gem_prime_import_sg_table(struct drm_device *dev,
 	if (ret < 0)
 		return ERR_PTR(ret);
 
+	lockdep_set_class(&etnaviv_obj->lock, &etnaviv_prime_lock_class);
+
 	npages = size / PAGE_SIZE;
 
 	etnaviv_obj->sgt = sgt;
@@ -139,9 +138,7 @@ struct drm_gem_object *etnaviv_gem_prime_import_sg_table(struct drm_device *dev,
 	if (ret)
 		goto fail;
 
-	ret = etnaviv_gem_obj_add(dev, &etnaviv_obj->base);
-	if (ret)
-		goto fail;
+	etnaviv_gem_obj_add(dev, &etnaviv_obj->base);
 
 	return &etnaviv_obj->base;
 

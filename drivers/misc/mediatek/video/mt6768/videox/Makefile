@@ -14,6 +14,13 @@
 # drivers/video/mtk/Makefile
 #
 
+CMDQ_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+ifeq ($(CONFIG_MTK_PLATFORM), "mt6761")
+	MTK_PLATFORM := mt6765
+else
+	MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+endif
+
 obj-$(CONFIG_MTK_FB) += mtkfb_console.o		\
 			disp_assert_layer.o	\
 			mtkfb.o			\
@@ -56,10 +63,22 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/video/include/     \
              -I$(srctree)/drivers/misc/mediatek/smi/ \
              -I$(srctree)/drivers/misc/mediatek/dramc/$(MTK_PLATFORM) \
              -I$(srctree)/drivers/misc/mediatek/gpu/ged/include/ \
-             -I$(srctree)/drivers/iommu/
+             -I$(srctree)/drivers/iommu/ \
+             -I$(srctree)/drivers/misc/mediatek/mmdvfs \
+			 -I$(srctree)/drivers/staging/android/mtk_ion \
+			 -I$(srctree)/drivers/staging/android/mtk_ion/mtk \
+		     -I$(srctree)/drivers/misc/mediatek/m4u/$(MTK_PLATFORM) \
+		     -I$(srctree)/drivers/misc/mediatek/m4u/2.0 \
+             -I$(srctree)/drivers/devfreq	\
+             -I$(srctree)/include/linux/soc/mediatek \
+             -I$(srctree)/drivers/misc/mediatek/sync/
 
-subdir-ccflags-y += -I$(srctree)/drivers/staging/android/ion \
-		    -I$(srctree)/drivers/staging/android/ion/mtk
+ifeq ($(CONFIG_MTK_TRUSTED_MEMORY_SUBSYSTEM),y)
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/trusted_mem/public/
+endif
+
+subdir-ccflags-y += -I$(srctree)/drivers/staging/android/mtk_ion \
+		    -I$(srctree)/drivers/staging/android/mtk_ion/mtk
 
 subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/m4u/$(MTK_PLATFORM) \
 		    -I$(srctree)/drivers/misc/mediatek/m4u/2.0

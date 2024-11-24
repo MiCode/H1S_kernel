@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define PR_FMT_HEADER_MUST_BE_INCLUDED_BEFORE_ALL_HDRS
@@ -243,7 +236,7 @@ int register_trusted_mem_device(enum TRUSTED_MEM_TYPE register_type,
 	return TMEM_OK;
 }
 
-static int __init trusted_mem_subsys_init(void)
+int trusted_mem_subsys_init(void)
 {
 	int idx;
 
@@ -262,7 +255,7 @@ static int __init trusted_mem_subsys_init(void)
 	return TMEM_OK;
 }
 
-static void __exit trusted_mem_subsys_exit(void)
+void trusted_mem_subsys_exit(void)
 {
 	int idx;
 
@@ -277,10 +270,3 @@ static void __exit trusted_mem_subsys_exit(void)
 		}
 	}
 }
-
-subsys_initcall(trusted_mem_subsys_init);
-module_exit(trusted_mem_subsys_exit);
-
-MODULE_AUTHOR("MediaTek Inc.");
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("MediaTek Trusted Memory Subsystem Driver");

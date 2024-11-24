@@ -507,15 +507,15 @@ static int moxart_mac_probe(struct platform_device *pdev)
 		goto init_fail;
 	}
 
-	priv->tx_buf_base = kmalloc(priv->tx_buf_size * TX_DESC_NUM,
-				    GFP_ATOMIC);
+	priv->tx_buf_base = kmalloc_array(priv->tx_buf_size, TX_DESC_NUM,
+					  GFP_ATOMIC);
 	if (!priv->tx_buf_base) {
 		ret = -ENOMEM;
 		goto init_fail;
 	}
 
-	priv->rx_buf_base = kmalloc(priv->rx_buf_size * RX_DESC_NUM,
-				    GFP_ATOMIC);
+	priv->rx_buf_base = kmalloc_array(priv->rx_buf_size, RX_DESC_NUM,
+					  GFP_ATOMIC);
 	if (!priv->rx_buf_base) {
 		ret = -ENOMEM;
 		goto init_fail;
@@ -538,10 +538,8 @@ static int moxart_mac_probe(struct platform_device *pdev)
 	SET_NETDEV_DEV(ndev, &pdev->dev);
 
 	ret = register_netdev(ndev);
-	if (ret) {
-		free_netdev(ndev);
+	if (ret)
 		goto init_fail;
-	}
 
 	netdev_dbg(ndev, "%s: IRQ=%d address=%pM\n",
 		   __func__, ndev->irq, ndev->dev_addr);

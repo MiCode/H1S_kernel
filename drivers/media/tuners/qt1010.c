@@ -351,11 +351,12 @@ static int qt1010_init(struct dvb_frontend *fe)
 			else
 				valptr = &tmpval;
 
-			BUG_ON(i >= ARRAY_SIZE(i2c_data) - 1);
-
-			err = qt1010_init_meas1(priv, i2c_data[i+1].reg,
-						i2c_data[i].reg,
-						i2c_data[i].val, valptr);
+			if (i >= ARRAY_SIZE(i2c_data) - 1)
+				err = -EIO;
+			else
+				err = qt1010_init_meas1(priv, i2c_data[i + 1].reg,
+							i2c_data[i].reg,
+							i2c_data[i].val, valptr);
 			i++;
 			break;
 		}
@@ -394,10 +395,10 @@ static int qt1010_get_if_frequency(struct dvb_frontend *fe, u32 *frequency)
 
 static const struct dvb_tuner_ops qt1010_tuner_ops = {
 	.info = {
-		.name           = "Quantek QT1010",
-		.frequency_min  = QT1010_MIN_FREQ,
-		.frequency_max  = QT1010_MAX_FREQ,
-		.frequency_step = QT1010_STEP,
+		.name              = "Quantek QT1010",
+		.frequency_min_hz  = QT1010_MIN_FREQ,
+		.frequency_max_hz  = QT1010_MAX_FREQ,
+		.frequency_step_hz = QT1010_STEP,
 	},
 
 	.release       = qt1010_release,
@@ -446,7 +447,7 @@ struct dvb_frontend * qt1010_attach(struct dvb_frontend *fe,
 	fe->tuner_priv = priv;
 	return fe;
 }
-EXPORT_SYMBOL(qt1010_attach);
+EXPORT_SYMBOL_GPL(qt1010_attach);
 
 MODULE_DESCRIPTION("Quantek QT1010 silicon tuner driver");
 MODULE_AUTHOR("Antti Palosaari <crope@iki.fi>");

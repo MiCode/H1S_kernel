@@ -13,6 +13,15 @@
 
 # drivers/dispsys
 
+CMDQ_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+ifeq ($(CONFIG_MTK_PLATFORM), "mt6761")
+	MTK_PLATFORM := mt6765
+else
+	MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+endif
+$(info shaohua)
+$(info $(CONFIG_MACH_MT6761))
+$(info $(CONFIG_MTK_SMI_EXT))
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/video/include/ \
              -I$(srctree)/drivers/misc/mediatek/video/common/ \
              -I$(srctree)/drivers/misc/mediatek/video/common/rdma20/ \
@@ -24,23 +33,27 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/video/include/ \
              -I$(srctree)/drivers/misc/mediatek/gpu/ged/include/ \
              -I$(srctree)/drivers/iommu/ \
              -I$(srctree)/drivers/misc/mediatek/smi/variant/ \
-             -I$(srctree)/drivers/misc/mediatek/dramc/$(MTK_PLATFORM) \
-             -I$(srctree)/drivers/misc/mediatek/include/
+             -I$(srctree)/drivers/misc/mediatek/dramc/$(MTK_PLATFORM)
 
-
+ifeq ($(CONFIG_MTK_PLATFORM), "mt6761")
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/m4u/mt6761 \
+                    -I$(srctree)/drivers/misc/mediatek/m4u/2.0
+else
 subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/m4u/$(MTK_PLATFORM) \
-		    -I$(srctree)/drivers/misc/mediatek/m4u/2.0
+                    -I$(srctree)/drivers/misc/mediatek/m4u/2.0
+endif
 
-subdir-ccflags-y += -I$(srctree)/drivers/staging/android/ion \
-		    -I$(srctree)/drivers/staging/android/ion/mtk
+ifeq ($(CONFIG_MTK_ION), y)
+subdir-ccflags-y += -I$(srctree)/drivers/staging/android/mtk_ion \
+                    -I$(srctree)/drivers/staging/android/mtk_ion/mtk
+else
+subdir-ccflags-y += -I$(srctree)/drivers/staging/android/aosp_ion \
+                    -I$(srctree)/drivers/staging/android/aosp_ion/mtk
+endif
 
 subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/
 
-ifeq ($(CONFIG_MACH_MT6761),y)
-    subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/mt6765/
-else
-    subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/$(MTK_PLATFORM)/
-endif
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/$(CMDQ_PLATFORM)/
 
 subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/mmp/
 
@@ -51,16 +64,16 @@ ifeq ($(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT),y)
 ifeq ($(CONFIG_TRUSTONIC_TEE_SUPPORT),y)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/$(MTK_PLATFORM)/include/trustzone/tplay/Tltplay/public/
 
-include $(srctree)/drivers/misc/mediatek/gud/Makefile.include
+include $(srctree)/drivers/tee/gud/Makefile.include
 endif
 
-ifeq ($(CONFIG_MTK_TEE_GP_SUPPORT),y)
+ifeq ($(CONFIG_TEE),y)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/$(MTK_PLATFORM)/include/trustzone/tplay/Tltplay/public/
 ifeq ($(CONFIG_TRUSTONIC_TEE_SUPPORT),y)
-  include $(srctree)/drivers/misc/mediatek/gud/Makefile.include
+  include $(srctree)/drivers/tee/gud/Makefile.include
 endif
 ifeq ($(CONFIG_MICROTRUST_TEE_SUPPORT),y)
-  include $(srctree)/drivers/misc/mediatek/teei/Makefile.include
+  include $(srctree)/drivers/tee/teei/Makefile.include
 endif
 endif
 

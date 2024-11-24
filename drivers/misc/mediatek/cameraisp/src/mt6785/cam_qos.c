@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 #ifdef CONFIG_COMPAT
 /* 64 bit */
@@ -22,8 +14,12 @@
 #include <linux/types.h>
 #include "inc/cam_qos.h"
 
+
+#define CONFIG_MTK_QOS_SUPPORT
+
 #ifdef CONFIG_MTK_QOS_SUPPORT
 #include <mmdvfs_pmqos.h>
+#include <linux/soc/mediatek/mtk-pm-qos.h>
 #include <smi_port.h>
 #else
 #include <mmdvfs_mgr.h>
@@ -89,7 +85,7 @@
 		ptr; \
 	})
 
-	struct pm_qos_request isp_qos;
+	struct mtk_pm_qos_request isp_qos;
 #else //CONFIG_MTK_QOS_SUPPORT
 
 	struct mmdvfs_pm_qos_request isp_qos;
@@ -409,20 +405,20 @@ static u32 target_clk;
 
 	inline void mtk_dfs_add(void)
 	{
-		pm_qos_add_request(&isp_qos, PM_QOS_CAM_FREQ, 0);
+		mtk_pm_qos_add_request(&isp_qos, PM_QOS_CAM_FREQ, 0);
 	}
 	inline void mtk_dfs_remove(void)
 	{
-		pm_qos_remove_request(&isp_qos);
+		mtk_pm_qos_remove_request(&isp_qos);
 	}
 	inline void  mtk_dfs_clr(void)
 	{
-		pm_qos_update_request(&isp_qos, 0);
+		mtk_pm_qos_update_request(&isp_qos, 0);
 	}
 	inline void  mtk_dfs_set(void) {}
 	inline void mtk_dfs_update(u32 clk)
 	{
-		pm_qos_update_request(&isp_qos, clk);
+		mtk_pm_qos_update_request(&isp_qos, clk);
 	}
 	inline void mtk_dfs_supported(u64 *frq, u32 *step)
 	{
@@ -498,7 +494,7 @@ static u32 target_clk;
 		//}
 		LOG_NOTICE("mtk_dfs_supported is not supported\n");
 	}
-	inline unsigned int mtk_dfs_cur(void)
+	inline unsigned void mtk_dfs_cur(void)
 	{
 		//return mmdvfs_qos_get_cur_thres(&isp_qos,
 		//	MMDVFS_PM_QOS_SUB_SYS_CAMERA);
@@ -640,7 +636,9 @@ int SV_SetPMQOS(
 		{
 			u32 i = 0;
 
-			plist_head_init(gSVBW_LIST(module));
+			if (gSVBW_LIST(module))
+				plist_head_init(gSVBW_LIST(module));
+
 			for (; i < _camsv_max_; i++)
 				mtk_pmqos_add(module, i);
 

@@ -70,6 +70,10 @@
 #define OMAP_RTC_COMP_MSB_REG		0x50
 #define OMAP_RTC_OSC_REG		0x54
 
+#define OMAP_RTC_SCRATCH0_REG		0x60
+#define OMAP_RTC_SCRATCH1_REG		0x64
+#define OMAP_RTC_SCRATCH2_REG		0x68
+
 #define OMAP_RTC_KICK0_REG		0x6c
 #define OMAP_RTC_KICK1_REG		0x70
 
@@ -269,9 +273,6 @@ static int omap_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
 /* this hardware doesn't support "don't care" alarm fields */
 static int tm2bcd(struct rtc_time *tm)
 {
-	if (rtc_valid_tm(tm) != 0)
-		return -EINVAL;
-
 	tm->tm_sec = bin2bcd(tm->tm_sec);
 	tm->tm_min = bin2bcd(tm->tm_min);
 	tm->tm_hour = bin2bcd(tm->tm_hour);
@@ -448,6 +449,7 @@ static void omap_rtc_power_off(void)
 
 	if (tm2bcd(&tm) < 0) {
 		dev_err(&rtc->rtc->dev, "power off failed\n");
+		rtc->type->lock(rtc);
 		return;
 	}
 
@@ -579,9 +581,7 @@ static int rtc_pinconf_get(struct pinctrl_dev *pctldev,
 	u32 val;
 	u16 arg = 0;
 
-	rtc->type->unlock(rtc);
 	val = rtc_readl(rtc, OMAP_RTC_PMIC_REG);
-	rtc->type->lock(rtc);
 
 	switch (param) {
 	case PIN_CONFIG_INPUT_ENABLE:
@@ -611,9 +611,7 @@ static int rtc_pinconf_set(struct pinctrl_dev *pctldev,
 	u32 param_val;
 	int i;
 
-	rtc->type->unlock(rtc);
 	val = rtc_readl(rtc, OMAP_RTC_PMIC_REG);
-	rtc->type->lock(rtc);
 
 	/* active low by default */
 	val |= OMAP_RTC_PMIC_EXT_WKUP_POL(pin);
@@ -665,6 +663,45 @@ static struct pinctrl_desc rtc_pinctrl_desc = {
 	.owner = THIS_MODULE,
 };
 
+static int omap_rtc_scratch_read(void *priv, unsigned int offset, void *_val,
+				 size_t bytes)
+{
+	struct omap_rtc	*rtc = priv;
+	u32 *val = _val;
+	int i;
+
+	for (i = 0; i < bytes / 4; i++)
+		val[i] = rtc_readl(rtc,
+				   OMAP_RTC_SCRATCH0_REG + offset + (i * 4));
+
+	return 0;
+}
+
+static int omap_rtc_scratch_write(void *priv, unsigned int offset, void *_val,
+				  size_t bytes)
+{
+	struct omap_rtc	*rtc = priv;
+	u32 *val = _val;
+	int i;
+
+	rtc->type->unlock(rtc);
+	for (i = 0; i < bytes / 4; i++)
+		rtc_writel(rtc,
+			   OMAP_RTC_SCRATCH0_REG + offset + (i * 4), val[i]);
+	rtc->type->lock(rtc);
+
+	return 0;
+}
+
+static struct nvmem_config omap_rtc_nvmem_config = {
+	.name = "omap_rtc_scratch",
+	.word_size = 4,
+	.stride = 4,
+	.size = OMAP_RTC_KICK0_REG - OMAP_RTC_SCRATCH0_REG,
+	.reg_read = omap_rtc_scratch_read,
+	.reg_write = omap_rtc_scratch_write,
+};
+
 static int omap_rtc_probe(struct platform_device *pdev)
 {
 	struct omap_rtc	*rtc;
@@ -708,8 +745,10 @@ static int omap_rtc_probe(struct platform_device *pdev)
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	rtc->base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(rtc->base))
+	if (IS_ERR(rtc->base)) {
+		clk_disable_unprepare(rtc->clk);
 		return PTR_ERR(rtc->base);
+	}
 
 	platform_set_drvdata(pdev, rtc);
 
@@ -795,12 +834,14 @@ static int omap_rtc_probe(struct platform_device *pdev)
 
 	device_init_wakeup(&pdev->dev, true);
 
-	rtc->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
-			&omap_rtc_ops, THIS_MODULE);
+	rtc->rtc = devm_rtc_allocate_device(&pdev->dev);
 	if (IS_ERR(rtc->rtc)) {
 		ret = PTR_ERR(rtc->rtc);
 		goto err;
 	}
+
+	rtc->rtc->ops = &omap_rtc_ops;
+	omap_rtc_nvmem_config.priv = rtc;
 
 	/* handle periodic and alarm irqs */
 	ret = devm_request_irq(&pdev->dev, rtc->irq_timer, rtc_irq, 0,
@@ -825,6 +866,12 @@ static int omap_rtc_probe(struct platform_device *pdev)
 		goto err;
 	}
 
+	ret = rtc_register_device(rtc->rtc);
+	if (ret)
+		goto err_deregister_pinctrl;
+
+	rtc_nvmem_register(rtc->rtc, &omap_rtc_nvmem_config);
+
 	if (rtc->is_pmic_controller) {
 		if (!pm_power_off) {
 			omap_rtc_power_off_rtc = rtc;
@@ -834,7 +881,10 @@ static int omap_rtc_probe(struct platform_device *pdev)
 
 	return 0;
 
+err_deregister_pinctrl:
+	pinctrl_unregister(rtc->pctldev);
 err:
+	clk_disable_unprepare(rtc->clk);
 	device_init_wakeup(&pdev->dev, false);
 	rtc->type->lock(rtc);
 	pm_runtime_put_sync(&pdev->dev);

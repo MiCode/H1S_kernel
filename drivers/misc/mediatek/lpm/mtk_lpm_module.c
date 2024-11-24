@@ -3,10 +3,8 @@
  * Copyright (c) 2019 MediaTek Inc.
  */
 
-#include <asm/cpuidle.h>
-#include <asm/suspend.h>
-#include <linux/cpu_pm.h>
 #include <linux/cpuidle.h>
+#include <linux/cpu_pm.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -16,6 +14,8 @@
 #include <linux/spinlock.h>
 #include <linux/suspend.h>
 #include <linux/syscore_ops.h>
+#include <asm/cpuidle.h>
+#include <asm/suspend.h>
 
 #include <mtk_lpm.h>
 #include "mtk_lpm_registry.h"
@@ -56,8 +56,8 @@ static DEFINE_PER_CPU(struct mtk_lpm_models, mtk_lpm_mods);
 
 
 #define mtk_lp_pm_notify(_id, _data)\
-		({raw_notifier_call_chain(&mtk_lpm_notifier,\
-					  _id, _data); })
+			({raw_notifier_call_chain(\
+				&mtk_lpm_notifier, _id, _data); })
 
 
 
@@ -105,11 +105,12 @@ int mtk_lpm_notifier_register(struct notifier_block *n)
 {
 	return raw_notifier_chain_register(&mtk_lpm_notifier, n);
 }
-
+EXPORT_SYMBOL(mtk_lpm_notifier_register);
 int mtk_lpm_notifier_unregister(struct notifier_block *n)
 {
 	return raw_notifier_chain_unregister(&mtk_lpm_notifier, n);
 }
+EXPORT_SYMBOL(mtk_lpm_notifier_unregister);
 
 void mtk_lpm_system_spin_lock(unsigned long *irqflag)
 {
@@ -221,12 +222,11 @@ int mtk_lp_cpuidle_prepare(struct cpuidle_driver *drv, int index)
 	unsigned int model_flags = 0;
 	unsigned long flags;
 	const int cpuid = smp_processor_id();
-	int ret = 0;
-
-	if (index < 0)
-		return -1;
 
 	lpmmods = this_cpu_ptr(&mtk_lpm_mods);
+
+	if (index < 0)
+		return -EINVAL;
 
 	if (lpmmods && lpmmods->mod[index])
 		lpm = lpmmods->mod[index];
@@ -243,7 +243,6 @@ int mtk_lp_cpuidle_prepare(struct cpuidle_driver *drv, int index)
 	if (lpm && lpm->op.prompt)
 		prompt = lpm->op.prompt(cpuid, nb_data.issuer);
 
-
 	if (!unlikely(flags & MTK_LP_REQ_NOBROADCAST)) {
 		prompt = mtk_lp_notify_var(MTK_LPM_NB_AFTER_PROMPT, prompt);
 		mtk_lp_pm_notify(prompt, &nb_data);
@@ -252,11 +251,11 @@ int mtk_lp_cpuidle_prepare(struct cpuidle_driver *drv, int index)
 	spin_unlock_irqrestore(&mtk_lp_mod_locker, flags);
 
 	if (lpm && lpm->op.prepare_enter)
-		ret = lpm->op.prepare_enter(prompt, cpuid, nb_data.issuer);
+		lpm->op.prepare_enter(prompt, cpuid, nb_data.issuer);
 
 	mtk_lp_pm_notify(MTK_LPM_NB_PREPARE, &nb_data);
 
-	return ret;
+	return 0;
 }
 
 void mtk_lp_cpuidle_resume(struct cpuidle_driver *drv, int index)
@@ -268,10 +267,10 @@ void mtk_lp_cpuidle_resume(struct cpuidle_driver *drv, int index)
 	unsigned long flags;
 	const int cpuid = smp_processor_id();
 
+	lpmmods = this_cpu_ptr(&mtk_lpm_mods);
+
 	if (index < 0)
 		return;
-
-	lpmmods = this_cpu_ptr(&mtk_lpm_mods);
 
 	if (lpmmods && lpmmods->mod[index])
 		lpm = lpmmods->mod[index];
@@ -337,6 +336,11 @@ struct syscore_ops mtk_lpm_suspend = {
 	.resume = mtk_lpm_suspend_resume,
 };
 
+int mtk_lpm_suspend_type_get(void)
+{
+	return (mtk_lpm_system.suspend.flag & MTK_LP_REQ_NOSYSCORE_CB)? 1 : 0; //1: MTK_LPM_SUSPEND_S2IDLE 0:MTK_LPM_SUSPEND_SYSTEM
+}
+EXPORT_SYMBOL(mtk_lpm_suspend_type_get);
 int mtk_lpm_suspend_registry(const char *name, struct mtk_lpm_model *suspend)
 {
 	unsigned long flags;
@@ -357,13 +361,6 @@ int mtk_lpm_suspend_registry(const char *name, struct mtk_lpm_model *suspend)
 	return 0;
 }
 EXPORT_SYMBOL(mtk_lpm_suspend_registry);
-
-int mtk_lpm_suspend_type_get(void)
-{
-	return (mtk_lpm_system.suspend.flag & MTK_LP_REQ_NOSYSCORE_CB)
-		? MTK_LPM_SUSPEND_S2IDLE : MTK_LPM_SUSPEND_SYSTEM;
-}
-EXPORT_SYMBOL(mtk_lpm_suspend_type_get);
 
 static struct wakeup_source *mtk_lpm_lock;
 

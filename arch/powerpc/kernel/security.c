@@ -9,9 +9,9 @@
 #include <linux/device.h>
 #include <linux/seq_buf.h>
 
-#include <asm/debugfs.h>
 #include <asm/asm-prototypes.h>
 #include <asm/code-patching.h>
+#include <asm/debugfs.h>
 #include <asm/security_features.h>
 #include <asm/setup.h>
 
@@ -247,6 +247,11 @@ static int __init handle_no_stf_barrier(char *p)
 }
 
 early_param("no_stf_barrier", handle_no_stf_barrier);
+
+enum stf_barrier_type stf_barrier_type_get(void)
+{
+	return stf_enabled_flush_types;
+}
 
 /* This is the generic flag used by other architectures */
 static int __init handle_ssbd(char *p)

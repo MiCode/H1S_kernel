@@ -715,7 +715,7 @@ static int netcp_process_one_rx_packet(struct netcp_intf *netcp)
 		/* warning!!!! We are retrieving the virtual ptr in the sw_data
 		 * field as a 32bit value. Will not work on 64bit machines
 		 */
-		page = (struct page *)GET_SW_DATA0(desc);
+		page = (struct page *)GET_SW_DATA0(ndesc);
 
 		if (likely(dma_buff && buf_len && page)) {
 			dma_unmap_page(netcp->dev, dma_buff, PAGE_SIZE,
@@ -906,7 +906,7 @@ static int netcp_allocate_rx_buf(struct netcp_intf *netcp, int fdq)
 		sw_data[0] = (u32)bufptr;
 	} else {
 		/* Allocate a secondary receive queue entry */
-		page = alloc_page(GFP_ATOMIC | GFP_DMA | __GFP_COLD);
+		page = alloc_page(GFP_ATOMIC | GFP_DMA);
 		if (unlikely(!page)) {
 			dev_warn_ratelimited(netcp->ndev_dev, "Secondary page alloc failed\n");
 			goto fail;
@@ -1276,7 +1276,7 @@ out:
 }
 
 /* Submit the packet */
-static int netcp_ndo_start_xmit(struct sk_buff *skb, struct net_device *ndev)
+static netdev_tx_t netcp_ndo_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct netcp_intf *netcp = netdev_priv(ndev);
 	struct netcp_stats *tx_stats = &netcp->stats;
@@ -1364,9 +1364,9 @@ int netcp_txpipe_open(struct netcp_tx_pipe *tx_pipe)
 	tx_pipe->dma_queue = knav_queue_open(name, tx_pipe->dma_queue_id,
 					     KNAV_QUEUE_SHARED);
 	if (IS_ERR(tx_pipe->dma_queue)) {
+		ret = PTR_ERR(tx_pipe->dma_queue);
 		dev_err(dev, "Could not open DMA queue for channel \"%s\": %d\n",
 			name, ret);
-		ret = PTR_ERR(tx_pipe->dma_queue);
 		goto err;
 	}
 
@@ -1509,6 +1509,24 @@ static void netcp_addr_sweep_add(struct netcp_intf *netcp)
 	}
 }
 
+static int netcp_set_promiscuous(struct netcp_intf *netcp, bool promisc)
+{
+	struct netcp_intf_modpriv *priv;
+	struct netcp_module *module;
+	int error;
+
+	for_each_module(netcp, priv) {
+		module = priv->netcp_module;
+		if (!module->set_rx_mode)
+			continue;
+
+		error = module->set_rx_mode(priv->module_priv, promisc);
+		if (error)
+			return error;
+	}
+	return 0;
+}
+
 static void netcp_set_rx_mode(struct net_device *ndev)
 {
 	struct netcp_intf *netcp = netdev_priv(ndev);
@@ -1538,6 +1556,7 @@ static void netcp_set_rx_mode(struct net_device *ndev)
 	/* finally sweep and callout into modules */
 	netcp_addr_sweep_del(netcp);
 	netcp_addr_sweep_add(netcp);
+	netcp_set_promiscuous(netcp, promisc);
 	spin_unlock(&netcp->lock);
 }
 
@@ -1870,13 +1889,6 @@ static int netcp_rx_kill_vid(struct net_device *ndev, __be16 proto, u16 vid)
 	return err;
 }
 
-static u16 netcp_select_queue(struct net_device *dev, struct sk_buff *skb,
-			      void *accel_priv,
-			      select_queue_fallback_t fallback)
-{
-	return 0;
-}
-
 static int netcp_setup_tc(struct net_device *dev, enum tc_setup_type type,
 			  void *type_data)
 {
@@ -1887,7 +1899,7 @@ static int netcp_setup_tc(struct net_device *dev, enum tc_setup_type type,
 	/* setup tc must be called under rtnl lock */
 	ASSERT_RTNL();
 
-	if (type != TC_SETUP_MQPRIO)
+	if (type != TC_SETUP_QDISC_MQPRIO)
 		return -EOPNOTSUPP;
 
 	mqprio->hw = TC_MQPRIO_HW_OFFLOAD_TCS;
@@ -1953,7 +1965,7 @@ static const struct net_device_ops netcp_netdev_ops = {
 	.ndo_vlan_rx_add_vid	= netcp_rx_add_vid,
 	.ndo_vlan_rx_kill_vid	= netcp_rx_kill_vid,
 	.ndo_tx_timeout		= netcp_ndo_tx_timeout,
-	.ndo_select_queue	= netcp_select_queue,
+	.ndo_select_queue	= dev_pick_tx_zero,
 	.ndo_setup_tc		= netcp_setup_tc,
 };
 
@@ -2033,7 +2045,7 @@ static int netcp_create_interface(struct netcp_device *netcp_device,
 		if (is_valid_ether_addr(efuse_mac_addr))
 			ether_addr_copy(ndev->dev_addr, efuse_mac_addr);
 		else
-			random_ether_addr(ndev->dev_addr);
+			eth_random_addr(ndev->dev_addr);
 
 		devm_iounmap(dev, efuse);
 		devm_release_mem_region(dev, res.start, size);
@@ -2042,7 +2054,7 @@ static int netcp_create_interface(struct netcp_device *netcp_device,
 		if (mac_addr)
 			ether_addr_copy(ndev->dev_addr, mac_addr);
 		else
-			random_ether_addr(ndev->dev_addr);
+			eth_random_addr(ndev->dev_addr);
 	}
 
 	ret = of_property_read_string(node_interface, "rx-channel",
@@ -2155,7 +2167,12 @@ static int netcp_probe(struct platform_device *pdev)
 	struct device_node *child, *interfaces;
 	struct netcp_device *netcp_device;
 	struct device *dev = &pdev->dev;
+	struct netcp_module *module;
 	int ret;
+
+	if (!knav_dma_device_ready() ||
+	    !knav_qmss_device_ready())
+		return -EPROBE_DEFER;
 
 	if (!node) {
 		dev_err(dev, "could not find device info\n");
@@ -2203,6 +2220,14 @@ static int netcp_probe(struct platform_device *pdev)
 	/* Add the device instance to the list */
 	list_add_tail(&netcp_device->device_list, &netcp_devices);
 
+	/* Probe & attach any modules already registered */
+	mutex_lock(&netcp_modules_lock);
+	for_each_netcp_module(module) {
+		ret = netcp_module_probe(netcp_device, module);
+		if (ret < 0)
+			dev_err(dev, "module(%s) probe failed\n", module->name);
+	}
+	mutex_unlock(&netcp_modules_lock);
 	return 0;
 
 probe_quit_interface:

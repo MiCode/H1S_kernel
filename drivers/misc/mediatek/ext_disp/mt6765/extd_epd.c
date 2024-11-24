@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /*****************************************************************************/
@@ -258,7 +250,7 @@ int epd_get_dev_info(int is_sf, void *info)
 		dispif_info->vsyncFPS = extd_epd_params.fps * 100;
 		dispif_info->isHwVsyncAvailable = 1;
 
-		EXTDINFO("epd_get_dev_info lays:%d, type:%d, W:%d, H:%d\n",
+		EXTDINFO("%s lays:%d, type:%d, W:%d, H:%d\n", __func__,
 			dispif_info->maxLayerNum, dispif_info->displayType,
 			dispif_info->displayWidth, dispif_info->displayHeight);
 	}
@@ -284,7 +276,7 @@ void epd_set_layer_num(int layer_num)
 int epd_ioctl(unsigned int ioctl_cmd, int param1, int param2,
 	      unsigned long *params)
 {
-	EXTDINFO("epd_ioctl ioctl_cmd:%d\n", ioctl_cmd);
+	EXTDINFO("%s ioctl_cmd:%d\n", __func__, ioctl_cmd);
 	int ret = 0;
 
 	switch (ioctl_cmd) {
@@ -298,7 +290,7 @@ int epd_ioctl(unsigned int ioctl_cmd, int param1, int param2,
 		epd_set_layer_num(param1);
 		break;
 	default:
-		EXTDERR("epd_ioctl unknown command\n");
+		EXTDERR("%s unknown command\n", __func__);
 		break;
 	}
 
@@ -307,7 +299,7 @@ int epd_ioctl(unsigned int ioctl_cmd, int param1, int param2,
 
 void epd_init(void)
 {
-	EXTDMSG("epd_init in+!\n");
+	EXTDMSG("%s in+!\n", __func__);
 	memset((void *)&EPD_Params, 0, sizeof(LCM_EPD_PARAMS));
 	memset((void *)&extd_epd_params, 0, sizeof(disp_ddp_path_config));
 

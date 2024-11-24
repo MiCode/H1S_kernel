@@ -11,23 +11,27 @@
 # See http://www.gnu.org/licenses/gpl-2.0.html for more details.
 #
 
+ifeq ($(CONFIG_MTK_GCOV_KERNEL),y)
+GCOV_PROFILE := y
+endif
+
 subdir-ccflags-y += -Idrivers/misc/mediatek/mtprof/
+subdir-ccflags-y += -Idrivers/misc/mediatek/
 subdir-ccflags-y += -Idrivers/misc/mediatek/dbgtop/
 
-ccflags-$(CONFIG_MTK_AEE_IPANIC) += -DTEXT_OFFSET=$(TEXT_OFFSET)
+ccflags-y += -DTEXT_OFFSET=$(TEXT_OFFSET)
 obj-$(CONFIG_MTK_AEE_IPANIC)	+= mrdump.o
 
-mrdump-objs-y := \
+mrdump-y := \
+	mboot_params.o \
 	mrdump_control.o \
 	mrdump_hw.o \
 	mrdump_full.o \
-	mrdump_key_setup.o \
 	mrdump_mini.o \
-	mrdump_panic.o
+	mrdump_panic.o \
+	mrdump_helper.o
 
-mrdump-objs-$(CONFIG_ARM) += mrdump_arm.o
-mrdump-objs-$(CONFIG_ARM64) += mrdump_arm64.o
-
-mrdump-objs := $(mrdump-objs-y)
+mrdump-$(CONFIG_ARM) += mrdump_arm.o
+mrdump-$(CONFIG_ARM64) += mrdump_arm64.o
 
 KASAN_SANITIZE := n

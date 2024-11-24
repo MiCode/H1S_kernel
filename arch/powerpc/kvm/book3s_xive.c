@@ -16,7 +16,7 @@
 #include <linux/delay.h>
 #include <linux/percpu.h>
 #include <linux/cpumask.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/kvm_book3s.h>
 #include <asm/kvm_ppc.h>
 #include <asm/hvcall.h>
@@ -38,7 +38,7 @@
  * Virtual mode variants of the hcalls for use on radix/radix
  * with AIL. They require the VCPU's VP to be "pushed"
  *
- * We still instanciate them here because we use some of the
+ * We still instantiate them here because we use some of the
  * generated utility functions as well in this file.
  */
 #define XIVE_RUNTIME_CHECKS
@@ -84,11 +84,21 @@ static irqreturn_t xive_esc_irq(int irq, void *data)
 {
 	struct kvm_vcpu *vcpu = data;
 
-	/* We use the existing H_PROD mechanism to wake up the target */
-	vcpu->arch.prodded = 1;
+	vcpu->arch.irq_pending = 1;
 	smp_mb();
 	if (vcpu->arch.ceded)
 		kvmppc_fast_vcpu_kick(vcpu);
+
+	/* Since we have the no-EOI flag, the interrupt is effectively
+	 * disabled now. Clearing xive_esc_on means we won't bother
+	 * doing so on the next entry.
+	 *
+	 * This also allows the entry code to know that if a PQ combination
+	 * of 10 is observed while xive_esc_on is true, it means the queue
+	 * contains an unprocessed escalation interrupt. We don't make use of
+	 * that knowledge today but might (see comment in book3s_hv_rmhandler.S)
+	 */
+	vcpu->arch.xive_esc_on = false;
 
 	return IRQ_HANDLED;
 }
@@ -112,19 +122,21 @@ static int xive_attach_escalation(struct kvm_vcpu *vcpu, u8 prio)
 		return -EIO;
 	}
 
-	/*
-	 * Future improvement: start with them disabled
-	 * and handle DD2 and later scheme of merged escalation
-	 * interrupts
-	 */
-	name = kasprintf(GFP_KERNEL, "kvm-%d-%d-%d",
-			 vcpu->kvm->arch.lpid, xc->server_num, prio);
+	if (xc->xive->single_escalation)
+		name = kasprintf(GFP_KERNEL, "kvm-%d-%d",
+				 vcpu->kvm->arch.lpid, xc->server_num);
+	else
+		name = kasprintf(GFP_KERNEL, "kvm-%d-%d-%d",
+				 vcpu->kvm->arch.lpid, xc->server_num, prio);
 	if (!name) {
 		pr_err("Failed to allocate escalation irq name for queue %d of VCPU %d\n",
 		       prio, xc->server_num);
 		rc = -ENOMEM;
 		goto error;
 	}
+
+	pr_devel("Escalation %s irq %d (prio %d)\n", name, xc->esc_virq[prio], prio);
+
 	rc = request_irq(xc->esc_virq[prio], xive_esc_irq,
 			 IRQF_NO_THREAD, name, vcpu);
 	if (rc) {
@@ -133,6 +145,25 @@ static int xive_attach_escalation(struct kvm_vcpu *vcpu, u8 prio)
 		goto error;
 	}
 	xc->esc_virq_names[prio] = name;
+
+	/* In single escalation mode, we grab the ESB MMIO of the
+	 * interrupt and mask it. Also populate the VCPU v/raddr
+	 * of the ESB page for use by asm entry/exit code. Finally
+	 * set the XIVE_IRQ_NO_EOI flag which will prevent the
+	 * core code from performing an EOI on the escalation
+	 * interrupt, thus leaving it effectively masked after
+	 * it fires once.
+	 */
+	if (xc->xive->single_escalation) {
+		struct irq_data *d = irq_get_irq_data(xc->esc_virq[prio]);
+		struct xive_irq_data *xd = irq_data_get_irq_handler_data(d);
+
+		xive_vm_esb_load(xd, XIVE_ESB_SET_PQ_01);
+		vcpu->arch.xive_esc_raddr = xd->eoi_page;
+		vcpu->arch.xive_esc_vaddr = (__force u64)xd->eoi_mmio;
+		xd->flags |= XIVE_IRQ_NO_EOI;
+	}
+
 	return 0;
 error:
 	irq_dispose_mapping(xc->esc_virq[prio]);
@@ -157,7 +188,7 @@ static int xive_provision_queue(struct kvm_vcpu *vcpu, u8 prio)
 	if (!qpage) {
 		pr_err("Failed to allocate queue %d for VCPU %d\n",
 		       prio, xc->server_num);
-		return -ENOMEM;;
+		return -ENOMEM;
 	}
 	memset(qpage, 0, 1 << xive->q_order);
 
@@ -191,12 +222,12 @@ static int xive_check_provisioning(struct kvm *kvm, u8 prio)
 
 	pr_devel("Provisioning prio... %d\n", prio);
 
-	/* Provision each VCPU and enable escalations */
+	/* Provision each VCPU and enable escalations if needed */
 	kvm_for_each_vcpu(i, vcpu, kvm) {
 		if (!vcpu->arch.xive_vcpu)
 			continue;
 		rc = xive_provision_queue(vcpu, prio);
-		if (rc == 0)
+		if (rc == 0 && !xive->single_escalation)
 			xive_attach_escalation(vcpu, prio);
 		if (rc)
 			return rc;
@@ -286,6 +317,11 @@ static int xive_select_target(struct kvm *kvm, u32 *server, u8 prio)
 	return -EBUSY;
 }
 
+static u32 xive_vp(struct kvmppc_xive *xive, u32 server)
+{
+	return xive->vp_base + kvmppc_pack_vcpu_id(xive->kvm, server);
+}
+
 static u8 xive_lock_and_mask(struct kvmppc_xive *xive,
 			     struct kvmppc_xive_src_block *sb,
 			     struct kvmppc_xive_irq_state *state)
@@ -331,7 +367,7 @@ static u8 xive_lock_and_mask(struct kvmppc_xive *xive,
 	 */
 	if (xd->flags & OPAL_XIVE_IRQ_MASK_VIA_FW) {
 		xive_native_configure_irq(hw_num,
-					  xive->vp_base + state->act_server,
+					  xive_vp(xive, state->act_server),
 					  MASKED, state->number);
 		/* set old_p so we can track if an H_EOI was done */
 		state->old_p = true;
@@ -387,7 +423,7 @@ static void xive_finish_unmask(struct kvmppc_xive *xive,
 	 */
 	if (xd->flags & OPAL_XIVE_IRQ_MASK_VIA_FW) {
 		xive_native_configure_irq(hw_num,
-					  xive->vp_base + state->act_server,
+					  xive_vp(xive, state->act_server),
 					  state->act_priority, state->number);
 		/* If an EOI is needed, do it here */
 		if (!state->old_p)
@@ -464,7 +500,7 @@ static int xive_target_interrupt(struct kvm *kvm,
 	kvmppc_xive_select_irq(state, &hw_num, NULL);
 
 	return xive_native_configure_irq(hw_num,
-					 xive->vp_base + server,
+					 xive_vp(xive, server),
 					 prio, state->number);
 }
 
@@ -852,7 +888,7 @@ int kvmppc_xive_set_mapped(struct kvm *kvm, unsigned long guest_irq,
 	 * which is fine for a never started interrupt.
 	 */
 	xive_native_configure_irq(hw_irq,
-				  xive->vp_base + state->act_server,
+				  xive_vp(xive, state->act_server),
 				  state->act_priority, state->number);
 
 	/*
@@ -928,7 +964,7 @@ int kvmppc_xive_clr_mapped(struct kvm *kvm, unsigned long guest_irq,
 
 	/* Reconfigure the IPI */
 	xive_native_configure_irq(state->ipi_number,
-				  xive->vp_base + state->act_server,
+				  xive_vp(xive, state->act_server),
 				  state->act_priority, state->number);
 
 	/*
@@ -1055,7 +1091,7 @@ int kvmppc_xive_connect_vcpu(struct kvm_device *dev,
 		pr_devel("Duplicate !\n");
 		return -EEXIST;
 	}
-	if (cpu >= KVM_MAX_VCPUS) {
+	if (cpu >= (KVM_MAX_VCPUS * vcpu->kvm->arch.emul_smt_mode)) {
 		pr_devel("Out of bounds !\n");
 		return -EINVAL;
 	}
@@ -1069,7 +1105,7 @@ int kvmppc_xive_connect_vcpu(struct kvm_device *dev,
 	xc->xive = xive;
 	xc->vcpu = vcpu;
 	xc->server_num = cpu;
-	xc->vp_id = xive->vp_base + cpu;
+	xc->vp_id = xive_vp(xive, cpu);
 	xc->mfrr = 0xff;
 	xc->valid = true;
 
@@ -1084,6 +1120,7 @@ int kvmppc_xive_connect_vcpu(struct kvm_device *dev,
 	/* Allocate IPI */
 	xc->vp_ipi = xive_native_alloc_irq();
 	if (!xc->vp_ipi) {
+		pr_err("Failed to allocate xive irq for VCPU IPI\n");
 		r = -EIO;
 		goto bail;
 	}
@@ -1094,18 +1131,33 @@ int kvmppc_xive_connect_vcpu(struct kvm_device *dev,
 		goto bail;
 
 	/*
+	 * Enable the VP first as the single escalation mode will
+	 * affect escalation interrupts numbering
+	 */
+	r = xive_native_enable_vp(xc->vp_id, xive->single_escalation);
+	if (r) {
+		pr_err("Failed to enable VP in OPAL, err %d\n", r);
+		goto bail;
+	}
+
+	/*
 	 * Initialize queues. Initially we set them all for no queueing
 	 * and we enable escalation for queue 0 only which we'll use for
 	 * our mfrr change notifications. If the VCPU is hot-plugged, we
-	 * do handle provisioning however.
+	 * do handle provisioning however based on the existing "map"
+	 * of enabled queues.
 	 */
 	for (i = 0; i < KVMPPC_XIVE_Q_COUNT; i++) {
 		struct xive_q *q = &xc->queues[i];
 
+		/* Single escalation, no queue 7 */
+		if (i == 7 && xive->single_escalation)
+			break;
+
 		/* Is queue already enabled ? Provision it */
 		if (xive->qmap & (1 << i)) {
 			r = xive_provision_queue(vcpu, i);
-			if (r == 0)
+			if (r == 0 && !xive->single_escalation)
 				xive_attach_escalation(vcpu, i);
 			if (r)
 				goto bail;
@@ -1122,11 +1174,6 @@ int kvmppc_xive_connect_vcpu(struct kvm_device *dev,
 
 	/* If not done above, attach priority 0 escalation */
 	r = xive_attach_escalation(vcpu, 0);
-	if (r)
-		goto bail;
-
-	/* Enable the VP */
-	r = xive_native_enable_vp(xc->vp_id);
 	if (r)
 		goto bail;
 
@@ -1476,6 +1523,7 @@ static int xive_set_source(struct kvmppc_xive *xive, long irq, u64 addr)
 
 	pr_devel("  val=0x016%llx (server=0x%x, guest_prio=%d)\n",
 		 val, server, guest_prio);
+
 	/*
 	 * If the source doesn't already have an IPI, allocate
 	 * one and get the corresponding data
@@ -1764,6 +1812,8 @@ static int kvmppc_xive_create(struct kvm_device *dev, u32 type)
 	if (xive->vp_base == XIVE_INVALID_VP)
 		ret = -ENOMEM;
 
+	xive->single_escalation = xive_native_has_single_escalation();
+
 	if (ret) {
 		kfree(xive);
 		return ret;
@@ -1797,6 +1847,7 @@ static int xive_debug_show(struct seq_file *m, void *private)
 
 	kvm_for_each_vcpu(i, vcpu, kvm) {
 		struct kvmppc_xive_vcpu *xc = vcpu->arch.xive_vcpu;
+		unsigned int i;
 
 		if (!xc)
 			continue;
@@ -1806,6 +1857,33 @@ static int xive_debug_show(struct seq_file *m, void *private)
 			   xc->server_num, xc->cppr, xc->hw_cppr,
 			   xc->mfrr, xc->pending,
 			   xc->stat_rm_h_xirr, xc->stat_vm_h_xirr);
+		for (i = 0; i < KVMPPC_XIVE_Q_COUNT; i++) {
+			struct xive_q *q = &xc->queues[i];
+			u32 i0, i1, idx;
+
+			if (!q->qpage && !xc->esc_virq[i])
+				continue;
+
+			seq_printf(m, " [q%d]: ", i);
+
+			if (q->qpage) {
+				idx = q->idx;
+				i0 = be32_to_cpup(q->qpage + idx);
+				idx = (idx + 1) & q->msk;
+				i1 = be32_to_cpup(q->qpage + idx);
+				seq_printf(m, "T=%d %08x %08x... \n", q->toggle, i0, i1);
+			}
+			if (xc->esc_virq[i]) {
+				struct irq_data *d = irq_get_irq_data(xc->esc_virq[i]);
+				struct xive_irq_data *xd = irq_data_get_irq_handler_data(d);
+				u64 pq = xive_vm_esb_load(xd, XIVE_ESB_GET);
+				seq_printf(m, "E:%c%c I(%d:%llx:%llx)",
+					   (pq & XIVE_ESB_VAL_P) ? 'P' : 'p',
+					   (pq & XIVE_ESB_VAL_Q) ? 'Q' : 'q',
+					   xc->esc_virq[i], pq, xd->eoi_page);
+				seq_printf(m, "\n");
+			}
+		}
 
 		t_rm_h_xirr += xc->stat_rm_h_xirr;
 		t_rm_h_ipoll += xc->stat_rm_h_ipoll;

@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2019 MediaTek Inc.
+*/
+
 #ifndef PANEL_R66451_FHDP_DSI_CMD_120HZ_TIANMA
 #define PANEL_R66451_FHDP_DSI_CMD_120HZ_TIANMA
 

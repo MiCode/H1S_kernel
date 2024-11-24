@@ -26,17 +26,13 @@ static u16 dmi_num;
 static u8 smbios_entry_point[32];
 static int smbios_entry_point_size;
 
-/*
- * Catch too early calls to dmi_check_system():
- */
-static int dmi_initialized;
-
 /* DMI system identification string used during boot */
 static char dmi_ids_string[128] __initdata;
 
 static struct dmi_memdev_info {
 	const char *device;
 	const char *bank;
+	u64 size;		/* bytes */
 	u16 handle;
 } *dmi_memdev;
 static int dmi_memdev_nr;
@@ -98,6 +94,17 @@ static void dmi_decode_table(u8 *buf,
 	while ((!dmi_num || i < dmi_num) &&
 	       (data - buf + sizeof(struct dmi_header)) <= dmi_len) {
 		const struct dmi_header *dm = (const struct dmi_header *)data;
+
+		/*
+		 * If a short entry is found (less than 4 bytes), not only it
+		 * is invalid, but we cannot reliably locate the next entry.
+		 */
+		if (dm->length < sizeof(struct dmi_header)) {
+			pr_warn(FW_BUG
+				"Corrupted DMI table, offset %zd (only %d entries processed)\n",
+				data - buf, i);
+			break;
+		}
 
 		/*
 		 *  We want to know the total length (formatted area and
@@ -215,9 +222,9 @@ static void __init dmi_save_uuid(const struct dmi_header *dm, int slot,
 	 * says that this is the defacto standard.
 	 */
 	if (dmi_ver >= 0x020600)
-		sprintf(s, "%pUL", d);
+		sprintf(s, "%pUl", d);
 	else
-		sprintf(s, "%pUB", d);
+		sprintf(s, "%pUb", d);
 
 	dmi_ident[slot] = s;
 }
@@ -391,6 +398,8 @@ static void __init save_mem_devices(const struct dmi_header *dm, void *v)
 {
 	const char *d = (const char *)dm;
 	static int nr;
+	u64 bytes;
+	u16 size;
 
 	if (dm->type != DMI_ENTRY_MEM_DEVICE || dm->length < 0x12)
 		return;
@@ -401,6 +410,20 @@ static void __init save_mem_devices(const struct dmi_header *dm, void *v)
 	dmi_memdev[nr].handle = get_unaligned(&dm->handle);
 	dmi_memdev[nr].device = dmi_string(dm, d[0x10]);
 	dmi_memdev[nr].bank = dmi_string(dm, d[0x11]);
+
+	size = get_unaligned((u16 *)&d[0xC]);
+	if (size == 0)
+		bytes = 0;
+	else if (size == 0xffff)
+		bytes = ~0ull;
+	else if (size & 0x8000)
+		bytes = (u64)(size & 0x7fff) << 10;
+	else if (size != 0x7fff || dm->length < 0x20)
+		bytes = (u64)size << 20;
+	else
+		bytes = (u64)get_unaligned((u32 *)&d[0x1C]) << 20;
+
+	dmi_memdev[nr].size = bytes;
 	nr++;
 }
 
@@ -435,6 +458,7 @@ static void __init dmi_decode(const struct dmi_header *dm, void *dummy)
 		dmi_save_ident(dm, DMI_PRODUCT_VERSION, 6);
 		dmi_save_ident(dm, DMI_PRODUCT_SERIAL, 7);
 		dmi_save_uuid(dm, DMI_PRODUCT_UUID, 8);
+		dmi_save_ident(dm, DMI_PRODUCT_SKU, 25);
 		dmi_save_ident(dm, DMI_PRODUCT_FAMILY, 26);
 		break;
 	case 2:		/* Base Board Information */
@@ -629,7 +653,7 @@ void __init dmi_scan_machine(void)
 
 			if (!dmi_smbios3_present(buf)) {
 				dmi_available = 1;
-				goto out;
+				return;
 			}
 		}
 		if (efi.smbios == EFI_INVALID_TABLE_ADDR)
@@ -647,7 +671,7 @@ void __init dmi_scan_machine(void)
 
 		if (!dmi_present(buf)) {
 			dmi_available = 1;
-			goto out;
+			return;
 		}
 	} else if (IS_ENABLED(CONFIG_DMI_SCAN_MACHINE_NON_EFI_FALLBACK)) {
 		p = dmi_early_remap(0xF0000, 0x10000);
@@ -664,7 +688,7 @@ void __init dmi_scan_machine(void)
 			if (!dmi_smbios3_present(buf)) {
 				dmi_available = 1;
 				dmi_early_unmap(p, 0x10000);
-				goto out;
+				return;
 			}
 			memcpy(buf, buf + 16, 16);
 		}
@@ -682,7 +706,7 @@ void __init dmi_scan_machine(void)
 			if (!dmi_present(buf)) {
 				dmi_available = 1;
 				dmi_early_unmap(p, 0x10000);
-				goto out;
+				return;
 			}
 			memcpy(buf, buf + 16, 16);
 		}
@@ -690,8 +714,6 @@ void __init dmi_scan_machine(void)
 	}
  error:
 	pr_info("DMI not present or invalid.\n");
- out:
-	dmi_initialized = 1;
 }
 
 static ssize_t raw_table_read(struct file *file, struct kobject *kobj,
@@ -711,10 +733,8 @@ static int __init dmi_init(void)
 	u8 *dmi_table;
 	int ret = -ENOMEM;
 
-	if (!dmi_available) {
-		ret = -ENODATA;
-		goto err;
-	}
+	if (!dmi_available)
+		return 0;
 
 	/*
 	 * Set up dmi directory at /sys/firmware/dmi. This entry should stay
@@ -780,19 +800,28 @@ static bool dmi_matches(const struct dmi_system_id *dmi)
 {
 	int i;
 
-	WARN(!dmi_initialized, KERN_ERR "dmi check: not initialized yet.\n");
-
 	for (i = 0; i < ARRAY_SIZE(dmi->matches); i++) {
 		int s = dmi->matches[i].slot;
 		if (s == DMI_NONE)
 			break;
-		if (dmi_ident[s]) {
-			if (!dmi->matches[i].exact_match &&
-			    strstr(dmi_ident[s], dmi->matches[i].substr))
+		if (s == DMI_OEM_STRING) {
+			/* DMI_OEM_STRING must be exact match */
+			const struct dmi_device *valid;
+
+			valid = dmi_find_device(DMI_DEV_TYPE_OEM_STRING,
+						dmi->matches[i].substr, NULL);
+			if (valid)
 				continue;
-			else if (dmi->matches[i].exact_match &&
-				 !strcmp(dmi_ident[s], dmi->matches[i].substr))
-				continue;
+		} else if (dmi_ident[s]) {
+			if (dmi->matches[i].exact_match) {
+				if (!strcmp(dmi_ident[s],
+					    dmi->matches[i].substr))
+					continue;
+			} else {
+				if (strstr(dmi_ident[s],
+					   dmi->matches[i].substr))
+					continue;
+			}
 		}
 
 		/* No match */
@@ -822,6 +851,8 @@ static bool dmi_is_end_of_table(const struct dmi_system_id *dmi)
  *	Walk the blacklist table running matching functions until someone
  *	returns non zero or we hit the end. Callback function is called for
  *	each successful match. Returns the number of matches.
+ *
+ *	dmi_scan_machine must be called before this function is called.
  */
 int dmi_check_system(const struct dmi_system_id *list)
 {
@@ -850,6 +881,8 @@ EXPORT_SYMBOL(dmi_check_system);
  *
  *	Walk the blacklist table until the first match is found.  Return the
  *	pointer to the matching entry or NULL if there's no match.
+ *
+ *	dmi_scan_machine must be called before this function is called.
  */
 const struct dmi_system_id *dmi_first_match(const struct dmi_system_id *list)
 {
@@ -1009,6 +1042,26 @@ out:
 EXPORT_SYMBOL(dmi_get_date);
 
 /**
+ *	dmi_get_bios_year - get a year out of DMI_BIOS_DATE field
+ *
+ *	Returns year on success, -ENXIO if DMI is not selected,
+ *	or a different negative error code if DMI field is not present
+ *	or not parseable.
+ */
+int dmi_get_bios_year(void)
+{
+	bool exists;
+	int year;
+
+	exists = dmi_get_date(DMI_BIOS_DATE, &year, NULL, NULL);
+	if (!exists)
+		return -ENODATA;
+
+	return year ? year : -ERANGE;
+}
+EXPORT_SYMBOL(dmi_get_bios_year);
+
+/**
  *	dmi_walk - Walk the DMI table and get called back for every record
  *	@decode: Callback function
  *	@private_data: Private data to be passed to the callback function
@@ -1069,3 +1122,17 @@ void dmi_memdev_name(u16 handle, const char **bank, const char **device)
 	}
 }
 EXPORT_SYMBOL_GPL(dmi_memdev_name);
+
+u64 dmi_memdev_size(u16 handle)
+{
+	int n;
+
+	if (dmi_memdev) {
+		for (n = 0; n < dmi_memdev_nr; n++) {
+			if (handle == dmi_memdev[n].handle)
+				return dmi_memdev[n].size;
+		}
+	}
+	return ~0ull;
+}
+EXPORT_SYMBOL_GPL(dmi_memdev_size);

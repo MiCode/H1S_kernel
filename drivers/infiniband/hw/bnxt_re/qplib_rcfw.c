@@ -88,13 +88,13 @@ static int __send_message(struct bnxt_qplib_rcfw *rcfw, struct cmdq_base *req,
 	unsigned long flags;
 	u32 size, opcode;
 	u16 cookie, cbit;
-	int pg, idx;
 	u8 *preq;
 
 	opcode = req->opcode;
 	if (!test_bit(FIRMWARE_INITIALIZED_FLAG, &rcfw->flags) &&
 	    (opcode != CMDQ_BASE_OPCODE_QUERY_FUNC &&
-	     opcode != CMDQ_BASE_OPCODE_INITIALIZE_FW)) {
+	     opcode != CMDQ_BASE_OPCODE_INITIALIZE_FW &&
+	     opcode != CMDQ_BASE_OPCODE_QUERY_VERSION)) {
 		dev_err(&rcfw->pdev->dev,
 			"QPLIB: RCFW not initialized, reject opcode 0x%x",
 			opcode);
@@ -149,9 +149,6 @@ static int __send_message(struct bnxt_qplib_rcfw *rcfw, struct cmdq_base *req,
 	preq = (u8 *)req;
 	size = req->cmd_size * BNXT_QPLIB_CMDQE_UNITS;
 	do {
-		pg = 0;
-		idx = 0;
-
 		/* Locate the next cmdq slot */
 		sw_prod = HWQ_CMP(cmdq->prod, cmdq);
 		cmdqe = &cmdq_ptr[get_cmdq_pg(sw_prod)][get_cmdq_idx(sw_prod)];
@@ -172,14 +169,14 @@ static int __send_message(struct bnxt_qplib_rcfw *rcfw, struct cmdq_base *req,
 	rcfw->seq_num++;
 
 	cmdq_prod = cmdq->prod;
-	if (rcfw->flags & FIRMWARE_FIRST_FLAG) {
+	if (test_bit(FIRMWARE_FIRST_FLAG, &rcfw->flags)) {
 		/* The very first doorbell write
 		 * is required to set this flag
 		 * which prompts the FW to reset
 		 * its internal pointers
 		 */
-		cmdq_prod |= FIRMWARE_FIRST_FLAG;
-		rcfw->flags &= ~FIRMWARE_FIRST_FLAG;
+		cmdq_prod |= BIT(FIRMWARE_FIRST_FLAG);
+		clear_bit(FIRMWARE_FIRST_FLAG, &rcfw->flags);
 	}
 
 	/* ring CMDQ DB */
@@ -237,7 +234,7 @@ int bnxt_qplib_rcfw_send_message(struct bnxt_qplib_rcfw *rcfw,
 		/* failed with status */
 		dev_err(&rcfw->pdev->dev, "QPLIB: cmdq[%#x]=%#x status %#x",
 			cookie, opcode, evnt->status);
-		rc = -EFAULT;
+		rc = -EIO;
 	}
 
 	return rc;
@@ -306,9 +303,10 @@ static int bnxt_qplib_process_qp_event(struct bnxt_qplib_rcfw *rcfw,
 			"QPLIB: qpid 0x%x, req_err=0x%x, resp_err=0x%x\n",
 			qp_id, err_event->req_err_state_reason,
 			err_event->res_err_state_reason);
-		bnxt_qplib_acquire_cq_locks(qp, &flags);
+		if (!qp)
+			break;
 		bnxt_qplib_mark_qp_error(qp);
-		bnxt_qplib_release_cq_locks(qp, &flags);
+		rcfw->aeq_handler(rcfw, qp_event, qp);
 		break;
 	default:
 		/*
@@ -370,6 +368,10 @@ static void bnxt_qplib_service_creq(unsigned long data)
 		creqe = &creq_ptr[get_creq_pg(sw_cons)][get_creq_idx(sw_cons)];
 		if (!CREQ_CMP_VALID(creqe, raw_cons, creq->max_elements))
 			break;
+		/* The valid test of the entry must be done first before
+		 * reading any further.
+		 */
+		dma_rmb();
 
 		type = creqe->type & CREQ_BASE_TYPE_MASK;
 		switch (type) {
@@ -589,26 +591,31 @@ fail:
 	return -ENOMEM;
 }
 
-void bnxt_qplib_disable_rcfw_channel(struct bnxt_qplib_rcfw *rcfw)
+void bnxt_qplib_rcfw_stop_irq(struct bnxt_qplib_rcfw *rcfw, bool kill)
 {
-	unsigned long indx;
-
-	/* Make sure the HW channel is stopped! */
-	synchronize_irq(rcfw->vector);
 	tasklet_disable(&rcfw->worker);
-	tasklet_kill(&rcfw->worker);
+	/* Mask h/w interrupts */
+	CREQ_DB(rcfw->creq_bar_reg_iomem, rcfw->creq.cons,
+		rcfw->creq.max_elements);
+	/* Sync with last running IRQ-handler */
+	synchronize_irq(rcfw->vector);
+	if (kill)
+		tasklet_kill(&rcfw->worker);
 
 	if (rcfw->requested) {
 		free_irq(rcfw->vector, rcfw);
 		rcfw->requested = false;
 	}
-	if (rcfw->cmdq_bar_reg_iomem)
-		iounmap(rcfw->cmdq_bar_reg_iomem);
-	rcfw->cmdq_bar_reg_iomem = NULL;
+}
 
-	if (rcfw->creq_bar_reg_iomem)
-		iounmap(rcfw->creq_bar_reg_iomem);
-	rcfw->creq_bar_reg_iomem = NULL;
+void bnxt_qplib_disable_rcfw_channel(struct bnxt_qplib_rcfw *rcfw)
+{
+	unsigned long indx;
+
+	bnxt_qplib_rcfw_stop_irq(rcfw, true);
+
+	iounmap(rcfw->cmdq_bar_reg_iomem);
+	iounmap(rcfw->creq_bar_reg_iomem);
 
 	indx = find_first_bit(rcfw->cmdq_bitmap, rcfw->bmap_size);
 	if (indx != rcfw->bmap_size)
@@ -617,8 +624,35 @@ void bnxt_qplib_disable_rcfw_channel(struct bnxt_qplib_rcfw *rcfw)
 	kfree(rcfw->cmdq_bitmap);
 	rcfw->bmap_size = 0;
 
+	rcfw->cmdq_bar_reg_iomem = NULL;
+	rcfw->creq_bar_reg_iomem = NULL;
 	rcfw->aeq_handler = NULL;
 	rcfw->vector = 0;
+}
+
+int bnxt_qplib_rcfw_start_irq(struct bnxt_qplib_rcfw *rcfw, int msix_vector,
+			      bool need_init)
+{
+	int rc;
+
+	if (rcfw->requested)
+		return -EFAULT;
+
+	rcfw->vector = msix_vector;
+	if (need_init)
+		tasklet_init(&rcfw->worker,
+			     bnxt_qplib_service_creq, (unsigned long)rcfw);
+	else
+		tasklet_enable(&rcfw->worker);
+	rc = request_irq(rcfw->vector, bnxt_qplib_creq_irq, 0,
+			 "bnxt_qplib_creq", rcfw);
+	if (rc)
+		return rc;
+	rcfw->requested = true;
+	CREQ_DB_REARM(rcfw->creq_bar_reg_iomem, rcfw->creq.cons,
+		      rcfw->creq.max_elements);
+
+	return 0;
 }
 
 int bnxt_qplib_enable_rcfw_channel(struct pci_dev *pdev,
@@ -626,7 +660,7 @@ int bnxt_qplib_enable_rcfw_channel(struct pci_dev *pdev,
 				   int msix_vector,
 				   int cp_bar_reg_off, int virt_fn,
 				   int (*aeq_handler)(struct bnxt_qplib_rcfw *,
-						      struct creq_func_event *))
+						      void *, void *))
 {
 	resource_size_t res_base;
 	struct cmdq_init init;
@@ -635,7 +669,7 @@ int bnxt_qplib_enable_rcfw_channel(struct pci_dev *pdev,
 
 	/* General */
 	rcfw->seq_num = 0;
-	rcfw->flags = FIRMWARE_FIRST_FLAG;
+	set_bit(FIRMWARE_FIRST_FLAG, &rcfw->flags);
 	bmap_size = BITS_TO_LONGS(RCFW_MAX_OUTSTANDING_CMD *
 				  sizeof(unsigned long));
 	rcfw->cmdq_bitmap = kzalloc(bmap_size, GFP_KERNEL);
@@ -677,32 +711,24 @@ int bnxt_qplib_enable_rcfw_channel(struct pci_dev *pdev,
 		dev_err(&rcfw->pdev->dev,
 			"QPLIB: CREQ BAR region %d mapping failed",
 			rcfw->creq_bar_reg);
+		iounmap(rcfw->cmdq_bar_reg_iomem);
+		rcfw->cmdq_bar_reg_iomem = NULL;
 		return -ENOMEM;
 	}
 	rcfw->creq_qp_event_processed = 0;
 	rcfw->creq_func_event_processed = 0;
 
-	rcfw->vector = msix_vector;
 	if (aeq_handler)
 		rcfw->aeq_handler = aeq_handler;
+	init_waitqueue_head(&rcfw->waitq);
 
-	tasklet_init(&rcfw->worker, bnxt_qplib_service_creq,
-		     (unsigned long)rcfw);
-
-	rcfw->requested = false;
-	rc = request_irq(rcfw->vector, bnxt_qplib_creq_irq, 0,
-			 "bnxt_qplib_creq", rcfw);
+	rc = bnxt_qplib_rcfw_start_irq(rcfw, msix_vector, true);
 	if (rc) {
 		dev_err(&rcfw->pdev->dev,
 			"QPLIB: Failed to request IRQ for CREQ rc = 0x%x", rc);
 		bnxt_qplib_disable_rcfw_channel(rcfw);
 		return rc;
 	}
-	rcfw->requested = true;
-
-	init_waitqueue_head(&rcfw->waitq);
-
-	CREQ_DB_REARM(rcfw->creq_bar_reg_iomem, 0, rcfw->creq.max_elements);
 
 	init.cmdq_pbl = cpu_to_le64(rcfw->cmdq.pbl[PBL_LVL_0].pg_map_arr[0]);
 	init.cmdq_size_cmdq_lvl = cpu_to_le16(

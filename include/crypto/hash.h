@@ -71,11 +71,12 @@ struct ahash_request {
 
 /**
  * struct ahash_alg - asynchronous message digest definition
- * @init: Initialize the transformation context. Intended only to initialize the
+ * @init: **[mandatory]** Initialize the transformation context. Intended only to initialize the
  *	  state of the HASH transformation at the beginning. This shall fill in
  *	  the internal structures used during the entire duration of the whole
- *	  transformation. No data processing happens at this point.
- * @update: Push a chunk of data into the driver for transformation. This
+ *	  transformation. No data processing happens at this point. Driver code
+ *	  implementation must not use req->result.
+ * @update: **[mandatory]** Push a chunk of data into the driver for transformation. This
  *	   function actually pushes blocks of data from upper layers into the
  *	   driver, which then passes those to the hardware as seen fit. This
  *	   function must not finalize the HASH transformation by calculating the
@@ -83,12 +84,14 @@ struct ahash_request {
  *	   transformation. This function shall not modify the transformation
  *	   context, as this function may be called in parallel with the same
  *	   transformation object. Data processing can happen synchronously
- *	   [SHASH] or asynchronously [AHASH] at this point.
- * @final: Retrieve result from the driver. This function finalizes the
+ *	   [SHASH] or asynchronously [AHASH] at this point. Driver must not use
+ *	   req->result.
+ * @final: **[mandatory]** Retrieve result from the driver. This function finalizes the
  *	   transformation and retrieves the resulting hash from the driver and
  *	   pushes it back to upper layers. No data processing happens at this
- *	   point.
- * @finup: Combination of @update and @final. This function is effectively a
+ *	   point unless hardware requires it to finish the transformation
+ *	   (then the data buffered by the device driver is processed).
+ * @finup: **[optional]** Combination of @update and @final. This function is effectively a
  *	   combination of @update and @final calls issued in sequence. As some
  *	   hardware cannot do @update and @final separately, this callback was
  *	   added to allow such hardware to be used at least by IPsec. Data
@@ -119,11 +122,12 @@ struct ahash_request {
  *	    you want to save partial result of the transformation after
  *	    processing certain amount of data and reload this partial result
  *	    multiple times later on for multiple re-use. No data processing
- *	    happens at this point.
+ *	    happens at this point. Driver must not use req->result.
  * @import: Import partial state of the transformation. This function loads the
  *	    entire state of the ongoing transformation from a provided block of
  *	    data so the transformation can continue from this point onward. No
- *	    data processing happens at this point.
+ *	    data processing happens at this point. Driver must not use
+ *	    req->result.
  * @halg: see struct hash_alg_common
  */
 struct ahash_alg {
@@ -253,6 +257,8 @@ static inline struct crypto_tfm *crypto_ahash_tfm(struct crypto_ahash *tfm)
 /**
  * crypto_free_ahash() - zeroize and free the ahash handle
  * @tfm: cipher handle to be freed
+ *
+ * If @tfm is a NULL or error pointer, this function does nothing.
  */
 static inline void crypto_free_ahash(struct crypto_ahash *tfm)
 {
@@ -410,11 +416,10 @@ int crypto_ahash_setkey(struct crypto_ahash *tfm, const u8 *key,
  *	 needed to perform the cipher operation
  *
  * This function is a "short-hand" for the function calls of
- * crypto_ahash_update and crypto_shash_final. The parameters have the same
+ * crypto_ahash_update and crypto_ahash_final. The parameters have the same
  * meaning as discussed for those separate functions.
  *
- * Return: 0 if the message digest creation was successful; < 0 if an error
- *	   occurred
+ * Return: see crypto_ahash_final()
  */
 int crypto_ahash_finup(struct ahash_request *req);
 
@@ -427,8 +432,11 @@ int crypto_ahash_finup(struct ahash_request *req);
  * based on all data added to the cipher handle. The message digest is placed
  * into the output buffer registered with the ahash_request handle.
  *
- * Return: 0 if the message digest creation was successful; < 0 if an error
- *	   occurred
+ * Return:
+ * 0		if the message digest was successfully calculated;
+ * -EINPROGRESS	if data is feeded into hardware (DMA) or queued for later;
+ * -EBUSY	if queue is full and request should be resubmitted later;
+ * other < 0	if an error occurred
  */
 int crypto_ahash_final(struct ahash_request *req);
 
@@ -441,8 +449,7 @@ int crypto_ahash_final(struct ahash_request *req);
  * crypto_ahash_update and crypto_ahash_final. The parameters have the same
  * meaning as discussed for those separate three functions.
  *
- * Return: 0 if the message digest creation was successful; < 0 if an error
- *	   occurred
+ * Return: see crypto_ahash_final()
  */
 int crypto_ahash_digest(struct ahash_request *req);
 
@@ -492,8 +499,7 @@ static inline int crypto_ahash_import(struct ahash_request *req, const void *in)
  * handle. Any potentially existing state created by previous operations is
  * discarded.
  *
- * Return: 0 if the message digest initialization was successful; < 0 if an
- *	   error occurred
+ * Return: see crypto_ahash_final()
  */
 static inline int crypto_ahash_init(struct ahash_request *req)
 {
@@ -514,8 +520,7 @@ static inline int crypto_ahash_init(struct ahash_request *req)
  * is pointed to by the scatter/gather list registered in the &ahash_request
  * handle
  *
- * Return: 0 if the message digest update was successful; < 0 if an error
- *	   occurred
+ * Return: see crypto_ahash_final()
  */
 static inline int crypto_ahash_update(struct ahash_request *req)
 {
@@ -689,6 +694,8 @@ static inline struct crypto_tfm *crypto_shash_tfm(struct crypto_shash *tfm)
 /**
  * crypto_free_shash() - zeroize and free the message digest handle
  * @tfm: cipher handle to be freed
+ *
+ * If @tfm is a NULL or error pointer, this function does nothing.
  */
 static inline void crypto_free_shash(struct crypto_shash *tfm)
 {

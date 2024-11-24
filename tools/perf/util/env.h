@@ -27,6 +27,12 @@ struct numa_node {
 	struct cpu_map	*map;
 };
 
+struct memory_node {
+	u64		 node;
+	u64		 size;
+	unsigned long	*set;
+};
+
 struct perf_env {
 	char			*hostname;
 	char			*os_release;
@@ -43,6 +49,7 @@ struct perf_env {
 	int			nr_sibling_cores;
 	int			nr_sibling_threads;
 	int			nr_numa_nodes;
+	int			nr_memory_nodes;
 	int			nr_pmu_mappings;
 	int			nr_groups;
 	char			*cmdline;
@@ -54,6 +61,8 @@ struct perf_env {
 	struct cpu_cache_level	*caches;
 	int			 caches_cnt;
 	struct numa_node	*numa_nodes;
+	struct memory_node	*memory_nodes;
+	unsigned long long	 memory_bsize;
 };
 
 extern struct perf_env perf_env;
@@ -66,6 +75,7 @@ int perf_env__read_cpu_topology_map(struct perf_env *env);
 
 void cpu_cache_level__free(struct cpu_cache_level *cache);
 
+const char *perf_env__arch(struct perf_env *env);
 const char *perf_env__raw_arch(struct perf_env *env);
 int perf_env__nr_cpus_avail(struct perf_env *env);
 

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 
@@ -57,7 +49,6 @@ struct sel_s {
 	unsigned long *reg;
 	unsigned int reg_val;
 };
-
 
 unsigned int module_list_scenario[DDP_SCENARIO_MAX][DDP_ENING_NUM] = {
 	/* DDP_SCENARIO_PRIMARY_DISP */
@@ -187,11 +178,11 @@ static struct mout_s mout_map[] = {
 static struct sel_s sel_out_map[] = {
 	/* DISP_RDMA0_RSZ0_IN_SOUT_SEL */
 	{DISP_MODULE_RDMA0, {DISP_MODULE_RSZ0_VIRT0,
-		DISP_MODULE_RSZ0, -1}, 0, 0},
+		DISP_MODULE_RSZ0}, 0, 0},
 
 	/* DISP_RDMA0_SOUT_SEL */
 	{DISP_MODULE_RSZ0_VIRT1, {DISP_MODULE_DSI0,
-		DISP_MODULE_COLOR0, DISP_MODULE_CCORR0, -1}, 0, 0},
+		DISP_MODULE_COLOR0, DISP_MODULE_CCORR0}, 0, 0},
 };
 
 /* 1st para is sout's output, 2nd para is sout's input */
@@ -472,27 +463,19 @@ static void ddp_check_path_l(int *module_list)
 					break;
 				}
 			}
-			if (valid == 0) {
+			if (!valid)
+				break;
+
+			valid = 0;
+			if ((DISP_REG_GET(mout_map[j].reg) & mout) == 0) {
 				path_error += 1;
-				DDPDUMP("err:%s mout,next module %s failed\n",
-					ddp_get_module_name(module_list[i]),
-					ddp_get_module_name(module_list[step]));
-			} else if (valid == 1) {
-				valid = 0;
-				if ((DISP_REG_GET(mout_map[j].reg) & mout)
-				== 0) {
-					path_error += 1;
-					DDPDUMP(
-					"err:%s mout,exp=0x%x,rea=0x%x\n",
+				DDPDUMP("err:%s mout,expect=0x%x,real=0x%x\n",
 					ddp_get_module_name(module_list[i]),
 					mout, DISP_REG_GET(mout_map[j].reg));
-				} else if
-				(DISP_REG_GET(mout_map[j].reg) != mout) {
-					DDPDUMP(
-					"warn:%s mout,exp=0x%x,rea=0x%x\n",
-					ddp_get_module_name(module_list[i]),
-					mout, DISP_REG_GET(mout_map[j].reg));
-				}
+			} else if (DISP_REG_GET(mout_map[j].reg) != mout) {
+				DDPDUMP("warn:%s moutexpect=0x%x,real=0x%x\n",
+				     ddp_get_module_name(module_list[i]), mout,
+				     DISP_REG_GET(mout_map[j].reg));
 			}
 			break;
 		}
@@ -510,14 +493,8 @@ static void ddp_check_path_l(int *module_list)
 			}
 			ASSERT(step < module_num);
 			for (k = 0; k < BIT_NUM; k++) {
-				if (sel_out_map[j].id_bit_map[k] == -1) {
-					path_error += 1;
-					DDPDUMP(
-					"error:out_s %s not connect to %s\n",
-					ddp_get_module_name(module_list[i]),
-					ddp_get_module_name(module_list[step]));
+				if (sel_out_map[j].id_bit_map[k] == -1)
 					break;
-				}
 				if (sel_out_map[j].id_bit_map[k] !=
 					module_list[step])
 					continue;
@@ -545,15 +522,8 @@ static void ddp_check_path_l(int *module_list)
 				step--;
 			ASSERT(step >= 0);
 			for (k = 0; k < BIT_NUM; k++) {
-				if (sel_in_map[j].id_bit_map[k] == -1) {
-					path_error += 1;
-					DDPDUMP(
-					"err:in_s %s not conn %s,expect0x%x,real0x%x\n",
-					ddp_get_module_name(module_list[step]),
-					ddp_get_module_name(module_list[i]), k,
-					DISP_REG_GET(sel_in_map[j].reg));
+				if (sel_in_map[j].id_bit_map[k] == -1)
 					break;
-				}
 				if (sel_in_map[j].id_bit_map[k] !=
 					module_list[step])
 					continue;
@@ -825,9 +795,6 @@ int ddp_path_top_clock_on(void)
 	int larb_idx = 0;
 #endif
 
-	if (disp_helper_get_stage() != DISP_HELPER_STAGE_NORMAL)
-		return 0;
-
 	DISPINFO("ddp path top clock on\n");
 
 	if (disp_helper_get_option(DISP_OPT_DYNAMIC_SWITCH_MMSYSCLK))
@@ -847,7 +814,7 @@ int ddp_path_top_clock_on(void)
 #ifdef CONFIG_MTK_IOMMU_V2
 	iommu_dev = disp_get_iommu_dev();
 	if (!iommu_dev) {
-		DISPERR("%s iommu is null\n", __func__);
+		DISPERR("ddp_path_top_clock_on iommu is null\n");
 		return 0;
 	}
 	for (larb_idx = 0; larb_idx < DISP_LARB_COUNT; larb_idx++)

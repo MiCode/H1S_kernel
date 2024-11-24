@@ -322,10 +322,10 @@ static int ioat_dma_self_test(struct ioatdma_device *ioat_dma)
 	unsigned long tmo;
 	unsigned long flags;
 
-	src = kzalloc(sizeof(u8) * IOAT_TEST_SIZE, GFP_KERNEL);
+	src = kzalloc(IOAT_TEST_SIZE, GFP_KERNEL);
 	if (!src)
 		return -ENOMEM;
-	dest = kzalloc(sizeof(u8) * IOAT_TEST_SIZE, GFP_KERNEL);
+	dest = kzalloc(IOAT_TEST_SIZE, GFP_KERNEL);
 	if (!dest) {
 		kfree(src);
 		return -ENOMEM;
@@ -759,7 +759,7 @@ ioat_init_channel(struct ioatdma_device *ioat_dma,
 	dma_cookie_init(&ioat_chan->dma_chan);
 	list_add_tail(&ioat_chan->dma_chan.device_node, &dma->channels);
 	ioat_dma->idx[idx] = ioat_chan;
-	setup_timer(&ioat_chan->timer, ioat_timer_event, data);
+	timer_setup(&ioat_chan->timer, ioat_timer_event, 0);
 	tasklet_init(&ioat_chan->cleanup_task, ioat_cleanup_event, data);
 }
 
@@ -1429,6 +1429,7 @@ module_init(ioat_init_module);
 static void __exit ioat_exit_module(void)
 {
 	pci_unregister_driver(&ioat_pci_driver);
+	kmem_cache_destroy(ioat_sed_cache);
 	kmem_cache_destroy(ioat_cache);
 }
 module_exit(ioat_exit_module);

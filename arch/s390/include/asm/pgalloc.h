@@ -13,6 +13,7 @@
 #define _S390_PGALLOC_H
 
 #include <linux/threads.h>
+#include <linux/string.h>
 #include <linux/gfp.h>
 #include <linux/mm.h>
 
@@ -28,33 +29,18 @@ void page_table_free_rcu(struct mmu_gather *, unsigned long *, unsigned long);
 void page_table_free_pgste(struct page *page);
 extern int page_table_allocate_pgste;
 
-static inline void clear_table(unsigned long *s, unsigned long val, size_t n)
-{
-	struct addrtype { char _[256]; };
-	int i;
-
-	for (i = 0; i < n; i += 256) {
-		*s = val;
-		asm volatile(
-			"mvc	8(248,%[s]),0(%[s])\n"
-			: "+m" (*(struct addrtype *) s)
-			: [s] "a" (s));
-		s += 256 / sizeof(long);
-	}
-}
-
 static inline void crst_table_init(unsigned long *crst, unsigned long entry)
 {
-	clear_table(crst, entry, _CRST_TABLE_SIZE);
+	memset64((u64 *)crst, entry, _CRST_ENTRIES);
 }
 
 static inline unsigned long pgd_entry_type(struct mm_struct *mm)
 {
-	if (mm->context.asce_limit <= _REGION3_SIZE)
+	if (mm_pmd_folded(mm))
 		return _SEGMENT_ENTRY_EMPTY;
-	if (mm->context.asce_limit <= _REGION2_SIZE)
+	if (mm_pud_folded(mm))
 		return _REGION3_ENTRY_EMPTY;
-	if (mm->context.asce_limit <= _REGION1_SIZE)
+	if (mm_p4d_folded(mm))
 		return _REGION2_ENTRY_EMPTY;
 	return _REGION1_ENTRY_EMPTY;
 }
@@ -176,5 +162,8 @@ extern void rcu_table_freelist_finish(void);
 void vmem_map_init(void);
 void *vmem_crst_alloc(unsigned long val);
 pte_t *vmem_pte_alloc(void);
+
+unsigned long base_asce_alloc(unsigned long addr, unsigned long num_pages);
+void base_asce_free(unsigned long asce);
 
 #endif /* _S390_PGALLOC_H */

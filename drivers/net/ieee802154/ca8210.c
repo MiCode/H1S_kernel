@@ -634,10 +634,9 @@ static int ca8210_test_int_driver_write(
 	for (i = 0; i < len; i++)
 		dev_dbg(&priv->spi->dev, "%#03x\n", buf[i]);
 
-	fifo_buffer = kmalloc(len, GFP_KERNEL);
+	fifo_buffer = kmemdup(buf, len, GFP_KERNEL);
 	if (!fifo_buffer)
 		return -ENOMEM;
-	memcpy(fifo_buffer, buf, len);
 	kfifo_in(&test->up_fifo, &fifo_buffer, 4);
 	wake_up_interruptible(&priv->test.readq);
 
@@ -924,9 +923,9 @@ static int ca8210_spi_transfer(
 	priv = spi_get_drvdata(spi);
 	reinit_completion(&priv->spi_transfer_complete);
 
-	dev_dbg(&spi->dev, "ca8210_spi_transfer called\n");
+	dev_dbg(&spi->dev, "%s called\n", __func__);
 
-	cas_ctl = kmalloc(sizeof(*cas_ctl), GFP_ATOMIC);
+	cas_ctl = kzalloc(sizeof(*cas_ctl), GFP_ATOMIC);
 	if (!cas_ctl)
 		return -ENOMEM;
 
@@ -1303,7 +1302,7 @@ static u8 tdme_checkpibattribute(
 		break;
 	/* MAC */
 	case MAC_BATT_LIFE_EXT_PERIODS:
-		if ((value < 6) || (value > 41))
+		if (value < 6 || value > 41)
 			status = MAC_INVALID_PARAMETER;
 		break;
 	case MAC_BEACON_PAYLOAD:
@@ -1319,7 +1318,7 @@ static u8 tdme_checkpibattribute(
 			status = MAC_INVALID_PARAMETER;
 		break;
 	case MAC_MAX_BE:
-		if ((value < 3) || (value > 8))
+		if (value < 3 || value > 8)
 			status = MAC_INVALID_PARAMETER;
 		break;
 	case MAC_MAX_CSMA_BACKOFFS:
@@ -1335,7 +1334,7 @@ static u8 tdme_checkpibattribute(
 			status = MAC_INVALID_PARAMETER;
 		break;
 	case MAC_RESPONSE_WAIT_TIME:
-		if ((value < 2) || (value > 64))
+		if (value < 2 || value > 64)
 			status = MAC_INVALID_PARAMETER;
 		break;
 	case MAC_SUPERFRAME_ORDER:
@@ -1511,7 +1510,7 @@ static u8 mcps_data_request(
 	psec = (struct secspec *)(command.pdata.data_req.msdu + msdu_length);
 	command.length = sizeof(struct mcps_data_request_pset) -
 		MAX_DATA_SIZE + msdu_length;
-	if (!security || (security->security_level == 0)) {
+	if (!security || security->security_level == 0) {
 		psec->security_level = 0;
 		command.length += 1;
 	} else {
@@ -1561,7 +1560,7 @@ static u8 mlme_reset_request_sync(
 	status = response.pdata.status;
 
 	/* reset COORD Bit for Channel Filtering as Coordinator */
-	if (CA8210_MAC_WORKAROUNDS && set_default_pib && (!status)) {
+	if (CA8210_MAC_WORKAROUNDS && set_default_pib && !status) {
 		status = tdme_setsfr_request_sync(
 			0,
 			CA8210_SFR_MACCON,
@@ -1770,6 +1769,7 @@ static int ca8210_async_xmit_complete(
 			status
 		);
 		if (status != MAC_TRANSACTION_OVERFLOW) {
+			dev_kfree_skb_any(priv->tx_skb);
 			ieee802154_wake_queue(priv->hw);
 			return 0;
 		}
@@ -1898,7 +1898,7 @@ static int ca8210_net_rx(struct ieee802154_hw *hw, u8 *command, size_t len)
 	unsigned long flags;
 	u8 status;
 
-	dev_dbg(&priv->spi->dev, "ca8210_net_rx(), CmdID = %d\n", command[0]);
+	dev_dbg(&priv->spi->dev, "%s: CmdID = %d\n", __func__, command[0]);
 
 	if (command[0] == SPI_MCPS_DATA_INDICATION) {
 		/* Received data */
@@ -1943,17 +1943,18 @@ static int ca8210_skb_tx(
 	struct ca8210_priv  *priv
 )
 {
-	int status;
-	struct ieee802154_hdr header = { 0 };
+	struct ieee802154_hdr header = { };
 	struct secspec secspec;
-	unsigned int mac_len;
+	int mac_len, status;
 
-	dev_dbg(&priv->spi->dev, "ca8210_skb_tx() called\n");
+	dev_dbg(&priv->spi->dev, "%s called\n", __func__);
 
 	/* Get addressing info from skb - ieee802154 layer creates a full
 	 * packet
 	 */
 	mac_len = ieee802154_hdr_peek_addrs(skb, &header);
+	if (mac_len < 0)
+		return mac_len;
 
 	secspec.security_level = header.sec.level;
 	secspec.key_id_mode = header.sec.key_id_mode;
@@ -2051,7 +2052,7 @@ static int ca8210_xmit_async(struct ieee802154_hw *hw, struct sk_buff *skb)
 	struct ca8210_priv *priv = hw->priv;
 	int status;
 
-	dev_dbg(&priv->spi->dev, "calling ca8210_xmit_async()\n");
+	dev_dbg(&priv->spi->dev, "calling %s\n", __func__);
 
 	priv->tx_skb = skb;
 	priv->async_tx_pending = true;
@@ -2369,7 +2370,7 @@ static int ca8210_set_promiscuous_mode(struct ieee802154_hw *hw, const bool on)
 		MAC_PROMISCUOUS_MODE,
 		0,
 		1,
-		(const void*)&on,
+		(const void *)&on,
 		priv->spi
 	);
 	if (status) {
@@ -2646,21 +2647,21 @@ static long ca8210_test_int_ioctl(
  *
  * Return: set of poll return flags
  */
-static unsigned int ca8210_test_int_poll(
+static __poll_t ca8210_test_int_poll(
 	struct file *filp,
 	struct poll_table_struct *ptable
 )
 {
-	unsigned int return_flags = 0;
+	__poll_t return_flags = 0;
 	struct ca8210_priv *priv = filp->private_data;
 
 	poll_wait(filp, &priv->test.readq, ptable);
 	if (!kfifo_is_empty(&priv->test.up_fifo))
-		return_flags |= (POLLIN | POLLRDNORM);
+		return_flags |= (EPOLLIN | EPOLLRDNORM);
 	if (wait_event_interruptible(
 		priv->test.readq,
 		!kfifo_is_empty(&priv->test.up_fifo))) {
-		return POLLERR;
+		return EPOLLERR;
 	}
 	return return_flags;
 }
@@ -2780,7 +2781,6 @@ static int ca8210_register_ext_clock(struct spi_device *spi)
 	struct device_node *np = spi->dev.of_node;
 	struct ca8210_priv *priv = spi_get_drvdata(spi);
 	struct ca8210_platform_data *pdata = spi->dev.platform_data;
-	int ret = 0;
 
 	if (!np)
 		return -EFAULT;
@@ -2797,18 +2797,8 @@ static int ca8210_register_ext_clock(struct spi_device *spi)
 		dev_crit(&spi->dev, "Failed to register external clk\n");
 		return PTR_ERR(priv->clk);
 	}
-	ret = of_clk_add_provider(np, of_clk_src_simple_get, priv->clk);
-	if (ret) {
-		clk_unregister(priv->clk);
-		dev_crit(
-			&spi->dev,
-			"Failed to register external clock as clock provider\n"
-		);
-	} else {
-		dev_info(&spi->dev, "External clock set as clock provider\n");
-	}
 
-	return ret;
+	return of_clk_add_provider(np, of_clk_src_simple_get, priv->clk);
 }
 
 /**
@@ -2820,8 +2810,8 @@ static void ca8210_unregister_ext_clock(struct spi_device *spi)
 {
 	struct ca8210_priv *priv = spi_get_drvdata(spi);
 
-	if (!priv->clk)
-		return
+	if (IS_ERR_OR_NULL(priv->clk))
+		return;
 
 	of_clk_del_provider(spi->dev.of_node);
 	clk_unregister(priv->clk);
@@ -2924,6 +2914,7 @@ static int ca8210_dev_com_init(struct ca8210_priv *priv)
 	);
 	if (!priv->irq_workqueue) {
 		dev_crit(&priv->spi->dev, "alloc of irq_workqueue failed!\n");
+		destroy_workqueue(priv->mlme_workqueue);
 		return -ENOMEM;
 	}
 
@@ -2974,8 +2965,8 @@ static void ca8210_hw_setup(struct ieee802154_hw *ca8210_hw)
 	ca8210_hw->phy->cca.opt = NL802154_CCA_OPT_ENERGY_CARRIER_AND;
 	ca8210_hw->phy->cca_ed_level = -9800;
 	ca8210_hw->phy->symbol_duration = 16;
-	ca8210_hw->phy->lifs_period = 40;
-	ca8210_hw->phy->sifs_period = 12;
+	ca8210_hw->phy->lifs_period = 40 * ca8210_hw->phy->symbol_duration;
+	ca8210_hw->phy->sifs_period = 12 * ca8210_hw->phy->symbol_duration;
 	ca8210_hw->flags =
 		IEEE802154_HW_AFILT |
 		IEEE802154_HW_OMIT_CKSUM |
@@ -3044,8 +3035,7 @@ static void ca8210_test_interface_clear(struct ca8210_priv *priv)
 {
 	struct ca8210_test *test = &priv->test;
 
-	if (!IS_ERR(test->ca8210_dfs_spi_int))
-		debugfs_remove(test->ca8210_dfs_spi_int);
+	debugfs_remove(test->ca8210_dfs_spi_int);
 	kfifo_free(&test->up_fifo);
 	dev_info(&priv->spi->dev, "Test interface removed\n");
 }

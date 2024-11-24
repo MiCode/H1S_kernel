@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 enum mt_cpu_dvfs_id {
@@ -35,6 +27,35 @@ enum throttle_type {
 
 #ifdef CONFIG_MTK_CPU_FREQ
 #include "../../drivers/misc/mediatek/include/mt-plat/mtk_cpufreq_common_api.h"
+int __attribute__ ((weak)) mt_cpufreq_set_by_schedule_load_cluster(
+			unsigned int cid, unsigned int freq)
+{
+	return 0;
+}
+int __attribute__ ((weak)) mt_cpufreq_set_by_wfi_load_cluster(
+			unsigned int cid, unsigned int freq)
+{
+	return 0;
+}
+unsigned int __attribute__ ((weak)) mt_cpufreq_find_close_freq(
+			unsigned int cluster_id, unsigned int freq)
+{
+	return 0;
+}
+unsigned int __attribute__ ((weak))  mt_cpufreq_get_freq_by_idx(
+			unsigned int cid, int idx)
+{
+	return 0;
+}
+int __attribute__ ((weak))  mt_cpufreq_get_sched_enable(void)
+{
+	return 0;
+}
+unsigned int __attribute__ ((weak))  mt_cpufreq_get_cur_freq(
+			enum mt_cpu_dvfs_id id)
+{
+	return 0;
+}
 #else
 static inline int  mt_cpufreq_set_by_schedule_load_cluster(
 			int cid, unsigned int freq) { return 0; }

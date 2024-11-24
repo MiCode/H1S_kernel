@@ -191,9 +191,10 @@ static enum hrtimer_restart sched_clock_poll(struct hrtimer *hrt)
 
 	/* snchronize new sched_clock base to co-processors */
 #ifndef CONFIG_FPGA_EARLY_PORTING
+#ifdef CONFIG_MTK_TIMER_TIMESYNC
 	sys_timer_timesync_sync_base(SYS_TIMER_TIMESYNC_FLAG_ASYNC);
 #endif
-
+#endif
 	return HRTIMER_RESTART;
 }
 
@@ -269,7 +270,7 @@ sched_clock_register(u64 (*read)(void), int bits, unsigned long rate)
 	pr_debug("Registered %pF as sched_clock source\n", read);
 }
 
-void __init sched_clock_postinit(void)
+void __init generic_sched_clock_init(void)
 {
 	/*
 	 * If no sched_clock() function has been provided at that point,
@@ -317,10 +318,11 @@ int sched_clock_suspend(void)
 
 	/* snchronize new sched_clock base to co-processors */
 #ifndef CONFIG_FPGA_EARLY_PORTING
+#ifdef CONFIG_MTK_TIMER_TIMESYNC
 	sys_timer_timesync_sync_base(SYS_TIMER_TIMESYNC_FLAG_SYNC |
 		SYS_TIMER_TIMESYNC_FLAG_FREEZE);
 #endif
-
+#endif
 	return 0;
 }
 
@@ -334,8 +336,10 @@ void sched_clock_resume(void)
 
 	/* snchronize new sched_clock base to co-processors */
 #ifndef CONFIG_FPGA_EARLY_PORTING
+#ifdef CONFIG_MTK_TIMER_TIMESYNC
 	sys_timer_timesync_sync_base(SYS_TIMER_TIMESYNC_FLAG_SYNC |
 		SYS_TIMER_TIMESYNC_FLAG_UNFREEZE);
+#endif
 #endif
 }
 

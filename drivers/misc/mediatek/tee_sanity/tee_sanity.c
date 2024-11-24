@@ -6,7 +6,9 @@
 #include <linux/arm-smccc.h>
 #include <linux/fs.h>
 #include <linux/interrupt.h>
+#if defined(CONFIG_MTK_GIC_V3_EXT)
 #include <linux/irqchip/mtk-gic-extend.h>
+#endif
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_irq.h>
@@ -14,31 +16,16 @@
 #include <linux/platform_device.h>
 #include <linux/proc_fs.h>
 #include <linux/uaccess.h>
-#include <mt-plat/mtk_secure_api.h>
+#include <linux/soc/mediatek/mtk_sip_svc.h>
 #include <tee_sanity.h>
 #include <linux/sched/clock.h>
 #include <archcounter_timesync.h>
 #include <asm/arch_timer.h>
-#include <sched_ctl.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace_tee.h>
 
-#define TEE_TASK_MIN_UTIL	30
-
 static u64 boot_to_kernel_ns;
-
-void mtk_set_prefer_bigcore(struct task_struct *current_task)
-{
-#ifdef CONFIG_MTK_SCHED_BOOST
-	sched_set_cpuprefer(current->pid, SCHED_PREFER_BIG);
-#endif
-}
-
-void mtk_set_task_basic_util(struct task_struct *current_task)
-{
-	set_task_util_min_pct(current->pid, TEE_TASK_MIN_UTIL);
-}
 
 static void set_boot_to_kernel_time(void)
 {
@@ -295,9 +282,13 @@ static int tee_sanity_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+#if defined(CONFIG_MTK_GIC_V3_EXT)
 	tee_sanity_hwirq = virq_to_hwirq(tee_sanity_irq);
 	pr_debug(PFX "tee_sanity_irq: 0x%x, hwirq: 0x%x\n",
 			tee_sanity_irq, tee_sanity_hwirq);
+#else
+	pr_err(PFX "MTK_GIC_V3_EXT is not supported\n");
+#endif
 
 	ret = devm_request_irq(&pdev->dev, tee_sanity_irq,
 			(irq_handler_t)tee_sanity_isr,

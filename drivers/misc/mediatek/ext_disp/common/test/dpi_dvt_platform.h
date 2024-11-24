@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Joey Pan <joey.pan@mediatek.com>
  */
 
 #ifndef _DPI_DVT_PLATFORM_H_
@@ -30,6 +23,7 @@
 /* #define RDMA_MODE_DIRECT_LINK 0 */
 /* #define RDMA_MODE_MEMORY	  1 */
 
+/* K2 */
 /* RDMA1 -> DPI0 */
 /* OVL1 -> RDMA1 -> DPI0 */
 /* OVL0 -> COLOR0 -> CCORR0 -> ALL0 -> GAMMA0 -> DITHER0 -> RDMA0 -> DPI0 */

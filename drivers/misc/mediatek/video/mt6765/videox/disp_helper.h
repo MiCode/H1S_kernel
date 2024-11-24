@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _DISP_HELPER_H_
@@ -80,6 +72,7 @@ enum DISP_HELPER_OPT {
 	DISP_OPT_OVL_SBCH,
 	DISP_OPT_GMO_OPTIMIZE,
 	DISP_OPT_TUI_MODE, /* 0: single-window; 1: multi-window */
+	DISP_OPT_DYNAMIC_FPS, /*DynFPS*/
 
 	DISP_OPT_NUM
 };

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -51,10 +43,30 @@
 #include <mtk_power_gs_api.h>
 #endif
 
-#include <trace/events/mtk_idle_event.h>
-
 #include <mtk_idle_internal.h>
 #include <mtk_idle_profile.h>
+
+void __attribute__ ((weak)) mtk8250_backup_dev(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+}
+
+void __attribute__ ((weak)) mtk8250_restore_dev(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+}
+
+int __attribute__ ((weak)) mtk8250_request_to_wakeup(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+	return 0;
+}
+
+int __attribute__ ((weak)) mtk8250_request_to_sleep(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+	return 0;
+}
 
 /**************************************
  * only for internal debug
@@ -218,7 +230,7 @@ static bool spm_sodi_is_not_gpt_event(
 	static int by_md2ap_count;
 	bool logout = false;
 
-	if ((wakesta->r12 & R12_APXGPT1_EVENT_B) == 0) {
+	if ((wakesta->r12 & R12_SYS_TIMER_EVENT_B) == 0) {
 		if (wakesta->r12 & R12_MD2AP_PEER_EVENT_B) {
 			/* wake up by R12_MD2AP_PEER_EVENT_B */
 			if ((by_md2ap_count >= 5) ||
@@ -508,15 +520,11 @@ unsigned int spm_go_to_sodi(u32 spm_flags, u32 spm_data, u32 sodi_flags)
 	spm_sodi_footprint_val((1 << SPM_SODI_ENTER_WFI) |
 		(1 << SPM_SODI_B4) | (1 << SPM_SODI_B5) | (1 << SPM_SODI_B6));
 
-	trace_sodi_rcuidle(cpu, 1);
-
 	profile_so_end(PIDX_ENTER_TOTAL);
 
 	spm_trigger_wfi_for_sodi(pwrctrl->pcm_flags);
 
 	profile_so_start(PIDX_LEAVE_TOTAL);
-
-	trace_sodi_rcuidle(cpu, 0);
 
 	spm_sodi_footprint(SPM_SODI_LEAVE_WFI);
 

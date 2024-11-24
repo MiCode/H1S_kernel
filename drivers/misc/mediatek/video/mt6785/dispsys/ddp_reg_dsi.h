@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _DDP_REG_DSI_H_
 #define _DDP_REG_DSI_H_
@@ -211,9 +203,11 @@ struct DSI_TXRX_CTRL_REG {
 
 enum DSI_PS_TYPE {
 	PACKED_PS_16BIT_RGB565 = 0,
-	LOOSELY_PS_18BIT_RGB666 = 1,
-	PACKED_PS_24BIT_RGB888 = 2,
-	PACKED_PS_18BIT_RGB666 = 3
+	LOOSELY_PS_24BIT_RGB666 = 1,
+	PACKED_PS_18BIT_RGB666 = 2,
+	PACKED_PS_24BIT_RGB888 = 3,
+	PACKED_PS_30BIT_RGB101010 = 4,
+	PACKED_COMPRESSION = 5
 };
 
 #define FLD_DSI_PS_WC			REG_FLD_MSB_LSB(14, 0)

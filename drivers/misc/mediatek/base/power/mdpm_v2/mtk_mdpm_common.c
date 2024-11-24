@@ -1,22 +1,16 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
+
 
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/sysfs.h>
 #include <linux/proc_fs.h>
-#include <mach/mtk_pbm.h>
+#include <linux/seq_file.h>
+#include <mtk_pbm.h>
 #include <mtk_mdpm_common.h>
 #include <mtk_mdpm_platform.h>
 
@@ -47,10 +41,6 @@ static bool md1_ccci_ready;
 (((unsigned int)-1>>(31-((1)?_bits_)))&~((1U<<((0)?_bits_))-1))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
-#define DLPT_TAG     "[MDPM]"
-#define mdpl_err(fmt, args...)		pr_err(DLPT_TAG fmt, ##args)
-#define mdpl_warn(fmt, args...)		pr_warn(DLPT_TAG fmt, ##args)
-
 #if MD_POWER_METER_ENABLE
 void init_md_section_level(enum pbm_kicker kicker)
 {
@@ -73,7 +63,7 @@ void init_md_section_level(enum pbm_kicker kicker)
 		init_version_check(share_mem);
 		md1_ccci_ready = 1;
 	} else
-		mdpl_warn("unknown MD kicker: %d\n", kicker);
+		pr_notice("unknown MD kicker: %d\n", kicker);
 #else
 	return;
 #endif
@@ -244,14 +234,14 @@ static int mt_mdpm_create_procfs(void)
 	dir = proc_mkdir("mdpm", NULL);
 
 	if (!dir) {
-		mdpl_err("fail to create /proc/mdpm @ %s()\n", __func__);
+		pr_info("fail to create /proc/mdpm @ %s()\n", __func__);
 		return -ENOMEM;
 	}
 
 	for (i = 0; i < ARRAY_SIZE(entries); i++) {
 		if (!proc_create
 		    (entries[i].name, 0664, dir, entries[i].fops))
-			mdpl_err("@%s: create /proc/mdpm/%s failed\n", __func__,
+			pr_info("@%s: create /proc/mdpm/%s failed\n", __func__,
 				    entries[i].name);
 	}
 

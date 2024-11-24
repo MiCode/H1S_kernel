@@ -1,6 +1,6 @@
 #
 # Traffic control configuration.
-# 
+#
 
 menuconfig NET_SCHED
 	bool "QoS and/or fair queueing"
@@ -44,23 +44,6 @@ if NET_SCHED
 
 comment "Queueing/Scheduling"
 
-config NET_SCH_CBQ
-	tristate "Class Based Queueing (CBQ)"
-	---help---
-	  Say Y here if you want to use the Class-Based Queueing (CBQ) packet
-	  scheduling algorithm. This algorithm classifies the waiting packets
-	  into a tree-like hierarchy of classes; the leaves of this tree are
-	  in turn scheduled by separate algorithms.
-
-	  See the top of <file:net/sched/sch_cbq.c> for more details.
-
-	  CBQ is a commonly used scheduler, so if you're unsure, you should
-	  say Y here. Then say Y to all the queueing algorithms below that you
-	  want to use as leaf disciplines.
-
-	  To compile this code as a module, choose M here: the
-	  module will be called sch_cbq.
-
 config NET_SCH_HTB
 	tristate "Hierarchical Token Bucket (HTB)"
 	---help---
@@ -83,20 +66,6 @@ config NET_SCH_HFSC
 
 	  To compile this code as a module, choose M here: the
 	  module will be called sch_hfsc.
-
-config NET_SCH_ATM
-	tristate "ATM Virtual Circuits (ATM)"
-	depends on ATM
-	---help---
-	  Say Y here if you want to use the ATM pseudo-scheduler.  This
-	  provides a framework for invoking classifiers, which in turn
-	  select classes of this queuing discipline.  Each class maps
-	  the flow(s) it is handling to a given virtual circuit.
-
-	  See the top of <file:net/sched/sch_atm.c> for more details.
-
-	  To compile this code as a module, choose M here: the
-	  module will be called sch_atm.
 
 config NET_SCH_PRIO
 	tristate "Multi Band Priority Queueing (PRIO)"
@@ -172,6 +141,28 @@ config NET_SCH_TBF
 	  To compile this code as a module, choose M here: the
 	  module will be called sch_tbf.
 
+config NET_SCH_CBS
+	tristate "Credit Based Shaper (CBS)"
+	---help---
+	  Say Y here if you want to use the Credit Based Shaper (CBS) packet
+	  scheduling algorithm.
+
+	  See the top of <file:net/sched/sch_cbs.c> for more details.
+
+	  To compile this code as a module, choose M here: the
+	  module will be called sch_cbs.
+
+config NET_SCH_ETF
+	tristate "Earliest TxTime First (ETF)"
+	help
+	  Say Y here if you want to use the Earliest TxTime First (ETF) packet
+	  scheduling algorithm.
+
+	  See the top of <file:net/sched/sch_etf.c> for more details.
+
+	  To compile this code as a module, choose M here: the
+	  module will be called sch_etf.
+
 config NET_SCH_GRED
 	tristate "Generic Random Early Detection (GRED)"
 	---help---
@@ -182,17 +173,6 @@ config NET_SCH_GRED
 
 	  To compile this code as a module, choose M here: the
 	  module will be called sch_gred.
-
-config NET_SCH_DSMARK
-	tristate "Differentiated Services marker (DSMARK)"
-	---help---
-	  Say Y if you want to schedule packets according to the
-	  Differentiated Services architecture proposed in RFC 2475.
-	  Technical information on this method, with pointers to associated
-	  RFCs, is available at <http://www.gta.ufrj.br/diffserv/>.
-
-	  To compile this code as a module, choose M here: the
-	  module will be called sch_dsmark.
 
 config NET_SCH_NETEM
 	tristate "Network emulator (NETEM)"
@@ -226,6 +206,19 @@ config NET_SCH_MQPRIO
 
 	  To compile this driver as a module, choose M here: the module will
 	  be called sch_mqprio.
+
+	  If unsure, say N.
+
+config NET_SCH_SKBPRIO
+	tristate "SKB priority queue scheduler (SKBPRIO)"
+	help
+	  Say Y here if you want to use the SKB priority queue
+	  scheduler. This schedules packets according to skb->priority,
+	  which is useful for request packets in DoS mitigation systems such
+	  as Gatekeeper.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called sch_skbprio.
 
 	  If unsure, say N.
 
@@ -270,6 +263,17 @@ config NET_SCH_FQ_CODEL
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called sch_fq_codel.
+
+	  If unsure, say N.
+
+config NET_SCH_CAKE
+	tristate "Common Applications Kept Enhanced (CAKE)"
+	help
+	  Say Y here if you want to use the Common Applications Kept Enhanced
+          (CAKE) queue management algorithm.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called sch_cake.
 
 	  If unsure, say N.
 
@@ -412,17 +416,6 @@ config NET_CLS_BASIC
 	  To compile this code as a module, choose M here: the
 	  module will be called cls_basic.
 
-config NET_CLS_TCINDEX
-	tristate "Traffic-Control Index (TCINDEX)"
-	select NET_CLS
-	---help---
-	  Say Y here if you want to be able to classify packets based on
-	  traffic control indices. You will want this feature if you want
-	  to implement Differentiated Services together with DSMARK.
-
-	  To compile this code as a module, choose M here: the
-	  module will be called cls_tcindex.
-
 config NET_CLS_ROUTE4
 	tristate "Routing decision (ROUTE)"
 	depends on INET
@@ -467,34 +460,6 @@ config CLS_U32_MARK
 	depends on NET_CLS_U32
 	---help---
 	  Say Y here to be able to use netfilter marks as u32 key.
-
-config NET_CLS_RSVP
-	tristate "IPv4 Resource Reservation Protocol (RSVP)"
-	select NET_CLS
-	---help---
-	  The Resource Reservation Protocol (RSVP) permits end systems to
-	  request a minimum and maximum data flow rate for a connection; this
-	  is important for real time data such as streaming sound or video.
-
-	  Say Y here if you want to be able to classify outgoing packets based
-	  on their RSVP requests.
-
-	  To compile this code as a module, choose M here: the
-	  module will be called cls_rsvp.
-
-config NET_CLS_RSVP6
-	tristate "IPv6 Resource Reservation Protocol (RSVP6)"
-	select NET_CLS
-	---help---
-	  The Resource Reservation Protocol (RSVP) permits end systems to
-	  request a minimum and maximum data flow rate for a connection; this
-	  is important for real time data such as streaming sound or video.
-
-	  Say Y here if you want to be able to classify outgoing packets based
-	  on their RSVP requests and you are using the IPv6 protocol.
-
-	  To compile this code as a module, choose M here: the
-	  module will be called cls_rsvp6.
 
 config NET_CLS_FLOW
 	tristate "Flow classifier"
@@ -647,6 +612,18 @@ config NET_EMATCH_IPSET
 	  To compile this code as a module, choose M here: the
 	  module will be called em_ipset.
 
+config NET_EMATCH_IPT
+	tristate "IPtables Matches"
+	depends on NET_EMATCH && NETFILTER && NETFILTER_XTABLES
+	---help---
+	  Say Y here to be able to classify packets based on iptables
+	  matches.
+	  Current supported match is "policy" which allows packet classification
+	  based on IPsec policy that was used during decapsulation
+
+	  To compile this code as a module, choose M here: the
+	  module will be called em_ipt.
+
 config NET_CLS_ACT
 	bool "Actions"
 	select NET_CLS
@@ -661,7 +638,7 @@ config NET_CLS_ACT
 
 config NET_ACT_POLICE
 	tristate "Traffic Policing"
-        depends on NET_CLS_ACT 
+        depends on NET_CLS_ACT
         ---help---
 	  Say Y here if you want to do traffic policing, i.e. strict
 	  bandwidth limiting. This action replaces the existing policing
@@ -846,17 +823,14 @@ config NET_ACT_TUNNEL_KEY
 config NET_IFE_SKBMARK
         tristate "Support to encoding decoding skb mark on IFE action"
         depends on NET_ACT_IFE
-        ---help---
 
 config NET_IFE_SKBPRIO
         tristate "Support to encoding decoding skb prio on IFE action"
         depends on NET_ACT_IFE
-        ---help---
 
 config NET_IFE_SKBTCINDEX
         tristate "Support to encoding decoding skb tcindex on IFE action"
         depends on NET_ACT_IFE
-        ---help---
 
 config NET_CLS_IND
 	bool "Incoming device classification"

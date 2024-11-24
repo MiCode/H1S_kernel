@@ -11,8 +11,6 @@
 
 #define DM_DEFAULT_KEY_MAX_WRAPPED_KEY_SIZE 128
 
-#define SECTOR_SIZE			(1 << SECTOR_SHIFT)
-
 static const struct dm_default_key_cipher {
 	const char *name;
 	enum blk_crypto_mode_num mode_num;
@@ -360,8 +358,7 @@ static void default_key_status(struct dm_target *ti, status_type_t type,
 }
 
 static int default_key_prepare_ioctl(struct dm_target *ti,
-				     struct block_device **bdev,
-				     fmode_t *mode)
+				     struct block_device **bdev)
 {
 	const struct default_key_c *dkc = ti->private;
 	const struct dm_dev *dev = dkc->dev;

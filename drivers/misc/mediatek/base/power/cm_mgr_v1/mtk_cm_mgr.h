@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTK_CM_MGR_H__
 #define __MTK_CM_MGR_H__
@@ -51,6 +43,19 @@ struct cm_mgr_data {
 #define IPI_CM_MGR_OPP_VOLT_SET 23
 #define IPI_CM_MGR_BCPU_WEIGHT_MAX_SET 24
 #define IPI_CM_MGR_BCPU_WEIGHT_MIN_SET 25
+#define IPI_CM_MGR_BBCPU_WEIGHT_MAX_SET 26
+#define IPI_CM_MGR_BBCPU_WEIGHT_MIN_SET 27
+#define IPI_CM_MGR_DSU_DEBOUNCE_UP_SET 28
+#define IPI_CM_MGR_DSU_DEBOUNCE_DOWN_SET 29
+#define IPI_CM_MGR_DSU_DIFF_PWR_UP_SET 30
+#define IPI_CM_MGR_DSU_DIFF_PWR_DOWN_SET 31
+#define IPI_CM_MGR_DSU_PWR_RATIO_SET 31
+#define IPI_CM_MGR_DSU_L_PWR_RATIO_SET 32
+#define IPI_CM_MGR_DSU_B_PWR_RATIO_SET 33
+#define IPI_CM_MGR_DSU_BB_PWR_RATIO_SET 34
+#define IPI_CM_MGR_BCPU_MIN_OPP_WEIGHT_SET 35
+#define IPI_CM_MGR_BCPU_LOW_OPP_WEIGHT_SET 36
+#define IPI_CM_MGR_BCPU_LOW_OPP_BOUND_SET 37
 
 extern spinlock_t cm_mgr_lock;
 extern int cm_mgr_disable_fb;

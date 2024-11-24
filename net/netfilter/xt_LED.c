@@ -85,9 +85,10 @@ led_tg(struct sk_buff *skb, const struct xt_action_param *par)
 	return XT_CONTINUE;
 }
 
-static void led_timeout_callback(unsigned long data)
+static void led_timeout_callback(struct timer_list *t)
 {
-	struct xt_led_info_internal *ledinternal = (struct xt_led_info_internal *)data;
+	struct xt_led_info_internal *ledinternal = from_timer(ledinternal, t,
+							      timer);
 
 	led_trigger_event(&ledinternal->netfilter_led_trigger, LED_OFF);
 }
@@ -110,10 +111,8 @@ static int led_tg_check(const struct xt_tgchk_param *par)
 	struct xt_led_info_internal *ledinternal;
 	int err;
 
-	if (ledinfo->id[0] == '\0') {
-		pr_info("No 'id' parameter given.\n");
+	if (ledinfo->id[0] == '\0')
 		return -EINVAL;
-	}
 
 	mutex_lock(&xt_led_mutex);
 
@@ -137,15 +136,14 @@ static int led_tg_check(const struct xt_tgchk_param *par)
 
 	err = led_trigger_register(&ledinternal->netfilter_led_trigger);
 	if (err) {
-		pr_err("Trigger name is already in use.\n");
+		pr_info_ratelimited("Trigger name is already in use.\n");
 		goto exit_alloc;
 	}
 
 	/* Since the letinternal timer can be shared between multiple targets,
 	 * always set it up, even if the current target does not need it
 	 */
-	setup_timer(&ledinternal->timer, led_timeout_callback,
-		    (unsigned long)ledinternal);
+	timer_setup(&ledinternal->timer, led_timeout_callback, 0);
 
 	list_add_tail(&ledinternal->list, &xt_led_triggers);
 

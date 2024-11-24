@@ -184,9 +184,8 @@ static unsigned int telclk_interrupt;
 static int int_events;		/* Event that generate a interrupt */
 static int got_event;		/* if events processing have been done */
 
-static void switchover_timeout(unsigned long data);
-static struct timer_list switchover_timer =
-	TIMER_INITIALIZER(switchover_timeout , 0, 0);
+static void switchover_timeout(struct timer_list *t);
+static struct timer_list switchover_timer;
 static unsigned long tlclk_timer_data;
 
 static struct tlclk_alarms *alarm_events;
@@ -777,17 +776,21 @@ static int __init tlclk_init(void)
 {
 	int ret;
 
-	ret = register_chrdev(tlclk_major, "telco_clock", &tlclk_fops);
-	if (ret < 0) {
-		printk(KERN_ERR "tlclk: can't get major %d.\n", tlclk_major);
-		return ret;
-	}
-	tlclk_major = ret;
+	telclk_interrupt = (inb(TLCLK_REG7) & 0x0f);
+
 	alarm_events = kzalloc( sizeof(struct tlclk_alarms), GFP_KERNEL);
 	if (!alarm_events) {
 		ret = -ENOMEM;
 		goto out1;
 	}
+
+	ret = register_chrdev(tlclk_major, "telco_clock", &tlclk_fops);
+	if (ret < 0) {
+		printk(KERN_ERR "tlclk: can't get major %d.\n", tlclk_major);
+		kfree(alarm_events);
+		return ret;
+	}
+	tlclk_major = ret;
 
 	/* Read telecom clock IRQ number (Set by BIOS) */
 	if (!request_region(TLCLK_BASE, 8, "telco_clock")) {
@@ -796,7 +799,6 @@ static int __init tlclk_init(void)
 		ret = -EBUSY;
 		goto out2;
 	}
-	telclk_interrupt = (inb(TLCLK_REG7) & 0x0f);
 
 	if (0x0F == telclk_interrupt ) { /* not MCPBL0010 ? */
 		printk(KERN_ERR "telclk_interrupt = 0x%x non-mcpbl0010 hw.\n",
@@ -805,7 +807,7 @@ static int __init tlclk_init(void)
 		goto out3;
 	}
 
-	init_timer(&switchover_timer);
+	timer_setup(&switchover_timer, switchover_timeout, 0);
 
 	ret = misc_register(&tlclk_miscdev);
 	if (ret < 0) {
@@ -837,8 +839,8 @@ out3:
 	release_region(TLCLK_BASE, 8);
 out2:
 	kfree(alarm_events);
-out1:
 	unregister_chrdev(tlclk_major, "telco_clock");
+out1:
 	return ret;
 }
 
@@ -855,9 +857,9 @@ static void __exit tlclk_cleanup(void)
 
 }
 
-static void switchover_timeout(unsigned long data)
+static void switchover_timeout(struct timer_list *unused)
 {
-	unsigned long flags = *(unsigned long *) data;
+	unsigned long flags = tlclk_timer_data;
 
 	if ((flags & 1)) {
 		if ((inb(TLCLK_REG1) & 0x08) != (flags & 0x08))
@@ -922,7 +924,6 @@ static irqreturn_t tlclk_interrupt(int irq, void *dev_id)
 		/* TIMEOUT in ~10ms */
 		switchover_timer.expires = jiffies + msecs_to_jiffies(10);
 		tlclk_timer_data = inb(TLCLK_REG1);
-		switchover_timer.data = (unsigned long) &tlclk_timer_data;
 		mod_timer(&switchover_timer, switchover_timer.expires);
 	} else {
 		got_event = 1;

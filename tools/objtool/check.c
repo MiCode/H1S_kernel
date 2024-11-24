@@ -159,14 +159,16 @@ static int __dead_end_function(struct objtool_file *file, struct symbol *func,
 		"panic",
 		"do_exit",
 		"do_task_dead",
+		"make_task_dead",
 		"__module_put_and_exit",
 		"complete_and_exit",
 		"kvm_spurious_fault",
 		"__reiserfs_panic",
 		"lbug_with_loc",
 		"fortify_panic",
+		"usercopy_abort",
 		"machine_real_restart",
-		"rewind_stack_do_exit",
+		"rewind_stack_and_make_dead",
 	};
 
 	if (func->bind == STB_WEAK)
@@ -502,7 +504,7 @@ static int add_jump_destinations(struct objtool_file *file)
 		    insn->type != INSN_JUMP_UNCONDITIONAL)
 			continue;
 
-		if (insn->ignore || insn->offset == FAKE_JUMP_OFFSET)
+		if (insn->offset == FAKE_JUMP_OFFSET)
 			continue;
 
 		rela = find_rela_by_dest_range(insn->sec, insn->offset,
@@ -545,6 +547,28 @@ static int add_jump_destinations(struct objtool_file *file)
 				  insn->sec, insn->offset, dest_sec->name,
 				  dest_off);
 			return -1;
+		}
+
+		/*
+		 * For GCC 8+, create parent/child links for any cold
+		 * subfunctions.  This is _mostly_ redundant with a similar
+		 * initialization in read_symbols().
+		 *
+		 * If a function has aliases, we want the *first* such function
+		 * in the symbol table to be the subfunction's parent.  In that
+		 * case we overwrite the initialization done in read_symbols().
+		 *
+		 * However this code can't completely replace the
+		 * read_symbols() code because this doesn't detect the case
+		 * where the parent function's only reference to a subfunction
+		 * is through a switch table.
+		 */
+		if (insn->func && insn->jump_dest->func &&
+		    insn->func != insn->jump_dest->func &&
+		    !strstr(insn->func->name, ".cold.") &&
+		    strstr(insn->jump_dest->func->name, ".cold.")) {
+			insn->func->cfunc = insn->jump_dest->func;
+			insn->jump_dest->func->pfunc = insn->func;
 		}
 	}
 
@@ -1144,6 +1168,7 @@ static int read_unwind_hints(struct objtool_file *file)
 
 		cfa->offset = hint->sp_offset;
 		insn->state.type = hint->type;
+		insn->state.end = hint->end;
 	}
 
 	return 0;

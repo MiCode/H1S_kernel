@@ -423,7 +423,7 @@ static int bond_changelink(struct net_device *bond_dev, struct nlattr *tb[],
 			return -EINVAL;
 
 		bond_opt_initval(&newval,
-				 nla_get_be64(data[IFLA_BOND_AD_ACTOR_SYSTEM]));
+				 nla_get_u64(data[IFLA_BOND_AD_ACTOR_SYSTEM]));
 		err = __bond_opt_set(bond, BOND_OPT_AD_ACTOR_SYSTEM, &newval);
 		if (err)
 			return err;
@@ -451,11 +451,10 @@ static int bond_newlink(struct net *src_net, struct net_device *bond_dev,
 		return err;
 
 	err = register_netdevice(bond_dev);
-
-	netif_carrier_off(bond_dev);
 	if (!err) {
 		struct bonding *bond = netdev_priv(bond_dev);
 
+		netif_carrier_off(bond_dev);
 		bond_work_init_all(bond);
 	}
 

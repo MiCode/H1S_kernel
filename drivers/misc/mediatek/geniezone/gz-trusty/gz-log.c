@@ -1,16 +1,25 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
+/*
+ * GenieZone (hypervisor-based seucrity platform) enables hardware protected
+ * and isolated security execution environment, includes
+ * 1. GZ hypervisor
+ * 2. Hypervisor-TEE OS (built-in Trusty OS)
+ * 3. Drivers (ex: debug, communication and interrupt) for GZ and
+ *    hypervisor-TEE OS
+ * 4. GZ and hypervisor-TEE and GZ framework (supporting multiple TEE
+ *    ecosystem, ex: M-TEE, Trusty, GlobalPlatform, ...)
+ */
+/*
+ * This is log driver
+ *
+ * Memory log is supported - a shared memory is used for memory log
+ * Driver provides read function for user-space debug apps getting log
+ */
+
 #include <linux/platform_device.h>
 #include <gz-trusty/smcall.h>
 #include <gz-trusty/trusty.h>
@@ -31,19 +40,21 @@
 #include <linux/of.h>
 
 #include <linux/of.h>
+#include <linux/of_fdt.h>
 #include <linux/of_platform.h>
 #include <linux/of_address.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/debugfs.h>
+#include <linux/sched/clock.h>
+#include <asm/arch_timer.h>
 
 #if ENABLE_GZ_TRACE_DUMP
-#if IS_BUILTIN(CONFIG_GZ_LOG)
+#if IS_BUILTIN(CONFIG_MTK_GZ_LOG)
 	#include "gz_trace_builtin.h"
 #else
 	#include "gz_trace_module.h"
 #endif
 #include <linux/vmalloc.h>
-#include <linux/sched/clock.h>
 
 struct gz_trace_dump_t {
 	u64 ktime_base;
@@ -105,47 +116,94 @@ struct gz_log_context {
 	void *virt;
 	struct page *pages;
 	size_t size;
-	enum {DYNAMIC, STATIC} flag;
-
+	enum {DYNAMIC, STATIC_MAP, STATIC_NOMAP} flag;
 	struct gz_log_state *gls;
 };
 
-static struct gz_log_context glctx;
+static struct gz_log_context glctx = {
+	.paddr = 0,
+	.virt = NULL,
+	.size = 0,
+	.flag = DYNAMIC,
+};
 
+#if IS_BUILTIN(CONFIG_MTK_GZ_LOG)
 static int __init gz_log_context_init(struct reserved_mem *rmem)
 {
+	unsigned long node;
+
 	if (!rmem) {
 		pr_info("[%s] ERROR: invalid reserved memory\n", __func__);
 		return -EFAULT;
 	}
 	glctx.paddr = rmem->base;
 	glctx.size = rmem->size;
-	glctx.flag = STATIC;
-	pr_info("[%s] rmem:%s base(0x%llx) size(0x%zx)\n",
-		__func__, rmem->name, glctx.paddr, glctx.size);
+
+	node = rmem->fdt_node;
+	if (!of_get_flat_dt_prop(node, "no-map", NULL))
+		glctx.flag = STATIC_MAP;
+	else
+		glctx.flag = STATIC_NOMAP;
+
+	pr_info("[%s] rmem:%s base(0x%llx) size(0x%zx) flag(%u)\n",
+		__func__, rmem->name, glctx.paddr, glctx.size, glctx.flag);
 	return 0;
 }
 RESERVEDMEM_OF_DECLARE(gz_log, "mediatek,gz-log", gz_log_context_init);
+#else
+static void gz_log_find_mblock(void)
+{
+	struct device_node *mblock_root = NULL, *gz_node = NULL;
+	struct reserved_mem *rmem;
+
+	mblock_root = of_find_node_by_path("/reserved-memory");
+	if (!mblock_root) {
+		pr_info("%s not found /reserved-memory\n", __func__);
+		return;
+	}
+
+	gz_node = of_find_compatible_node(mblock_root, NULL, "mediatek,gz-log");
+	if (!gz_node) {
+		pr_info("%s not found gz-log\n", __func__);
+		return;
+	}
+
+	rmem = of_reserved_mem_lookup(gz_node);
+	if (!rmem) {
+		pr_info("[%s] ERROR: not found address\n", __func__);
+		return;
+	}
+
+	glctx.paddr = rmem->base;
+	glctx.size = rmem->size;
+	if (!of_find_property(gz_node, "no-map", NULL))
+		glctx.flag = STATIC_MAP;
+	else
+		glctx.flag = STATIC_NOMAP;
+
+	pr_info("[%s] rmem:%s base(0x%llx) size(0x%zx) flag(%u)\n",
+		__func__, gz_node->name, glctx.paddr, glctx.size, glctx.flag);
+}
+#endif
 
 static int gz_log_page_init(void)
 {
 	if (glctx.virt)
 		return 0;
 
-	if (glctx.flag == STATIC) {
-		glctx.virt = ioremap(glctx.paddr, glctx.size);
+#if IS_MODULE(CONFIG_MTK_GZ_LOG)
+	gz_log_find_mblock();
+#endif
 
-		if (!glctx.virt) {
-			pr_info("[%s] ERROR: ioremap failed, use dynamic\n",
-				__func__);
-			glctx.flag = DYNAMIC;
-			goto dynamic_alloc;
-		}
+	if (glctx.flag >= STATIC_MAP) {
+		if (glctx.flag == STATIC_MAP)
+			glctx.virt = phys_to_virt(glctx.paddr);
+		else
+			glctx.virt = memremap(glctx.paddr, glctx.size, MEMREMAP_WB);
+	}
 
-		pr_info("[%s] set by static, virt addr:%p, sz:0x%zx\n",
-			__func__, glctx.virt, glctx.size);
-	} else {
-dynamic_alloc:
+	if (!glctx.virt) {
+		glctx.flag = DYNAMIC;
 		glctx.size = TRUSTY_LOG_SIZE;
 		glctx.virt = kzalloc(glctx.size, GFP_KERNEL);
 
@@ -153,9 +211,13 @@ dynamic_alloc:
 			return -ENOMEM;
 
 		glctx.paddr = virt_to_phys(glctx.virt);
-		pr_info("[%s] set by dynamic, virt:%p, sz:0x%zx\n",
-			__func__, glctx.virt, glctx.size);
 	}
+
+	pr_info("[%s] set by %s, virt addr:%p, sz:0x%zx\n",
+		__func__,
+		glctx.flag == STATIC_NOMAP ? "static_nomap" :
+		glctx.flag == STATIC_MAP ? "static_map" : "dynamic",
+		glctx.virt, glctx.size);
 
 	return 0;
 }
@@ -301,7 +363,8 @@ static int do_gz_log_read(struct gz_log_state *gls,
 	uint32_t get, put, alloc, read_chars = 0, copy_chars = 0;
 	int ret = 0;
 
-	WARN_ON(!is_power_of_2(log->sz));
+	if (!is_power_of_2(log->sz))
+		pr_info("[%s] Error log size 0x%x\n", __func__, log->sz);
 
 	/*
 	 * For this ring buffer, at any given point, alloc >= put >= get.
@@ -587,10 +650,9 @@ static int gz_trace_task_entry(void *data)
 			get = gls->get_trace;
 			put = trace_dump_info_use.put;
 
-			if (get > put) {
+			if (get > put)
 				dev_info(gls->dev, "%s get(%u)>put(%u)\n", __func__, get, put);
-				break;
-			} else if (get < put  && atomic_read(&gls->gz_trace_onoff))
+			else if (get < put)
 				gz_trace_parse(gls, get, put, &trace_dump_info_use);
 
 			gls->get_trace = put;
@@ -610,14 +672,18 @@ static int trusty_log_callback_notify(struct notifier_block *nb,
 						callback_notifier);
 		struct gz_trace_dump_t *trace_dump_info;
 
-		trace_dump_info = gz_trace_add_dump_tail(&gls->gz_trace_dump_list,
+		if (atomic_read(&gls->gz_trace_onoff)) {
+			trace_dump_info = gz_trace_add_dump_tail(&gls->gz_trace_dump_list,
 				&gls->gz_trace_dump_mux);
-		if (trace_dump_info) {
-			trace_dump_info->ktime_base = ktime_get();
-			trace_dump_info->cntvct_base = arch_counter_get_cntvct();
-			trace_dump_info->put = gls->log->put;
-			complete(&gls->trace_dump_event);
-		}
+			if (trace_dump_info) {
+				trace_dump_info->ktime_base = ktime_get();
+				trace_dump_info->cntvct_base = arch_counter_get_cntvct();
+				trace_dump_info->put = gls->log->put;
+				complete(&gls->trace_dump_event);
+			} else
+				gls->get_trace = gls->log->put;
+		} else
+			gls->get_trace = gls->log->put;
 	}
 
 	return NOTIFY_OK;
@@ -680,12 +746,44 @@ static const struct file_operations proc_gz_log_fops = {
 	.poll = gz_log_poll,
 };
 
+static int trusty_gz_send_ktime(struct platform_device *pdev)
+{
+	uint64_t current_ktime = 0;
+	uint64_t current_cnt = 0;
+	uint64_t diff_all;
+	uint32_t diff_msb;
+	uint32_t diff_lsb;
+
+	current_ktime = sched_clock();
+	current_cnt = arch_counter_get_cntvct();
+	diff_all = current_cnt - div64_u64((13 * current_ktime), 1000);
+	diff_msb = (diff_all >> 32);
+	diff_lsb = (diff_all & U32_MAX);
+
+	trusty_fast_call32(pdev->dev.parent,
+		MTEE_SMCNR(MT_SMCF_FC_KTIME_ALIGN, pdev->dev.parent),
+		diff_msb, diff_lsb, 0);
+
+	return 0;
+}
+
+static int trusty_gz_log_resume(struct platform_device *pdev)
+{
+	return trusty_gz_send_ktime(pdev);
+}
+
 static int trusty_gz_log_probe(struct platform_device *pdev)
 {
 	int ret;
 	struct gz_log_state *gls = NULL;
 	struct device_node *pnode = pdev->dev.parent->of_node;
 	int tee_id = 0;
+#if ENABLE_GZ_TRACE_DUMP
+	uint32_t mask;
+	int cpu;
+#endif
+
+	trusty_gz_send_ktime(pdev);
 
 	if (!trusty_supports_logging(pdev->dev.parent))
 		return -ENXIO;
@@ -758,6 +856,30 @@ static int trusty_gz_log_probe(struct platform_device *pdev)
 		goto error_trace_task_run;
 	}
 	set_user_nice(gls->trace_task_fd, 5);
+	mask = (u32)trusty_fast_call32(gls->trusty_dev,
+					MTEE_SMCNR(SMCF_FC_GET_CMASK, gls->trusty_dev),
+					0, 0, 0);
+	dev_info(&pdev->dev, "%s mask=0x%x\n", __func__, mask);
+	if ((mask != U32_MAX) && (mask != 0x0)) {
+		struct cpumask task_cmask;
+
+		mask = ~mask;
+		dev_info(&pdev->dev, "%s bind mask=0x%x\n", __func__, mask);
+		cpumask_clear(&task_cmask);
+		for_each_possible_cpu(cpu) {
+			if (cpu > 31) {
+				dev_info(&pdev->dev,
+					 "%s not support cpu# > 32\n",
+					 __func__);
+				continue;
+			}
+			if (mask & (1<<cpu))
+				cpumask_set_cpu(cpu, &task_cmask);
+		}
+
+		if (!cpumask_empty(&task_cmask))
+			set_cpus_allowed_ptr(gls->trace_task_fd, &task_cmask);
+	}
 #endif
 
 	gls->call_notifier.notifier_call = trusty_log_call_notify;
@@ -817,9 +939,9 @@ error_callback_notifier:
 			  MTEE_SMCNR(SMCF_SC_SHARED_LOG_RM, gls->trusty_dev),
 			  (u32)glctx.paddr, (u32)((u64)glctx.paddr >> 32), 0);
 error_std_call:
-	if (glctx.flag == STATIC)
-		iounmap(glctx.virt);
-	else
+	if (glctx.flag == STATIC_NOMAP)
+		memunmap(glctx.virt);
+	else if (glctx.flag == DYNAMIC)
 		kfree(glctx.virt);
 error_alloc_log:
 	mutex_destroy(&gls->lock);
@@ -855,9 +977,9 @@ static int trusty_gz_log_remove(struct platform_device *pdev)
 	if (ret)
 		pr_info("std call(GZ_SHARED_LOG_RM) failed: %d\n", ret);
 
-	if (glctx.flag == STATIC)
-		iounmap(glctx.virt);
-	else
+	if (glctx.flag == STATIC_NOMAP)
+		memunmap(glctx.virt);
+	else if (glctx.flag == DYNAMIC)
 		kfree(glctx.virt);
 
 	mutex_destroy(&gls->lock);
@@ -874,6 +996,7 @@ static const struct of_device_id trusty_gz_of_match[] = {
 
 static struct platform_driver trusty_gz_log_driver = {
 	.probe = trusty_gz_log_probe,
+	.resume = trusty_gz_log_resume,
 	.remove = trusty_gz_log_remove,
 	.driver = {
 		.name = "trusty-gz-log",

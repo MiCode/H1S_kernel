@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __HAL_BTIF_PUB_H_
@@ -34,19 +26,6 @@ enum _ENUM_BTIF_MODE_ {
  *  BTIF's information
  *****************************************************************************/
 struct _MTK_BTIF_INFO_STR_ *hal_btif_info_get(void);
-
-#if 0				/*included in hal_btif_info_get */
-/*****************************************************************************
- * FUNCTION
- *  hal_btif_get_irq
- * DESCRIPTION
- *  get BTIF module's IRQ information
- * PARAMETERS
- * RETURNS
- *  pointer to BTIF's irq structure
- *****************************************************************************/
-struct _MTK_BTIF_IRQ_STR_ *hal_btif_get_irq(void);
-#endif
 
 #if !defined(CONFIG_MTK_CLKMGR)
 /*****************************************************************************

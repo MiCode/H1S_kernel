@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <drm/drmP.h>
 #include <drm/drm_crtc_helper.h>
@@ -73,6 +65,21 @@ dma_addr_t mtk_fb_get_dma(struct drm_framebuffer *fb)
 	return mtk_gem->dma_addr;
 }
 
+int mtk_fb_get_sec_id(struct drm_framebuffer *fb)
+{
+	struct mtk_drm_fb *mtk_fb = to_mtk_fb(fb);
+	struct mtk_drm_gem_obj *mtk_gem = NULL;
+
+	if (!mtk_fb->gem_obj)
+		return -1;
+
+	mtk_gem = to_mtk_gem_obj(mtk_fb->gem_obj);
+	if (!mtk_gem)
+		return -1;
+
+	return mtk_gem->sec_id;
+}
+
 bool mtk_drm_fb_is_secure(struct drm_framebuffer *fb)
 {
 	struct drm_gem_object *gem = NULL;
@@ -93,8 +100,12 @@ static int mtk_drm_fb_create_handle(struct drm_framebuffer *fb,
 				    unsigned int *handle)
 {
 	struct mtk_drm_fb *mtk_fb = to_mtk_fb(fb);
+	int ret = -EINVAL;
 
-	return drm_gem_handle_create(file_priv, mtk_fb->gem_obj, handle);
+	if (mtk_fb->gem_obj && mtk_fb->gem_obj->dev)
+		ret = drm_gem_handle_create(file_priv, mtk_fb->gem_obj, handle);
+
+	return ret;
 }
 
 static void mtk_drm_fb_destroy(struct drm_framebuffer *fb)

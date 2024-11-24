@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _S5KJD1MIPI_SENSOR_H
@@ -75,6 +67,7 @@ struct imgsensor_struct {
 	kal_uint8 hdr_mode;
 	kal_uint8 i2c_write_id; /* record current sensor's i2c write id */
 	kal_uint8  AE_binning_type;
+	kal_bool extend_frame_length_en;
 };
 
 /* SENSOR PRIVATE STRUCT FOR CONSTANT*/

@@ -1,20 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2016 MediaTek Inc.
  */
 #ifndef _MTK_EEM_CONFIG_H_
 #define _MTK_EEM_CONFIG_H_
 
 /* CONFIG (SW related) */
-#define EEM_NOT_READY (1) /* for bring up, remove for MP */
+/* #define EEM_NOT_READY (1) */ /* for bring up, remove for MP */
 #define CONFIG_EEM_SHOWLOG (0)
 #define EN_ISR_LOG (0)
 #define EEM_BANK_SOC (0) /* use voltage bin, so disable it */
@@ -50,6 +42,26 @@
 #define EX_DEV_IDX_1 64		/* 5B8 */
 #define EX_DEV_IDX_2 65		/* 5BC */
 #define EX_DEV_IDX_3 133	/* 7AC */
+
+#define DEVINFO_OFF_0 0xc8	/* 580 */
+#define DEVINFO_OFF_1 0xcc	/* 584 */
+#define DEVINFO_OFF_2 0xd0	/* 588 */
+#define DEVINFO_OFF_3 0xd4	/* 58C */
+#define DEVINFO_OFF_4 0xd8	/* 590 */
+#define DEVINFO_OFF_5 0xdc	/* 594 */
+#define DEVINFO_OFF_6 0xe0	/* 598 */
+#define DEVINFO_OFF_7 0xe4	/* 59C */
+#define DEVINFO_OFF_8 0xe8	/* 5A0 */
+#define DEVINFO_OFF_9 0xf4	/* 5A4 */
+#define DEVINFO_OFF_10 0xf8	/* 5A8 */
+#define DEVINFO_OFF_11 0xfc	/* 5AC */
+
+#define EX_DEV_OFF_0 0xec	/* 5A4 */
+#define EX_DEV_OFF_1 0x100	/* 5B8 */
+#define EX_DEV_OFF_2 0x104	/* 5BC */
+#define EX_DEV_OFF_3 0x214	/* 7AC */
+#define EX_DEV_OFF_FAB2 0x210	/* 7A8 */
+
 
 /*****************************************
  * eem sw setting
@@ -88,12 +100,13 @@
 
 /* common part: for cci, LL, L */
 #define VBOOT_VAL		(0x30)
-#define VMAX_VAL		(0x64)
+#define VMAX_VAL		(0x70) /* 1.2V */
 #define VMIN_VAL		(0x10)
 #define VCO_VAL			(0x10)
 #define DVTFIXED_VAL		(0x8)
 #define DVTFIXED_M_VAL		(0x4)
 
+#define BCPU_FREQ_BASE	1700000
 
 
 #define DTHI_VAL		(0x01) /* positive */

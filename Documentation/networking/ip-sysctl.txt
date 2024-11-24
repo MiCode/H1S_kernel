@@ -26,7 +26,7 @@ ip_no_pmtu_disc - INTEGER
 	discarded. Outgoing frames are handled the same as in mode 1,
 	implicitly setting IP_PMTUDISC_DONT on every created socket.
 
-	Mode 3 is a hardend pmtu discover mode. The kernel will only
+	Mode 3 is a hardened pmtu discover mode. The kernel will only
 	accept fragmentation-needed errors if the underlying protocol
 	can verify them besides a plain socket lookup. Current
 	protocols for which pmtu events will be honored are TCP, SCTP
@@ -80,6 +80,15 @@ fib_multipath_hash_policy - INTEGER
 	Possible values:
 	0 - Layer 3
 	1 - Layer 4
+
+ip_forward_update_priority - INTEGER
+	Whether to update SKB priority from "TOS" field in IPv4 header after it
+	is forwarded. The new SKB priority is mapped from TOS field value
+	according to an rt_tos2priority table (see e.g. man tc-prio).
+	Default: 1 (Update priority.)
+	Possible values:
+	0 - Do not update priority.
+	1 - Update priority.
 
 route/max_size - INTEGER
 	Maximum number of routes allowed in the kernel.  Increase
@@ -294,8 +303,7 @@ tcp_ecn_fallback - BOOLEAN
 	Default: 1 (fallback enabled)
 
 tcp_fack - BOOLEAN
-	Enable FACK congestion avoidance and fast retransmission.
-	The value is not used, if tcp_sack is not enabled.
+	This is a legacy option, it has no effect anymore.
 
 tcp_fin_timeout - INTEGER
 	The length of time an orphaned (no longer referenced by any
@@ -426,7 +434,7 @@ tcp_mtu_probing - INTEGER
 	  1 - Disabled by default, enabled when an ICMP black hole detected
 	  2 - Always enabled, use initial MSS of tcp_base_mss.
 
-tcp_probe_interval - INTEGER
+tcp_probe_interval - UNSIGNED INTEGER
 	Controls how often to start TCP Packetization-Layer Path MTU
 	Discovery reprobe. The default is reprobing every 10 minutes as
 	per RFC4821.
@@ -459,7 +467,10 @@ tcp_recovery - INTEGER
 	features.
 
 	RACK: 0x1 enables the RACK loss detection for fast detection of lost
-	      retransmissions and tail drops.
+	      retransmissions and tail drops. It also subsumes and disables
+	      RFC6675 recovery for SACK connections.
+	RACK: 0x2 makes RACK's reordering window static (min_rtt/4).
+	RACK: 0x4 disables RACK's DUPACK threshold heuristic
 
 	Default: 0x1
 
@@ -518,19 +529,31 @@ tcp_rmem - vector of 3 INTEGERs: min, default, max
 
 	default: initial size of receive buffer used by TCP sockets.
 	This value overrides net.core.rmem_default used by other protocols.
-	Default: 87380 bytes. This value results in window of 65535 with
-	default setting of tcp_adv_win_scale and tcp_app_win:0 and a bit
-	less for default tcp_app_win. See below about these variables.
+	Default: 131072 bytes.
+	This value results in initial window of 65535.
 
 	max: maximal size of receive buffer allowed for automatically
 	selected receiver buffers for TCP socket. This value does not override
 	net.core.rmem_max.  Calling setsockopt() with SO_RCVBUF disables
 	automatic tuning of that socket's receive buffer size, in which
 	case this value is ignored.
-	Default: between 87380B and 6MB, depending on RAM size.
+	Default: between 131072 and 6MB, depending on RAM size.
 
 tcp_sack - BOOLEAN
 	Enable select acknowledgments (SACKS).
+
+tcp_comp_sack_delay_ns - LONG INTEGER
+	TCP tries to reduce number of SACK sent, using a timer
+	based on 5% of SRTT, capped by this sysctl, in nano seconds.
+	The default is 1ms, based on TSO autosizing period.
+
+	Default : 1,000,000 ns (1 ms)
+
+tcp_comp_sack_nr - INTEGER
+	Max numer of SACK that can be compressed.
+	Using 0 disables SACK compression.
+
+	Detault : 44
 
 tcp_slow_start_after_idle - BOOLEAN
 	If set, provide RFC2861 behavior and time out the congestion
@@ -612,17 +635,8 @@ tcp_fastopen_blackhole_timeout_sec - INTEGER
 	This time period will grow exponentially when more blackhole issues
 	get detected right after Fastopen is re-enabled and will reset to
 	initial value when the blackhole issue goes away.
+	0 to disable the blackhole detection.
 	By default, it is set to 1hr.
-
-tcp_fwmark_accept - BOOLEAN
-	If set, incoming connections to listening sockets that do not have a
-	socket mark will set the mark of the accepting socket to the fwmark of
-	the incoming SYN packet. This will cause all packets on that connection
-	(starting from the first SYNACK) to be sent with that fwmark. The
-	listening socket's mark is unchanged. Listening sockets that already
-	have a fwmark set via setsockopt(SOL_SOCKET, SO_MARK, ...) are
-	unaffected.
-	Default: 0
 
 tcp_syn_retries - INTEGER
 	Number of times initial SYNs for an active TCP connection attempt
@@ -670,11 +684,15 @@ tcp_tso_win_divisor - INTEGER
 	building larger TSO frames.
 	Default: 3
 
-tcp_tw_reuse - BOOLEAN
-	Allow to reuse TIME-WAIT sockets for new connections when it is
-	safe from protocol viewpoint. Default value is 0.
+tcp_tw_reuse - INTEGER
+	Enable reuse of TIME-WAIT sockets for new connections when it is
+	safe from protocol viewpoint.
+	0 - disable
+	1 - global enable
+	2 - enable for loopback traffic only
 	It should not be changed without advice/request of technical
 	experts.
+	Default: 2
 
 tcp_window_scaling - BOOLEAN
 	Enable window scaling as defined in RFC1323.
@@ -732,11 +750,11 @@ tcp_limit_output_bytes - INTEGER
 	Controls TCP Small Queue limit per tcp socket.
 	TCP bulk sender tends to increase packets in flight until it
 	gets losses notifications. With SNDBUF autotuning, this can
-	result in a large amount of packets queued in qdisc/device
-	on the local machine, hurting latency of other flows, for
-	typical pfifo_fast qdiscs.
-	tcp_limit_output_bytes limits the number of bytes on qdisc
-	or device to reduce artificial RTT/cwnd and reduce bufferbloat.
+	result in a large amount of packets queued on the local machine
+	(e.g.: qdiscs, CPU backlog, or device) hurting latency of other
+	flows, for typical pfifo_fast qdiscs.  tcp_limit_output_bytes
+	limits the number of bytes on qdisc or device to reduce artificial
+	RTT/cwnd and reduce bufferbloat.
 	Default: 262144
 
 tcp_challenge_ack_limit - INTEGER
@@ -770,13 +788,13 @@ udp_rmem_min - INTEGER
 	Minimal size of receive buffer used by UDP sockets in moderation.
 	Each UDP socket is able to use the size for receiving data, even if
 	total pages of UDP sockets exceed udp_mem pressure. The unit is byte.
-	Default: 1 page
+	Default: 4K
 
 udp_wmem_min - INTEGER
 	Minimal size of send buffer used by UDP sockets in moderation.
 	Each UDP socket is able to use the size for sending data, even if
 	total pages of UDP sockets exceed udp_mem pressure. The unit is byte.
-	Default: 1 page
+	Default: 4K
 
 CIPSOv4 Variables:
 
@@ -791,7 +809,7 @@ cipso_cache_enable - BOOLEAN
 cipso_cache_bucket_size - INTEGER
 	The CIPSO label cache consists of a fixed size hash table with each
 	hash bucket containing a number of cache entries.  This variable limits
-	the number of entries in each hash bucket; the larger the value the
+	the number of entries in each hash bucket; the larger the value is, the
 	more CIPSO label mappings that can be cached.  When the number of
 	entries in a given hash bucket reaches this limit adding new entries
 	causes the oldest entry in the bucket to be removed to make room.
@@ -868,7 +886,7 @@ ip_nonlocal_bind - BOOLEAN
 	which can be quite useful - but may break some applications.
 	Default: 0
 
-ip_dynaddr - BOOLEAN
+ip_dynaddr - INTEGER
 	If set non-zero, enables support for dynamic addresses.
 	If set to a non-zero value larger than 1, a kernel log
 	message will be printed when dynamic address rewriting
@@ -1380,6 +1398,13 @@ flowlabel_reflect - BOOLEAN
 	FALSE: disabled
 	Default: FALSE
 
+fib_multipath_hash_policy - INTEGER
+	Controls which hash policy to use for multipath routes.
+	Default: 0 (Layer 3)
+	Possible values:
+	0 - Layer 3 (source and destination addresses plus flow label)
+	1 - Layer 4 (standard 5-tuple)
+
 anycast_src_echo_reply - BOOLEAN
 	Controls the use of anycast addresses as source addresses for ICMPv6
 	echo reply
@@ -1403,6 +1428,30 @@ mld_qrv - INTEGER
 	Default: 2 (as specified by RFC3810 9.1)
 	Minimum: 1 (as specified by RFC6636 4.5)
 
+max_dst_opts_number - INTEGER
+	Maximum number of non-padding TLVs allowed in a Destination
+	options extension header. If this value is less than zero
+	then unknown options are disallowed and the number of known
+	TLVs allowed is the absolute value of this number.
+	Default: 8
+
+max_hbh_opts_number - INTEGER
+	Maximum number of non-padding TLVs allowed in a Hop-by-Hop
+	options extension header. If this value is less than zero
+	then unknown options are disallowed and the number of known
+	TLVs allowed is the absolute value of this number.
+	Default: 8
+
+max_dst_opts_length - INTEGER
+	Maximum length allowed for a Destination options extension
+	header.
+	Default: INT_MAX (unlimited)
+
+max_hbh_length - INTEGER
+	Maximum length allowed for a Hop-by-Hop options extension
+	header.
+	Default: INT_MAX (unlimited)
+
 IPv6 Fragmentation:
 
 ip6frag_high_thresh - INTEGER
@@ -1416,6 +1465,19 @@ ip6frag_low_thresh - INTEGER
 
 ip6frag_time - INTEGER
 	Time in seconds to keep an IPv6 fragment in memory.
+
+IPv6 Segment Routing:
+
+seg6_flowlabel - INTEGER
+	Controls the behaviour of computing the flowlabel of outer
+	IPv6 header in case of SR T.encaps
+
+	-1 set flowlabel to zero.
+	0 copy flowlabel from Inner packet in case of Inner IPv6
+		(Set flowlabel to 0 in case IPv4/L2)
+	1 Compute the flowlabel using seg6_make_flowlabel()
+
+	Default is 0.
 
 conf/default/*:
 	Change the interface-specific default settings.
@@ -1689,7 +1751,9 @@ disable_ipv6 - BOOLEAN
 	interface and start Duplicate Address Detection, if necessary.
 
 	When this value is changed from 0 to 1 (IPv6 is being disabled),
-	it will dynamically delete all address on the given interface.
+	it will dynamically delete all addresses and routes on the given
+	interface. From now on it will not possible to add addresses/routes
+	to the selected interface.
 
 accept_dad - INTEGER
 	Whether to accept DAD (Duplicate Address Detection).
@@ -1724,6 +1788,15 @@ ndisc_notify - BOOLEAN
 	0 - (default): do nothing
 	1 - Generate unsolicited neighbour advertisements when device is brought
 	    up or hardware address changes.
+
+ndisc_tclass - INTEGER
+	The IPv6 Traffic Class to use by default when sending IPv6 Neighbor
+	Discovery (Router Solicitation, Router Advertisement, Neighbor
+	Solicitation, Neighbor Advertisement, Redirect) messages.
+	These 8 bits can be interpreted as 6 high order bits holding the DSCP
+	value and 2 low order bits representing ECN (which you probably want
+	to leave cleared).
+	0 - (default)
 
 mldv1_unsolicited_report_interval - INTEGER
 	The interval in milliseconds in which the next unsolicited
@@ -1780,6 +1853,16 @@ stable_secret - IPv6 address
 
 	By default the stable secret is unset.
 
+addr_gen_mode - INTEGER
+	Defines how link-local and autoconf addresses are generated.
+
+	0: generate address based on EUI64 (default)
+	1: do no generate a link-local address, use EUI64 for addresses generated
+	   from autoconf
+	2: generate stable privacy addresses, using the secret from
+	   stable_secret (RFC7217)
+	3: generate stable privacy addresses, using a random secret if unset
+
 drop_unicast_in_l2_multicast - BOOLEAN
 	Drop any unicast IPv6 packets that are received in link-layer
 	multicast (or broadcast) frames.
@@ -1808,6 +1891,11 @@ ratelimit - INTEGER
 	0 to disable any limiting,
 	otherwise the minimal space between responses in milliseconds.
 	Default: 1000
+
+echo_ignore_all - BOOLEAN
+	If set non-zero, then the kernel will ignore all ICMP ECHO
+	requests sent to it over the IPv6 protocol.
+	Default: 0
 
 xfrm6_gc_thresh - INTEGER
 	The threshold at which we will start garbage collecting for IPv6
@@ -2078,10 +2166,17 @@ sctp_rmem - vector of 3 INTEGERs: min, default, max
 	It is guaranteed to each SCTP socket (but not association) even
 	under moderate memory pressure.
 
-	Default: 1 page
+	Default: 4K
 
 sctp_wmem  - vector of 3 INTEGERs: min, default, max
-	Currently this tunable has no effect.
+	Only the first value ("min") is used, "default" and "max" are
+	ignored.
+
+	min: Minimum size of send buffer that can be used by SCTP sockets.
+	It is guaranteed to each SCTP socket (but not association) even
+	under moderate memory pressure.
+
+	Default: 4K
 
 addr_scope_policy - INTEGER
 	Control IPv4 address scoping - draft-stewart-tsvwg-sctp-ipv4-00
@@ -2104,18 +2199,3 @@ max_dgram_qlen - INTEGER
 
 	Default: 10
 
-
-UNDOCUMENTED:
-
-/proc/sys/net/irda/*
-	fast_poll_increase FIXME
-	warn_noreply_time FIXME
-	discovery_slots FIXME
-	slot_timeout FIXME
-	max_baud_rate FIXME
-	discovery_timeout FIXME
-	lap_keepalive_time FIXME
-	max_noreply_time FIXME
-	max_tx_data_size FIXME
-	max_tx_window FIXME
-	min_tx_turn_time FIXME

@@ -10,9 +10,9 @@
 #include <linux/soc/mediatek/scpsys-ext.h>
 
 #define MTK_POLL_DELAY_US   10
-#define MTK_POLL_TIMEOUT    (jiffies_to_usecs(HZ))
+#define MTK_POLL_TIMEOUT    USEC_PER_SEC
 
-static int set_way_en(struct regmap *map, struct regmap *ack, u32 mask,
+static int enable_way_en(struct regmap *map, struct regmap *ack, u32 mask,
 				u32 ack_mask, u32 reg_set, u32 reg_sta,
 				u32 reg_en)
 {
@@ -28,7 +28,7 @@ static int set_way_en(struct regmap *map, struct regmap *ack, u32 mask,
 			MTK_POLL_DELAY_US, MTK_POLL_TIMEOUT);
 }
 
-static int clear_way_en(struct regmap *map, struct regmap *ack, u32 mask,
+static int disable_way_en(struct regmap *map, struct regmap *ack, u32 mask,
 				u32 ack_mask, u32 reg_clr, u32 reg_sta,
 				u32 reg_en)
 {
@@ -97,7 +97,7 @@ int mtk_scpsys_ext_set_bus_protection(const struct bus_prot *bp_table,
 					bp_table[i].en_ofs);
 			break;
 		case IFR_WAYEN_TYPE:
-			ret = clear_way_en(infracfg, infracfg_nao,
+			ret = disable_way_en(infracfg, infracfg_nao,
 					bp_table[i].mask,
 					bp_table[i].clr_ack_mask,
 					bp_table[i].clr_ofs,
@@ -141,7 +141,7 @@ int mtk_scpsys_ext_clear_bus_protection(const struct bus_prot *bp_table,
 						bp_table[i].en_ofs);
 			break;
 		case IFR_WAYEN_TYPE:
-			ret = set_way_en(infracfg, infracfg_nao,
+			ret = enable_way_en(infracfg, infracfg_nao,
 						bp_table[i].mask,
 						bp_table[i].set_ack_mask,
 						bp_table[i].set_ofs,

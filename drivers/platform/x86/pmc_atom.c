@@ -253,7 +253,7 @@ static void pmc_power_off(void)
 	pm1_cnt_port = acpi_base_addr + PM1_CNT;
 
 	pm1_cnt_value = inl(pm1_cnt_port);
-	pm1_cnt_value &= SLEEP_TYPE_MASK;
+	pm1_cnt_value &= ~SLEEP_TYPE_MASK;
 	pm1_cnt_value |= SLEEP_TYPE_S5;
 	pm1_cnt_value |= SLEEP_ENABLE;
 
@@ -310,17 +310,7 @@ static int pmc_dev_state_show(struct seq_file *s, void *unused)
 	return 0;
 }
 
-static int pmc_dev_state_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, pmc_dev_state_show, inode->i_private);
-}
-
-static const struct file_operations pmc_dev_state_ops = {
-	.open		= pmc_dev_state_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(pmc_dev_state);
 
 static int pmc_pss_state_show(struct seq_file *s, void *unused)
 {
@@ -337,17 +327,7 @@ static int pmc_pss_state_show(struct seq_file *s, void *unused)
 	return 0;
 }
 
-static int pmc_pss_state_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, pmc_pss_state_show, inode->i_private);
-}
-
-static const struct file_operations pmc_pss_state_ops = {
-	.open		= pmc_pss_state_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(pmc_pss_state);
 
 static int pmc_sleep_tmr_show(struct seq_file *s, void *unused)
 {
@@ -368,17 +348,7 @@ static int pmc_sleep_tmr_show(struct seq_file *s, void *unused)
 	return 0;
 }
 
-static int pmc_sleep_tmr_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, pmc_sleep_tmr_show, inode->i_private);
-}
-
-static const struct file_operations pmc_sleep_tmr_ops = {
-	.open		= pmc_sleep_tmr_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(pmc_sleep_tmr);
 
 static void pmc_dbgfs_unregister(struct pmc_dev *pmc)
 {
@@ -396,17 +366,17 @@ static int pmc_dbgfs_register(struct pmc_dev *pmc)
 	pmc->dbgfs_dir = dir;
 
 	f = debugfs_create_file("dev_state", S_IFREG | S_IRUGO,
-				dir, pmc, &pmc_dev_state_ops);
+				dir, pmc, &pmc_dev_state_fops);
 	if (!f)
 		goto err;
 
 	f = debugfs_create_file("pss_state", S_IFREG | S_IRUGO,
-				dir, pmc, &pmc_pss_state_ops);
+				dir, pmc, &pmc_pss_state_fops);
 	if (!f)
 		goto err;
 
 	f = debugfs_create_file("sleep_state", S_IFREG | S_IRUGO,
-				dir, pmc, &pmc_sleep_tmr_ops);
+				dir, pmc, &pmc_sleep_tmr_fops);
 	if (!f)
 		goto err;
 
@@ -453,34 +423,10 @@ static const struct dmi_system_id critclk_systems[] = {
 	},
 	{
 		/* pmc_plt_clk* - are used for ethernet controllers */
-		.ident = "Beckhoff CB3163",
+		.ident = "Beckhoff Baytrail",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Beckhoff Automation"),
-			DMI_MATCH(DMI_BOARD_NAME, "CB3163"),
-		},
-	},
-	{
-		/* pmc_plt_clk* - are used for ethernet controllers */
-		.ident = "Beckhoff CB4063",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Beckhoff Automation"),
-			DMI_MATCH(DMI_BOARD_NAME, "CB4063"),
-		},
-	},
-	{
-		/* pmc_plt_clk* - are used for ethernet controllers */
-		.ident = "Beckhoff CB6263",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Beckhoff Automation"),
-			DMI_MATCH(DMI_BOARD_NAME, "CB6263"),
-		},
-	},
-	{
-		/* pmc_plt_clk* - are used for ethernet controllers */
-		.ident = "Beckhoff CB6363",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "Beckhoff Automation"),
-			DMI_MATCH(DMI_BOARD_NAME, "CB6363"),
+			DMI_MATCH(DMI_PRODUCT_FAMILY, "CBxx63"),
 		},
 	},
 	{

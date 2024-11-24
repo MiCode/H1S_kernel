@@ -417,18 +417,6 @@ static struct irq_chip thunderx_gpio_irq_chip = {
 	.flags			= IRQCHIP_SET_TYPE_MASKED
 };
 
-static int thunderx_gpio_irq_map(struct irq_domain *d, unsigned int irq,
-				 irq_hw_number_t hwirq)
-{
-	struct thunderx_gpio *txgpio = d->host_data;
-
-	if (hwirq >= txgpio->chip.ngpio)
-		return -EINVAL;
-	if (!thunderx_gpio_is_gpio_nowarn(txgpio, hwirq))
-		return -EPERM;
-	return 0;
-}
-
 static int thunderx_gpio_irq_translate(struct irq_domain *d,
 				       struct irq_fwspec *fwspec,
 				       irq_hw_number_t *hwirq,
@@ -455,7 +443,6 @@ static int thunderx_gpio_irq_alloc(struct irq_domain *d, unsigned int virq,
 }
 
 static const struct irq_domain_ops thunderx_gpio_irqd_ops = {
-	.map		= thunderx_gpio_irq_map,
 	.alloc		= thunderx_gpio_irq_alloc,
 	.translate	= thunderx_gpio_irq_translate
 };
@@ -517,16 +504,17 @@ static int thunderx_gpio_probe(struct pci_dev *pdev,
 		txgpio->base_msi = (c >> 8) & 0xff;
 	}
 
-	txgpio->msix_entries = devm_kzalloc(dev,
-					  sizeof(struct msix_entry) * ngpio,
+	txgpio->msix_entries = devm_kcalloc(dev,
+					  ngpio, sizeof(struct msix_entry),
 					  GFP_KERNEL);
 	if (!txgpio->msix_entries) {
 		err = -ENOMEM;
 		goto out;
 	}
 
-	txgpio->line_entries = devm_kzalloc(dev,
-					    sizeof(struct thunderx_line) * ngpio,
+	txgpio->line_entries = devm_kcalloc(dev,
+					    ngpio,
+					    sizeof(struct thunderx_line),
 					    GFP_KERNEL);
 	if (!txgpio->line_entries) {
 		err = -ENOMEM;

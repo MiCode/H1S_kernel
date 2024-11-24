@@ -113,11 +113,14 @@ struct ip_tunnel {
 
 	/* These four fields used only by GRE */
 	u32		i_seqno;	/* The last seen seqno	*/
-	u32		o_seqno;	/* The last output seqno */
+	atomic_t	o_seqno;	/* The last output seqno */
 	int		tun_hlen;	/* Precalculated header length */
 
-	/* This field used only by ERSPAN */
+	/* These four fields used only by ERSPAN */
 	u32		index;		/* ERSPAN type II index */
+	u8		erspan_ver;	/* ERSPAN version */
+	u8		dir;		/* ERSPAN direction */
+	u16		hwid;		/* ERSPAN hardware ID */
 
 	struct dst_cache dst_cache;
 
@@ -177,8 +180,10 @@ struct tnl_ptk_info {
 
 struct ip_tunnel_net {
 	struct net_device *fb_tunnel_dev;
+	struct rtnl_link_ops *rtnl_link_ops;
 	struct hlist_head tunnels[IP_TNL_HASH_SIZE];
 	struct ip_tunnel __rcu *collect_md_tun;
+	int type;
 };
 
 static inline void ip_tunnel_key_init(struct ip_tunnel_key *key,
@@ -251,6 +256,22 @@ static inline __be32 tunnel_id_to_key32(__be64 tun_id)
 
 #ifdef CONFIG_INET
 
+static inline void ip_tunnel_init_flow(struct flowi4 *fl4,
+				       int proto,
+				       __be32 daddr, __be32 saddr,
+				       __be32 key, __u8 tos, int oif,
+				       __u32 mark)
+{
+	memset(fl4, 0, sizeof(*fl4));
+	fl4->flowi4_oif = oif;
+	fl4->daddr = daddr;
+	fl4->saddr = saddr;
+	fl4->flowi4_tos = tos;
+	fl4->flowi4_proto = proto;
+	fl4->fl4_gre_key = key;
+	fl4->flowi4_mark = mark;
+}
+
 int ip_tunnel_init(struct net_device *dev);
 void ip_tunnel_uninit(struct net_device *dev);
 void  ip_tunnel_dellink(struct net_device *dev, struct list_head *head);
@@ -259,7 +280,8 @@ int ip_tunnel_get_iflink(const struct net_device *dev);
 int ip_tunnel_init_net(struct net *net, unsigned int ip_tnl_net_id,
 		       struct rtnl_link_ops *ops, char *devname);
 
-void ip_tunnel_delete_net(struct ip_tunnel_net *itn, struct rtnl_link_ops *ops);
+void ip_tunnel_delete_nets(struct list_head *list_net, unsigned int id,
+			   struct rtnl_link_ops *ops);
 
 void ip_tunnel_xmit(struct sk_buff *skb, struct net_device *dev,
 		    const struct iphdr *tnl_params, const u8 protocol);
@@ -285,6 +307,8 @@ int ip_tunnel_newlink(struct net_device *dev, struct nlattr *tb[],
 		      struct ip_tunnel_parm *p, __u32 fwmark);
 void ip_tunnel_setup(struct net_device *dev, unsigned int net_id);
 
+__be16 ip_tunnel_parse_protocol(const struct sk_buff *skb);
+
 struct ip_tunnel_encap_ops {
 	size_t (*encap_hlen)(struct ip_tunnel_encap *e);
 	int (*build_header)(struct sk_buff *skb, struct ip_tunnel_encap *e,
@@ -303,6 +327,59 @@ int ip_tunnel_encap_del_ops(const struct ip_tunnel_encap_ops *op,
 
 int ip_tunnel_encap_setup(struct ip_tunnel *t,
 			  struct ip_tunnel_encap *ipencap);
+
+static inline bool pskb_inet_may_pull(struct sk_buff *skb)
+{
+	int nhlen;
+
+	switch (skb->protocol) {
+#if IS_ENABLED(CONFIG_IPV6)
+	case htons(ETH_P_IPV6):
+		nhlen = sizeof(struct ipv6hdr);
+		break;
+#endif
+	case htons(ETH_P_IP):
+		nhlen = sizeof(struct iphdr);
+		break;
+	default:
+		nhlen = 0;
+	}
+
+	return pskb_network_may_pull(skb, nhlen);
+}
+
+/* Variant of pskb_inet_may_pull().
+ */
+static inline bool skb_vlan_inet_prepare(struct sk_buff *skb)
+{
+	int nhlen = 0, maclen = ETH_HLEN;
+	__be16 type = skb->protocol;
+
+	/* Essentially this is skb_protocol(skb, true)
+	 * And we get MAC len.
+	 */
+	if (eth_type_vlan(type))
+		type = __vlan_get_protocol(skb, type, &maclen);
+
+	switch (type) {
+#if IS_ENABLED(CONFIG_IPV6)
+	case htons(ETH_P_IPV6):
+		nhlen = sizeof(struct ipv6hdr);
+		break;
+#endif
+	case htons(ETH_P_IP):
+		nhlen = sizeof(struct iphdr);
+		break;
+	}
+	/* For ETH_P_IPV6/ETH_P_IP we make sure to pull
+	 * a base network header in skb->head.
+	 */
+	if (!pskb_may_pull(skb, maclen + nhlen))
+		return false;
+
+	skb_set_network_header(skb, maclen);
+	return true;
+}
 
 static inline int ip_encap_hlen(struct ip_tunnel_encap *e)
 {
@@ -353,6 +430,17 @@ static inline u8 ip_tunnel_get_dsfield(const struct iphdr *iph,
 		return iph->tos;
 	else if (skb->protocol == htons(ETH_P_IPV6))
 		return ipv6_get_dsfield((const struct ipv6hdr *)iph);
+	else
+		return 0;
+}
+
+static inline u8 ip_tunnel_get_ttl(const struct iphdr *iph,
+				       const struct sk_buff *skb)
+{
+	if (skb->protocol == htons(ETH_P_IP))
+		return iph->ttl;
+	else if (skb->protocol == htons(ETH_P_IPV6))
+		return ((const struct ipv6hdr *)iph)->hop_limit;
 	else
 		return 0;
 }
@@ -433,10 +521,14 @@ static inline void ip_tunnel_info_opts_get(void *to,
 }
 
 static inline void ip_tunnel_info_opts_set(struct ip_tunnel_info *info,
-					   const void *from, int len)
+					   const void *from, int len,
+					   __be16 flags)
 {
-	memcpy(ip_tunnel_info_opts(info), from, len);
 	info->options_len = len;
+	if (len > 0) {
+		memcpy(ip_tunnel_info_opts(info), from, len);
+		info->key.tun_flags |= flags;
+	}
 }
 
 static inline struct ip_tunnel_info *lwt_tun_info(struct lwtunnel_state *lwtstate)
@@ -444,12 +536,12 @@ static inline struct ip_tunnel_info *lwt_tun_info(struct lwtunnel_state *lwtstat
 	return (struct ip_tunnel_info *)lwtstate->data;
 }
 
-extern struct static_key ip_tunnel_metadata_cnt;
+DECLARE_STATIC_KEY_FALSE(ip_tunnel_metadata_cnt);
 
 /* Returns > 0 if metadata should be collected */
 static inline int ip_tunnel_collect_metadata(void)
 {
-	return static_key_false(&ip_tunnel_metadata_cnt);
+	return static_branch_unlikely(&ip_tunnel_metadata_cnt);
 }
 
 void __init ip_tunnel_core_init(void);
@@ -478,7 +570,8 @@ static inline void ip_tunnel_info_opts_get(void *to,
 }
 
 static inline void ip_tunnel_info_opts_set(struct ip_tunnel_info *info,
-					   const void *from, int len)
+					   const void *from, int len,
+					   __be16 flags)
 {
 	info->options_len = 0;
 }

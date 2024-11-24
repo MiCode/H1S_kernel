@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2021 MediaTek Inc.
+*/
 
 #include <generated/autoconf.h>
 #include <linux/cdev.h>
@@ -499,14 +491,17 @@ static int pmic_ipi_reg_read(void *context,
 			     void *val_buf, size_t val_size)
 {
 	unsigned short reg = *(unsigned short *)reg_buf;
+	unsigned int val = 0;
+	int ret = 0;
 
 	if (reg_size != 2 || val_size != 2) {
 		pr_notice("%s: reg=0x%x, reg_size=%zu, val_size=%zu\n",
 			__func__, reg, reg_size, val_size);
 		return -EINVAL;
 	}
-
-	return regmap_read(pmic_read_regmap, reg, val_buf);
+	ret = regmap_read(pmic_read_regmap, reg, &val);
+	*(u16 *)val_buf = val;
+	return ret;
 }
 
 static int pmic_ipi_reg_update_bits(void *context, unsigned int reg,
@@ -592,6 +587,9 @@ static int pmic_mt_probe(struct platform_device *pdev)
 	/*get PMIC CID */
 	PMICLOG("PMIC CID = 0x%x\n", pmic_get_register_value(PMIC_SWCID));
 
+#if defined(CONFIG_MACH_MT6781)
+	record_is_pmic_new_power_grid(pdev);
+#endif
 	record_md_vosel();
 
 	PMIC_INIT_SETTING_V1();

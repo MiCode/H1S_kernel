@@ -1,0 +1,71 @@
+menu "MTK scheduler extension"
+
+config MTK_SCHED_EXTENSION
+	bool "mtk scheduler extension"
+	help
+	  MTK scheduler extension,
+	  1. include MTK scheduler enhancement.
+	  2. All MTK scheduler sub-feature config should depend on
+	     this config.
+	  Say Y to enable MTK scheduler extension. If unsure, say N.
+
+config MTK_IDLE_BALANCE_ENHANCEMENT
+	bool "mtk load balance enhancement"
+	depends on MTK_SCHED_EXTENSION && SMP && ENERGY_MODEL && CPU_FREQ_GOV_SCHEDUTIL
+	help
+	  Mediatek aggressive idle balance, include
+	  1. for runnable tasks with idle prefer attributes
+	  2. for runnable and running tasks with min_cap(dynamic floor)
+	  3. migrate runnable task directly and
+		use stop machine to migrate running task
+
+config MTK_SCHED_INTEROP
+	bool "mtk scheduling interopation enhancement"
+	depends on MTK_SCHED_EXTENSION
+	help
+	   Original Linux Design, RT & CFS do load balance seperatedly,
+	   and let would result in unload balance.
+	   that is, one CPU has more than 2 tasks, however, one CPU is IDLE
+	   We make RT & CFS to check each other and make load more balance.
+
+config MTK_SCHED_LB_ENHANCEMENT
+	bool "mtk enhancement for load balance"
+	depends on MTK_SCHED_EXTENSION && ENERGY_MODEL && CPU_FREQ_GOV_SCHEDUTIL
+	help
+	   mtk enhancement for load balance
+	   system overutilization,
+	   intra-cluster load balance,
+	   and so on.
+
+config MTK_SCHED_TRACERS
+	bool "mtk scheduling trace, output mtk schedule trace into FTRACE"
+	depends on MTK_SCHED_EXTENSION
+	help
+	  Mediatek scheduling trace, output mtk schedule trace into FTRACE,
+	  Mediatek enhancements to vanilla linux kernel. Export scheduling
+	  trace in sched_switch events.
+	  Say Y to enable mtk scheduling trace.If unsure, say N
+
+config MTK_SCHED_CPU_PREFER
+	bool "mtk scheduling boost enhancement"
+	depends on MTK_SCHED_EXTENSION && ENERGY_MODEL && CPU_FREQ_GOV_SCHEDUTIL
+	help
+	   task level to prefer to put the task
+	   on big core or little core.
+	   If the preferred type CPU has IDLE CPU,
+	   put on the task on the idle CPU.
+	   If there are no IDLE CPU on preferred type CPU,
+	   the task placement will follow original policy.
+
+config MTK_SCHED_BIG_TASK_MIGRATE
+	bool "mtk scheduling big task migrate"
+	depends on MTK_SCHED_EXTENSION && SMP
+	help
+	   Migrate misfit task more efficient in scheduler tick.
+	   1. Big task migration: migrate misfit task in scheduler tick
+	      To reduce boosted task push to big core latency.
+	      Migrate current task to big core if it is misfit.
+	   2. Big task rotation: swap two misfit task between big cores and
+	      little core, equally distributed runtime for each misfit task.
+endmenu
+

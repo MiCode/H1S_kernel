@@ -1,17 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
-* Copyright (c) 2016 MediaTek Inc.
-* Author: PC Chen <pc.chen@mediatek.com>
-*         Tiffany Lin <tiffany.lin@mediatek.com>
-*
-* This program is free software; you can redistribute it and/or modify
-* it under the terms of the GNU General Public License version 2 as
-* published by the Free Software Foundation.
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-* GNU General Public License for more details.
-*/
+ * Copyright (c) 2019 MediaTek Inc.
+ */
 
 #ifndef _MTK_VCODEC_DRV_H_
 #define _MTK_VCODEC_DRV_H_
@@ -31,9 +21,9 @@
 #ifdef CONFIG_VB2_MEDIATEK_DMA_SG
 #include "mtkbuf-dma-cache-sg.h"
 #endif
-
+#ifdef CONFIG_MTK_SLBC
 #include "slbc_ops.h"
-
+#endif
 #define MTK_VCODEC_DRV_NAME     "mtk_vcodec_drv"
 #define MTK_VCODEC_DEC_NAME     "mtk-vcodec-dec"
 #define MTK_VCODEC_ENC_NAME     "mtk-vcodec-enc"
@@ -45,6 +35,7 @@
 #define WAIT_INTR_TIMEOUT_MS    500
 #define SUSPEND_TIMEOUT_CNT     5000
 #define MTK_MAX_CTRLS_HINT      64
+#define V4L2_BUF_FLAG_OUTPUT_NOT_GENERATED 0x02000000
 
 /**
  * enum mtk_instance_type - The type of an MTK Vcodec instance.
@@ -94,6 +85,15 @@ enum mtk_encode_param {
 	MTK_ENCODE_PARAM_SEC_ENCODE = (1 << 15),
 	MTK_ENCODE_PARAM_TSVC = (1 << 16),
 	MTK_ENCODE_PARAM_NONREFPFREQ = (1 << 17),
+	MTK_ENCODE_PARAM_MAX_QP = (1 << 18),
+	MTK_ENCODE_PARAM_MIN_QP = (1 << 19),
+	MTK_ENCODE_PARAM_I_P_QP_DELTA = (1 << 20),
+	MTK_ENCODE_PARAM_QP_CONTROL_MODE = (1 << 21),
+	MTK_ENCODE_PARAM_FRAME_LEVEL_QP = (1 << 22),
+	MTK_ENCODE_PARAM_MAX_REFP_NUM = (1 << 23),
+	MTK_ENCODE_PARAM_REFP_DISTANCE = (1 << 24),
+	MTK_ENCODE_PARAM_REFP_FRMNUM = (1 << 25),
+	MTK_ENCODE_PARAM_DUMMY_NAL = (1 << 26),
 };
 
 /*
@@ -165,6 +165,12 @@ enum mtk_dec_param {
 	MTK_DEC_PARAM_OPERATING_RATE = (1 << 9)
 };
 
+enum venc_lock {
+	VENC_LOCK_NONE,
+	VENC_LOCK_NORMAL,
+	VENC_LOCK_SEC
+};
+
 struct mtk_dec_params {
 	unsigned int    decode_mode;
 	unsigned int    frame_size_width;
@@ -181,6 +187,7 @@ struct mtk_dec_params {
 	u64	timestamp;
 	unsigned int	total_frame_bufq_count;
 	unsigned int	queued_frame_buf_count;
+	int		priority;
 };
 
 /**
@@ -236,6 +243,15 @@ struct mtk_enc_params {
 	unsigned int    svp_mode;
 	unsigned int    tsvc;
 	unsigned int    nonrefpfreq;
+	unsigned int    max_qp;
+	unsigned int    min_qp;
+	unsigned int    i_p_qp_delta;
+	unsigned int    qp_control_mode;
+	unsigned int    frame_level_qp;
+	unsigned int    maxrefpnum;
+	unsigned int    refpdistance;
+	unsigned int    refpfrmnum;
+	unsigned int	dummynal;
 };
 
 /*
@@ -289,6 +305,16 @@ struct venc_enc_param {
 	unsigned int svp_mode;
 	unsigned int tsvc;
 	unsigned int nonrefpfreq;
+	unsigned int max_qp;
+	unsigned int min_qp;
+	unsigned int i_p_qp_delta;
+	unsigned int qp_control_mode;
+	unsigned int frame_level_qp;
+	unsigned int maxrefpnum;
+	unsigned int refpdistance;
+	unsigned int refpfrmnum;
+	char *log;
+	unsigned int dummynal;
 };
 
 /*
@@ -298,10 +324,12 @@ struct venc_enc_param {
  */
 struct venc_frm_buf {
 	struct mtk_vcodec_mem fb_addr[MTK_VCODEC_MAX_PLANES];
+	u32 index;
 	unsigned int num_planes;
 	u64 timestamp;
 	unsigned int roimap;
 	bool has_meta;
+	unsigned int qpmap;
 	struct dma_buf *meta_dma;
 	dma_addr_t meta_addr;
 };
@@ -368,6 +396,8 @@ struct mtk_vcodec_ctx {
 	const struct vdec_common_if *dec_if;
 	const struct venc_common_if *enc_if;
 	unsigned long drv_handle;
+	uintptr_t bs_list[VB2_MAX_FRAME+1];
+	uintptr_t fb_list[VB2_MAX_FRAME+1];
 
 	struct vdec_pic_info picinfo;
 	int dpb_size;
@@ -393,8 +423,8 @@ struct mtk_vcodec_ctx {
 	int input_driven;
 	int user_lock_hw;
 	/* for user lock HW case release check */
+	struct mutex hw_status;
 	int hw_locked[MTK_VDEC_HW_NUM];
-	int lock_abort;
 	int async_mode;
 	int oal_vcodec;
 
@@ -406,7 +436,9 @@ struct mtk_vcodec_ctx {
 	int decoded_frame_cnt;
 	struct mutex buf_lock;
 	struct mutex worker_lock;
+#ifdef CONFIG_MTK_SLBC
 	struct slbc_data sram_data;
+#endif
 	int use_slbc;
 };
 
@@ -463,12 +495,16 @@ struct mtk_vcodec_dev {
 	void __iomem *dec_reg_base[NUM_MAX_VDEC_REG_BASE];
 	void __iomem *enc_reg_base[NUM_MAX_VENC_REG_BASE];
 
+	bool dec_is_power_on[MTK_VDEC_HW_NUM];
+	spinlock_t dec_power_lock[MTK_VDEC_HW_NUM];
+
 	unsigned long id_counter;
 
 	struct workqueue_struct *decode_workqueue;
 	struct workqueue_struct *encode_workqueue;
 	int int_cond;
 	int int_type;
+	struct mutex ctx_mutex;
 	struct mutex dev_mutex;
 	wait_queue_head_t queue;
 
@@ -491,6 +527,7 @@ struct mtk_vcodec_dev {
 
 	int dec_cnt;
 	int enc_cnt;
+	enum venc_lock enc_hw_locked[MTK_VENC_HW_NUM];
 };
 
 static inline struct mtk_vcodec_ctx *fh_to_ctx(struct v4l2_fh *fh)

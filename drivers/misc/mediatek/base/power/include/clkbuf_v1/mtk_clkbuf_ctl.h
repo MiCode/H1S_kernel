@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 /**
@@ -33,23 +25,35 @@
 #elif defined(CONFIG_MACH_MT6763)
 #include "mt6763/mtk_clkbuf_hw.h"
 #elif defined(CONFIG_MACH_MT6739)
-#include "mt6739/mtk_clkbuf_hw.h"
-#elif defined(CONFIG_MACH_MT6771)
-#include "mt6771/mtk_clkbuf_hw.h"
+#include "./mt6739/mtk_clkbuf_hw.h"
 #elif defined(CONFIG_MACH_MT6765)
 #include "mt6765/mtk_clkbuf_hw.h"
+#elif defined(CONFIG_MACH_MT6761)
+#include "mt6761/mtk_clkbuf_hw.h"
+#elif defined(CONFIG_MACH_MT3967)
+#include "mt3967/mtk_clkbuf_hw.h"
+#elif defined(CONFIG_MACH_MT6779)
+#include "mt6779/mtk_clkbuf_hw.h"
+#elif defined(CONFIG_MACH_MT6781)
+#include "mt6768/mtk_clkbuf_hw.h"
 #elif defined(CONFIG_MACH_MT6768)
 #include "mt6768/mtk_clkbuf_hw.h"
 #elif defined(CONFIG_MACH_MT6785)
 #include "mt6785/mtk_clkbuf_hw.h"
-#elif defined(CONFIG_MACH_MT8168)
-#include "mt8168/mtk_clkbuf_hw.h"
+#elif defined(CONFIG_MACH_MT6877)
+#include "mt6877/mtk_clkbuf_hw.h"
 #elif defined(CONFIG_MACH_MT6873)
 #include "mt6873/mtk_clkbuf_hw.h"
+#elif defined(CONFIG_MACH_MT6853)
+#include "mt6853/mtk_clkbuf_hw.h"
+#elif defined(CONFIG_MACH_MT6833)
+#include "mt6833/mtk_clkbuf_hw.h"
+#elif defined(CONFIG_MACH_MT6739)
+#include "mt6739/mtk_clkbuf_hw.h"
 #elif defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6893)
 #include "mt6885/mtk_clkbuf_hw.h"
-#elif defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6833)
-#include "mt6853/mtk_clkbuf_hw.h"
+#elif defined(CONFIG_MACH_MT6771)
+#include "mt6771/mtk_clkbuf_hw.h"
 #endif
 
 enum CLK_BUF_SWCTRL_STATUS_T {
@@ -63,13 +67,10 @@ enum CLK_BUF_SWCTRL_STATUS_T {
 #define STA_CLK_OFF     0
 
 int clk_buf_init(void);
-bool clk_buf_ctrl(enum clk_buf_id id, bool onoff);
 void clk_buf_get_swctrl_status(enum CLK_BUF_SWCTRL_STATUS_T *status);
 void clk_buf_get_rf_drv_curr(void *rf_drv_curr);
-void clk_buf_set_by_flightmode(bool is_flightmode_on);
 void clk_buf_save_afc_val(unsigned int afcdac);
 void clk_buf_write_afcdac(void);
-void clk_buf_control_bblpm(bool on);
 u32 clk_buf_bblpm_enter_cond(void);
 void clk_buf_dump_clkbuf_log(void);
 bool is_clk_buf_under_flightmode(void);

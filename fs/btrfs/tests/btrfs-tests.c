@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2013 Fusion IO.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License v2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 #include <linux/fs.h>
@@ -51,7 +38,13 @@ static struct file_system_type test_type = {
 
 struct inode *btrfs_new_test_inode(void)
 {
-	return new_inode(test_mnt->mnt_sb);
+	struct inode *inode;
+
+	inode = new_inode(test_mnt->mnt_sb);
+	if (inode)
+		inode_init_owner(inode, NULL, S_IFREG);
+
+	return inode;
 }
 
 static int btrfs_init_test_fs(void)
@@ -181,7 +174,7 @@ void btrfs_free_dummy_fs_info(struct btrfs_fs_info *fs_info)
 
 void btrfs_free_dummy_root(struct btrfs_root *root)
 {
-	if (!root)
+	if (IS_ERR_OR_NULL(root))
 		return;
 	/* Will be freed by btrfs_free_fs_roots */
 	if (WARN_ON(test_bit(BTRFS_ROOT_IN_RADIX, &root->state)))
@@ -231,11 +224,13 @@ void btrfs_free_dummy_block_group(struct btrfs_block_group_cache *cache)
 	kfree(cache);
 }
 
-void btrfs_init_dummy_trans(struct btrfs_trans_handle *trans)
+void btrfs_init_dummy_trans(struct btrfs_trans_handle *trans,
+			    struct btrfs_fs_info *fs_info)
 {
 	memset(trans, 0, sizeof(*trans));
 	trans->transid = 1;
 	trans->type = __TRANS_DUMMY;
+	trans->fs_info = fs_info;
 }
 
 int btrfs_run_sanity_tests(void)
@@ -276,6 +271,8 @@ int btrfs_run_sanity_tests(void)
 				goto out;
 		}
 	}
+	ret = btrfs_test_extent_map();
+
 out:
 	btrfs_destroy_test_fs();
 	return ret;

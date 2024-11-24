@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 /******************************************************************************
  * camera_RSC.c - Linux RSC Device Driver
@@ -249,7 +241,7 @@ static struct Tasklet_table RSC_tasklet[RSC_IRQ_TYPE_AMOUNT] = {
 static struct work_struct logWork;
 static void logPrint(struct work_struct *data);
 
-struct wakeup_source RSC_wake_lock;
+//struct wakeup_source RSC_wake_lock;
 
 static DEFINE_MUTEX(gRscMutex);
 static DEFINE_MUTEX(gRscDequeMutex);
@@ -455,7 +447,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 								- 1] = '\0';\
 						LOG_DBG("%s", &ptr[\
 							NORMAL_STR_LEN*logi]);\
-					} else{\
+					} else {\
 						LOG_DBG("%s",\
 						&ptr[NORMAL_STR_LEN*logi]);\
 						break;\
@@ -470,7 +462,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 								   - 1] = '\0';\
 						LOG_INF("%s",		       \
 						    &ptr[NORMAL_STR_LEN*logi]);\
-					} else{\
+					} else {\
 						LOG_INF("%s",\
 						&ptr[NORMAL_STR_LEN*logi]);\
 						break;\
@@ -485,7 +477,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 								   - 1] = '\0';\
 						LOG_INF("%s",\
 						&ptr[NORMAL_STR_LEN*logi]);\
-					} else{\
+					} else {\
 						LOG_INF("%s",\
 						&ptr[NORMAL_STR_LEN*logi]);\
 						break;\
@@ -526,12 +518,12 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 	unsigned int logT = 0;\
 	if (ppb_in > 1) {\
 		ppb = 1;\
-	} else{\
+	} else {\
 		ppb = ppb_in;\
 	} \
 	if (logT_in > _LOG_ERR) {\
 		logT = _LOG_ERR;\
-	} else{\
+	} else {\
 		logT = logT_in;\
 	} \
 	ptr = pSrc->_str[ppb][logT];\
@@ -541,7 +533,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 					LOG_DBG("%s", &ptr[NORMAL_STR_LEN*i]);\
-				} else{\
+				} else {\
 					LOG_DBG("%s", &ptr[NORMAL_STR_LEN*i]);\
 					break;\
 				} \
@@ -552,7 +544,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 			if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 				ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 				LOG_INF("%s", &ptr[NORMAL_STR_LEN*i]);\
-			} else{\
+			} else {\
 				LOG_INF("%s", &ptr[NORMAL_STR_LEN*i]);\
 				break;\
 			} \
@@ -563,7 +555,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 			if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 				ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 				LOG_ERR("%s", &ptr[NORMAL_STR_LEN*i]);\
-			} else{\
+			} else {\
 				LOG_ERR("%s", &ptr[NORMAL_STR_LEN*i]);\
 				break;\
 			} \
@@ -2925,7 +2917,7 @@ static signed int RSC_probe(struct platform_device *pDev)
 		if (!RSCInfo.wkqueue)
 			LOG_ERR("NULL RSC-CMDQ-WQ\n");
 
-		wakeup_source_init(&RSC_wake_lock, "rsc_lock_wakelock");
+		//wakeup_source_init(&RSC_wake_lock, "rsc_lock_wakelock");
 
 		INIT_WORK(&logWork, logPrint);
 		for (i = 0; i < RSC_IRQ_TYPE_AMOUNT; i++)

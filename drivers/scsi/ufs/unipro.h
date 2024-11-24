@@ -1,12 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * drivers/scsi/ufs/unipro.h
  *
  * Copyright (C) 2013 Samsung Electronics Co., Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #ifndef _UNIPRO_H_
@@ -36,7 +32,6 @@
 #define TX_LCC_SEQUENCER			0x0032
 #define TX_MIN_ACTIVATETIME			0x0033
 #define TX_PWM_G6_G7_SYNC_LENGTH		0x0034
-#define TX_FSM_STATE				0x0041 /* MTK PATCH */
 #define TX_REFCLKFREQ				0x00EB
 #define TX_CFGCLKFREQVAL			0x00EC
 #define	CFGEXTRATTR				0x00F0
@@ -53,7 +48,7 @@
 #define RX_HS_UNTERMINATED_ENABLE		0x00A6
 #define RX_ENTER_HIBERN8			0x00A7
 #define RX_BYPASS_8B10B_ENABLE			0x00A8
-#define RX_TERMINATION_FORCE_ENABLE		0x0089
+#define RX_TERMINATION_FORCE_ENABLE		0x00A9
 #define RX_MIN_ACTIVATETIME_CAPABILITY		0x008F
 #define RX_HIBERN8TIME_CAPABILITY		0x0092
 #define RX_REFCLKFREQ				0x00EB
@@ -120,7 +115,6 @@
 #define PA_PWRMODE		0x1571
 #define PA_RXGEAR		0x1583
 #define PA_RXTERMINATION	0x1584
-#define PA_SCRAMBLING		0x1585 /* MTK PATCH */
 #define PA_MAXRXPWMGEAR		0x1586
 #define PA_MAXRXHSGEAR		0x1587
 #define PA_RXHSUNTERMCAP	0x15A5
@@ -152,21 +146,17 @@
 #define PA_SLEEPNOCONFIGTIME	0x15A2
 #define PA_STALLNOCONFIGTIME	0x15A3
 #define PA_SAVECONFIGTIME	0x15A4
-#define PA_TXHSADAPTTYPE        0x15D4
-#define PA_LOCALTXLCCENABLE	0x155E /* MTK PATCH */
+#define PA_TXHSADAPTTYPE       0x15D4
 
 /* Adpat type for PA_TXHSADAPTTYPE attribute */
 #define PA_REFRESH_ADAPT       0x00
 #define PA_INITIAL_ADAPT       0x01
-#define PA_NO_ADAPT            0x03
+#define PA_NO_ADAPT            0x0
 
 #define PA_TACTIVATE_TIME_UNIT_US	10
 #define PA_HIBERN8_TIME_UNIT_US		100
 
 /*Other attributes*/
-#define VS_DME_PWRMODIND	0xD040 /* MTK PATCH */
-#define VS_DEBUGPWRCHG		0xD096 /* MTK PATCH */
-#define VS_DEBUGSTATES		0xD097 /* MTK PATCH */
 #define VS_MPHYCFGUPDT		0xD085
 #define VS_DEBUGOMC		0xD09E
 #define VS_POWERSTATE		0xD083
@@ -176,6 +166,17 @@
 
 /* PHY Adapter Protocol Constants */
 #define PA_MAXDATALANES	4
+
+#define DL_FC0ProtectionTimeOutVal_Default	8191
+#define DL_TC0ReplayTimeOutVal_Default		65535
+#define DL_AFC0ReqTimeOutVal_Default		32767
+#define DL_FC1ProtectionTimeOutVal_Default	8191
+#define DL_TC1ReplayTimeOutVal_Default		65535
+#define DL_AFC1ReqTimeOutVal_Default		32767
+
+#define DME_LocalFC0ProtectionTimeOutVal	0xD041
+#define DME_LocalTC0ReplayTimeOutVal		0xD042
+#define DME_LocalAFC0ReqTimeOutVal		0xD043
 
 /* PA power modes */
 enum {
@@ -215,8 +216,10 @@ enum ufs_unipro_ver {
 	UFS_UNIPRO_VER_RESERVED = 0,
 	UFS_UNIPRO_VER_1_40 = 1, /* UniPro version 1.40 */
 	UFS_UNIPRO_VER_1_41 = 2, /* UniPro version 1.41 */
-	UFS_UNIPRO_VER_1_6 = 3,  /* UniPro version 1.6 */
-	UFS_UNIPRO_VER_MAX = 4,  /* UniPro unsupported version */
+	UFS_UNIPRO_VER_1_6  = 3, /* UniPro version 1.6 */
+	UFS_UNIPRO_VER_1_61 = 4, /* UniPro version 1.61 */
+	UFS_UNIPRO_VER_1_8  = 5, /* UniPro version 1.8 */
+	UFS_UNIPRO_VER_MAX  = 6, /* UniPro unsupported version */
 	/* UniPro version field mask in PA_LOCALVERINFO */
 	UFS_UNIPRO_VER_MASK = 0xF,
 };
@@ -275,34 +278,6 @@ enum ufs_unipro_ver {
 #define T_CPORTMODE		0x402B
 #define T_TC0TXMAXSDUSIZE	0x4060
 #define T_TC1TXMAXSDUSIZE	0x4061
-
-/* MTK PATCH */
-#define VENDOR_DEBUGCLOCKENABLE         0xD0A1
-#define VENDOR_SAVEPOWERCONTROL         0xD0A6
-#define VENDOR_UNIPROPOWERDOWNCONTROL   0xD0A8
-#define VENDOR_POWERSTATE               0xD083
-
-/* VENDOR_DEBUGCLOCKENABLE */
-enum {
-	TX_SYMBOL_CLK_REQ_FORCE = 5,
-};
-
-/* VENDOR_SAVEPOWERCONTROL */
-enum {
-	RX_SYMBOL_CLK_GATE_EN   = 0,
-	SYS_CLK_GATE_EN         = 2,
-	TX_CLK_GATE_EN          = 3,
-};
-
-/* VENDOR_POWERSTATE status */
-enum {
-	VENDOR_POWERSTATE_DISABLED  = 0,
-	VENDOR_POWERSTATE_LINKDOWN  = 1,
-	VENDOR_POWERSTATE_LINKUP    = 2,
-	VENDOR_POWERSTATE_HIBERNATE = 3,
-	VENDOR_POWERSTATE_LINKLOST  = 4,
-	VENDOR_POWERSTATE_LINKCFG   = 5,
-};
 
 #ifdef FALSE
 #undef FALSE

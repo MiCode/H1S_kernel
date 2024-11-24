@@ -36,6 +36,8 @@
 #define AQ_CFG_TX_FRAME_MAX  (16U * 1024U)
 #define AQ_CFG_RX_FRAME_MAX  (4U * 1024U)
 
+#define AQ_CFG_TX_CLEAN_BUDGET 256U
+
 /* LRO */
 #define AQ_CFG_IS_LRO_DEF           1U
 
@@ -50,7 +52,7 @@
 #define AQ_CFG_PCI_FUNC_MSIX_IRQS   9U
 #define AQ_CFG_PCI_FUNC_PORTS       2U
 
-#define AQ_CFG_SERVICE_TIMER_INTERVAL    (2 * HZ)
+#define AQ_CFG_SERVICE_TIMER_INTERVAL    (1 * HZ)
 #define AQ_CFG_POLLING_TIMER_INTERVAL   ((unsigned int)(2 * HZ))
 
 #define AQ_CFG_SKB_FRAGS_MAX   32U
@@ -61,11 +63,15 @@
 
 #define AQ_CFG_NAPI_WEIGHT     64U
 
-#define AQ_CFG_MULTICAST_ADDRESS_MAX     32U
-
 /*#define AQ_CFG_MAC_ADDR_PERMANENT {0x30, 0x0E, 0xE3, 0x12, 0x34, 0x56}*/
 
-#define AQ_CFG_FC_MODE 3U
+#define AQ_NIC_FC_OFF    0U
+#define AQ_NIC_FC_TX     1U
+#define AQ_NIC_FC_RX     2U
+#define AQ_NIC_FC_FULL   3U
+#define AQ_NIC_FC_AUTO   4U
+
+#define AQ_CFG_FC_MODE AQ_NIC_FC_FULL
 
 #define AQ_CFG_SPEED_MSK  0xFFFFU	/* 0xFFFFU==auto_neg */
 
@@ -80,6 +86,7 @@
 #define AQ_CFG_DRV_VERSION	__stringify(NIC_MAJOR_DRIVER_VERSION)"."\
 				__stringify(NIC_MINOR_DRIVER_VERSION)"."\
 				__stringify(NIC_BUILD_DRIVER_VERSION)"."\
-				__stringify(NIC_REVISION_DRIVER_VERSION)
+				__stringify(NIC_REVISION_DRIVER_VERSION) \
+				AQ_CFG_DRV_VERSION_SUFFIX
 
 #endif /* AQ_CFG_H */

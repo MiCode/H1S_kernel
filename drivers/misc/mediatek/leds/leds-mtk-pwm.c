@@ -65,7 +65,6 @@ struct mtk_led_data {
 	struct led_pwm_info info;
 	struct mtk_leds_info	*parent;
 	struct led_debug_info debug;
-	struct work_struct work;
 };
 
 struct mtk_leds_info {
@@ -226,15 +225,6 @@ int mt_leds_brightness_set(char *name, int level)
 }
 EXPORT_SYMBOL(mt_leds_brightness_set);
 
-void mtk_led_work(struct work_struct *work)
-{
-	struct mtk_led_data *led_data =
-	    container_of(work, struct mtk_led_data, work);
-
-	led_level_pwm_set(led_data, led_data->conf.level);
-}
-
-
 #ifndef CONFIG_MTK_AAL_SUPPORT
 static int led_pwm_disable(struct led_pwm_info *led_info)
 {
@@ -272,20 +262,12 @@ static int led_level_set(struct led_classdev *led_cdev,
 
 	led_debug_log(led_dat, brightness, trans_level);
 
-#ifdef MET_USER_EVENT_SUPPORT
-	if (enable_met_backlight_tag())
-		output_met_backlight_tag(brightness);
-#endif
-
 #ifdef CONFIG_LEDS_BRIGHTNESS_CHANGED
 	call_notifier(1, led_dat);
 #endif
-#ifdef CONFIG_MTK_AAL_SUPPORT
-		disp_pq_notify_backlight_changed(trans_level);
-#else
+#ifndef CONFIG_MTK_AAL_SUPPORT
 	led_level_pwm_set(led_dat, trans_level);
 	led_dat->last_level = trans_level;
-
 #endif
 	return 0;
 
@@ -296,7 +278,7 @@ static int led_level_set(struct led_classdev *led_cdev,
  * add API for temperature control
  ***************************************************************************/
 
-int setMaxBrightness(char *name, int percent, bool enable)
+int mt_leds_max_brightness_set(char *name, int percent, bool enable)
 {
 	struct mtk_led_data *led_dat;
 	int max_l = 0, index = -1, limit_l = 0, cur_l = 0;
@@ -332,7 +314,7 @@ int setMaxBrightness(char *name, int percent, bool enable)
 	return 0;
 
 }
-EXPORT_SYMBOL(setMaxBrightness);
+EXPORT_SYMBOL(mt_leds_max_brightness_set);
 
 static int led_data_init(struct device *dev, struct mtk_led_data *s_led)
 {
@@ -342,9 +324,9 @@ static int led_data_init(struct device *dev, struct mtk_led_data *s_led)
 	s_led->conf.cdev.max_brightness = s_led->info.config.max_brightness;
 	s_led->conf.cdev.flags = LED_CORE_SUSPENDRESUME;
 	s_led->conf.cdev.brightness_set_blocking = led_level_set;
-	s_led->brightness = (1 << s_led->conf.trans_bits) - 1;
-	s_led->conf.level = s_led->brightness;
-	s_led->last_level = s_led->brightness;
+	s_led->brightness = 0;
+	s_led->conf.level = 0;
+	s_led->last_level = 0;
 	ret = devm_led_classdev_register(dev, &(s_led->conf.cdev));
 	if (ret < 0) {
 		pr_notice("led class register fail!");
@@ -352,7 +334,6 @@ static int led_data_init(struct device *dev, struct mtk_led_data *s_led)
 	}
 	pr_info("%s devm_led_classdev_register ok! ", s_led->conf.cdev.name);
 
-	INIT_WORK(&s_led->work, mtk_led_work);
 	ret = snprintf(s_led->debug.buffer + strlen(s_led->debug.buffer),
 		4095 - strlen(s_led->debug.buffer),
 		"[Light] Set %s directly ", s_led->conf.cdev.name);
@@ -406,7 +387,7 @@ static int mtk_leds_parse_dt(struct device *dev,
 {
 	struct device_node *child;
 	struct mtk_led_data *s_led;
-	int ret = 0, num = 0, level = 102;
+	int ret = 0, num = 0, level = 0;
 	const char *state;
 
 	if (!dev->of_node) {
@@ -467,6 +448,8 @@ static int mtk_leds_parse_dt(struct device *dev,
 				level = s_led->info.config.max_brightness;
 			else
 				level = s_led->conf.level = 0;
+		} else {
+			level = s_led->info.config.max_brightness;
 		}
 		pr_info("parse %s(%d) leds dt: %s, %s, %d, %d, %d\n",
 			s_led->conf.cdev.name, num, s_led->info.config.name,
@@ -553,7 +536,6 @@ static int mtk_leds_remove(struct platform_device *pdev)
 		if (!m_leds->leds[i].parent)
 			continue;
 		led_classdev_unregister(&m_leds->leds[i].conf.cdev);
-		cancel_work_sync(&m_leds->leds[i].work);
 		m_leds->leds[i].parent = NULL;
 	}
 	kfree(m_leds);
@@ -587,7 +569,7 @@ static void mtk_leds_shutdown(struct platform_device *pdev)
 }
 
 static const struct of_device_id of_mtk_pwm_leds_match[] = {
-	{ .compatible = "mediatek,pwm-leds", },
+	{ .compatible = "mediatek,disp-pwm-leds", },
 	{},
 };
 MODULE_DEVICE_TABLE(of, of_mtk_pwm_leds_match);

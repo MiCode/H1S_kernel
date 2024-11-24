@@ -62,9 +62,6 @@ static int ghash_update(struct shash_desc *desc,
 	struct ghash_ctx *ctx = crypto_shash_ctx(desc->tfm);
 	u8 *dst = dctx->buffer;
 
-	if (!ctx->gf128)
-		return -ENOKEY;
-
 	if (dctx->bytes) {
 		int n = min(srclen, dctx->bytes);
 		u8 *pos = dst + (GHASH_BLOCK_SIZE - dctx->bytes);
@@ -117,9 +114,6 @@ static int ghash_final(struct shash_desc *desc, u8 *dst)
 	struct ghash_ctx *ctx = crypto_shash_ctx(desc->tfm);
 	u8 *buf = dctx->buffer;
 
-	if (!ctx->gf128)
-		return -ENOKEY;
-
 	ghash_flush(ctx, dctx);
 	memcpy(dst, buf, GHASH_BLOCK_SIZE);
 
@@ -144,7 +138,6 @@ static struct shash_alg ghash_alg = {
 		.cra_name		= "ghash",
 		.cra_driver_name	= "ghash-generic",
 		.cra_priority		= 100,
-		.cra_flags		= CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize		= GHASH_BLOCK_SIZE,
 		.cra_ctxsize		= sizeof(struct ghash_ctx),
 		.cra_module		= THIS_MODULE,

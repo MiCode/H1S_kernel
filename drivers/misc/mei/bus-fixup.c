@@ -1,7 +1,7 @@
 /*
  *
  * Intel Management Engine Interface (Intel MEI) Linux driver
- * Copyright (c) 2003-2013, Intel Corporation.
+ * Copyright (c) 2003-2018, Intel Corporation.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -96,8 +96,22 @@ struct mkhi_fwcaps {
 	u8 data[0];
 } __packed;
 
+struct mkhi_fw_ver_block {
+	u16 minor;
+	u8 major;
+	u8 platform;
+	u16 buildno;
+	u16 hotfix;
+} __packed;
+
+struct mkhi_fw_ver {
+	struct mkhi_fw_ver_block ver[MEI_MAX_FW_VER_BLOCKS];
+} __packed;
+
 #define MKHI_FWCAPS_GROUP_ID 0x3
 #define MKHI_FWCAPS_SET_OS_VER_APP_RULE_CMD 6
+#define MKHI_GEN_GROUP_ID 0xFF
+#define MKHI_GEN_GET_FW_VERSION_CMD 0x2
 struct mkhi_msg_hdr {
 	u8  group_id;
 	u8  command;
@@ -139,21 +153,89 @@ static int mei_osver(struct mei_cl_device *cldev)
 	return __mei_cl_send(cldev->cl, buf, size, mode);
 }
 
+#define MKHI_FWVER_BUF_LEN (sizeof(struct mkhi_msg_hdr) + \
+			    sizeof(struct mkhi_fw_ver))
+#define MKHI_FWVER_LEN(__num) (sizeof(struct mkhi_msg_hdr) + \
+			       sizeof(struct mkhi_fw_ver_block) * (__num))
+#define MKHI_RCV_TIMEOUT 500 /* receive timeout in msec */
+static int mei_fwver(struct mei_cl_device *cldev)
+{
+	char buf[MKHI_FWVER_BUF_LEN];
+	struct mkhi_msg *req;
+	struct mkhi_fw_ver *fwver;
+	int bytes_recv, ret, i;
+
+	memset(buf, 0, sizeof(buf));
+
+	req = (struct mkhi_msg *)buf;
+	req->hdr.group_id = MKHI_GEN_GROUP_ID;
+	req->hdr.command = MKHI_GEN_GET_FW_VERSION_CMD;
+
+	ret = __mei_cl_send(cldev->cl, buf, sizeof(struct mkhi_msg_hdr),
+			    MEI_CL_IO_TX_BLOCKING);
+	if (ret < 0) {
+		dev_err(&cldev->dev, "Could not send ReqFWVersion cmd ret = %d\n", ret);
+		return ret;
+	}
+
+	ret = 0;
+	bytes_recv = __mei_cl_recv(cldev->cl, buf, sizeof(buf), 0,
+				   MKHI_RCV_TIMEOUT);
+	if (bytes_recv < 0 || (size_t)bytes_recv < MKHI_FWVER_LEN(1)) {
+		/*
+		 * Should be at least one version block,
+		 * error out if nothing found
+		 */
+		dev_err(&cldev->dev, "Could not read FW version ret = %d\n", bytes_recv);
+		return -EIO;
+	}
+
+	fwver = (struct mkhi_fw_ver *)req->data;
+	memset(cldev->bus->fw_ver, 0, sizeof(cldev->bus->fw_ver));
+	for (i = 0; i < MEI_MAX_FW_VER_BLOCKS; i++) {
+		if ((size_t)bytes_recv < MKHI_FWVER_LEN(i + 1))
+			break;
+		dev_dbg(&cldev->dev, "FW version%d %d:%d.%d.%d.%d\n",
+			i, fwver->ver[i].platform,
+			fwver->ver[i].major, fwver->ver[i].minor,
+			fwver->ver[i].hotfix, fwver->ver[i].buildno);
+
+		cldev->bus->fw_ver[i].platform = fwver->ver[i].platform;
+		cldev->bus->fw_ver[i].major = fwver->ver[i].major;
+		cldev->bus->fw_ver[i].minor = fwver->ver[i].minor;
+		cldev->bus->fw_ver[i].hotfix = fwver->ver[i].hotfix;
+		cldev->bus->fw_ver[i].buildno = fwver->ver[i].buildno;
+	}
+
+	return ret;
+}
+
 static void mei_mkhi_fix(struct mei_cl_device *cldev)
 {
 	int ret;
 
-	if (!cldev->bus->hbm_f_os_supported)
+	/* No need to enable the client if nothing is needed from it */
+	if (!cldev->bus->fw_f_fw_ver_supported &&
+	    !cldev->bus->hbm_f_os_supported)
 		return;
 
 	ret = mei_cldev_enable(cldev);
 	if (ret)
 		return;
 
-	ret = mei_osver(cldev);
-	if (ret < 0)
-		dev_err(&cldev->dev, "OS version command failed %d\n", ret);
+	if (cldev->bus->fw_f_fw_ver_supported) {
+		ret = mei_fwver(cldev);
+		if (ret < 0)
+			dev_err(&cldev->dev, "FW version command failed %d\n",
+				ret);
+	}
 
+	if (cldev->bus->hbm_f_os_supported) {
+		ret = mei_osver(cldev);
+		if (ret < 0)
+			dev_err(&cldev->dev, "OS version command failed %d\n",
+				ret);
+	}
 	mei_cldev_disable(cldev);
 }
 
@@ -253,7 +335,7 @@ static int mei_nfc_if_version(struct mei_cl *cl,
 	ret = __mei_cl_send(cl, (u8 *)&cmd, sizeof(struct mei_nfc_cmd),
 			    MEI_CL_IO_TX_BLOCKING);
 	if (ret < 0) {
-		dev_err(bus->dev, "Could not send IF version cmd\n");
+		dev_err(bus->dev, "Could not send IF version cmd ret = %d\n", ret);
 		return ret;
 	}
 
@@ -266,9 +348,9 @@ static int mei_nfc_if_version(struct mei_cl *cl,
 		return -ENOMEM;
 
 	ret = 0;
-	bytes_recv = __mei_cl_recv(cl, (u8 *)reply, if_version_length, 0);
-	if (bytes_recv < 0 || bytes_recv < if_version_length) {
-		dev_err(bus->dev, "Could not read IF version\n");
+	bytes_recv = __mei_cl_recv(cl, (u8 *)reply, if_version_length, 0, 0);
+	if (bytes_recv < 0 || (size_t)bytes_recv < if_version_length) {
+		dev_err(bus->dev, "Could not read IF version ret = %d\n", bytes_recv);
 		ret = -EIO;
 		goto err;
 	}
@@ -410,7 +492,7 @@ void mei_cl_bus_dev_fixup(struct mei_cl_device *cldev)
 {
 	struct mei_fixup *f;
 	const uuid_le *uuid = mei_me_cl_uuid(cldev->me_cl);
-	int i;
+	size_t i;
 
 	for (i = 0; i < ARRAY_SIZE(mei_fixups); i++) {
 

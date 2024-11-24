@@ -87,6 +87,11 @@ struct resource;
 
 #define NFP_CPP_TARGET_ID_MASK          0x1f
 
+#define NFP_CPP_ATOMIC_RD(target, island) \
+	NFP_CPP_ISLAND_ID((target), 3, 0, (island))
+#define NFP_CPP_ATOMIC_WR(target, island) \
+	NFP_CPP_ISLAND_ID((target), 4, 0, (island))
+
 /**
  * NFP_CPP_ID() - pack target, token, and action into a CPP ID.
  * @target:     NFP CPP target id
@@ -242,6 +247,7 @@ int nfp_cpp_area_read(struct nfp_cpp_area *area, unsigned long offset,
 		      void *buffer, size_t length);
 int nfp_cpp_area_write(struct nfp_cpp_area *area, unsigned long offset,
 		       const void *buffer, size_t length);
+size_t nfp_cpp_area_size(struct nfp_cpp_area *area);
 const char *nfp_cpp_area_name(struct nfp_cpp_area *cpp_area);
 void *nfp_cpp_area_priv(struct nfp_cpp_area *cpp_area);
 struct nfp_cpp *nfp_cpp_area_cpp(struct nfp_cpp_area *cpp_area);
@@ -294,6 +300,8 @@ void nfp_cpp_mutex_free(struct nfp_cpp_mutex *mutex);
 int nfp_cpp_mutex_lock(struct nfp_cpp_mutex *mutex);
 int nfp_cpp_mutex_unlock(struct nfp_cpp_mutex *mutex);
 int nfp_cpp_mutex_trylock(struct nfp_cpp_mutex *mutex);
+int nfp_cpp_mutex_reclaim(struct nfp_cpp *cpp, int target,
+			  unsigned long long address);
 
 /**
  * nfp_cppcore_pcie_unit() - Get PCI Unit of a CPP handle
@@ -356,8 +364,8 @@ struct nfp_cpp_operations {
 	int (*init)(struct nfp_cpp *cpp);
 	void (*free)(struct nfp_cpp *cpp);
 
-	void (*read_serial)(struct device *dev, u8 *serial);
-	u16 (*get_interface)(struct device *dev);
+	int (*read_serial)(struct device *dev, u8 *serial);
+	int (*get_interface)(struct device *dev);
 
 	int (*area_init)(struct nfp_cpp_area *area,
 			 u32 dest, unsigned long long address,

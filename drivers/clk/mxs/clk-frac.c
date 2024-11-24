@@ -107,7 +107,7 @@ static int clk_frac_set_rate(struct clk_hw *hw, unsigned long rate,
 	return mxs_clk_wait(frac->reg, frac->busy);
 }
 
-static struct clk_ops clk_frac_ops = {
+static const struct clk_ops clk_frac_ops = {
 	.recalc_rate = clk_frac_recalc_rate,
 	.round_rate = clk_frac_round_rate,
 	.set_rate = clk_frac_set_rate,
@@ -118,7 +118,7 @@ struct clk *mxs_clk_frac(const char *name, const char *parent_name,
 {
 	struct clk_frac *frac;
 	struct clk *clk;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 
 	frac = kzalloc(sizeof(*frac), GFP_KERNEL);
 	if (!frac)

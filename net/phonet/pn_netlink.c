@@ -206,7 +206,7 @@ void rtm_phonet_notify(int event, struct net_device *dev, u8 dst)
 	struct sk_buff *skb;
 	int err = -ENOBUFS;
 
-	skb = nlmsg_new(NLMSG_ALIGN(sizeof(struct ifaddrmsg)) +
+	skb = nlmsg_new(NLMSG_ALIGN(sizeof(struct rtmsg)) +
 			nla_total_size(1) + nla_total_size(4), GFP_KERNEL);
 	if (skb == NULL)
 		goto errout;
@@ -299,16 +299,21 @@ out:
 
 int __init phonet_netlink_register(void)
 {
-	int err = __rtnl_register(PF_PHONET, RTM_NEWADDR, addr_doit,
-				  NULL, 0);
+	int err = rtnl_register_module(THIS_MODULE, PF_PHONET, RTM_NEWADDR,
+				       addr_doit, NULL, 0);
 	if (err)
 		return err;
 
-	/* Further __rtnl_register() cannot fail */
-	__rtnl_register(PF_PHONET, RTM_DELADDR, addr_doit, NULL, 0);
-	__rtnl_register(PF_PHONET, RTM_GETADDR, NULL, getaddr_dumpit, 0);
-	__rtnl_register(PF_PHONET, RTM_NEWROUTE, route_doit, NULL, 0);
-	__rtnl_register(PF_PHONET, RTM_DELROUTE, route_doit, NULL, 0);
-	__rtnl_register(PF_PHONET, RTM_GETROUTE, NULL, route_dumpit, 0);
+	/* Further rtnl_register_module() cannot fail */
+	rtnl_register_module(THIS_MODULE, PF_PHONET, RTM_DELADDR,
+			     addr_doit, NULL, 0);
+	rtnl_register_module(THIS_MODULE, PF_PHONET, RTM_GETADDR,
+			     NULL, getaddr_dumpit, 0);
+	rtnl_register_module(THIS_MODULE, PF_PHONET, RTM_NEWROUTE,
+			     route_doit, NULL, 0);
+	rtnl_register_module(THIS_MODULE, PF_PHONET, RTM_DELROUTE,
+			     route_doit, NULL, 0);
+	rtnl_register_module(THIS_MODULE, PF_PHONET, RTM_GETROUTE,
+			     NULL, route_dumpit, 0);
 	return 0;
 }

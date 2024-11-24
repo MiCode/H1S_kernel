@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
-
 #include <linux/types.h>
 #include <linux/interrupt.h>
 #include <linux/device.h>
@@ -97,6 +88,36 @@ next:
 	return ret;
 }
 
+static int vpu_req_check(struct apusys_cmd_hnd *cmd, struct vpu_request *req)
+{
+	uint64_t mask = 0;
+	int ret = 0;
+
+	if (cmd->size != sizeof(struct vpu_request)) {
+		pr_info("%s: invalid size of vpu request\n", __func__);
+		return -EINVAL;
+	}
+
+	mask = ~(VPU_REQ_F_ALG_RELOAD |
+			VPU_REQ_F_ALG_CUSTOM |
+			VPU_REQ_F_ALG_PRELOAD |
+			VPU_REQ_F_PREEMPT_TEST);
+
+	if (req->flags & mask) {
+		pr_info("%s: invalid flags 0x%llx of vpu request\n",
+			__func__, req->flags);
+		return -EINVAL;
+	}
+
+	if (req->buffer_count > VPU_MAX_NUM_PORTS) {
+		pr_info("%s: invalid buffer_count 0x%x of vpu request\n",
+			__func__, req->buffer_count);
+		return -EINVAL;
+	}
+
+	return ret;
+}
+
 int vpu_send_cmd_rt(int op, void *hnd, struct apusys_device *adev)
 {
 	int ret = 0;
@@ -127,6 +148,10 @@ int vpu_send_cmd_rt(int op, void *hnd, struct apusys_device *adev)
 		vpu_cmd_debug("%s: vpu%d: EXECUTE, kva: %lx cmd_id: 0x%llx subcmd_idx: 0x%x\n",
 			__func__, vd->id, (unsigned long)cmd->kva,
 			cmd->cmd_id, cmd->subcmd_idx);
+
+		if (vpu_req_check(cmd, req))
+			return -EINVAL;
+
 		/* overwrite vpu_req->boost from apusys_cmd */
 		req->power_param.boost_value = cmd->boost_val;
 		VPU_REQ_FLAG_SET(req, ALG_PRELOAD);
@@ -169,7 +194,6 @@ int vpu_send_cmd(int op, void *hnd, struct apusys_device *adev)
 	struct vpu_request *req;
 	struct apusys_cmd_hnd *cmd;
 	struct apusys_power_hnd *pw;
-	struct apusys_firmware_hnd *fw;
 	struct apusys_usercmd_hnd *ucmd;
 
 	vd = (struct vpu_device *)adev->private;
@@ -204,6 +228,10 @@ int vpu_send_cmd(int op, void *hnd, struct apusys_device *adev)
 		vpu_cmd_debug("%s: vpu%d: EXECUTE, kva: %lx cmd_id: 0x%llx subcmd_idx: 0x%x\n",
 			__func__, vd->id, (unsigned long)cmd->kva,
 			cmd->cmd_id, cmd->subcmd_idx);
+
+		if (vpu_req_check(cmd, req))
+			return -EINVAL;
+
 		req->prio = 0;
 		/* overwrite vpu_req->boost from apusys_cmd */
 		req->power_param.boost_value = cmd->boost_val;
@@ -220,11 +248,6 @@ int vpu_send_cmd(int op, void *hnd, struct apusys_device *adev)
 		vpu_cmd_debug("%s: vpu%d: operation not allowed: %d\n",
 			      __func__, vd->id, op);
 		return -EACCES;
-	case APUSYS_CMD_FIRMWARE:
-		fw = (struct apusys_firmware_hnd *)hnd;
-		vpu_cmd_debug("%s: vpu%d: FIRMWARE, op: %d, name: %s\n",
-			      __func__, vd->id, fw->op, fw->name);
-		return vpu_firmware(vd, fw);
 	case APUSYS_CMD_USER:
 		ucmd = (struct apusys_usercmd_hnd *)hnd;
 		vpu_cmd_debug("%s: vpu%d: USER, op: 0x%x size %d\n",
@@ -489,7 +512,7 @@ static int vpu_init_bin(void)
 #endif
 
 	/* map vpu firmware to kernel virtual address */
-	vpu_drv->bin_va = ioremap_wc(phy_addr, phy_size);
+	vpu_drv->bin_va = vpu_vmap(phy_addr, phy_size, 0);
 	vpu_drv->bin_pa = phy_addr;
 	vpu_drv->bin_size = phy_size;
 
@@ -538,9 +561,11 @@ static int vpu_shared_get(struct platform_device *pdev,
 
 	kref_init(&vpu_drv->iova_ref);
 
-	if (!vpu_drv->mva_algo) {
+	if (!vpu_drv->mva_algo && vd->id == 0) {
 		if (vpu_iova_dts(pdev, "algo", &vpu_drv->iova_algo))
 			goto error;
+		if (!vpu_drv->iova_algo.size)
+			return 0;
 		iova = vpu_iova_alloc(pdev, &vpu_drv->iova_algo);
 		if (!iova)
 			goto error;

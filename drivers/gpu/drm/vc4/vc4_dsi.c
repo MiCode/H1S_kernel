@@ -33,6 +33,7 @@
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_mipi_dsi.h>
+#include <drm/drm_of.h>
 #include <drm/drm_panel.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
@@ -504,7 +505,6 @@ struct vc4_dsi {
 	struct mipi_dsi_host dsi_host;
 	struct drm_encoder *encoder;
 	struct drm_bridge *bridge;
-	bool is_panel_bridge;
 
 	void __iomem *regs;
 
@@ -753,6 +753,11 @@ static void vc4_dsi_ulps(struct vc4_dsi *dsi, bool ulps)
 			 (dsi->lanes > 2 ? DSI1_STAT_PHY_D2_STOP : 0) |
 			 (dsi->lanes > 3 ? DSI1_STAT_PHY_D3_STOP : 0));
 	int ret;
+	bool ulps_currently_enabled = (DSI_PORT_READ(PHY_AFEC0) &
+				       DSI_PORT_BIT(PHY_AFEC0_LATCH_ULPS));
+
+	if (ulps == ulps_currently_enabled)
+		return;
 
 	DSI_PORT_WRITE(STAT, stat_ulps);
 	DSI_PORT_WRITE(PHYC, DSI_PORT_READ(PHYC) | phyc_ulps);
@@ -809,7 +814,9 @@ static void vc4_dsi_encoder_disable(struct drm_encoder *encoder)
 	struct vc4_dsi *dsi = vc4_encoder->dsi;
 	struct device *dev = &dsi->pdev->dev;
 
+	drm_bridge_disable(dsi->bridge);
 	vc4_dsi_ulps(dsi, true);
+	drm_bridge_post_disable(dsi->bridge);
 
 	clk_disable_unprepare(dsi->pll_phy_clock);
 	clk_disable_unprepare(dsi->escape_clock);
@@ -846,11 +853,9 @@ static bool vc4_dsi_encoder_mode_fixup(struct drm_encoder *encoder,
 	/* Find what divider gets us a faster clock than the requested
 	 * pixel clock.
 	 */
-	for (divider = 1; divider < 8; divider++) {
-		if (parent_rate / divider < pll_clock) {
-			divider--;
+	for (divider = 1; divider < 255; divider++) {
+		if (parent_rate / (divider + 1) < pll_clock)
 			break;
-		}
 	}
 
 	/* Now that we've picked a PLL divider, calculate back to its
@@ -859,11 +864,7 @@ static bool vc4_dsi_encoder_mode_fixup(struct drm_encoder *encoder,
 	pll_clock = parent_rate / divider;
 	pixel_clock_hz = pll_clock / dsi->divider;
 
-	/* Round up the clk_set_rate() request slightly, since
-	 * PLLD_DSI1 is an integer divider and its rate selection will
-	 * never round up.
-	 */
-	adjusted_mode->clock = pixel_clock_hz / 1000 + 1;
+	adjusted_mode->clock = pixel_clock_hz / 1000;
 
 	/* Given the new pixel clock, adjust HFP to keep vrefresh the same. */
 	adjusted_mode->htotal = adjusted_mode->clock * mode->htotal /
@@ -901,7 +902,11 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 		vc4_dsi_dump_regs(dsi);
 	}
 
-	phy_clock = pixel_clock_hz * dsi->divider;
+	/* Round up the clk_set_rate() request slightly, since
+	 * PLLD_DSI1 is an integer divider and its rate selection will
+	 * never round up.
+	 */
+	phy_clock = (pixel_clock_hz + 1000) * dsi->divider;
 	ret = clk_set_rate(dsi->pll_phy_clock, phy_clock);
 	if (ret) {
 		dev_err(&dsi->pdev->dev,
@@ -1084,21 +1089,6 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	/* Display reset sequence timeout */
 	DSI_PORT_WRITE(PR_TO_CNT, 100000);
 
-	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO) {
-		DSI_PORT_WRITE(DISP0_CTRL,
-			       VC4_SET_FIELD(dsi->divider,
-					     DSI_DISP0_PIX_CLK_DIV) |
-			       VC4_SET_FIELD(dsi->format, DSI_DISP0_PFORMAT) |
-			       VC4_SET_FIELD(DSI_DISP0_LP_STOP_PERFRAME,
-					     DSI_DISP0_LP_STOP_CTRL) |
-			       DSI_DISP0_ST_END |
-			       DSI_DISP0_ENABLE);
-	} else {
-		DSI_PORT_WRITE(DISP0_CTRL,
-			       DSI_DISP0_COMMAND_MODE |
-			       DSI_DISP0_ENABLE);
-	}
-
 	/* Set up DISP1 for transferring long command payloads through
 	 * the pixfifo.
 	 */
@@ -1122,6 +1112,25 @@ static void vc4_dsi_encoder_enable(struct drm_encoder *encoder)
 	}
 
 	vc4_dsi_ulps(dsi, false);
+
+	drm_bridge_pre_enable(dsi->bridge);
+
+	if (dsi->mode_flags & MIPI_DSI_MODE_VIDEO) {
+		DSI_PORT_WRITE(DISP0_CTRL,
+			       VC4_SET_FIELD(dsi->divider,
+					     DSI_DISP0_PIX_CLK_DIV) |
+			       VC4_SET_FIELD(dsi->format, DSI_DISP0_PFORMAT) |
+			       VC4_SET_FIELD(DSI_DISP0_LP_STOP_PERFRAME,
+					     DSI_DISP0_LP_STOP_CTRL) |
+			       DSI_DISP0_ST_END |
+			       DSI_DISP0_ENABLE);
+	} else {
+		DSI_PORT_WRITE(DISP0_CTRL,
+			       DSI_DISP0_COMMAND_MODE |
+			       DSI_DISP0_ENABLE);
+	}
+
+	drm_bridge_enable(dsi->bridge);
 
 	if (debug_dump_regs) {
 		DRM_INFO("DSI regs after:\n");
@@ -1289,7 +1298,6 @@ static int vc4_dsi_host_attach(struct mipi_dsi_host *host,
 			       struct mipi_dsi_device *device)
 {
 	struct vc4_dsi *dsi = host_to_dsi(host);
-	int ret = 0;
 
 	dsi->lanes = device->lanes;
 	dsi->channel = device->channel;
@@ -1324,34 +1332,12 @@ static int vc4_dsi_host_attach(struct mipi_dsi_host *host,
 		return 0;
 	}
 
-	dsi->bridge = of_drm_find_bridge(device->dev.of_node);
-	if (!dsi->bridge) {
-		struct drm_panel *panel =
-			of_drm_find_panel(device->dev.of_node);
-
-		dsi->bridge = drm_panel_bridge_add(panel,
-						   DRM_MODE_CONNECTOR_DSI);
-		if (IS_ERR(dsi->bridge)) {
-			ret = PTR_ERR(dsi->bridge);
-			dsi->bridge = NULL;
-			return ret;
-		}
-		dsi->is_panel_bridge = true;
-	}
-
-	return drm_bridge_attach(dsi->encoder, dsi->bridge, NULL);
+	return 0;
 }
 
 static int vc4_dsi_host_detach(struct mipi_dsi_host *host,
 			       struct mipi_dsi_device *device)
 {
-	struct vc4_dsi *dsi = host_to_dsi(host);
-
-	if (dsi->is_panel_bridge) {
-		drm_panel_bridge_remove(dsi->bridge);
-		dsi->bridge = NULL;
-	}
-
 	return 0;
 }
 
@@ -1383,6 +1369,27 @@ static void dsi_handle_error(struct vc4_dsi *dsi,
 	*ret = IRQ_HANDLED;
 }
 
+/*
+ * Initial handler for port 1 where we need the reg_dma workaround.
+ * The register DMA writes sleep, so we can't do it in the top half.
+ * Instead we use IRQF_ONESHOT so that the IRQ gets disabled in the
+ * parent interrupt contrller until our interrupt thread is done.
+ */
+static irqreturn_t vc4_dsi_irq_defer_to_thread_handler(int irq, void *data)
+{
+	struct vc4_dsi *dsi = data;
+	u32 stat = DSI_PORT_READ(INT_STAT);
+
+	if (!stat)
+		return IRQ_NONE;
+
+	return IRQ_WAKE_THREAD;
+}
+
+/*
+ * Normal IRQ handler for port 0, or the threaded IRQ handler for port
+ * 1 where we need the reg_dma workaround.
+ */
 static irqreturn_t vc4_dsi_irq_handler(int irq, void *data)
 {
 	struct vc4_dsi *dsi = data;
@@ -1493,15 +1500,12 @@ static int vc4_dsi_bind(struct device *dev, struct device *master, void *data)
 	struct platform_device *pdev = to_platform_device(dev);
 	struct drm_device *drm = dev_get_drvdata(master);
 	struct vc4_dev *vc4 = to_vc4_dev(drm);
-	struct vc4_dsi *dsi;
+	struct vc4_dsi *dsi = dev_get_drvdata(dev);
 	struct vc4_dsi_encoder *vc4_dsi_encoder;
+	struct drm_panel *panel;
 	const struct of_device_id *match;
 	dma_cap_mask_t dma_mask;
 	int ret;
-
-	dsi = devm_kzalloc(dev, sizeof(*dsi), GFP_KERNEL);
-	if (!dsi)
-		return -ENOMEM;
 
 	match = of_match_device(vc4_dsi_dt_match, dev);
 	if (!match)
@@ -1517,7 +1521,6 @@ static int vc4_dsi_bind(struct device *dev, struct device *master, void *data)
 	vc4_dsi_encoder->dsi = dsi;
 	dsi->encoder = &vc4_dsi_encoder->base.base;
 
-	dsi->pdev = pdev;
 	dsi->regs = vc4_ioremap_regs(pdev, 0);
 	if (IS_ERR(dsi->regs))
 		return PTR_ERR(dsi->regs);
@@ -1566,8 +1569,15 @@ static int vc4_dsi_bind(struct device *dev, struct device *master, void *data)
 	/* Clear any existing interrupt state. */
 	DSI_PORT_WRITE(INT_STAT, DSI_PORT_READ(INT_STAT));
 
-	ret = devm_request_irq(dev, platform_get_irq(pdev, 0),
-			       vc4_dsi_irq_handler, 0, "vc4 dsi", dsi);
+	if (dsi->reg_dma_mem)
+		ret = devm_request_threaded_irq(dev, platform_get_irq(pdev, 0),
+						vc4_dsi_irq_defer_to_thread_handler,
+						vc4_dsi_irq_handler,
+						IRQF_ONESHOT,
+						"vc4 dsi", dsi);
+	else
+		ret = devm_request_irq(dev, platform_get_irq(pdev, 0),
+				       vc4_dsi_irq_handler, 0, "vc4 dsi", dsi);
 	if (ret) {
 		if (ret != -EPROBE_DEFER)
 			dev_err(dev, "Failed to get interrupt: %d\n", ret);
@@ -1598,6 +1608,28 @@ static int vc4_dsi_bind(struct device *dev, struct device *master, void *data)
 		return ret;
 	}
 
+	ret = drm_of_find_panel_or_bridge(dev->of_node, 0, 0,
+					  &panel, &dsi->bridge);
+	if (ret) {
+		/* If the bridge or panel pointed by dev->of_node is not
+		 * enabled, just return 0 here so that we don't prevent the DRM
+		 * dev from being registered. Of course that means the DSI
+		 * encoder won't be exposed, but that's not a problem since
+		 * nothing is connected to it.
+		 */
+		if (ret == -ENODEV)
+			return 0;
+
+		return ret;
+	}
+
+	if (panel) {
+		dsi->bridge = devm_drm_panel_bridge_add(dev, panel,
+							DRM_MODE_CONNECTOR_DSI);
+		if (IS_ERR(dsi->bridge))
+			return PTR_ERR(dsi->bridge);
+	}
+
 	/* The esc clock rate is supposed to always be 100Mhz. */
 	ret = clk_set_rate(dsi->escape_clock, 100 * 1000000);
 	if (ret) {
@@ -1616,12 +1648,17 @@ static int vc4_dsi_bind(struct device *dev, struct device *master, void *data)
 			 DRM_MODE_ENCODER_DSI, NULL);
 	drm_encoder_helper_add(dsi->encoder, &vc4_dsi_encoder_helper_funcs);
 
-	dsi->dsi_host.ops = &vc4_dsi_host_ops;
-	dsi->dsi_host.dev = dev;
-
-	mipi_dsi_host_register(&dsi->dsi_host);
-
-	dev_set_drvdata(dev, dsi);
+	ret = drm_bridge_attach(dsi->encoder, dsi->bridge, NULL);
+	if (ret) {
+		dev_err(dev, "bridge attach failed: %d\n", ret);
+		return ret;
+	}
+	/* Disable the atomic helper calls into the bridge.  We
+	 * manually call the bridge pre_enable / enable / etc. calls
+	 * from our driver, since we need to sequence them within the
+	 * encoder's enable/disable paths.
+	 */
+	dsi->encoder->bridge = NULL;
 
 	pm_runtime_enable(dev);
 
@@ -1635,11 +1672,10 @@ static void vc4_dsi_unbind(struct device *dev, struct device *master,
 	struct vc4_dev *vc4 = to_vc4_dev(drm);
 	struct vc4_dsi *dsi = dev_get_drvdata(dev);
 
-	pm_runtime_disable(dev);
+	if (dsi->bridge)
+		pm_runtime_disable(dev);
 
 	vc4_dsi_encoder_destroy(dsi->encoder);
-
-	mipi_dsi_host_unregister(&dsi->dsi_host);
 
 	if (dsi->port == 1)
 		vc4->dsi1 = NULL;
@@ -1652,12 +1688,47 @@ static const struct component_ops vc4_dsi_ops = {
 
 static int vc4_dsi_dev_probe(struct platform_device *pdev)
 {
-	return component_add(&pdev->dev, &vc4_dsi_ops);
+	struct device *dev = &pdev->dev;
+	struct vc4_dsi *dsi;
+	int ret;
+
+	dsi = devm_kzalloc(dev, sizeof(*dsi), GFP_KERNEL);
+	if (!dsi)
+		return -ENOMEM;
+	dev_set_drvdata(dev, dsi);
+
+	dsi->pdev = pdev;
+
+	/* Note, the initialization sequence for DSI and panels is
+	 * tricky.  The component bind above won't get past its
+	 * -EPROBE_DEFER until the panel/bridge probes.  The
+	 * panel/bridge will return -EPROBE_DEFER until it has a
+	 * mipi_dsi_host to register its device to.  So, we register
+	 * the host during pdev probe time, so vc4 as a whole can then
+	 * -EPROBE_DEFER its component bind process until the panel
+	 * successfully attaches.
+	 */
+	dsi->dsi_host.ops = &vc4_dsi_host_ops;
+	dsi->dsi_host.dev = dev;
+	mipi_dsi_host_register(&dsi->dsi_host);
+
+	ret = component_add(&pdev->dev, &vc4_dsi_ops);
+	if (ret) {
+		mipi_dsi_host_unregister(&dsi->dsi_host);
+		return ret;
+	}
+
+	return 0;
 }
 
 static int vc4_dsi_dev_remove(struct platform_device *pdev)
 {
+	struct device *dev = &pdev->dev;
+	struct vc4_dsi *dsi = dev_get_drvdata(dev);
+
 	component_del(&pdev->dev, &vc4_dsi_ops);
+	mipi_dsi_host_unregister(&dsi->dsi_host);
+
 	return 0;
 }
 

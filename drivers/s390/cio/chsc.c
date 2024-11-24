@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *   S/390 common I/O routines -- channel subsystem call
  *
@@ -90,7 +91,7 @@ struct chsc_ssd_area {
 	u16 sch;	  /* subchannel */
 	u8 chpid[8];	  /* chpids 0-7 */
 	u16 fla[8];	  /* full link addresses 0-7 */
-} __attribute__ ((packed));
+} __packed __aligned(PAGE_SIZE);
 
 int chsc_get_ssd_info(struct subchannel_id schid, struct chsc_ssd_info *ssd)
 {
@@ -318,7 +319,7 @@ struct chsc_sei {
 		struct chsc_sei_nt2_area nt2_area;
 		u8 nt_area[PAGE_SIZE - 24];
 	} u;
-} __packed;
+} __packed __aligned(PAGE_SIZE);
 
 /*
  * Node Descriptor as defined in SA22-7204, "Common I/O-Device Commands"
@@ -769,8 +770,6 @@ int chsc_chp_vary(struct chp_id chpid, int on)
 {
 	struct channel_path *chp = chpid_to_chp(chpid);
 
-	/* Wait until previous actions have settled. */
-	css_wait_for_slow_path();
 	/*
 	 * Redo PathVerification on the devices the chpid connects to
 	 */
@@ -840,7 +839,7 @@ int __chsc_do_secm(struct channel_subsystem *css, int enable)
 		u32 : 4;
 		u32 fmt : 4;
 		u32 : 16;
-	} __attribute__ ((packed)) *secm_area;
+	} *secm_area;
 	unsigned long flags;
 	int ret, ccode;
 
@@ -922,6 +921,8 @@ int chsc_determine_channel_path_desc(struct chp_id chpid, int fmt, int rfmt,
 		return -EINVAL;
 	if ((rfmt == 2) && !css_general_characteristics.cib)
 		return -EINVAL;
+	if ((rfmt == 3) && !css_general_characteristics.util_str)
+		return -EINVAL;
 
 	memset(page, 0, PAGE_SIZE);
 	scpd_area = page;
@@ -947,43 +948,30 @@ int chsc_determine_channel_path_desc(struct chp_id chpid, int fmt, int rfmt,
 }
 EXPORT_SYMBOL_GPL(chsc_determine_channel_path_desc);
 
-int chsc_determine_base_channel_path_desc(struct chp_id chpid,
-					  struct channel_path_desc *desc)
-{
-	struct chsc_scpd *scpd_area;
-	unsigned long flags;
-	int ret;
-
-	spin_lock_irqsave(&chsc_page_lock, flags);
-	scpd_area = chsc_page;
-	ret = chsc_determine_channel_path_desc(chpid, 0, 0, 0, 0, scpd_area);
-	if (ret)
-		goto out;
-
-	memcpy(desc, scpd_area->data, sizeof(*desc));
-out:
-	spin_unlock_irqrestore(&chsc_page_lock, flags);
-	return ret;
+#define chsc_det_chp_desc(FMT, c)					\
+int chsc_determine_fmt##FMT##_channel_path_desc(			\
+	struct chp_id chpid, struct channel_path_desc_fmt##FMT *desc)	\
+{									\
+	struct chsc_scpd *scpd_area;					\
+	unsigned long flags;						\
+	int ret;							\
+									\
+	spin_lock_irqsave(&chsc_page_lock, flags);			\
+	scpd_area = chsc_page;						\
+	ret = chsc_determine_channel_path_desc(chpid, 0, FMT, c, 0,	\
+					       scpd_area);		\
+	if (ret)							\
+		goto out;						\
+									\
+	memcpy(desc, scpd_area->data, sizeof(*desc));			\
+out:									\
+	spin_unlock_irqrestore(&chsc_page_lock, flags);			\
+	return ret;							\
 }
 
-int chsc_determine_fmt1_channel_path_desc(struct chp_id chpid,
-					  struct channel_path_desc_fmt1 *desc)
-{
-	struct chsc_scpd *scpd_area;
-	unsigned long flags;
-	int ret;
-
-	spin_lock_irqsave(&chsc_page_lock, flags);
-	scpd_area = chsc_page;
-	ret = chsc_determine_channel_path_desc(chpid, 0, 1, 1, 0, scpd_area);
-	if (ret)
-		goto out;
-
-	memcpy(desc, scpd_area->data, sizeof(*desc));
-out:
-	spin_unlock_irqrestore(&chsc_page_lock, flags);
-	return ret;
-}
+chsc_det_chp_desc(0, 0)
+chsc_det_chp_desc(1, 1)
+chsc_det_chp_desc(3, 0)
 
 static void
 chsc_initialize_cmg_chars(struct channel_path *chp, u8 cmcv,
@@ -1024,7 +1012,7 @@ int chsc_get_channel_measurement_chars(struct channel_path *chp)
 		u32 cmg : 8;
 		u32 zeroes3;
 		u32 data[NR_MEASUREMENT_CHARS];
-	} __attribute__ ((packed)) *scmc_area;
+	} *scmc_area;
 
 	chp->shared = -1;
 	chp->cmg = -1;
@@ -1152,7 +1140,7 @@ int __init chsc_get_cssid(int idx)
 			u8 cssid;
 			u32 : 24;
 		} list[0];
-	} __packed *sdcal_area;
+	} *sdcal_area;
 	int ret;
 
 	spin_lock_irq(&chsc_page_lock);
@@ -1202,7 +1190,7 @@ chsc_determine_css_characteristics(void)
 		u32 reserved4;
 		u32 general_char[510];
 		u32 chsc_char[508];
-	} __attribute__ ((packed)) *scsc_area;
+	} *scsc_area;
 
 	spin_lock_irqsave(&chsc_page_lock, flags);
 	memset(chsc_page, 0, PAGE_SIZE);
@@ -1246,7 +1234,7 @@ int chsc_sstpc(void *page, unsigned int op, u16 ctrl, u64 *clock_delta)
 		unsigned int rsvd3[3];
 		u64 clock_delta;
 		unsigned int rsvd4[2];
-	} __attribute__ ((packed)) *rr;
+	} *rr;
 	int rc;
 
 	memset(page, 0, PAGE_SIZE);
@@ -1271,7 +1259,7 @@ int chsc_sstpi(void *page, void *result, size_t size)
 		unsigned int rsvd0[3];
 		struct chsc_header response;
 		char data[];
-	} __attribute__ ((packed)) *rr;
+	} *rr;
 	int rc;
 
 	memset(page, 0, PAGE_SIZE);
@@ -1294,7 +1282,7 @@ int chsc_siosl(struct subchannel_id schid)
 		u32 word3;
 		struct chsc_header response;
 		u32 word[11];
-	} __attribute__ ((packed)) *siosl_area;
+	} *siosl_area;
 	unsigned long flags;
 	int ccode;
 	int rc;

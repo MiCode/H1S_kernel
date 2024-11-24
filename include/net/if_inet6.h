@@ -20,13 +20,12 @@
 #include <linux/refcount.h>
 
 /* inet6_dev.if_flags */
-
+#define IF_RS_VZW_SENT  0x01  /*add for VzW feature*/
 #define IF_RA_OTHERCONF	0x80
 #define IF_RA_MANAGED	0x40
 #define IF_RA_RCVD	0x20
 #define IF_RS_SENT	0x10
 #define IF_READY	0x80000000
-#define IF_RS_VZW_SENT 0x01  /*add for VzW feature*/
 
 /* prefix flags */
 #define IF_PREFIX_ONLINK	0x01
@@ -43,6 +42,7 @@ enum {
 struct inet6_ifaddr {
 	struct in6_addr		addr;
 	__u32			prefix_len;
+	__u32			rt_priority;
 
 	/* In seconds, relative to tstamp. Expiry is at tstamp + HZ * lft. */
 	__u32			valid_lft;
@@ -65,10 +65,18 @@ struct inet6_ifaddr {
 	struct delayed_work	dad_work;
 
 	struct inet6_dev	*idev;
-	struct rt6_info		*rt;
+	struct fib6_info	*rt;
 
 	struct hlist_node	addr_lst;
 	struct list_head	if_list;
+	/*
+	 * Used to safely traverse idev->addr_list in process context
+	 * if the idev->lock needed to protect idev->addr_list cannot be held.
+	 * In that case, add the items to this list temporarily and iterate
+	 * without holding idev->lock.
+	 * See addrconf_ifdown and dev_forward_change.
+	 */
+	struct list_head	if_list_aux;
 
 	struct list_head	tmp_list;
 	struct inet6_ifaddr	*ifpub;
@@ -144,8 +152,7 @@ struct ipv6_ac_socklist {
 
 struct ifacaddr6 {
 	struct in6_addr		aca_addr;
-	struct inet6_dev	*aca_idev;
-	struct rt6_info		*aca_rt;
+	struct fib6_info	*aca_rt;
 	struct ifacaddr6	*aca_next;
 	int			aca_users;
 	refcount_t		aca_refcnt;

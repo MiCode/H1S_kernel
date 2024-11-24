@@ -95,7 +95,7 @@ static inline void aspeed_sig_desc_print_val(
  *
  * @desc: The signal descriptor of interest
  * @enabled: True to query the enabled state, false to query disabled state
- * @regmap: The IP block's regmap instance
+ * @map: The IP block's regmap instance
  *
  * Return: 1 if the descriptor's bitfield is configured to the state
  * selected by @enabled, 0 if not, and less than zero if an unrecoverable
@@ -295,7 +295,7 @@ static int aspeed_disable_sig(const struct aspeed_sig_expr **exprs,
 	int ret = 0;
 
 	if (!exprs)
-		return true;
+		return -EINVAL;
 
 	while (*exprs && !ret) {
 		ret = aspeed_sig_expr_disable(*exprs, maps);
@@ -458,13 +458,14 @@ int aspeed_pinmux_set_mux(struct pinctrl_dev *pctldev, unsigned int function,
 static bool aspeed_expr_is_gpio(const struct aspeed_sig_expr *expr)
 {
 	/*
-	 * The signal type is GPIO if the signal name has "GPIO" as a prefix.
+	 * The signal type is GPIO if the signal name has "GPI" as a prefix.
 	 * strncmp (rather than strcmp) is used to implement the prefix
 	 * requirement.
 	 *
-	 * expr->signal might look like "GPIOT3" in the GPIO case.
+	 * expr->signal might look like "GPIOB1" in the GPIO case.
+	 * expr->signal might look like "GPIT0" in the GPI case.
 	 */
-	return strncmp(expr->signal, "GPIO", 4) == 0;
+	return strncmp(expr->signal, "GPI", 3) == 0;
 }
 
 static bool aspeed_gpio_in_exprs(const struct aspeed_sig_expr **exprs)
@@ -594,7 +595,7 @@ static inline const struct aspeed_pin_config *find_pinconf_config(
 /**
  * @param: pinconf configuration parameter
  * @arg: The supported argument for @param, or -1 if any value is supported
- * @value: The register value to write to configure @arg for @param
+ * @val: The register value to write to configure @arg for @param
  *
  * The map is to be used in conjunction with the configuration array supplied
  * by the driver implementation.

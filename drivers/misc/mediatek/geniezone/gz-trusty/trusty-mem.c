@@ -1,16 +1,29 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2015 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
+/*
+ * GenieZone (hypervisor-based seucrity platform) enables hardware protected
+ * and isolated security execution environment, includes
+ * 1. GZ hypervisor
+ * 2. Hypervisor-TEE OS (built-in Trusty OS)
+ * 3. Drivers (ex: debug, communication and interrupt) for GZ and
+ *    hypervisor-TEE OS
+ * 4. GZ and hypervisor-TEE and GZ framework (supporting multiple TEE
+ *    ecosystem, ex: M-TEE, Trusty, GlobalPlatform, ...)
+ */
+/*
+ * This is IPC driver
+ *
+ * For communication between client OS and hypervisor-TEE OS, IPC driver
+ * is provided, including:
+ * 1. standard call interface for communication and entering hypervisor-TEE
+ * 2. virtio for message/command passing by shared memory
+ * 3. IPC driver
+ */
+
 
 #include <linux/types.h>
 #include <linux/printk.h>

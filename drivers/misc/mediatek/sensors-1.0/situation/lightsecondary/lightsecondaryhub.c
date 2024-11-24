@@ -20,8 +20,7 @@
 #include <situation.h>
 #include <SCP_sensorHub.h>
 #include <linux/notifier.h>
-#include "scp_helper.h"
-#include "scp_helper.h"
+#include "include/scp.h"
 #include "lightsecondary_factory.h"
 
 static struct situation_init_info lightsecondaryhub_init_info;

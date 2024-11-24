@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _MT_M4U_REG_H__
 #define _MT_M4U_REG_H__
@@ -435,6 +427,7 @@
 #define SMI_LARB_NON_SEC_CONx(larb_port)    (0x380 + ((larb_port)<<2))
 #define F_SMI_NON_SEC_MMU_EN(en)            F_BIT_VAL(en, 0)
 #define F_SMI_MMU_EN                        F_BIT_SET(0)
+#define F_SMI_BIT32                         F_MSK(15, 8)
 
 /* ========================================================================= */
 /* peripheral system */

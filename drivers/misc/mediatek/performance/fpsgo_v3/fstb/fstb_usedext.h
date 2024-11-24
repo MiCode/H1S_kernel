@@ -1,23 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef FSTB_USEDEXT_H
 #define FSTB_USEDEXT_H
 
-#include <fpsgo_common.h>
+#include <mt-plat/fpsgo_common.h>
 #include <trace/events/fpsgo.h>
 #include <linux/list.h>
 #include <linux/sched.h>
@@ -35,7 +24,6 @@
 #define MDLA_MAX_CAP 100
 #define RESET_TOLERENCE 3
 #define DEFAULT_JUMP_CHECK_NUM 21
-#define DEFAULT_JUMP_CHECK_Q_PCT 33
 #define JUMP_VOTE_MAX_I 60
 
 extern int (*fbt_notifier_cpu_frame_time_fps_stabilizer)(
@@ -53,12 +41,14 @@ struct FSTB_FRAME_INFO {
 	struct hlist_node hlist;
 
 	int pid;
+	int proc_id;
 	char proc_name[16];
 	int target_fps;
 	int target_fps_margin;
 	int target_fps_margin2;
 	int target_fps_margin_dbnc_a;
 	int target_fps_margin_dbnc_b;
+	int sbe_state; /* -1: no chase, 0: free run, 1: max_fps*/
 	int queue_fps;
 	unsigned long long bufid;
 	int in_list;
@@ -105,10 +95,10 @@ struct FSTB_RENDER_TARGET_FPS {
 	struct fps_level level[MAX_NR_RENDER_FPS_LEVELS];
 };
 
-struct FSTB_FTEH_LIST {
-	struct hlist_node hlist;
-	char process_name[16];
-	char thread_name[16];
+struct FSTB_POWERFPS_LIST {
+	int pid;
+	int fps;
 };
 
 #endif
+

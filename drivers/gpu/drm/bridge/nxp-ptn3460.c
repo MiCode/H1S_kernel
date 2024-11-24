@@ -64,13 +64,13 @@ static int ptn3460_read_bytes(struct ptn3460_bridge *ptn_bridge, char addr,
 	int ret;
 
 	ret = i2c_master_send(ptn_bridge->client, &addr, 1);
-	if (ret <= 0) {
+	if (ret < 0) {
 		DRM_ERROR("Failed to send i2c command, ret=%d\n", ret);
 		return ret;
 	}
 
 	ret = i2c_master_recv(ptn_bridge->client, buf, len);
-	if (ret <= 0) {
+	if (ret < 0) {
 		DRM_ERROR("Failed to recv i2c data, ret=%d\n", ret);
 		return ret;
 	}
@@ -88,7 +88,7 @@ static int ptn3460_write_byte(struct ptn3460_bridge *ptn_bridge, char addr,
 	buf[1] = val;
 
 	ret = i2c_master_send(ptn_bridge->client, buf, ARRAY_SIZE(buf));
-	if (ret <= 0) {
+	if (ret < 0) {
 		DRM_ERROR("Failed to send i2c command, ret=%d\n", ret);
 		return ret;
 	}
@@ -222,7 +222,7 @@ static int ptn3460_get_modes(struct drm_connector *connector)
 	}
 
 	ptn_bridge->edid = (struct edid *)edid;
-	drm_mode_connector_update_edid_property(connector, ptn_bridge->edid);
+	drm_connector_update_edid_property(connector, ptn_bridge->edid);
 
 	num_modes = drm_add_edid_modes(connector, ptn_bridge->edid);
 
@@ -265,7 +265,7 @@ static int ptn3460_bridge_attach(struct drm_bridge *bridge)
 	drm_connector_helper_add(&ptn_bridge->connector,
 					&ptn3460_connector_helper_funcs);
 	drm_connector_register(&ptn_bridge->connector);
-	drm_mode_connector_attach_encoder(&ptn_bridge->connector,
+	drm_connector_attach_encoder(&ptn_bridge->connector,
 							bridge->encoder);
 
 	if (ptn_bridge->panel)

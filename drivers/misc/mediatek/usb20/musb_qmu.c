@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2018 MediaTek Inc.
  */
 
 #include <linux/delay.h>
@@ -27,18 +19,18 @@
 #include "mtk_musb.h"
 #include "musb_qmu.h"
 
-static unsigned int tx_max_active_isoc_gpd[MAX_QMU_EP + 1];
-static unsigned int tx_max_number_of_pkts[MAX_QMU_EP + 1];
-static unsigned int rx_max_active_isoc_gpd[MAX_QMU_EP + 1];
-static unsigned int rx_max_number_of_pkts[MAX_QMU_EP + 1];
+static unsigned int host_qmu_tx_max_active_isoc_gpd[MAX_QMU_EP + 1];
+static unsigned int host_qmu_tx_max_number_of_pkts[MAX_QMU_EP + 1];
+static unsigned int host_qmu_rx_max_active_isoc_gpd[MAX_QMU_EP + 1];
+static unsigned int host_qmu_rx_max_number_of_pkts[MAX_QMU_EP + 1];
 #define MTK_HOST_ACTIVE_DEV_TABLE_SZ 128
 static u8 mtk_host_active_dev_table[MTK_HOST_ACTIVE_DEV_TABLE_SZ];
 #ifdef CONFIG_MTK_UAC_POWER_SAVING
 static struct workqueue_struct *low_power_timer_test_wq;
 static struct work_struct low_power_timer_test_work;
 static int low_power_timer_activate;
-static unsigned long int low_power_timer_total_sleep;
-static unsigned long int low_power_timer_total_wake;
+static unsigned long low_power_timer_total_sleep;
+static unsigned long low_power_timer_total_wake;
 static int low_power_timer_request_time;
 static unsigned int low_power_timer_trigger_cnt;
 static unsigned int low_power_timer_wake_cnt;
@@ -87,13 +79,13 @@ static void do_low_power_timer_monitor_work(struct work_struct *work)
 static void low_power_timer_wakeup_func(unsigned long data);
 static DEFINE_TIMER(low_power_timer, low_power_timer_wakeup_func, 0, 0);
 
-void low_power_timer_resource_reset(void)
+static void low_power_timer_resource_reset(void)
 {
 	low_power_timer_total_sleep = low_power_timer_total_wake = 0;
 	low_power_timer_trigger_cnt = low_power_timer_wake_cnt = 0;
 }
 
-static void low_power_timer_wakeup_func(unsigned long data)
+static void low_power_timer_wakeup_func(struct timer_list *timer)
 {
 #ifdef TIMER_LOCK
 	unsigned long flags;
@@ -119,20 +111,22 @@ static void low_power_timer_wakeup_func(unsigned long data)
 		static DEFINE_RATELIMIT_STATE(ratelimit, HZ, 1);
 
 		if (__ratelimit(&ratelimit))
-			pr_debug("<limit> sleep(%lu/%d, %lu)us, wake(%lu/%d, %lu)us, mode<%d,%d>, balance<%d,%d>\n"
-					, low_power_timer_total_sleep,
-					low_power_timer_trigger_cnt,
-					low_power_timer_total_sleep/
-					low_power_timer_trigger_cnt,
-					low_power_timer_total_wake,
-					(low_power_timer_trigger_cnt - 1),
-					low_power_timer_total_wake/
-					(low_power_timer_trigger_cnt - 1),
-					low_power_timer_mode,
-					low_power_timer_mode2_option,
-					low_power_timer_trigger_cnt,
-					low_power_timer_wake_cnt);
-	}
+			pr_debug("<ratelimit> avg sleep(%lu/%d, %lu)us,
+			avg wake(%lu/%d, %lu)us, mode<%d,%d>,
+			local balanced<%d,%d>\n"
+				, low_power_timer_total_sleep,
+				low_power_timer_trigger_cnt,
+				low_power_timer_total_sleep/
+				low_power_timer_trigger_cnt,
+				low_power_timer_total_wake,
+				(low_power_timer_trigger_cnt - 1),
+				low_power_timer_total_wake/
+				(low_power_timer_trigger_cnt - 1),
+				low_power_timer_mode,
+				low_power_timer_mode2_option,
+				low_power_timer_trigger_cnt,
+				low_power_timer_wake_cnt);
+		}
 
 	low_power_timer_activate = 0;
 	DBG(1, "sleep forbidden <%d,%d>\n",
@@ -144,7 +138,7 @@ static void low_power_timer_wakeup_func(unsigned long data)
 
 }
 
-void try_trigger_low_power_timer(signed int sleep_ms)
+static void try_trigger_low_power_timer(signed int sleep_ms)
 {
 
 	DBG(1, "sleep_ms:%d\n", sleep_ms);
@@ -166,9 +160,7 @@ void try_trigger_low_power_timer(signed int sleep_ms)
 			return;
 		}
 
-		init_timer(timer);
-		timer->function = low_power_timer_wakeup_func;
-		timer->data = (unsigned long)timer;
+		timer_setup(timer, low_power_timer_wakeup_func, 0);
 		timer->expires = jiffies + msecs_to_jiffies(sleep_ms);
 		add_timer(timer);
 	}
@@ -196,11 +188,11 @@ void try_trigger_low_power_timer(signed int sleep_ms)
 		usb_hal_dpidle_request(USB_DPIDLE_SRAM);
 }
 
-void do_low_power_timer_test_work(struct work_struct *work)
+static void do_low_power_timer_test_work(struct work_struct *work)
 {
 	unsigned long flags;
 	signed int set_time;
-	unsigned long int diff_time_ns;
+	unsigned long diff_time_ns;
 	int gpd_free_count_last, gpd_free_count;
 	int done = 0;
 
@@ -231,7 +223,7 @@ void do_low_power_timer_test_work(struct work_struct *work)
 	}
 }
 
-void lower_power_timer_test_init(void)
+static void lower_power_timer_test_init(void)
 {
 	INIT_WORK(&low_power_timer_test_work, do_low_power_timer_test_work);
 	low_power_timer_test_wq =
@@ -250,7 +242,7 @@ void lower_power_timer_test_init(void)
  *  mode 2 + option 2: simulate SCREEN OFF mode 1 real case
  */
 
-void low_power_timer_sleep(unsigned int sleep_ms)
+static void low_power_timer_sleep(unsigned int sleep_ms)
 {
 	DBG(1, "sleep(%d) ms\n", sleep_ms);
 
@@ -271,7 +263,7 @@ void low_power_timer_sleep(unsigned int sleep_ms)
 }
 #endif
 
-void mtk_host_active_dev_resource_reset(void)
+static void mtk_host_active_dev_resource_reset(void)
 {
 	memset(mtk_host_active_dev_table, 0, sizeof(mtk_host_active_dev_table));
 	mtk_host_active_dev_cnt = 0;
@@ -287,7 +279,7 @@ void musb_host_active_dev_add(unsigned int addr)
 		mtk_host_active_dev_cnt++;
 	}
 }
-
+EXPORT_SYMBOL(musb_host_active_dev_add);
 
 void __iomem *qmu_base;
 /* debug variable to check qmu_base issue */
@@ -323,11 +315,13 @@ int musb_qmu_init(struct musb *musb)
 
 	return 0;
 }
+EXPORT_SYMBOL(musb_qmu_init);
 
 void musb_qmu_exit(struct musb *musb)
 {
 	qmu_destroy_gpd_pool(musb->controller);
 }
+EXPORT_SYMBOL(musb_qmu_exit);
 
 void musb_disable_q_all(struct musb *musb)
 {
@@ -344,18 +338,19 @@ void musb_disable_q_all(struct musb *musb)
 			mtk_disable_q(musb, ep_num, 1);
 
 		/* reset statistics */
-		rx_max_active_isoc_gpd[ep_num] = 0;
-		rx_max_number_of_pkts[ep_num] = 0;
+		host_qmu_rx_max_active_isoc_gpd[ep_num] = 0;
+		host_qmu_rx_max_number_of_pkts[ep_num] = 0;
 	}
 	for (ep_num = 1; ep_num <= TXQ_NUM; ep_num++) {
 		if (mtk_is_qmu_enabled(ep_num, TXQ))
 			mtk_disable_q(musb, ep_num, 0);
 
 		/* reset statistics */
-		tx_max_active_isoc_gpd[ep_num] = 0;
-		tx_max_number_of_pkts[ep_num] = 0;
+		host_qmu_tx_max_active_isoc_gpd[ep_num] = 0;
+		host_qmu_tx_max_number_of_pkts[ep_num] = 0;
 	}
 }
+EXPORT_SYMBOL(musb_disable_q_all);
 
 void musb_kick_D_CmdQ(struct musb *musb, struct musb_request *request)
 {
@@ -364,7 +359,7 @@ void musb_kick_D_CmdQ(struct musb *musb, struct musb_request *request)
 	isRx = request->tx ? 0 : 1;
 
 	/* enable qmu at musb_gadget_eanble */
-#if 0
+#ifdef NEVER
 	if (!mtk_is_qmu_enabled(request->epnum, isRx)) {
 		/* enable qmu */
 		mtk_qmu_enable(musb, request->epnum, isRx);
@@ -380,6 +375,7 @@ void musb_kick_D_CmdQ(struct musb *musb, struct musb_request *request)
 
 	mtk_qmu_resume(request->epnum, isRx);
 }
+EXPORT_SYMBOL(musb_kick_D_CmdQ);
 
 irqreturn_t musb_q_irq(struct musb *musb)
 {
@@ -408,6 +404,7 @@ irqreturn_t musb_q_irq(struct musb *musb)
 
 	return retval;
 }
+EXPORT_SYMBOL(musb_q_irq);
 
 void musb_flush_qmu(u32 ep_num, u8 isRx)
 {
@@ -415,6 +412,7 @@ void musb_flush_qmu(u32 ep_num, u8 isRx)
 	mtk_qmu_stop(ep_num, isRx);
 	qmu_reset_gpd_pool(ep_num, isRx);
 }
+EXPORT_SYMBOL(musb_flush_qmu);
 
 void musb_restart_qmu(struct musb *musb, u32 ep_num, u8 isRx)
 {
@@ -422,6 +420,7 @@ void musb_restart_qmu(struct musb *musb, u32 ep_num, u8 isRx)
 	flush_ep_csr(musb, ep_num, isRx);
 	mtk_qmu_enable(musb, ep_num, isRx);
 }
+EXPORT_SYMBOL(musb_restart_qmu);
 
 bool musb_is_qmu_stop(u32 ep_num, u8 isRx)
 {
@@ -624,23 +623,24 @@ int mtk_kick_CmdQ(struct musb *musb,
 		gpd_used_count = qmu_used_gpd_count(isRx, hw_ep->epnum);
 
 		if (!isRx) {
-			if (tx_max_active_isoc_gpd[hw_ep->epnum]
-					< gpd_used_count)
-				tx_max_active_isoc_gpd[hw_ep->epnum]
-					= gpd_used_count;
+			if (host_qmu_tx_max_active_isoc_gpd[hw_ep->epnum]
+				< gpd_used_count)
 
-			if (tx_max_number_of_pkts[hw_ep->epnum]
+				host_qmu_tx_max_active_isoc_gpd[hw_ep->epnum]
+				= gpd_used_count;
+
+			if (host_qmu_tx_max_number_of_pkts[hw_ep->epnum]
 				< urb->number_of_packets)
 
-				tx_max_number_of_pkts[hw_ep->epnum]
+				host_qmu_tx_max_number_of_pkts[hw_ep->epnum]
 				= urb->number_of_packets;
 
 				DBG_LIMIT(1,
 					"TXQ[%d], max_isoc gpd:%d, max_pkts:%d, active_dev:%d\n",
 					hw_ep->epnum,
-					tx_max_active_isoc_gpd
+					host_qmu_tx_max_active_isoc_gpd
 					[hw_ep->epnum],
-					tx_max_number_of_pkts
+					host_qmu_tx_max_number_of_pkts
 					[hw_ep->epnum],
 					mtk_host_active_dev_cnt);
 
@@ -657,7 +657,7 @@ int mtk_kick_CmdQ(struct musb *musb,
 					&& hw_ep->epnum == ISOC_EP_START_IDX
 					&& usb_on_sram
 					&& audio_on_sram
-					&& (rx_max_active_isoc_gpd
+					&& (host_qmu_rx_max_active_isoc_gpd
 						[ISOC_EP_START_IDX] == 0)) {
 				if (urb->dev->speed == USB_SPEED_FULL)
 					low_power_timer_sleep
@@ -668,22 +668,24 @@ int mtk_kick_CmdQ(struct musb *musb,
 			}
 #endif
 		} else {
-			if (rx_max_active_isoc_gpd[hw_ep->epnum]
-					< gpd_used_count)
-				rx_max_active_isoc_gpd[hw_ep->epnum]
-					= gpd_used_count;
+			if (host_qmu_rx_max_active_isoc_gpd[hw_ep->epnum]
+				< gpd_used_count)
 
-			if (rx_max_number_of_pkts[hw_ep->epnum]
-					< urb->number_of_packets)
-				rx_max_number_of_pkts[hw_ep->epnum] =
-					urb->number_of_packets;
+				host_qmu_rx_max_active_isoc_gpd[hw_ep->epnum]
+				= gpd_used_count;
+
+			if (host_qmu_rx_max_number_of_pkts[hw_ep->epnum]
+				< urb->number_of_packets)
+
+				host_qmu_rx_max_number_of_pkts[hw_ep->epnum]
+				= urb->number_of_packets;
 
 			DBG_LIMIT(1,
 				"RXQ[%d], max_isoc gpd:%d, max_pkts:%d, active_dev:%d\n",
 				hw_ep->epnum,
-				rx_max_active_isoc_gpd
+				host_qmu_rx_max_active_isoc_gpd
 				[hw_ep->epnum],
-				rx_max_number_of_pkts
+				host_qmu_rx_max_number_of_pkts
 				[hw_ep->epnum],
 				mtk_host_active_dev_cnt);
 		}
@@ -748,3 +750,4 @@ int mtk_kick_CmdQ(struct musb *musb,
 	DBG(4, "\n");
 	return 0;
 }
+EXPORT_SYMBOL(mtk_kick_CmdQ);

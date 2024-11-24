@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 /* #include <../drivers/staging/android/sw_sync.h> */
 #include <linux/slab.h>
@@ -207,7 +199,8 @@ struct frame_queue_head_t *get_frame_queue_head(int session_id)
 	mutex_lock(&frame_q_head_lock);
 
 	for (i = 0; i < ARRAY_SIZE(frame_q_head); i++) {
-		if (frame_q_head[i].session_id == session_id) {
+		if (frame_q_head[i].session_id == session_id
+		    && frame_q_head[i].inited == 1) {
 			head = &frame_q_head[i];
 			break;
 		}

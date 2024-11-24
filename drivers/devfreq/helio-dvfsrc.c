@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2018 MediaTek Inc.
  */
 
 #include <linux/devfreq.h>
@@ -19,6 +11,10 @@
 
 #include <linux/notifier.h>
 #include <linux/pm_qos.h>
+#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/mutex.h>
+
 
 #include <linux/slab.h>
 
@@ -40,6 +36,8 @@
 
 #include <linux/regulator/consumer.h>
 static struct regulator *vcore_reg_id;
+
+static DEFINE_MUTEX(sw_req1_mutex);
 
 __weak void helio_dvfsrc_platform_init(struct helio_dvfsrc *dvfsrc) { }
 __weak void spm_check_status_before_dvfs(void) { }
@@ -69,11 +67,11 @@ void dvfsrc_update_opp_table(void)
 	struct opp_profile *opp_ctrl_table = opp_table;
 	int opp;
 
-	mutex_lock(&dvfsrc->devfreq->lock);
+	mutex_lock(&sw_req1_mutex);
 	for (opp = 0; opp < VCORE_DVFS_OPP_NUM; opp++)
 		opp_ctrl_table[opp].vcore_uv = vcorefs_get_vcore_by_steps(opp);
 
-	mutex_unlock(&dvfsrc->devfreq->lock);
+	mutex_unlock(&sw_req1_mutex);
 }
 
 char *dvfsrc_get_opp_table_info(char *p)
@@ -159,12 +157,13 @@ void dvfsrc_update_sspm_ddr_opp_table(int opp, unsigned int ddr_khz)
 #endif
 #endif
 
+
 void dvfsrc_init_opp_table(void)
 {
 	struct opp_profile *opp_ctrl_table = opp_table;
 	int opp;
 
-	mutex_lock(&dvfsrc->devfreq->lock);
+	mutex_lock(&sw_req1_mutex);
 	dvfsrc->curr_vcore_uv = vcorefs_get_curr_vcore();
 	dvfsrc->curr_ddr_khz = vcorefs_get_curr_ddr();
 
@@ -189,7 +188,7 @@ void dvfsrc_init_opp_table(void)
 	}
 
 	spm_vcorefs_pwarp_cmd();
-	mutex_unlock(&dvfsrc->devfreq->lock);
+	mutex_unlock(&sw_req1_mutex);
 }
 
 int is_qos_can_work(void)
@@ -207,15 +206,6 @@ static struct devfreq_dev_profile helio_devfreq_profile = {
 static int helio_dvfsrc_reg_config(struct helio_dvfsrc *dvfsrc,
 					struct reg_config *config)
 {
-#if 0
-	int i;
-
-	mutex_lock(&dvfsrc->devfreq->lock);
-	for (i = 0; config[i].offset != -1; i++)
-		dvfsrc_write(dvfsrc, config[i].offset, config[i].val);
-
-	mutex_unlock(&dvfsrc->devfreq->lock);
-#endif
 	return 0;
 }
 
@@ -248,7 +238,7 @@ static struct devfreq_governor helio_dvfsrc_governor = {
 
 static void helio_dvfsrc_enable(struct helio_dvfsrc *dvfsrc)
 {
-	mutex_lock(&dvfsrc->devfreq->lock);
+	mutex_lock(&sw_req1_mutex);
 
 #if !defined(CONFIG_MACH_MT6771) && !defined(CONFIG_MACH_MT6765)
 	dvfsrc_write(dvfsrc, DVFSRC_VCORE_REQUEST,
@@ -259,7 +249,7 @@ static void helio_dvfsrc_enable(struct helio_dvfsrc *dvfsrc)
 
 	dvfsrc->enable = 1;
 
-	mutex_unlock(&dvfsrc->devfreq->lock);
+	mutex_unlock(&sw_req1_mutex);
 }
 
 int is_dvfsrc_opp_fixed(void)
@@ -291,7 +281,7 @@ static int commit_data(struct helio_dvfsrc *dvfsrc, int type, int data)
 	int opp_uv;
 	int vcore_uv = 0;
 
-	mutex_lock(&dvfsrc->devfreq->lock);
+	mutex_lock(&sw_req1_mutex);
 
 	if (!dvfsrc->enable)
 		goto out;
@@ -422,7 +412,7 @@ static int commit_data(struct helio_dvfsrc *dvfsrc, int type, int data)
 
 		if (vcore_reg_id) {
 			vcore_uv = regulator_get_voltage(vcore_reg_id);
-			opp_uv = get_vcore_opp_volt(get_min_opp_for_vcore(opp));
+			opp_uv = get_vcore_opp_volt(opp);
 				if (vcore_uv < opp_uv) {
 					pr_info("DVFS FAIL= %d %d 0x%08x %08x\n",
 					vcore_uv, opp_uv,
@@ -481,7 +471,7 @@ static int commit_data(struct helio_dvfsrc *dvfsrc, int type, int data)
 	}
 
 out:
-	mutex_unlock(&dvfsrc->devfreq->lock);
+	mutex_unlock(&sw_req1_mutex);
 
 	return ret;
 }
@@ -492,7 +482,7 @@ void dvfsrc_set_vcore_request(unsigned int mask, unsigned int vcore_level)
 	int r = 0;
 	unsigned int val = 0;
 
-	mutex_lock(&dvfsrc->devfreq->lock);
+	mutex_lock(&sw_req1_mutex);
 
 	/* check DVFS idle */
 	r = wait_for_completion
@@ -515,7 +505,7 @@ void dvfsrc_set_vcore_request(unsigned int mask, unsigned int vcore_level)
 	}
 
 out:
-	mutex_unlock(&dvfsrc->devfreq->lock);
+	mutex_unlock(&sw_req1_mutex);
 }
 #endif
 
@@ -685,16 +675,18 @@ static int helio_dvfsrc_probe(struct platform_device *pdev)
 						 &helio_devfreq_profile,
 						 "helio_dvfsrc",
 						 NULL);
+
+	if (dvfsrc->devfreq) {
 #if !defined(CONFIG_MACH_MT6771) && !defined(CONFIG_MACH_MT6765)
-	vcore_opp_init();
-	dvfsrc_init_opp_table();
-	spm_check_status_before_dvfs();
+		vcore_opp_init();
+		dvfsrc_init_opp_table();
+		spm_check_status_before_dvfs();
 
-	ret = helio_dvfsrc_reg_config(dvfsrc, dvfsrc->init_config);
-	if (ret)
-		return ret;
+		ret = helio_dvfsrc_reg_config(dvfsrc, dvfsrc->init_config);
+		if (ret)
+			return ret;
 #endif
-
+	}
 	pm_qos_notifier_register(dvfsrc);
 	helio_dvfsrc_enable(dvfsrc);
 
@@ -710,8 +702,8 @@ static int helio_dvfsrc_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id helio_dvfsrc_of_match[] = {
-	{ .compatible = "mediatek,dvfsrc_top" },
-	{ .compatible = "mediatek,helio-dvfsrc-v2" },
+	{ .compatible = "mediatek,dvfsrc_top" ,},
+	{ .compatible = "mediatek,helio-dvfsrc-v2" ,},
 	{ },
 };
 
@@ -722,9 +714,13 @@ static __maybe_unused int helio_dvfsrc_suspend(struct device *dev)
 	struct helio_dvfsrc *dvfsrc = dev_get_drvdata(dev);
 	int ret = 0;
 
+#if defined(CONFIG_MACH_MT6771)
+	if (IS_ERR(dvfsrc->devfreq))
+		return ret;
+#endif
 	ret = devfreq_suspend_device(dvfsrc->devfreq);
 	if (ret < 0) {
-		dev_err(dev, "failed to suspend the devfreq devices\n");
+		dev_info(dev, "failed to suspend the devfreq devices\n");
 		return ret;
 	}
 
@@ -736,9 +732,13 @@ static __maybe_unused int helio_dvfsrc_resume(struct device *dev)
 	struct helio_dvfsrc *dvfsrc = dev_get_drvdata(dev);
 	int ret = 0;
 
+#if defined(CONFIG_MACH_MT6771)
+	if (IS_ERR(dvfsrc->devfreq))
+		return ret;
+#endif
 	ret = devfreq_resume_device(dvfsrc->devfreq);
 	if (ret < 0) {
-		dev_err(dev, "failed to resume the devfreq devices\n");
+		dev_info(dev, "failed to resume the devfreq devices\n");
 		return ret;
 	}
 	return ret;
@@ -763,7 +763,7 @@ static int __init helio_dvfsrc_init(void)
 
 	ret = devfreq_add_governor(&helio_dvfsrc_governor);
 	if (ret) {
-		pr_err("%s: failed to add governor: %d\n", __func__, ret);
+		pr_info("%s: failed to add governor: %d\n", __func__, ret);
 		return ret;
 	}
 
@@ -783,7 +783,7 @@ static void __exit helio_dvfsrc_exit(void)
 
 	ret = devfreq_remove_governor(&helio_dvfsrc_governor);
 	if (ret)
-		pr_err("%s: failed to remove governor: %d\n", __func__, ret);
+		pr_info("%s: failed to remove governor: %d\n", __func__, ret);
 }
 module_exit(helio_dvfsrc_exit)
 

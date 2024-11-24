@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 #include <linux/slab.h>
 #include <linux/kernel.h>
@@ -129,7 +121,7 @@ static struct mtk_usb_boost {
 	struct timeval tv_ref_time;
 	int work_cnt;
 	struct act_arg_obj act_arg;
-	void (*request_func)(int id);
+	void (*request_func)(int value);
 } boost_inst[_TYPE_MAXID];
 
 static int update_time(int id);

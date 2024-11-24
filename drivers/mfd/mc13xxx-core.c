@@ -282,8 +282,21 @@ int mc13xxx_adc_do_conversion(struct mc13xxx *mc13xxx, unsigned int mode,
 	       MC13XXX_ADC0_CHRGRAWDIV;
 	adc1 = MC13XXX_ADC1_ADEN | MC13XXX_ADC1_ADTRIGIGN | MC13XXX_ADC1_ASC;
 
-	if (channel > 7)
+	/*
+	 * Channels mapped through ADIN7:
+	 * 7  - General purpose ADIN7
+	 * 16 - UID
+	 * 17 - Die temperature
+	 */
+	if (channel > 7 && channel < 16) {
 		adc1 |= MC13XXX_ADC1_ADSEL;
+	} else if (channel == 16) {
+		adc0 |= MC13XXX_ADC0_ADIN7SEL_UID;
+		channel = 7;
+	} else if (channel == 17) {
+		adc0 |= MC13XXX_ADC0_ADIN7SEL_DIE;
+		channel = 7;
+	}
 
 	switch (mode) {
 	case MC13XXX_ADC_MODE_TS:
@@ -313,8 +326,10 @@ int mc13xxx_adc_do_conversion(struct mc13xxx *mc13xxx, unsigned int mode,
 		adc1 |= MC13783_ADC1_ATOX;
 
 	dev_dbg(mc13xxx->dev, "%s: request irq\n", __func__);
-	mc13xxx_irq_request(mc13xxx, MC13XXX_IRQ_ADCDONE,
+	ret = mc13xxx_irq_request(mc13xxx, MC13XXX_IRQ_ADCDONE,
 			mc13xxx_handler_adcdone, __func__, &adcdone_data);
+	if (ret)
+		goto out;
 
 	mc13xxx_reg_write(mc13xxx, MC13XXX_ADC0, adc0);
 	mc13xxx_reg_write(mc13xxx, MC13XXX_ADC1, adc1);

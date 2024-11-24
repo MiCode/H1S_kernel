@@ -1,18 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /******************************************************************************
@@ -69,6 +58,7 @@
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
 #include <linux/wait.h>
+#include <mt-plat/aee.h>
 #include "mtk-soc-pcm-platform.h"
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -126,7 +116,7 @@
 #define SOC_HIGH_USE_CHANNELS_MAX 8
 
 /*#ifdef AUDIO_ALLOCATE_SMP_RATE_DECLARE*/
-#if 1
+
 /* Conventional and unconventional sample rate supported */
 static const unsigned int soc_fm_supported_sample_rates[3] = {32000, 44100,
 							      48000};
@@ -147,13 +137,6 @@ static const unsigned int soc_high_supported_sample_rates[14] = {
 
 /* Conventional and unconventional channels supported */
 static const unsigned int soc_multiple_supported_channels[3] = {1, 2, 4};
-
-#else
-extern const unsigned int soc_fm_supported_sample_rates[3];
-extern const unsigned int soc_voice_supported_sample_rates[3];
-extern const unsigned int soc_normal_supported_sample_rates[9];
-extern const unsigned int soc_high_supported_sample_rates[13];
-#endif
 
 unsigned long audio_frame_to_bytes(struct snd_pcm_substream *substream,
 				   unsigned long count);

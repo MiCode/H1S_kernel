@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 
@@ -31,7 +23,7 @@
 #include <linux/if_ether.h>
 #include <linux/bitops.h>
 #include <linux/dma-mapping.h>
-#include <mt-plat/mtk_ccci_common.h>
+#include "mt-plat/mtk_ccci_common.h"
 
 /*
  * normal workqueue:   MODEM_CAP_NAPI=0, ENABLE_NAPI_GRO=0, ENABLE_WQ_GRO=0
@@ -40,9 +32,7 @@
  * NAPI with GRO:      MODEM_CAP_NAPI=1, ENABLE_NAPI_GRO=1, ENABLE_WQ_GRO=0
  */
 /* #define ENABLE_NAPI_GRO */
-#ifdef CONFIG_MTK_ECCCI_C2K
 #define ENABLE_WQ_GRO
-#endif
 
 #define  CCMNI_MTU              1500
 #define  CCMNI_TX_QUEUE         1000
@@ -59,13 +49,14 @@
 #define  SIOCFWDFILTER          (SIOCDEVPRIVATE + 2)
 /* disable ack first mechanism */
 #define  SIOCACKPRIO          (SIOCDEVPRIVATE + 3)
-
+/* push the queued packet to stack */
+#define  SIOPUSHPENDING       (SIOCDEVPRIVATE + 4)
 
 
 #define  IS_CCMNI_LAN(dev)      \
 	(strncmp(dev->name, "ccmni-lan", 9) == 0)
 #define  CCMNI_TX_PRINT_F	(0x1 << 0)
-#define  MDDP_TAG_PATTERN       0x4646
+#define MDT_TAG_PATTERN         0x46464646
 #define  CCMNI_FLT_NUM          32
 
 /* #define CCMNI_MET_DEBUG */
@@ -165,13 +156,15 @@ struct ccmni_ccci_ops {
 	int (*napi_poll)(int md_id, int ccmni_idx,
 			struct napi_struct *napi, int weight);
 	int (*get_ccmni_ch)(int md_id, int ccmni_idx, struct ccmni_ch *channel);
+	void (*ccci_net_init)(char *name);
+	int (*ccci_handle_port_list)(int status, char *name);
 };
 
 struct ccmni_ctl_block {
 	struct ccmni_ccci_ops   *ccci_ops;
 	struct ccmni_instance   *ccmni_inst[32];
 	unsigned int       md_sta;
-	struct wakeup_source   ccmni_wakelock;
+	struct wakeup_source   *ccmni_wakelock;
 	char               wakelock_name[16];
 	unsigned long long net_rx_delay[4];
 };
@@ -193,24 +186,15 @@ struct ccmni_dev_ops {
 	int (*is_ack_skb)(int md_id, struct sk_buff *skb);
 };
 
+struct md_drt_tag {
+	u8  in_netif_id;
+	u8  out_netif_id;
+	u16 port;
+};
+
 struct md_tag_packet {
-	u_int16_t   guard_pattern; /* 0x4646 */
-	u_int8_t    version;
-	u_int8_t    tag_len;       /*total len*/
-	union {
-		struct {
-			u_int8_t    in_netif_id;
-			u_int8_t    out_netif_id;
-			u_int16_t   port;
-		} v1;
-		struct {
-			u_int8_t    tag_info;
-			u_int8_t    reserved;
-			u_int16_t   port;
-			u_int32_t   lan_netif_id;
-			u_int32_t   ip;
-		} v2;
-	};
+	u32 guard_pattern;
+	struct md_drt_tag info;
 };
 
 enum {

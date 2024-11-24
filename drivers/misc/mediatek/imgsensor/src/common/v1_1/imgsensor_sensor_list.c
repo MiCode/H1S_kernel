@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "kd_imgsensor.h"
@@ -25,6 +16,9 @@
  */
 struct IMGSENSOR_SENSOR_LIST
 	gimgsensor_sensor_list[MAX_NUM_OF_SUPPORT_SENSOR] = {
+#if defined(IMX766_MIPI_RAW)
+{IMX766_SENSOR_ID, SENSOR_DRVNAME_IMX766_MIPI_RAW, IMX766_MIPI_RAW_SensorInit},
+#endif
 #if defined(S5KJD1_MIPI_RAW)
 {S5KJD1_SENSOR_ID, SENSOR_DRVNAME_S5KJD1_MIPI_RAW,
 	S5KJD1_MIPI_RAW_SensorInit},
@@ -152,6 +146,9 @@ struct IMGSENSOR_SENSOR_LIST
 #endif
 #if defined(IMX616_MIPI_RAW)
 {IMX616_SENSOR_ID, SENSOR_DRVNAME_IMX616_MIPI_RAW, IMX616_MIPI_RAW_SensorInit},
+#endif
+#if defined(IMX355_MIPI_RAW)
+{IMX355_SENSOR_ID, SENSOR_DRVNAME_IMX355_MIPI_RAW, IMX355_MIPI_RAW_SensorInit},
 #endif
 #if defined(IMX355OFILM_MIPI_RAW)
 {IMX355OFILM_SENSOR_ID, SENSOR_DRVNAME_IMX355OFILM_MIPI_RAW,
@@ -332,6 +329,14 @@ struct IMGSENSOR_SENSOR_LIST
 {OV48C_SENSOR_ID, SENSOR_DRVNAME_OV48C_MIPI_RAW,
 	OV48C_MIPI_RAW_SensorInit},
 #endif
+#if defined(OV13B10_MIPI_RAW)
+{OV13B10_SENSOR_ID, SENSOR_DRVNAME_OV13B10_MIPI_RAW,
+	OV13B10_MIPI_RAW_SensorInit},
+#endif
+#if defined(OV02B10_MIPI_RAW)
+{OV02B10_SENSOR_ID, SENSOR_DRVNAME_OV02B10_MIPI_RAW,
+	OV02B10_MIPI_RAW_SensorInit},
+#endif
 	/*S5K*/
 #if defined(S5K2LQSX_MIPI_RAW)
 {S5K2LQSX_SENSOR_ID, SENSOR_DRVNAME_S5K2LQSX_MIPI_RAW,
@@ -339,6 +344,9 @@ struct IMGSENSOR_SENSOR_LIST
 #endif
 #if defined(S5K4H7_MIPI_RAW)
 {S5K4H7_SENSOR_ID, SENSOR_DRVNAME_S5K4H7_MIPI_RAW, S5K4H7_MIPI_RAW_SensorInit},
+#endif
+#if defined(S5K4H7YXSUB_MIPI_RAW)
+{S5K4H7YXSUB_SENSOR_ID, SENSOR_DRVNAME_S5K4H7YXSUB_MIPI_RAW, S5K4H7YXSUB_MIPI_RAW_SensorInit},
 #endif
 #if defined(S5K3P8SP_MIPI_RAW)
 {S5K3P8SP_SENSOR_ID, SENSOR_DRVNAME_S5K3P8SP_MIPI_RAW,
@@ -616,6 +624,12 @@ struct IMGSENSOR_SENSOR_LIST
 {T8EV5_SENSOR_ID, SENSOR_DRVNAME_T8EV5_YUV, T8EV5_YUV_SensorInit},
 #endif
 
+#if defined(OV13B10LN_MIPI_RAW)
+	{OV13B10LN_SENSOR_ID, SENSOR_DRVNAME_OV13B10LN_MIPI_RAW, OV13B10LN_MIPI_RAW_SensorInit},
+#endif
+#if defined(S5K4H7LN_MIPI_RAW)
+	{S5K4H7LN_SENSOR_ID, SENSOR_DRVNAME_S5K4H7LN_MIPI_RAW, S5K4H7LN_MIPI_RAW_SensorInit},
+#endif
 	/*  ADD sensor driver before this line */
 	{0, {0}, NULL}, /* end of list */
 };

@@ -821,7 +821,8 @@ void rtl92de_set_desc(struct ieee80211_hw *hw, u8 *pdesc, bool istx,
 	}
 }
 
-u32 rtl92de_get_desc(u8 *p_desc, bool istx, u8 desc_name)
+u64 rtl92de_get_desc(struct ieee80211_hw *hw,
+		     u8 *p_desc, bool istx, u8 desc_name)
 {
 	u32 ret = 0;
 
@@ -864,7 +865,7 @@ bool rtl92de_is_tx_desc_closed(struct ieee80211_hw *hw,
 	struct rtl_pci *rtlpci = rtl_pcidev(rtl_pcipriv(hw));
 	struct rtl8192_tx_ring *ring = &rtlpci->tx_ring[hw_queue];
 	u8 *entry = (u8 *)(&ring->desc[ring->idx]);
-	u8 own = (u8)rtl92de_get_desc(entry, true, HW_DESC_OWN);
+	u8 own = (u8)rtl92de_get_desc(hw, entry, true, HW_DESC_OWN);
 
 	/* a beacon packet will only use the first
 	 * descriptor by defaut, and the own bit may not

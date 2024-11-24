@@ -42,10 +42,8 @@
 #define CREATE_TRACE_POINTS
 #include "vsyscall_trace.h"
 
-static enum { EMULATE, NATIVE, NONE } vsyscall_mode =
-#if defined(CONFIG_LEGACY_VSYSCALL_NATIVE)
-	NATIVE;
-#elif defined(CONFIG_LEGACY_VSYSCALL_NONE)
+static enum { EMULATE, NONE } vsyscall_mode =
+#ifdef CONFIG_LEGACY_VSYSCALL_NONE
 	NONE;
 #else
 	EMULATE;
@@ -56,8 +54,6 @@ static int __init vsyscall_setup(char *str)
 	if (str) {
 		if (!strcmp("emulate", str))
 			vsyscall_mode = EMULATE;
-		else if (!strcmp("native", str))
-			vsyscall_mode = NATIVE;
 		else if (!strcmp("none", str))
 			vsyscall_mode = NONE;
 		else
@@ -111,7 +107,7 @@ static bool write_ok_or_segv(unsigned long ptr, size_t size)
 		thread->cr2		= ptr;
 		thread->trap_nr		= X86_TRAP_PF;
 
-		memset(&info, 0, sizeof(info));
+		clear_siginfo(&info);
 		info.si_signo		= SIGSEGV;
 		info.si_errno		= 0;
 		info.si_code		= SEGV_MAPERR;
@@ -131,6 +127,7 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 	int vsyscall_nr, syscall_nr, tmp;
 	int prev_sig_on_uaccess_err;
 	long ret;
+	unsigned long orig_dx;
 
 	/*
 	 * No point in checking CS -- the only way to get here is a user mode
@@ -138,10 +135,6 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 	 */
 
 	WARN_ON_ONCE(address != regs->ip);
-
-	/* This should be unreachable in NATIVE mode. */
-	if (WARN_ON(vsyscall_mode == NATIVE))
-		return false;
 
 	if (vsyscall_mode == NONE) {
 		warn_bad_vsyscall(KERN_INFO, regs,
@@ -208,7 +201,7 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 
 	/*
 	 * Handle seccomp.  regs->ip must be the original value.
-	 * See seccomp_send_sigsys and Documentation/prctl/seccomp_filter.txt.
+	 * See seccomp_send_sigsys and Documentation/userspace-api/seccomp_filter.rst.
 	 *
 	 * We could optimize the seccomp disabled case, but performance
 	 * here doesn't matter.
@@ -235,19 +228,22 @@ bool emulate_vsyscall(struct pt_regs *regs, unsigned long address)
 	ret = -EFAULT;
 	switch (vsyscall_nr) {
 	case 0:
-		ret = sys_gettimeofday(
-			(struct timeval __user *)regs->di,
-			(struct timezone __user *)regs->si);
+		/* this decodes regs->di and regs->si on its own */
+		ret = __x64_sys_gettimeofday(regs);
 		break;
 
 	case 1:
-		ret = sys_time((time_t __user *)regs->di);
+		/* this decodes regs->di on its own */
+		ret = __x64_sys_time(regs);
 		break;
 
 	case 2:
-		ret = sys_getcpu((unsigned __user *)regs->di,
-				 (unsigned __user *)regs->si,
-				 NULL);
+		/* while we could clobber regs->dx, we didn't in the past... */
+		orig_dx = regs->dx;
+		regs->dx = 0;
+		/* this decodes regs->di, regs->si and regs->dx on its own */
+		ret = __x64_sys_getcpu(regs);
+		regs->dx = orig_dx;
 		break;
 	}
 
@@ -370,9 +366,7 @@ void __init map_vsyscall(void)
 
 	if (vsyscall_mode != NONE) {
 		__set_fixmap(VSYSCALL_PAGE, physaddr_vsyscall,
-			     vsyscall_mode == NATIVE
-			     ? PAGE_KERNEL_VSYSCALL
-			     : PAGE_KERNEL_VVAR);
+			     PAGE_KERNEL_VVAR);
 		set_vsyscall_pgtable_user_bits(swapper_pg_dir);
 	}
 

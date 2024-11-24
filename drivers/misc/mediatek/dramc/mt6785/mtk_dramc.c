@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 #include <linux/kernel.h>
 #include <linux/device.h>
@@ -38,7 +31,7 @@
 #include "mtk_dramc.h"
 #include "dramc.h"
 #ifdef EMI_READY
-#include "mt_emi_api.h"
+#include <memory/mediatek/emi.h>
 #endif
 
 #include <mt-plat/aee.h>
@@ -48,10 +41,20 @@
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
 
-#include <mt-plat/mtk_gpt.h>
 #include <mt-plat/sync_write.h>
 
 #include <linux/interrupt.h>
+
+struct mem_desc {
+	u64 start;
+	u64 size;
+};
+
+struct dram_info {
+	u32 rank_num;
+	struct mem_desc rank_info[4];
+};
+
 
 struct mt_gpt_timers {
 	int tmr_irq;
@@ -96,12 +99,16 @@ unsigned int DRAM_TYPE;
 unsigned int CH_NUM;
 unsigned int CBT_MODE;
 unsigned int highfreq_4266;
+unsigned int DRAMC_INIT_DONE;
+
 
 /*extern bool spm_vcorefs_is_dvfs_in_porgress(void);*/
 #define Reg_Sync_Writel(addr, val)   writel(val, IOMEM(addr))
 #define Reg_Readl(addr) readl(IOMEM(addr))
 
+#ifndef EMI_READY
 static unsigned int dram_rank_num;
+#endif
 static unsigned int dram_mr_mode;
 #ifdef SW_TX_TRACKING
 static unsigned int dram_sw_tx;
@@ -642,7 +649,7 @@ int enter_pasr_dpd_config(unsigned char segment_rank0,
 
 /* #if PASR_TEST_SCENARIO == PASR_SUPPORT_2_CHANNEL*/
 #ifdef EMI_READY
-	for (iChannelIdx = 0; iChannelIdx < get_ch_num(); iChannelIdx++) {
+	for (iChannelIdx = 0; iChannelIdx < mtk_emicen_get_ch_cnt(); iChannelIdx++) {
 #else
 	for (iChannelIdx = 0; iChannelIdx < 2; iChannelIdx++) {
 #endif
@@ -697,7 +704,7 @@ int enter_pasr_dpd_config(unsigned char segment_rank0,
 				((0x1<<4) | (0x1<<6)), u4rg_24);
 		/* CKE0 CKE1 fix on no matter the setting of CKE2RANK*/
 #ifdef EMI_READY
-		for (iRankIdx = 0; iRankIdx < get_rk_num(); iRankIdx++) {
+		for (iRankIdx = 0; iRankIdx < mtk_emicen_get_rk_cnt(); iRankIdx++) {
 #else
 		for (iRankIdx = 0; iRankIdx < 2; iRankIdx++) {
 #endif
@@ -1268,10 +1275,16 @@ int get_ddr_type(void)
 }
 EXPORT_SYMBOL(get_ddr_type);
 
+unsigned int mtk_dramc_get_ddr_type(void)
+{
+	return DRAM_TYPE;
+}
+EXPORT_SYMBOL(mtk_dramc_get_ddr_type);
+
 int get_emi_ch_num(void)
 {
 #ifdef EMI_READY
-	return get_ch_num();
+	return mtk_emicen_get_ch_cnt();
 #else
 	return 2;
 #endif
@@ -1285,7 +1298,12 @@ int dram_steps_freq(unsigned int step)
 
 	switch (step) {
 	case 0:
-		freq = highfreq_4266 ? 4266 : 3733;
+		if (!DRAMC_INIT_DONE) {
+			freq = 4266;
+			return freq;
+		}
+		//freq = highfreq_4266 ? 4266 : 3733;
+		freq = get_dram_data_rate();
 		break;
 	case 1:
 		freq = 3094;
@@ -1315,7 +1333,7 @@ int dram_steps_freq(unsigned int step)
 		freq = 819;
 		break;
 	default:
-		return -1;
+		return freq;
 	}
 	return freq;
 }
@@ -1430,8 +1448,10 @@ DRIVER_ATTR(read_mr4, 0664, read_mr4_show, read_mr4_store);
 #endif
 
 /*DRIVER_ATTR(dram_dfs, 0664, dram_dfs_show, dram_dfs_store);*/
+#if defined(SW_ZQCS) || defined(SW_TX_TRACKING)
 static struct timer_list zqcs_timer;
 static unsigned char low_freq_counter;
+#endif
 DEFINE_SPINLOCK(sw_zq_tx_lock);
 
 void zqcs_timer_callback(unsigned long data)
@@ -1496,12 +1516,12 @@ void zqcs_timer_callback(unsigned long data)
 #endif
   /* CH0_Rank0 --> CH1Rank0 */
 #ifdef EMI_READY
-	for (RankCounter = 0; RankCounter < get_rk_num(); RankCounter++) {
+	for (RankCounter = 0; RankCounter < mtk_emicen_get_rk_cnt(); RankCounter++) {
 #else
 	for (RankCounter = 0; RankCounter < 2; RankCounter++) {
 #endif
 #ifdef EMI_READY
-		for (CHCounter = 0; CHCounter < get_ch_num(); CHCounter++) {
+		for (CHCounter = 0; CHCounter < mtk_emicen_get_ch_cnt(); CHCounter++) {
 #else
 		for (CHCounter = 0; CHCounter < 2; CHCounter++) {
 #endif
@@ -1842,11 +1862,10 @@ static int dram_probe(struct platform_device *pdev)
 		return -1;
 	}
 
-#ifdef EMI_READY
-	DRAM_TYPE = get_dram_type();
-#else
+	//DRAM_TYPE = get_dram_type();
+
 	DRAM_TYPE = TYPE_LPDDR4;
-#endif
+
 	dramc_info("dram type =%d\n", DRAM_TYPE);
 
 	if (!DRAM_TYPE) {
@@ -1855,7 +1874,7 @@ static int dram_probe(struct platform_device *pdev)
 	}
 
 #ifdef EMI_READY
-	CH_NUM = get_ch_num();
+	CH_NUM = mtk_emicen_get_ch_cnt();
 	dramc_info("Channel num =%d\n", CH_NUM);
 
 	if (!CH_NUM) {
@@ -1890,6 +1909,7 @@ static int dram_probe(struct platform_device *pdev)
 		break;
 	}
 
+	DRAMC_INIT_DONE = 1;  //1, means DRAMC base addr init done!
 	if (get_dram_data_rate() == 4266)
 		highfreq_4266 = 1;
 
@@ -1911,14 +1931,6 @@ static int dram_probe(struct platform_device *pdev)
 	/* if (((DRAM_TYPE == TYPE_LPDDR4) || (DRAM_TYPE == TYPE_LPDDR4X)) &&
 	 *		(dram_sw_tx || dram_sw_zq)) {
 	 */
-	if (0) {
-		low_freq_counter = 10;
-		init_timer_deferrable(&zqcs_timer);
-		zqcs_timer.function = zqcs_timer_callback;
-		zqcs_timer.data = 0;
-		if (mod_timer(&zqcs_timer, jiffies + msecs_to_jiffies(280)))
-			dramc_info("Error in ZQCS mod_timer\n");
-	}
 
 	ret = driver_create_file(pdev->dev.driver,
 	&driver_attr_emi_clk_mem_test);
@@ -1995,7 +2007,7 @@ static void __exit dram_test_exit(void)
 	platform_driver_unregister(&dram_test_drv);
 }
 
-postcore_initcall(dram_test_init);
+device_initcall_sync(dram_test_init);
 module_exit(dram_test_exit);
 
 void *mt_dramc_chn_base_get(int channel)
@@ -2073,6 +2085,28 @@ unsigned int mt_dramc_chp_get(unsigned int emi_cona)
 	return chp + 7;
 }
 
+#ifdef EMI_READY
+phys_addr_t mt_dramc_rankbase_get(unsigned int rank)
+{
+	int rank_num = mtk_emicen_get_rk_cnt(),
+	i = 0;
+	phys_addr_t rank_base = 0x40000000;
+
+	if (rank >= rank_num)
+		return 0;
+
+	for (i = rank; i > 0; i--)
+		rank_base += mtk_emicen_get_rk_size(i-1) * 0x8000000;
+
+	return rank_base;
+}
+
+unsigned int mt_dramc_ta_support_ranks(void)
+{
+	return mtk_emicen_get_rk_cnt();
+}
+
+#else
 phys_addr_t mt_dramc_rankbase_get(unsigned int rank)
 {
 	if (!get_dram_info)
@@ -2088,6 +2122,7 @@ unsigned int mt_dramc_ta_support_ranks(void)
 {
 	return dram_rank_num;
 }
+#endif
 
 late_initcall(dramc_apxgpt3_init);
 MODULE_DESCRIPTION("MediaTek DRAMC Driver v0.1");

@@ -1,24 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
  * Copyright (c) 2019 MediaTek Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files
- * (the "Software"), to deal in the Software without restriction,
- * including without limitation the rights to use, copy, modify, merge,
- * publish, distribute, sublicense, and/or sell copies of the Software,
- * and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
- * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+/*
+ * GenieZone (hypervisor-based seucrity platform) enables hardware protected
+ * and isolated security execution environment, includes
+ * 1. GZ hypervisor
+ * 2. Hypervisor-TEE OS (built-in Trusty OS)
+ * 3. Drivers (ex: debug, communication and interrupt) for GZ and
+ *    hypervisor-TEE OS
+ * 4. GZ and hypervisor-TEE and GZ framework (supporting multiple TEE
+ *    ecosystem, ex: M-TEE, Trusty, GlobalPlatform, ...)
  */
 
 #ifndef __SMCALL_MTEE_H__
@@ -126,6 +120,9 @@
 #define SMC_FC_GZ_GET_CMASK			\
 			SMC_FASTCALL_NR(SMC_ENTITY_GZ_SECURE_MONITOR, 12)
 
+#define SMC_FC_GZ_GET_CPU_REQUEST			\
+			SMC_FASTCALL_NR(SMC_ENTITY_GZ_SECURE_MONITOR, 13)
+
 #define SMC_SC_GZ_NS_RETURN		\
 			SMC_STDCALL_NR(SMC_ENTITY_GZ_SECURE_MONITOR, 0)
 
@@ -133,7 +130,8 @@
 #define TRUSTY_API_VERSION_SMP		(2)
 #define TRUSTY_API_VERSION_SMCNR_TABLE	(3)
 #define TRUSTY_API_VERSION_SMP_NOP	(4)
-#define TRUSTY_API_VERSION_CURRENT	(3)
+#define TRUSTY_API_VERSION_MULTI_VQUEUE	(5)
+#define TRUSTY_API_VERSION_CURRENT	(5)
 #define NEBULA_API_VERSION_CURRENT	(3)
 
 /*************************/
@@ -163,6 +161,8 @@
 			SMC_FASTCALL_NR(SMC_ENTITY_MT_TRUSTED_OS, 0xF09)
 #define MT_SMC_FC_GZ_DEVAPC_VIO		\
 			SMC_FASTCALL_NR(SMC_ENTITY_MT_TRUSTED_OS, 0xF0A)
+#define MT_SMC_FC_GZ_KTIME		\
+			SMC_FASTCALL_NR(SMC_ENTITY_MT_TRUSTED_OS, 0xF0B)
 
 #define MT_SMC_SC_GZ_SET_RAMCONSOLE	\
 			SMC_STDCALL_NR(SMC_ENTITY_MT_TRUSTED_OS, 0xFF80)

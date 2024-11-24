@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include "mtk_layering_rule.h"
 #include "mtk_drm_crtc.h"
@@ -20,12 +12,12 @@
 static struct drm_crtc *dev_crtc;
 
 /* add for mm qos */
-static struct pm_qos_request mm_freq_request;
 static u64 g_freq_steps[MAX_FREQ_STEP];
 static int g_freq_level = -1;
 static int step_size = 1;
 
 #ifdef MTK_FB_MMDVFS_SUPPORT
+static struct mtk_pm_qos_request mm_freq_request;
 int __mtk_disp_pmqos_slot_look_up(int comp_id, int mode)
 {
 	switch (comp_id) {
@@ -103,6 +95,8 @@ int __mtk_disp_pmqos_port_look_up(int comp_id)
 #if defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6893)
 	case DDP_COMPONENT_OVL0:
 		return M4U_PORT_L0_OVL_RDMA0;
+	case DDP_COMPONENT_OVL1:
+		return M4U_PORT_L1_OVL_RDMA1;
 	case DDP_COMPONENT_OVL0_2L:
 		return M4U_PORT_L1_OVL_2L_RDMA0;
 	case DDP_COMPONENT_OVL1_2L:
@@ -135,7 +129,8 @@ int __mtk_disp_pmqos_port_look_up(int comp_id)
 		return M4U_PORT_L0_DISP_WDMA0;
 #endif
 
-#if defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6833)
+#if defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6833) \
+	|| defined(CONFIG_MACH_MT6877) || defined(CONFIG_MACH_MT6781)
 	case DDP_COMPONENT_OVL0:
 		return M4U_PORT_L0_OVL_RDMA0;
 	case DDP_COMPONENT_OVL0_2L:
@@ -145,6 +140,12 @@ int __mtk_disp_pmqos_port_look_up(int comp_id)
 	case DDP_COMPONENT_WDMA0:
 		return M4U_PORT_L1_DISP_WDMA0;
 #endif
+
+#if defined(CONFIG_MACH_MT6877)
+	case DDP_COMPONENT_OVL1_2L:
+		return M4U_PORT_L1_OVL_2L_RDMA1;
+#endif
+
 
 	default:
 		DDPPR_ERR("%s, unknown comp %d\n", __func__, comp_id);
@@ -195,6 +196,10 @@ int mtk_disp_set_hrt_bw(struct mtk_drm_crtc *mtk_crtc, unsigned int bw)
 		for_each_comp_in_crtc_target_path(comp, mtk_crtc, j, i) {
 			ret |= mtk_ddp_comp_io_cmd(comp, NULL, PMQOS_SET_HRT_BW,
 						   &tmp);
+		}
+		if (mtk_crtc->is_dual_pipe) {
+			for_each_comp_in_dual_pipe(comp, mtk_crtc, i, j)
+				mtk_ddp_comp_io_cmd(comp, NULL, PMQOS_SET_HRT_BW, &tmp);
 		}
 	}
 
@@ -300,7 +305,7 @@ int mtk_disp_hrt_cond_init(struct drm_crtc *crtc)
 void mtk_drm_mmdvfs_init(void)
 {
 
-	pm_qos_add_request(&mm_freq_request, PM_QOS_DISP_FREQ,
+	mtk_pm_qos_add_request(&mm_freq_request, PM_QOS_DISP_FREQ,
 			   PM_QOS_MM_FREQ_DEFAULT_VALUE);
 
 	mmdvfs_qos_get_freq_steps(PM_QOS_DISP_FREQ, g_freq_steps, &step_size);
@@ -312,7 +317,7 @@ static void mtk_drm_set_mmclk(struct drm_crtc *crtc, int level,
 	if (drm_crtc_index(crtc) != 0)
 		return;
 
-	if (level < 0 || level > MAX_FREQ_STEP)
+	if (level < 0 || level >= MAX_FREQ_STEP)
 		level = -1;
 
 	if (level == g_freq_level)
@@ -322,11 +327,13 @@ static void mtk_drm_set_mmclk(struct drm_crtc *crtc, int level,
 
 	DDPINFO("%s set mmclk level: %d\n", caller, g_freq_level);
 
+#ifdef MTK_FB_MMDVFS_SUPPORT
 	if (g_freq_level >= 0)
-		pm_qos_update_request(&mm_freq_request,
+		mtk_pm_qos_update_request(&mm_freq_request,
 			g_freq_steps[g_freq_level]);
 	else
-		pm_qos_update_request(&mm_freq_request, 0);
+		mtk_pm_qos_update_request(&mm_freq_request, 0);
+#endif
 }
 
 void mtk_drm_set_mmclk_by_pixclk(struct drm_crtc *crtc,

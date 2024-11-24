@@ -1,19 +1,6 @@
-/******************************************************************************
- * mtk_pwm.c PWM Drvier
- *
- * Copyright (c) 2016, Media Teck.inc
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public Licence,
- * version 2, as publish by the Free Software Foundation.
- *
- * This program is distributed and in hope it will be useful, but WITHOUT
- * ANY WARRNTY; without even the implied warranty of MERCHANTABITLITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- *
- ******************************************************************************
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/init.h>
@@ -1817,13 +1804,6 @@ static ssize_t pwm_debug_store(struct device *dev,
 		conf.PWM_MODE_MEMORY_REGS.STOP_BITPOS_VALUE = 30;
 
 #if LARGE_8G_DRAM_TEST
-	#if 0
-		if (dma_set_mask(dev, DMA_BIT_MASK(36))) {
-			pr_debug(T "[PWM]  dma_set_mask failed, dma_mask:%llx",
-				DMA_BIT_MASK(36));
-			return count;
-		}
-	#endif
 		if (dma_set_coherent_mask(dev, DMA_BIT_MASK(36))) {
 			pr_debug(T "[PWM] dma alloc fail, dma_mask:0x%llx",
 					DMA_BIT_MASK(36));

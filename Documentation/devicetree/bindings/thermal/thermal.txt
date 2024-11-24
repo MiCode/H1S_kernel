@@ -55,8 +55,7 @@ of heat dissipation). For example a fan's cooling states correspond to
 the different fan speeds possible. Cooling states are referred to by
 single unsigned integers, where larger numbers mean greater heat
 dissipation. The precise set of cooling states associated with a device
-(as referred to by the cooling-min-level and cooling-max-level
-properties) should be defined in a particular device's binding.
+should be defined in a particular device's binding.
 For more examples of cooling devices, refer to the example sections below.
 
 Required properties:
@@ -68,15 +67,6 @@ Required properties:
 			the maximum cooling state requested in the reference.
 			See Cooling device maps section below for more details
 			on how consumers refer to cooling devices.
-
-Optional properties:
-- cooling-min-level:	An integer indicating the smallest
-  Type: unsigned	cooling state accepted. Typically 0.
-  Size: one cell
-
-- cooling-max-level:	An integer indicating the largest
-  Type: unsigned	cooling state accepted.
-  Size: one cell
 
 * Trip points
 
@@ -107,8 +97,8 @@ get assigned to trip points of the zone. The cooling devices are expected
 to be loaded in the target system.
 
 Required properties:
-- cooling-device:	A phandle of a cooling device with its specifier,
-  Type: phandle +	referring to which cooling device is used in this
+- cooling-device:	A list of phandles of cooling devices with their specifiers,
+  Type: phandle +	referring to which cooling devices are used in this
     cooling specifier	binding. In the cooling specifier, the first cell
 			is the minimum cooling state and the second cell
 			is the maximum cooling state used in this map.
@@ -175,6 +165,14 @@ Optional property:
 			2000mW, while on a 10'' tablet is around
 			4500mW.
 
+- tracks-low:		Indicates that the temperature sensor tracks the low
+  Type: bool		thresholds, so the governors may mitigate by ensuring
+			timing closures and other low temperature operating
+			issues.
+- wake-capable-sensor:	Set to true if thermal zone sensor is wake up capable
+  Type: bool		and cooling devices binded to this thermal zone are not
+  Size: none		affected during suspend.
+
 Note: The delay properties are bound to the maximum dT/dt (temperature
 derivative over time) in two situations for a thermal zone:
 (i)  - when passive cooling is activated (polling-delay-passive); and
@@ -226,8 +224,6 @@ cpus {
 			396000  950000
 			198000  850000
 		>;
-		cooling-min-level = <0>;
-		cooling-max-level = <3>;
 		#cooling-cells = <2>; /* min followed by max */
 	};
 	...
@@ -239,10 +235,8 @@ cpus {
 	 * A simple fan controller which supports 10 speeds of operation
 	 * (represented as 0-9).
 	 */
-	fan0: fan@0x48 {
+	fan0: fan@48 {
 		...
-		cooling-min-level = <0>;
-		cooling-max-level = <9>;
 		#cooling-cells = <2>; /* min followed by max */
 	};
 };
@@ -252,7 +246,7 @@ ocp {
 	/*
 	 * A simple IC with a single bandgap temperature sensor.
 	 */
-	bandgap0: bandgap@0x0000ED00 {
+	bandgap0: bandgap@0000ed00 {
 		...
 		#thermal-sensor-cells = <0>;
 	};
@@ -290,12 +284,7 @@ thermal-zones {
 			};
 			map1 {
 				trip = <&cpu_alert1>;
-				cooling-device = <&fan0 5 THERMAL_NO_LIMIT>;
-			};
-			map2 {
-				trip = <&cpu_alert1>;
-				cooling-device =
-				    <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				cooling-device = <&fan0 5 THERMAL_NO_LIMIT>, <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 			};
 		};
 	};
@@ -330,7 +319,7 @@ ocp {
 	/*
 	 * A simple IC with several bandgap temperature sensors.
 	 */
-	bandgap0: bandgap@0x0000ED00 {
+	bandgap0: bandgap@0000ed00 {
 		...
 		#thermal-sensor-cells = <1>;
 	};
@@ -447,7 +436,7 @@ one thermal zone.
 	/*
 	 * A simple IC with a single temperature sensor.
 	 */
-	adc: sensor@0x49 {
+	adc: sensor@49 {
 		...
 		#thermal-sensor-cells = <0>;
 	};
@@ -458,7 +447,7 @@ ocp {
 	/*
 	 * A simple IC with a single bandgap temperature sensor.
 	 */
-	bandgap0: bandgap@0x0000ED00 {
+	bandgap0: bandgap@0000ed00 {
 		...
 		#thermal-sensor-cells = <0>;
 	};
@@ -516,7 +505,7 @@ with many sensors and many cooling devices.
 	/*
 	 * An IC with several temperature sensor.
 	 */
-	adc_dummy: sensor@0x50 {
+	adc_dummy: sensor@50 {
 		...
 		#thermal-sensor-cells = <1>; /* sensor internal ID */
 	};

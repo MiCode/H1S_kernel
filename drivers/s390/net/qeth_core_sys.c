@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *    Copyright IBM Corp. 2007
  *    Author(s): Utz Bacher <utz.bacher@de.ibm.com>,
@@ -111,7 +112,7 @@ static ssize_t qeth_dev_portno_show(struct device *dev,
 	if (!card)
 		return -EINVAL;
 
-	return sprintf(buf, "%i\n", card->info.portno);
+	return sprintf(buf, "%i\n", card->dev->dev_port);
 }
 
 static ssize_t qeth_dev_portno_store(struct device *dev,
@@ -142,7 +143,7 @@ static ssize_t qeth_dev_portno_store(struct device *dev,
 		rc = -EINVAL;
 		goto out;
 	}
-	card->info.portno = portno;
+	card->dev->dev_port = portno;
 out:
 	mutex_unlock(&card->conf_mutex);
 	return rc ? rc : count;
@@ -385,6 +386,7 @@ static ssize_t qeth_dev_layer2_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct qeth_card *card = dev_get_drvdata(dev);
+	struct net_device *ndev;
 	char *tmp;
 	int i, rc = 0;
 	enum qeth_discipline_id newdis;
@@ -421,9 +423,19 @@ static ssize_t qeth_dev_layer2_store(struct device *dev,
 
 	card->info.mac_bits = 0;
 	if (card->discipline) {
+		/* start with a new, pristine netdevice: */
+		ndev = qeth_clone_netdev(card->dev);
+		if (!ndev) {
+			rc = -ENOMEM;
+			goto out;
+		}
+
 		card->discipline->remove(card->gdev);
 		qeth_core_free_discipline(card);
 		card->options.layer2 = -1;
+
+		free_netdev(card->dev);
+		card->dev = ndev;
 	}
 
 	rc = qeth_core_load_discipline(card, newdis);
@@ -476,10 +488,8 @@ static ssize_t qeth_dev_isolation_store(struct device *dev,
 		return -EINVAL;
 
 	mutex_lock(&card->conf_mutex);
-	/* check for unknown, too, in case we do not yet know who we are */
 	if (card->info.type != QETH_CARD_TYPE_OSD &&
-	    card->info.type != QETH_CARD_TYPE_OSX &&
-	    card->info.type != QETH_CARD_TYPE_UNKNOWN) {
+	    card->info.type != QETH_CARD_TYPE_OSX) {
 		rc = -EOPNOTSUPP;
 		dev_err(&card->gdev->dev, "Adapter does not "
 			"support QDIO data connection isolation\n");

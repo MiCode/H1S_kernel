@@ -90,8 +90,8 @@ end:
 	return map;
 }
 
-ssize_t uncore_event_show(struct kobject *kobj,
-			  struct kobj_attribute *attr, char *buf)
+ssize_t uncore_event_show(struct device *dev,
+			  struct device_attribute *attr, char *buf)
 {
 	struct uncore_event_desc *event =
 		container_of(attr, struct uncore_event_desc, attr);
@@ -203,7 +203,7 @@ static void uncore_assign_hw_event(struct intel_uncore_box *box,
 	hwc->idx = idx;
 	hwc->last_tag = ++box->tags[idx];
 
-	if (hwc->idx == UNCORE_PMC_IDX_FIXED) {
+	if (uncore_pmc_fixed(hwc->idx)) {
 		hwc->event_base = uncore_fixed_ctr(box);
 		hwc->config_base = uncore_fixed_ctl(box);
 		return;
@@ -218,7 +218,9 @@ void uncore_perf_event_update(struct intel_uncore_box *box, struct perf_event *e
 	u64 prev_count, new_count, delta;
 	int shift;
 
-	if (event->hw.idx == UNCORE_PMC_IDX_FIXED)
+	if (uncore_pmc_freerunning(event->hw.idx))
+		shift = 64 - uncore_freerunning_bits(box, event);
+	else if (uncore_pmc_fixed(event->hw.idx))
 		shift = 64 - uncore_fixed_ctr_bits(box);
 	else
 		shift = 64 - uncore_perf_ctr_bits(box);
@@ -354,7 +356,7 @@ uncore_collect_events(struct intel_uncore_box *box, struct perf_event *leader,
 	if (!dogrp)
 		return n;
 
-	list_for_each_entry(event, &leader->sibling_list, group_entry) {
+	for_each_sibling_event(event, leader) {
 		if (!is_box_event(box, event) ||
 		    event->state <= PERF_EVENT_STATE_OFF)
 			continue;
@@ -449,15 +451,30 @@ static int uncore_assign_events(struct intel_uncore_box *box, int assign[], int 
 	return ret ? -EINVAL : 0;
 }
 
-static void uncore_pmu_event_start(struct perf_event *event, int flags)
+void uncore_pmu_event_start(struct perf_event *event, int flags)
 {
 	struct intel_uncore_box *box = uncore_event_to_box(event);
 	int idx = event->hw.idx;
 
-	if (WARN_ON_ONCE(!(event->hw.state & PERF_HES_STOPPED)))
+	if (WARN_ON_ONCE(idx == -1 || idx >= UNCORE_PMC_IDX_MAX))
 		return;
 
-	if (WARN_ON_ONCE(idx == -1 || idx >= UNCORE_PMC_IDX_MAX))
+	/*
+	 * Free running counter is read-only and always active.
+	 * Use the current counter value as start point.
+	 * There is no overflow interrupt for free running counter.
+	 * Use hrtimer to periodically poll the counter to avoid overflow.
+	 */
+	if (uncore_pmc_freerunning(event->hw.idx)) {
+		list_add_tail(&event->active_entry, &box->active_list);
+		local64_set(&event->hw.prev_count,
+			    uncore_read_counter(box, event));
+		if (box->n_active++ == 0)
+			uncore_pmu_start_hrtimer(box);
+		return;
+	}
+
+	if (WARN_ON_ONCE(!(event->hw.state & PERF_HES_STOPPED)))
 		return;
 
 	event->hw.state = 0;
@@ -468,16 +485,23 @@ static void uncore_pmu_event_start(struct perf_event *event, int flags)
 	local64_set(&event->hw.prev_count, uncore_read_counter(box, event));
 	uncore_enable_event(box, event);
 
-	if (box->n_active == 1) {
-		uncore_enable_box(box);
+	if (box->n_active == 1)
 		uncore_pmu_start_hrtimer(box);
-	}
 }
 
-static void uncore_pmu_event_stop(struct perf_event *event, int flags)
+void uncore_pmu_event_stop(struct perf_event *event, int flags)
 {
 	struct intel_uncore_box *box = uncore_event_to_box(event);
 	struct hw_perf_event *hwc = &event->hw;
+
+	/* Cannot disable free running counter which is read-only */
+	if (uncore_pmc_freerunning(hwc->idx)) {
+		list_del(&event->active_entry);
+		if (--box->n_active == 0)
+			uncore_pmu_cancel_hrtimer(box);
+		uncore_perf_event_update(box, event);
+		return;
+	}
 
 	if (__test_and_clear_bit(hwc->idx, box->active_mask)) {
 		uncore_disable_event(box, event);
@@ -486,10 +510,8 @@ static void uncore_pmu_event_stop(struct perf_event *event, int flags)
 		WARN_ON_ONCE(hwc->state & PERF_HES_STOPPED);
 		hwc->state |= PERF_HES_STOPPED;
 
-		if (box->n_active == 0) {
-			uncore_disable_box(box);
+		if (box->n_active == 0)
 			uncore_pmu_cancel_hrtimer(box);
-		}
 	}
 
 	if ((flags & PERF_EF_UPDATE) && !(hwc->state & PERF_HES_UPTODATE)) {
@@ -502,7 +524,7 @@ static void uncore_pmu_event_stop(struct perf_event *event, int flags)
 	}
 }
 
-static int uncore_pmu_event_add(struct perf_event *event, int flags)
+int uncore_pmu_event_add(struct perf_event *event, int flags)
 {
 	struct intel_uncore_box *box = uncore_event_to_box(event);
 	struct hw_perf_event *hwc = &event->hw;
@@ -511,6 +533,17 @@ static int uncore_pmu_event_add(struct perf_event *event, int flags)
 
 	if (!box)
 		return -ENODEV;
+
+	/*
+	 * The free funning counter is assigned in event_init().
+	 * The free running counter event and free running counter
+	 * are 1:1 mapped. It doesn't need to be tracked in event_list.
+	 */
+	if (uncore_pmc_freerunning(hwc->idx)) {
+		if (flags & PERF_EF_START)
+			uncore_pmu_event_start(event, 0);
+		return 0;
+	}
 
 	ret = n = uncore_collect_events(box, event, false);
 	if (ret < 0)
@@ -563,12 +596,20 @@ static int uncore_pmu_event_add(struct perf_event *event, int flags)
 	return 0;
 }
 
-static void uncore_pmu_event_del(struct perf_event *event, int flags)
+void uncore_pmu_event_del(struct perf_event *event, int flags)
 {
 	struct intel_uncore_box *box = uncore_event_to_box(event);
 	int i;
 
 	uncore_pmu_event_stop(event, PERF_EF_UPDATE);
+
+	/*
+	 * The event for free running counter is not tracked by event_list.
+	 * It doesn't need to force event->hw.idx = -1 to reassign the counter.
+	 * Because the event and the free running counter are 1:1 mapped.
+	 */
+	if (uncore_pmc_freerunning(event->hw.idx))
+		return;
 
 	for (i = 0; i < box->n_events; i++) {
 		if (event == box->event_list[i]) {
@@ -602,6 +643,10 @@ static int uncore_validate_group(struct intel_uncore_pmu *pmu,
 	struct perf_event *leader = event->group_leader;
 	struct intel_uncore_box *fake_box;
 	int ret = -EINVAL, n;
+
+	/* The free running counter is always active. */
+	if (uncore_pmc_freerunning(event->hw.idx))
+		return 0;
 
 	fake_box = uncore_alloc_box(pmu->type, NUMA_NO_NODE);
 	if (!fake_box)
@@ -690,6 +735,18 @@ static int uncore_pmu_event_init(struct perf_event *event)
 
 		/* fixed counters have event field hardcoded to zero */
 		hwc->config = 0ULL;
+	} else if (is_freerunning_event(event)) {
+		hwc->config = event->attr.config;
+		if (!check_valid_freerunning_event(box, event))
+			return -EINVAL;
+		event->hw.idx = UNCORE_PMC_IDX_FREERUNNING;
+		/*
+		 * The free running counter event and free running counter
+		 * are always 1:1 mapped.
+		 * The free running counter is always active.
+		 * Assign the free running counter here.
+		 */
+		event->hw.event_base = uncore_freerunning_counter(box, event);
 	} else {
 		hwc->config = event->attr.config &
 			      (pmu->type->event_mask | ((u64)pmu->type->event_mask_ext << 32));
@@ -706,6 +763,40 @@ static int uncore_pmu_event_init(struct perf_event *event)
 		ret = 0;
 
 	return ret;
+}
+
+static void uncore_pmu_enable(struct pmu *pmu)
+{
+	struct intel_uncore_pmu *uncore_pmu;
+	struct intel_uncore_box *box;
+
+	uncore_pmu = container_of(pmu, struct intel_uncore_pmu, pmu);
+	if (!uncore_pmu)
+		return;
+
+	box = uncore_pmu_to_box(uncore_pmu, smp_processor_id());
+	if (!box)
+		return;
+
+	if (uncore_pmu->type->ops->enable_box)
+		uncore_pmu->type->ops->enable_box(box);
+}
+
+static void uncore_pmu_disable(struct pmu *pmu)
+{
+	struct intel_uncore_pmu *uncore_pmu;
+	struct intel_uncore_box *box;
+
+	uncore_pmu = container_of(pmu, struct intel_uncore_pmu, pmu);
+	if (!uncore_pmu)
+		return;
+
+	box = uncore_pmu_to_box(uncore_pmu, smp_processor_id());
+	if (!box)
+		return;
+
+	if (uncore_pmu->type->ops->disable_box)
+		uncore_pmu->type->ops->disable_box(box);
 }
 
 static ssize_t uncore_get_attr_cpumask(struct device *dev,
@@ -733,6 +824,8 @@ static int uncore_pmu_register(struct intel_uncore_pmu *pmu)
 		pmu->pmu = (struct pmu) {
 			.attr_groups	= pmu->type->attr_groups,
 			.task_ctx_nr	= perf_invalid_context,
+			.pmu_enable	= uncore_pmu_enable,
+			.pmu_disable	= uncore_pmu_disable,
 			.event_init	= uncore_pmu_event_init,
 			.add		= uncore_pmu_event_add,
 			.del		= uncore_pmu_event_del,
@@ -805,12 +898,10 @@ static void uncore_types_exit(struct intel_uncore_type **types)
 static int __init uncore_type_init(struct intel_uncore_type *type, bool setid)
 {
 	struct intel_uncore_pmu *pmus;
-	struct attribute_group *attr_group;
-	struct attribute **attrs;
 	size_t size;
 	int i, j;
 
-	pmus = kzalloc(sizeof(*pmus) * type->num_boxes, GFP_KERNEL);
+	pmus = kcalloc(type->num_boxes, sizeof(*pmus), GFP_KERNEL);
 	if (!pmus)
 		return -ENOMEM;
 
@@ -831,21 +922,24 @@ static int __init uncore_type_init(struct intel_uncore_type *type, bool setid)
 				0, type->num_counters, 0, 0);
 
 	if (type->event_descs) {
+		struct {
+			struct attribute_group group;
+			struct attribute *attrs[];
+		} *attr_group;
 		for (i = 0; type->event_descs[i].attr.attr.name; i++);
 
-		attr_group = kzalloc(sizeof(struct attribute *) * (i + 1) +
-					sizeof(*attr_group), GFP_KERNEL);
+		attr_group = kzalloc(struct_size(attr_group, attrs, i + 1),
+								GFP_KERNEL);
 		if (!attr_group)
 			goto err;
 
-		attrs = (struct attribute **)(attr_group + 1);
-		attr_group->name = "events";
-		attr_group->attrs = attrs;
+		attr_group->group.name = "events";
+		attr_group->group.attrs = attr_group->attrs;
 
 		for (j = 0; j < i; j++)
-			attrs[j] = &type->event_descs[j].attr.attr;
+			attr_group->attrs[j] = &type->event_descs[j].attr.attr;
 
-		type->events_group = attr_group;
+		type->events_group = &attr_group->group;
 	}
 
 	type->pmu_group = &uncore_pmu_attr_group;
@@ -975,10 +1069,10 @@ static void uncore_pci_remove(struct pci_dev *pdev)
 	int i, phys_id, pkg;
 
 	phys_id = uncore_pcibus_to_physid(pdev->bus);
-	pkg = topology_phys_to_logical_pkg(phys_id);
 
 	box = pci_get_drvdata(pdev);
 	if (!box) {
+		pkg = topology_phys_to_logical_pkg(phys_id);
 		for (i = 0; i < UNCORE_EXTRA_PCI_DEV_MAX; i++) {
 			if (uncore_extra_pci_dev[pkg].dev[i] == pdev) {
 				uncore_extra_pci_dev[pkg].dev[i] = NULL;
@@ -994,7 +1088,7 @@ static void uncore_pci_remove(struct pci_dev *pdev)
 		return;
 
 	pci_set_drvdata(pdev, NULL);
-	pmu->boxes[pkg] = NULL;
+	pmu->boxes[box->pkgid] = NULL;
 	if (atomic_dec_return(&pmu->activeboxes) == 0)
 		uncore_pmu_unregister(pmu);
 	uncore_box_exit(box);

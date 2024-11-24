@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * ACPI PCI HotPlug glue functions to ACPI CA subsystem
  *
@@ -10,21 +11,6 @@
  * Copyright (C) 2005 Intel Corporation
  *
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or (at
- * your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
- * NON INFRINGEMENT.  See the GNU General Public License for more
- * details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * Send feedback to <kristen.c.accardi@intel.com>
  *
@@ -136,13 +122,21 @@ static struct acpiphp_context *acpiphp_grab_context(struct acpi_device *adev)
 	struct acpiphp_context *context;
 
 	acpi_lock_hp_context();
+
 	context = acpiphp_get_context(adev);
-	if (!context || context->func.parent->is_going_away) {
-		acpi_unlock_hp_context();
-		return NULL;
+	if (!context)
+		goto unlock;
+
+	if (context->func.parent->is_going_away) {
+		acpiphp_put_context(context);
+		context = NULL;
+		goto unlock;
 	}
+
 	get_bridge(context->func.parent);
 	acpiphp_put_context(context);
+
+unlock:
 	acpi_unlock_hp_context();
 	return context;
 }
@@ -301,11 +295,12 @@ static acpi_status acpiphp_add_context(acpi_handle handle, u32 lvl, void *data,
 	/*
 	 * Expose slots to user space for functions that have _EJ0 or _RMV or
 	 * are located in dock stations.  Do not expose them for devices handled
-	 * by the native PCIe hotplug (PCIeHP), becuase that code is supposed to
-	 * expose slots to user space in those cases.
+	 * by the native PCIe hotplug (PCIeHP) or standard PCI hotplug
+	 * (SHPCHP), because that code is supposed to expose slots to user
+	 * space in those cases.
 	 */
 	if ((acpi_pci_check_ejectable(pbus, handle) || is_dock_device(adev))
-	    && !(pdev && pdev->is_hotplug_bridge && pciehp_is_native(pdev))) {
+	    && !(pdev && hotplug_is_native(pdev))) {
 		unsigned long long sun;
 		int retval;
 
@@ -444,29 +439,73 @@ static int acpiphp_rescan_slot(struct acpiphp_slot *slot)
 	return pci_scan_slot(slot->bus, PCI_DEVFN(slot->device, 0));
 }
 
+static void acpiphp_native_scan_bridge(struct pci_dev *bridge)
+{
+	struct pci_bus *bus = bridge->subordinate;
+	struct pci_dev *dev;
+	int max;
+
+	if (!bus)
+		return;
+
+	max = bus->busn_res.start;
+	/* Scan already configured non-hotplug bridges */
+	for_each_pci_bridge(dev, bus) {
+		if (!hotplug_is_native(dev))
+			max = pci_scan_bridge(bus, dev, max, 0);
+	}
+
+	/* Scan non-hotplug bridges that need to be reconfigured */
+	for_each_pci_bridge(dev, bus) {
+		if (hotplug_is_native(dev))
+			continue;
+
+		max = pci_scan_bridge(bus, dev, max, 1);
+		if (dev->subordinate) {
+			pcibios_resource_survey_bus(dev->subordinate);
+			pci_bus_size_bridges(dev->subordinate);
+			pci_bus_assign_resources(dev->subordinate);
+		}
+	}
+}
+
 /**
  * enable_slot - enable, configure a slot
  * @slot: slot to be enabled
+ * @bridge: true if enable is for the whole bridge (not a single slot)
  *
  * This function should be called per *physical slot*,
  * not per each slot object in ACPI namespace.
  */
-static void enable_slot(struct acpiphp_slot *slot)
+static void enable_slot(struct acpiphp_slot *slot, bool bridge)
 {
 	struct pci_dev *dev;
 	struct pci_bus *bus = slot->bus;
 	struct acpiphp_func *func;
-	int max, pass;
-	LIST_HEAD(add_list);
 
-	acpiphp_rescan_slot(slot);
-	max = acpiphp_max_busnr(bus);
-	for (pass = 0; pass < 2; pass++) {
-		list_for_each_entry(dev, &bus->devices, bus_list) {
-			if (PCI_SLOT(dev->devfn) != slot->device)
-				continue;
+	if (bridge && bus->self && hotplug_is_native(bus->self)) {
+		/*
+		 * If native hotplug is used, it will take care of hotplug
+		 * slot management and resource allocation for hotplug
+		 * bridges. However, ACPI hotplug may still be used for
+		 * non-hotplug bridges to bring in additional devices such
+		 * as a Thunderbolt host controller.
+		 */
+		for_each_pci_bridge(dev, bus) {
+			if (PCI_SLOT(dev->devfn) == slot->device)
+				acpiphp_native_scan_bridge(dev);
+		}
+	} else {
+		LIST_HEAD(add_list);
+		int max, pass;
 
-			if (pci_is_bridge(dev)) {
+		acpiphp_rescan_slot(slot);
+		max = acpiphp_max_busnr(bus);
+		for (pass = 0; pass < 2; pass++) {
+			for_each_pci_bridge(dev, bus) {
+				if (PCI_SLOT(dev->devfn) != slot->device)
+					continue;
+
 				max = pci_scan_bridge(bus, dev, max, pass);
 				if (pass && dev->subordinate) {
 					check_hotplug_bridge(slot, dev);
@@ -476,8 +515,8 @@ static void enable_slot(struct acpiphp_slot *slot)
 				}
 			}
 		}
+		__pci_bus_assign_resources(bus, &add_list, NULL);
 	}
-	__pci_bus_assign_resources(bus, &add_list, NULL);
 
 	acpiphp_sanitize_bus(bus);
 	pcie_bus_configure_settings(bus);
@@ -485,7 +524,7 @@ static void enable_slot(struct acpiphp_slot *slot)
 
 	list_for_each_entry(dev, &bus->devices, bus_list) {
 		/* Assume that newly added devices are powered on already. */
-		if (!dev->is_added)
+		if (!pci_dev_is_added(dev))
 			dev->current_state = PCI_D0;
 	}
 
@@ -498,9 +537,10 @@ static void enable_slot(struct acpiphp_slot *slot)
 		if (!dev) {
 			/* Do not set SLOT_ENABLED flag if some funcs
 			   are not added. */
-			slot->flags &= (~SLOT_ENABLED);
+			slot->flags &= ~SLOT_ENABLED;
 			continue;
 		}
+		pci_dev_put(dev);
 	}
 }
 
@@ -527,7 +567,7 @@ static void disable_slot(struct acpiphp_slot *slot)
 	list_for_each_entry(func, &slot->funcs, sibling)
 		acpi_bus_trim(func_to_acpi_device(func));
 
-	slot->flags &= (~SLOT_ENABLED);
+	slot->flags &= ~SLOT_ENABLED;
 }
 
 static bool slot_no_hotplug(struct acpiphp_slot *slot)
@@ -625,6 +665,11 @@ static void trim_stale_devices(struct pci_dev *dev)
 		alive = pci_device_is_present(dev);
 
 	if (!alive) {
+		pci_dev_set_disconnected(dev, NULL);
+		if (pci_has_subordinate(dev))
+			pci_walk_bus(dev->subordinate, pci_dev_set_disconnected,
+				     NULL);
+
 		pci_stop_and_remove_bus_device(dev);
 		if (adev)
 			acpi_bus_trim(adev);
@@ -672,7 +717,7 @@ static void acpiphp_check_bridge(struct acpiphp_bridge *bridge)
 					trim_stale_devices(dev);
 
 			/* configure all functions */
-			enable_slot(slot);
+			enable_slot(slot, true);
 		} else {
 			disable_slot(slot);
 		}
@@ -756,7 +801,7 @@ static void hotplug_event(u32 type, struct acpiphp_context *context)
 		if (bridge)
 			acpiphp_check_bridge(bridge);
 		else if (!(slot->flags & SLOT_IS_GOING_AWAY))
-			enable_slot(slot);
+			enable_slot(slot, false);
 
 		break;
 
@@ -823,10 +868,8 @@ void acpiphp_enumerate_slots(struct pci_bus *bus)
 
 	handle = adev->handle;
 	bridge = kzalloc(sizeof(struct acpiphp_bridge), GFP_KERNEL);
-	if (!bridge) {
-		acpi_handle_err(handle, "No memory for bridge object\n");
+	if (!bridge)
 		return;
-	}
 
 	INIT_LIST_HEAD(&bridge->slots);
 	kref_init(&bridge->ref);
@@ -946,7 +989,7 @@ int acpiphp_enable_slot(struct acpiphp_slot *slot)
 
 	/* configure all functions */
 	if (!(slot->flags & SLOT_ENABLED))
-		enable_slot(slot);
+		enable_slot(slot, false);
 
 	pci_unlock_rescan_remove();
 	return 0;

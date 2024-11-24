@@ -1,24 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/delay.h>
 #include <linux/math64.h>
 #include <linux/pm_qos.h>
-#include <linux/sched.h>
+#include <linux/sched/clock.h>
 #include <linux/spinlock.h>
 #include <linux/timekeeping.h>
 #include <linux/tick.h>
-
 #include <mtk_idle.h>
 
 #include <mtk_mcdi.h>
@@ -51,7 +42,6 @@ static int core_cluster_off_token[NF_CLUSTER];
 static int last_cpu_enter;
 static int last_cpu_enter_in_cluster[NF_CLUSTER];
 static int boot_time_check;
-static unsigned int mtk_idle_mode;
 
 struct mcdi_status {
 	bool valid;
@@ -109,13 +99,6 @@ static DEFINE_SPINLOCK(all_cpu_idle_spin_lock);
 int __attribute__((weak)) mtk_idle_select(int cpu)
 {
 	return -1;
-}
-
-int __attribute__((weak)) mtk_idle_entrance(
-	struct mtk_idle_info *info, int *ChosenIdle, int IsSelectOnly)
-{
-	*ChosenIdle = mtk_idle_select(info->cpu);
-	return (*ChosenIdle == IDLE_TYPE_RG) ? -1 : 1;
 }
 
 unsigned int mcdi_get_boot_time_check(void)
@@ -194,7 +177,7 @@ void set_mcdi_idle_state(int cpu, int state)
 	mcdi_prof_set_idle_state(cpu, state);
 }
 
-int get_cluster_off_token(cpu)
+int get_cluster_off_token(int cpu)
 {
 	unsigned long flags;
 	int cluster;
@@ -267,7 +250,6 @@ static void mcdi_set_timer(int cpu)
 static void mcdi_cancel_timer(int cpu)
 {
 	unsigned long flags;
-	int ret = -1;
 
 	if (!mcdi_cluster.tmr_en)
 		return;
@@ -280,9 +262,7 @@ static void mcdi_cancel_timer(int cpu)
 	if (mcdi_cluster.tmr_running) {
 		mcdi_cluster.tmr_running = false;
 		mcdi_cluster.owner = -1;
-		RCU_NONIDLE(ret = hrtimer_try_to_cancel(&mcdi_cluster.timer));
-		if (ret < 0)
-			printk_deferred("[mcdi]timer cancel fail\n");
+		RCU_NONIDLE(hrtimer_try_to_cancel(&mcdi_cluster.timer));
 	}
 
 	spin_unlock_irqrestore(&mcdi_cluster_spin_lock, flags);
@@ -298,6 +278,8 @@ static bool remain_sleep_residency_allowable(unsigned int cpu_mask, int state)
 	struct mcdi_status *sta = NULL;
 
 	if (!mcdi_cluster.chk_res_each_core)
+		return true;
+	if ((state < 0) || (state >= CPUIDLE_STATE_MAX))
 		return true;
 
 	mcdi_cluster.chk_res_cnt++;
@@ -333,15 +315,6 @@ static bool remain_sleep_residency_allowable(unsigned int cpu_mask, int state)
 
 			mcdi_cluster.chk_res_fail++;
 			spin_unlock_irqrestore(&mcdi_cluster_spin_lock, flags);
-#if 0
-			printk_deferred("[mcdi] cpu%d, entry:%llu curr:%llu next:%u, remain:%llu dur:%llu\n",
-				i,
-				sta->enter_time_us,
-				curr_time_us,
-				sta->next_timer_us,
-				remain_sleep_us,
-				curr_time_us - sta->enter_time_us);
-#endif
 			return false;
 		}
 	}
@@ -482,26 +455,10 @@ bool any_core_deepidle_sodi_residency_check(int cpu)
 	return true;
 }
 
-/*
- *  If return true, acquire last core prot before mtk_idle_entrance.
- *  Note that if sel_only equals to 0, we must return true,
- *  because we must acquire last core prot before idle mode been selected
- *  and entered.
- */
-static bool mcdi_set_pre_lock_single_core(void)
-{
-	return (DEFAULT_MTK_IDLE_SEL_ONLY == 1) ? DEFAULT_PRE_LOCK : true;
-}
-
 int any_core_deepidle_sodi_check(int cpu)
 {
 	int state;
-	int pass;
-	bool pre_lock_single_core;
-	struct mtk_idle_info IdleInfo = {
-		.cpu = 0,
-		.predit_us = 0
-	};
+	int mtk_idle_state;
 
 	state = MCDI_STATE_CPU_OFF;
 
@@ -515,63 +472,22 @@ int any_core_deepidle_sodi_check(int cpu)
 		return state;
 	}
 
-	pre_lock_single_core = mcdi_set_pre_lock_single_core();
-
-	if (pre_lock_single_core && acquire_last_core_prot(cpu) != 0)
+	if (acquire_last_core_prot(cpu) != 0)
 		return state;
 
-	/*
-	 * Check other deepidle/SODI criteria:
-	 * If support mtk_idle_entrance:
-	 *	if DEFAULT_MTK_IDLE_SEL_ONLY = 1 (select only):
-	 *		return 0 if idle mode select success
-	 *		return -1 if idle mode select fail
-	 *	if DEFAULT_MTK_IDLE_SEL_ONLY = 0 (select and enter):
-	 *		return 0 if idle mode select and enter success
-	 *		return -1 if idle mode select fail
-	 * If not support mtk_idle_entrance:
-	 *	return 1 if idle mode select success
-	 *	return -1 if idle mode select fail
-	 */
-	IdleInfo.cpu = cpu;
-	IdleInfo.predit_us = get_menu_predict_us();
-	pass = mtk_idle_entrance(
-			&IdleInfo, &mtk_idle_mode, DEFAULT_MTK_IDLE_SEL_ONLY);
+	any_core_cpu_cond_inc(LAST_CORE_CNT);
 
-	trace_mtk_idle_select_rcuidle(cpu, mtk_idle_mode);
+	/* Check other deepidle/SODI criteria */
+	mtk_idle_state = mtk_idle_select(cpu);
 
-	if (pre_lock_single_core) {
-		/*
-		 * If DEFAULT_MTK_IDLE_SEL_ONLY = 1, idle mode select
-		 * successfully and return 0.
-		 * If DEFAULT_MTK_IDLE_SEL_ONLY = 0, idle mode select + enter
-		 * successfully and return 0.
-		 */
-		if (pass == 0)
-			state = DEFAULT_MTK_IDLE_SEL_ONLY ?
-					MCDI_STATE_CLUSTER_OFF + 1 : -1;
-		/* support old path (idle mode select successfully) */
-		else if (pass == 1)
-			state = mcdi_get_mcdi_idle_state(mtk_idle_mode);
-		/* If pass = -1, idle mode select fail, return CPU OFF state */
-		else
-			release_last_core_prot();
-	/* no pre_lock & idle mode select successfully */
-	} else if (pass == 0) {
-		/* acquire last core prot fail */
-		if (acquire_last_core_prot(cpu) != 0)
-			state = MCDI_STATE_CLUSTER_OFF;
-		/* acquire last core prot successfully */
-		else
-			state = MCDI_STATE_CLUSTER_OFF + 1;
+	state = mcdi_get_mcdi_idle_state(mtk_idle_state);
+
+	if (!is_anycore_dpidle_sodi_state(state)) {
+		release_last_core_prot();
+		/* trace_mtk_idle_select_rcuidle(cpu, mtk_idle_state); */
 	}
 
 	return state;
-}
-
-unsigned int mcdi_get_mtk_idle_mode(void)
-{
-	return mtk_idle_mode;
 }
 
 bool is_mcdi_working(void)
@@ -612,7 +528,7 @@ int mcdi_governor_select(int cpu, int cluster_idx)
 		if (val >= BOOT_TIME_LIMIT) {
 			boot_time_check = 1;
 			mcdi_ap_ready();
-			printk_deferred("[mcdi]bootup check: PASS\n");
+			pr_info("MCDI bootup check: PASS\n");
 		} else {
 			return MCDI_STATE_WFI;
 		}
@@ -652,16 +568,14 @@ int mcdi_governor_select(int cpu, int cluster_idx)
 	/* Check if any core deepidle/SODI can entered */
 	if (mcdi_feature_stat.any_core && last_core_token_get) {
 
-		any_core_cpu_cond_inc(LAST_CORE_CNT);
-
 		if (tbl->states[MCDI_STATE_CLUSTER_OFF + 1].exit_latency
 				< latency_req) {
 
-			trace_check_anycore_rcuidle(cpu, 1, -1);
+			/* trace_check_anycore_rcuidle(cpu, 1, -1); */
 
 			select_state = any_core_deepidle_sodi_check(cpu);
 
-			trace_check_anycore_rcuidle(cpu, 0, select_state);
+			/* trace_check_anycore_rcuidle(cpu, 0, select_state); */
 
 		} else {
 			any_core_cpu_cond_inc(LATENCY_CNT);
@@ -732,12 +646,10 @@ void mcdi_governor_reflect(int cpu, int state)
 
 	spin_unlock_irqrestore(&mcdi_gov_spin_lock, flags);
 
-	if (is_anycore_dpidle_sodi_state(state)) {
+	if (is_anycore_dpidle_sodi_state(state))
 		release_last_core_prot();
-		mtk_idle_mode = 0;
-	} else if (state == MCDI_STATE_CLUSTER_OFF) {
+	else if (state == MCDI_STATE_CLUSTER_OFF)
 		release_cluster_last_core_prot();
-	}
 
 	mcdi_cancel_timer(cpu);
 }
@@ -779,19 +691,6 @@ void mcdi_avail_cpu_cluster_update(void)
 	spin_unlock_irqrestore(&mcdi_gov_spin_lock, flags);
 
 	mcdi_avail_cpu_mask(cpu_mask);
-
-#if 0
-	printk_deferred("[mcdi]online = %d, avail: mcusys = %d, cluster[0] = %d ",
-		num_online_cpus(),
-		mcdi_gov_data.avail_cnt_mcusys,
-		mcdi_gov_data.avail_cnt_cluster[0],
-	);
-	printk_deferred("[mcdi][1] = %d, cpu_mask = %04x, cluster_mask = %04x\n",
-		mcdi_gov_data.avail_cnt_cluster[1],
-		mcdi_gov_data.avail_cpu_mask,
-		mcdi_gov_data.avail_cluster_mask
-	);
-#endif
 }
 
 void set_mcdi_enable_status(bool enabled)
@@ -817,6 +716,9 @@ void set_mcdi_s_state(int state)
 	bool cluster_off = false;
 	bool any_core = false;
 
+	if (!(state >= MCDI_STATE_CPU_OFF && state <= MCDI_STATE_SODI3))
+		return;
+
 	switch (state) {
 	case MCDI_STATE_CPU_OFF:
 		cluster_off = false;
@@ -836,7 +738,7 @@ void set_mcdi_s_state(int state)
 		return;
 	}
 
-	pr_info("%s:  %d\n", __func__, state);
+	pr_info("%s = %d\n", __func__, state);
 
 	spin_lock_irqsave(&mcdi_feature_stat_spin_lock, flags);
 
@@ -847,24 +749,17 @@ void set_mcdi_s_state(int state)
 	spin_unlock_irqrestore(&mcdi_feature_stat_spin_lock, flags);
 }
 
-void mcdi_cluster_chk_res_each_core_set(bool en)
-{
-	mcdi_cluster.chk_res_each_core = en;
-}
-
-void mcdi_cluster_tmr_en_set(bool en)
-{
-	mcdi_cluster.tmr_en = en;
-}
-
 static void mcdi_cluster_init(void)
 {
 	mcdi_cluster.timer.function = mcdi_hrtimer_func;
 	mcdi_cluster.use_max_remain = true;
 	mcdi_cluster.owner = -1;
+	mcdi_cluster.chk_res_each_core = false;
 
-	mcdi_cluster_chk_res_each_core_set(DEFAULT_CHK_RES_EACH_CORE);
-	mcdi_cluster_tmr_en_set(DEFAULT_TMR_EN);
+	if (mcdi_is_cpc_mode())
+		mcdi_cluster.tmr_en = true;
+	else
+		mcdi_cluster.tmr_en = false;
 
 	hrtimer_init(&mcdi_cluster.timer,
 			CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -985,8 +880,8 @@ void idle_refcnt_inc(void)
 
 	spin_unlock_irqrestore(&all_cpu_idle_spin_lock, flags);
 
-	if (enter)
-		trace_all_cpu_idle_rcuidle(1);
+	/* if (enter) */
+		/* trace_all_cpu_idle_rcuidle(1); */
 }
 
 void idle_refcnt_dec(void)
@@ -1025,8 +920,8 @@ void idle_refcnt_dec(void)
 
 	spin_unlock_irqrestore(&all_cpu_idle_spin_lock, flags);
 
-	if (leave)
-		trace_all_cpu_idle_rcuidle(0);
+	/* if (leave) */
+		/* trace_all_cpu_idle_rcuidle(0); */
 }
 
 int all_cpu_idle_ratio_get(void)
@@ -1081,8 +976,8 @@ bool is_all_cpu_idle_criteria(void)
 
 	end_tick = sched_clock();
 
-	trace_mtk_menu_rcuidle(smp_processor_id(),
-		all_idle_ratio, (int)(end_tick - start_tick));
+	/* trace_mtk_menu_rcuidle(smp_processor_id(), */
+		/* all_idle_ratio, (int)(end_tick - start_tick)); */
 
 	return (all_idle_ratio >= thd_percent);
 }

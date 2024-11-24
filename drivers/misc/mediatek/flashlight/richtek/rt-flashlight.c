@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- *  Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -34,7 +27,7 @@ static const char * const flashlight_mode_string[] = {
 	[FLASHLIGHT_MODE_DUAL_OFF] = "Off",
 };
 
-static ssize_t flashlight_show_name(struct device *dev,
+static ssize_t name_show(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
 	struct flashlight_device *flashlight_dev = to_flashlight_device(dev);
@@ -44,33 +37,35 @@ static ssize_t flashlight_show_name(struct device *dev,
 		       flashlight_dev->props.alias_name : "anonymous");
 }
 
-static ssize_t flashlight_show_type(struct device *dev,
+static ssize_t type_show(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
 	struct flashlight_device *flashlight_dev = to_flashlight_device(dev);
-	int type = flashlight_dev->props.type;
+	int size = ARRAY_SIZE(flashlight_type_string);
+	unsigned int type = flashlight_dev->props.type;
 
-	if (type >= FLASHLIGHT_TYPE_MAX || type < 0)
-		return -ERANGE;
-	else
-		return scnprintf(buf, PAGE_SIZE, "%s\n",
-				flashlight_type_string[type]);
+	if (type >= size)
+		return -EINVAL;
+
+	return scnprintf(buf, PAGE_SIZE, "%s\n",
+		       flashlight_type_string[type]);
 }
 
-static ssize_t flashlight_show_mode(struct device *dev,
+static ssize_t mode_show(struct device *dev,
 				    struct device_attribute *attr, char *buf)
 {
 	struct flashlight_device *flashlight_dev = to_flashlight_device(dev);
-	int mode = flashlight_dev->props.mode;
+	int size = ARRAY_SIZE(flashlight_mode_string);
 
-	if (mode >= FLASHLIGHT_MODE_MAX || mode < 0)
-		return -ERANGE;
-	else
-		return scnprintf(buf, PAGE_SIZE, "%s\n",
-				flashlight_mode_string[mode]);
+	if ((flashlight_dev->props.mode < 0) ||
+				(flashlight_dev->props.mode >= size))
+		return -EINVAL;
+
+	return scnprintf(buf, PAGE_SIZE, "%s\n",
+		       flashlight_mode_string[flashlight_dev->props.mode]);
 }
 
-static ssize_t flashlight_show_torch_max_brightness(struct device *dev,
+static ssize_t torch_max_brightness_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct flashlight_device *flashlight_dev = to_flashlight_device(dev);
@@ -79,7 +74,7 @@ static ssize_t flashlight_show_torch_max_brightness(struct device *dev,
 		       flashlight_dev->props.torch_max_brightness);
 }
 
-static ssize_t flashlight_show_strobe_max_brightness(struct device *dev,
+static ssize_t strobe_max_brightness_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct flashlight_device *flashlight_dev = to_flashlight_device(dev);
@@ -88,7 +83,7 @@ static ssize_t flashlight_show_strobe_max_brightness(struct device *dev,
 		       flashlight_dev->props.strobe_max_brightness);
 }
 
-static ssize_t flashlight_show_color_temperature(struct device *dev,
+static ssize_t color_temperature_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct flashlight_device *flashlight_dev = to_flashlight_device(dev);
@@ -97,7 +92,7 @@ static ssize_t flashlight_show_color_temperature(struct device *dev,
 		       flashlight_dev->props.color_temperature);
 }
 
-static ssize_t flashlight_show_strobe_delay(struct device *dev,
+static ssize_t strobe_delay_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct flashlight_device *flashlight_dev = to_flashlight_device(dev);
@@ -106,7 +101,7 @@ static ssize_t flashlight_show_strobe_delay(struct device *dev,
 		       flashlight_dev->props.strobe_delay);
 }
 
-static ssize_t flashlight_store_strobe_timeout(struct device *dev,
+static ssize_t strobe_timeout_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int rc;
@@ -122,7 +117,7 @@ static ssize_t flashlight_store_strobe_timeout(struct device *dev,
 	return rc;
 }
 
-static ssize_t flashlight_show_strobe_timeout(struct device *dev,
+static ssize_t strobe_timeout_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct flashlight_device *flashlight_dev = to_flashlight_device(dev);
@@ -132,7 +127,7 @@ static ssize_t flashlight_show_strobe_timeout(struct device *dev,
 }
 
 
-static ssize_t flashlight_store_torch_brightness(struct device *dev,
+static ssize_t torch_brightness_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int rc;
@@ -164,7 +159,7 @@ static ssize_t flashlight_store_torch_brightness(struct device *dev,
 	return rc;
 }
 
-static ssize_t flashlight_show_torch_brightness(struct device *dev,
+static ssize_t torch_brightness_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct flashlight_device *flashlight_dev = to_flashlight_device(dev);
@@ -173,7 +168,7 @@ static ssize_t flashlight_show_torch_brightness(struct device *dev,
 		       flashlight_dev->props.torch_brightness);
 }
 
-static ssize_t flashlight_store_strobe_brightness(struct device *dev,
+static ssize_t strobe_brightness_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int rc;
@@ -204,7 +199,7 @@ static ssize_t flashlight_store_strobe_brightness(struct device *dev,
 	return rc;
 }
 
-static ssize_t flashlight_show_strobe_brightness(struct device *dev,
+static ssize_t strobe_brightness_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	struct flashlight_device *flashlight_dev = to_flashlight_device(dev);
@@ -217,9 +212,10 @@ static ssize_t flashlight_show_strobe_brightness(struct device *dev,
 
 static struct class *flashlight_class;
 
-static int flashlight_suspend(struct device *dev, pm_message_t state)
+static int flashlight_suspend(struct device *dev)
 {
 	struct flashlight_device *flashlight_dev = to_flashlight_device(dev);
+	pm_message_t state = {};
 
 	if (flashlight_dev->ops)
 		flashlight_dev->ops->suspend(flashlight_dev, state);
@@ -242,27 +238,16 @@ static void flashlight_device_release(struct device *dev)
 	kfree(flashlight_dev);
 }
 
-
-static DEVICE_ATTR(name, 0444, flashlight_show_name, NULL);
-static DEVICE_ATTR(type, 0444, flashlight_show_type, NULL);
-static DEVICE_ATTR(mode, 0444, flashlight_show_mode, NULL);
-static DEVICE_ATTR(torch_max_brightness, 0444,
-	flashlight_show_torch_max_brightness, NULL);
-static DEVICE_ATTR(strobe_max_brightness, 0444,
-	flashlight_show_strobe_max_brightness, NULL);
-static DEVICE_ATTR(color_temperature, 0444,
-	flashlight_show_color_temperature, NULL);
-static DEVICE_ATTR(strobe_delay, 0664,
-	flashlight_show_strobe_delay, NULL);
-static DEVICE_ATTR(strobe_timeout, 0664,
-	flashlight_show_strobe_timeout,
-	flashlight_store_strobe_timeout);
-static DEVICE_ATTR(torch_brightness, 0664,
-	flashlight_show_torch_brightness,
-	flashlight_store_torch_brightness);
-static DEVICE_ATTR(strobe_brightness, 0664,
-	flashlight_show_strobe_brightness,
-	flashlight_store_strobe_brightness);
+static DEVICE_ATTR_RO(name);
+static DEVICE_ATTR_RO(type);
+static DEVICE_ATTR_RO(mode);
+static DEVICE_ATTR_RO(torch_max_brightness);
+static DEVICE_ATTR_RO(strobe_max_brightness);
+static DEVICE_ATTR_RO(color_temperature);
+static DEVICE_ATTR_RO(strobe_delay);
+static DEVICE_ATTR_RW(strobe_timeout);
+static DEVICE_ATTR_RW(torch_brightness);
+static DEVICE_ATTR_RW(strobe_brightness);
 
 static struct attribute *flashlight_class_attrs[] = {
 	&dev_attr_name.attr,
@@ -307,15 +292,16 @@ struct flashlight_device *flashlight_device_register(const char *name,
 		const struct flashlight_ops *ops,
 		const struct flashlight_properties *props)
 {
-	struct flashlight_device *flashlight_dev;
+	struct flashlight_device *flashlight_dev = NULL;
 	int rc;
 
 	pr_debug("%s: name=%s\n", __func__, name);
-	flashlight_dev = kzalloc(sizeof(*flashlight_dev), GFP_KERNEL);
+	flashlight_dev = devm_kzalloc(parent, sizeof(*flashlight_dev), GFP_KERNEL);
 	if (!flashlight_dev)
 		return ERR_PTR(-ENOMEM);
 
 	mutex_init(&flashlight_dev->ops_lock);
+	device_initialize(&flashlight_dev->dev);
 	flashlight_dev->dev.class = flashlight_class;
 	flashlight_dev->dev.parent = parent;
 	flashlight_dev->dev.release = flashlight_device_release;
@@ -568,6 +554,9 @@ int flashlight_strobe_charge(struct flashlight_device *flashlight_dev,
 }
 EXPORT_SYMBOL(flashlight_strobe_charge);
 
+static SIMPLE_DEV_PM_OPS(flashlight_pm_ops, flashlight_suspend,
+			 flashlight_resume);
+
 static void __exit flashlight_class_exit(void)
 {
 	class_destroy(flashlight_class);
@@ -582,8 +571,7 @@ static int __init flashlight_class_init(void)
 		return PTR_ERR(flashlight_class);
 	}
 	flashlight_class->dev_groups = flashlight_groups;
-	flashlight_class->suspend = flashlight_suspend;
-	flashlight_class->resume = flashlight_resume;
+	flashlight_class->pm = &flashlight_pm_ops;
 	return 0;
 }
 

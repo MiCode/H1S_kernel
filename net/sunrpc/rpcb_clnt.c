@@ -213,12 +213,12 @@ static void rpcb_set_local(struct net *net, struct rpc_clnt *clnt,
 	sn->rpcb_local_clnt = clnt;
 	sn->rpcb_local_clnt4 = clnt4;
 	sn->rpcb_is_af_local = is_af_local ? 1 : 0;
-	smp_wmb(); 
+	smp_wmb();
 	sn->rpcb_users = 1;
 	dprintk("RPC:       created new rpcb local clients (rpcb_local_clnt: "
-			"%p, rpcb_local_clnt4: %p) for net %p%s\n",
-			sn->rpcb_local_clnt, sn->rpcb_local_clnt4,
-			net, (net == &init_net) ? " (init_net)" : "");
+		"%p, rpcb_local_clnt4: %p) for net %x%s\n",
+		sn->rpcb_local_clnt, sn->rpcb_local_clnt4,
+		net->ns.inum, (net == &init_net) ? " (init_net)" : "");
 }
 
 /*
@@ -981,8 +981,8 @@ static int rpcb_dec_getaddr(struct rpc_rqst *req, struct xdr_stream *xdr,
 	p = xdr_inline_decode(xdr, len);
 	if (unlikely(p == NULL))
 		goto out_fail;
-	dprintk("RPC: %5u RPCB_%s reply: %s\n", req->rq_task->tk_pid,
-			req->rq_task->tk_msg.rpc_proc->p_name, (char *)p);
+	dprintk("RPC: %5u RPCB_%s reply: %*pE\n", req->rq_task->tk_pid,
+			req->rq_task->tk_msg.rpc_proc->p_name, len, (char *)p);
 
 	if (rpc_uaddr2sockaddr(req->rq_xprt->xprt_net, (char *)p, len,
 				sap, sizeof(address)) == 0)

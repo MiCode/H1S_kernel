@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 #include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -27,13 +19,10 @@
 #include "mach/mtk_thermal.h"
 #include <linux/uidgid.h>
 #include <linux/slab.h>
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-#include <mt-plat/mtk_charger.h>
-#else
-#if !defined(CONFIG_MACH_MT8168)
-#include <charging.h>
-#endif
-#endif
+#include <linux/power_supply.h>
+
+
+
 
 #define mtktscharger_TEMP_CRIT (150000) /* 150.000 degree Celsius */
 
@@ -54,9 +43,9 @@ static kgid_t gid = KGIDT_INIT(1000);
 static DEFINE_SEMAPHORE(sem_mutex);
 
 static int kernelmode;
-static unsigned int interval = 2; /* seconds, 0 : no auto polling */
+static unsigned int interval; /* seconds, 0 : no auto polling */
 static int num_trip = 1;
-static int trip_temp[10] = { 120000, 110000, 100000, 90000, 80000,
+static int trip_temp[10] = { 125000, 110000, 100000, 90000, 80000,
 				70000, 65000, 60000, 55000, 50000 };
 
 static int g_THERMAL_TRIP[10] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
@@ -79,11 +68,11 @@ static unsigned int cl_dev_sysrst_state;
 static struct thermal_cooling_device *cl_dev_sysrst;
 
 static int mtktscharger_debug_log;
-
 /* This is to preserve last temperature readings from charger driver.
  * In case mtk_ts_charger.c fails to read temperature.
  */
 static unsigned long prev_temp = 30000;
+
 
 /**
  * If curr_temp >= polling_trip_temp1, use interval
@@ -95,101 +84,70 @@ static int polling_trip_temp1 = 40000;
 static int polling_trip_temp2 = 20000;
 static int polling_factor1 = 5000;
 static int polling_factor2 = 10000;
+static int charger_type;
 
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-static struct charger_consumer *pthermal_consumer;
-#endif
-
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-struct charger_consumer __attribute__ ((weak))
-*charger_manager_get_by_name(struct device *dev,
-	const char *supply_name)
+/*return 0:single charger*/
+/*return 1,2:dual charger*/
+static int get_charger_type(void)
 {
-	mtktscharger_pr_notice("%s not found.\n", __func__);
+	struct device_node *node = NULL;
+	u32 val = 0;
+
+	node = of_find_compatible_node(NULL, NULL, "mediatek,charger");
+	WARN_ON_ONCE(node == 0);
+
+	if (of_property_read_u32(node, "charger_configuration", &val))
+		return 0;
+
+	return val;
+}
+
+static struct power_supply *get_charger_psy(void)
+{
+	static struct power_supply *s_psy;
+	static struct power_supply *m_psy;
+
+	if (charger_type != 0) {
+	/*check if support slave charger*/
+		if (s_psy == NULL)
+			s_psy = power_supply_get_by_name("mtk-slave-charger");
+		if (s_psy)
+			return s_psy;
+	} else {
+	/*check if support master charger*/
+		if (m_psy == NULL)
+			m_psy = power_supply_get_by_name("mtk-master-charger");
+		if (m_psy)
+			return m_psy;
+	}
 	return NULL;
 }
 
-int __attribute__ ((weak))
-charger_manager_get_charger_temperature(struct charger_consumer *consumer,
-	int idx, int *tchg_min, int *tchg_max)
-{
-	mtktscharger_pr_notice("%s not found.\n", __func__);
-	return -ENODEV;
-}
-#else
-int __attribute__ ((weak))
-mtk_chr_get_tchr(int *min_tchr, int *max_tchr)
-{
-	mtktscharger_pr_notice("%s not found.\n", __func__);
-	return -ENODEV;
-}
-#endif
 
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-/**
- * Use new GM30 API to get charger temperatures.
- * When nothing is defined, main charger temperature is read.
- * When PEP30 is defined, direct charger temperature is read.
- * When Dual Charging is defined, slave charger temperature is read.
- * If main charger is not PMIC, it is necessary to create another TZ
- * for main charger
- * in both PEP30 and dual charging cases.
- */
 static int mtktscharger_get_hw_temp(void)
 {
-	int charger_idx = MAIN_CHARGER;
-	int tmax = 0, tmin = 0;
 	int ret = -1;
 	int t = -127000;
+	union power_supply_propval prop;
+	struct power_supply *chg_psy;
 
-	if (!pthermal_consumer)
+	chg_psy = get_charger_psy();
+
+	if (chg_psy == NULL)
 		return t;
-
-#ifdef CONFIG_MTK_PUMP_EXPRESS_PLUS_30_SUPPORT
-	charger_idx = DIRECT_CHARGER;
-#endif
-#ifdef CONFIG_MTK_DUAL_CHARGER_SUPPORT
-	charger_idx = SLAVE_CHARGER;
-#endif
-	ret = charger_manager_get_charger_temperature(pthermal_consumer,
-		charger_idx, &tmin, &tmax);
-
-	if (ret >= 0) {
-		t = tmax * 1000;
+	ret = power_supply_get_property(chg_psy,
+			POWER_SUPPLY_PROP_TEMP, &prop);
+	if (ret == 0) {
+		t = 1000 * prop.intval;
 		prev_temp = t;
-	} else if (ret == -ENODEV) {
-	} else {
+	} else
 		t = prev_temp;
-	}
-
-	mtktscharger_dprintk("%s t=%d min=%d max=%d ret=%d\n", __func__, t,
-							tmin, tmax, ret);
+	mtktscharger_dprintk("%s t=%d ret=%d\n",
+		__func__, t, ret);
 
 	return t;
 }
-#else
-static int mtktscharger_get_hw_temp(void)
-{
-	int ret = -1;
-	int min_temp = 0, max_temp = 0;
-	int t = -127000;
 
-	ret = mtk_chr_get_tchr(&min_temp, &max_temp);
-
-	if (ret >= 0) {
-		t = max_temp * 1000;
-		prev_temp = t;
-	} else if (ret == -ENODEV) {
-	} else {
-		t = prev_temp;
-	}
-
-	mtktscharger_dprintk("%s t=%d min=%d max=%d ret=%d\n", __func__, t,
-						min_temp, max_temp, ret);
-
-	return t;
-}
-#endif
 
 static int mtktscharger_get_temp(struct thermal_zone_device *thermal, int *t)
 {
@@ -337,7 +295,6 @@ static struct thermal_zone_device_ops mtktscharger_dev_ops = {
 static int mtktscharger_register_thermal(void)
 {
 	mtktscharger_dprintk("%s\n", __func__);
-
 	/* trips : trip 0~2 */
 	thz_dev = mtk_thermal_zone_device_register("mtktscharger", num_trip,
 					NULL, /* name: mtktscharger ??? */
@@ -593,7 +550,7 @@ static const struct file_operations mtktscharger_fops = {
 	.release = single_release,
 };
 
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
+
 static int mtktscharger_pdrv_probe(struct platform_device *pdev)
 {
 	int err = 0;
@@ -601,14 +558,7 @@ static int mtktscharger_pdrv_probe(struct platform_device *pdev)
 	struct proc_dir_entry *mtktscharger_dir = NULL;
 
 	mtktscharger_dprintk_always("%s\n", __func__);
-
-	pthermal_consumer = charger_manager_get_by_name(&pdev->dev, "charger");
-
-	if (!pthermal_consumer) {
-		mtktscharger_pr_notice("%s get get_by_name fails.\n", __func__);
-		return -EPERM;
-	}
-
+	charger_type = get_charger_type();
 	err = mtktscharger_register_thermal();
 	if (err)
 		goto err_unreg;
@@ -650,53 +600,14 @@ static struct platform_driver mtktscharger_driver = {
 		   .owner  = THIS_MODULE,
 		   },
 };
-#endif
+
 
 static int __init mtktscharger_init(void)
 {
 	int err = 0;
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-	/* Move this segment to probe function
-	 * in case mtktscharger reads temperature
-	 * before mtk_charger allows it.
-	 */
-#else
-	struct proc_dir_entry *entry = NULL;
-	struct proc_dir_entry *mtktscharger_dir = NULL;
-#endif
-
 	err = mtktscharger_register_cooler();
 	if (err)
 		return err;
-
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-	/* Move this segment to probe function
-	 * in case mtktscharger reads temperature
-	 * before mtk_charger allows it.
-	 */
-#else
-	err = mtktscharger_register_thermal();
-	if (err)
-		goto err_unreg;
-
-	mtktscharger_dir = mtk_thermal_get_proc_drv_therm_dir_entry();
-	if (!mtktscharger_dir) {
-		mtktscharger_dprintk("%s get /proc/driver/thermal failed\n",
-								__func__);
-	} else {
-		entry = proc_create("tzcharger", 0664, mtktscharger_dir,
-							&mtktscharger_fops);
-		if (entry)
-			proc_set_user(entry, uid, gid);
-	}
-#endif
-
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-	/* TODO: consider not to register a charger thermal zone
-	 * if not PEP30 or dual charger.
-	 */
-	/* register platform device/driver
-	 */
 	err = platform_device_register(&mtktscharger_device);
 	if (err) {
 		mtktscharger_dprintk("%s fail to reg device\n", __func__);
@@ -708,14 +619,11 @@ static int __init mtktscharger_init(void)
 		mtktscharger_dprintk("%s fail to reg driver\n", __func__);
 		goto reg_platform_driver_fail;
 	}
-#endif
 
 	return 0;
 
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
 reg_platform_driver_fail:
 	platform_device_unregister(&mtktscharger_device);
-#endif
 
 err_unreg:
 

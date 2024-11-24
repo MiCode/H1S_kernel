@@ -1,13 +1,6 @@
-/* * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __LAYER_STRATEGY_EX__
@@ -105,5 +98,9 @@ enum HRT_DRAMC_TYPE {
 void layering_rule_init(void);
 int layering_rule_get_mm_freq_table(enum HRT_OPP_LEVEL opp_level);
 int set_emi_bound_tb(int idx, int num, int *val);
-
+void copy_hrt_bound_table(int is_larb, int *hrt_table,
+	int active_config_id);
+unsigned long long layering_get_frame_bw(int active_cfg_id);
+unsigned int layering_rule_get_hrt_idx(void);
+int layering_get_valid_hrt(int active_config_id);
 #endif

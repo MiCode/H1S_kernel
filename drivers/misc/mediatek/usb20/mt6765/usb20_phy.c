@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2018 MediaTek Inc.
  */
 
 #ifdef CONFIG_MTK_CLKMGR
@@ -23,7 +15,8 @@
 #include <mtk_musb.h>
 #include <musb_core.h>
 #include "usb20.h"
-#include "mtk_devinfo.h"
+#include <linux/nvmem-consumer.h>
+#include <linux/phy/phy.h>
 
 #ifdef CONFIG_OF
 #include <linux/of_address.h>
@@ -60,7 +53,7 @@ void usb_phy_savecurrent(void)
 {
 }
 
-void usb_phy_recover(void)
+void usb_phy_recover(struct musb *musb)
 {
 }
 
@@ -169,13 +162,13 @@ int usb2jtag_usb_init(void)
 #endif
 
 	if (!node) {
-		pr_err("[USB2JTAG] map node @ mediatek,USB0 failed\n");
+		pr_notice("[USB2JTAG] map node @ mediatek,USB0 failed\n");
 		return -1;
 	}
 
 	usb_phy_base = of_iomap(node, 1);
 	if (!usb_phy_base) {
-		pr_err("[USB2JTAG] iomap usb_phy_base failed\n");
+		pr_notice("[USB2JTAG] iomap usb_phy_base failed\n");
 		return -1;
 	}
 
@@ -492,19 +485,19 @@ void usb_phy_switch_to_usb(void)
 void set_usb_phy_mode(int mode)
 {
 	switch (mode) {
-	case PHY_DEV_ACTIVE:
+	case PHY_MODE_USB_DEVICE:
 	/* VBUSVALID=1, AVALID=1, BVALID=1, SESSEND=0, IDDIG=1, IDPULLUP=1 */
 		USBPHY_CLR32(0x6C, (0x10<<0));
 		USBPHY_SET32(0x6C, (0x2F<<0));
 		USBPHY_SET32(0x6C, (0x3F<<8));
 		break;
-	case PHY_HOST_ACTIVE:
+	case PHY_MODE_USB_HOST:
 	/* VBUSVALID=1, AVALID=1, BVALID=1, SESSEND=0, IDDIG=0, IDPULLUP=1 */
 		USBPHY_CLR32(0x6c, (0x12<<0));
 		USBPHY_SET32(0x6c, (0x2d<<0));
 		USBPHY_SET32(0x6c, (0x3f<<8));
 		break;
-	case PHY_IDLE_MODE:
+	case PHY_MODE_INVALID:
 	/* VBUSVALID=0, AVALID=0, BVALID=0, SESSEND=1, IDDIG=0, IDPULLUP=1 */
 		USBPHY_SET32(0x6c, (0x11<<0));
 		USBPHY_CLR32(0x6c, (0x2e<<0));
@@ -537,7 +530,7 @@ void usb_phy_poweron(void)
 {
 #ifdef CONFIG_MTK_UART_USB_SWITCH
 	if (in_uart_mode) {
-		DBG(0, "At UART mode. No usb_phy_poweron\n");
+		DBG(0, "At UART mode. No %s\n", __func__);
 		return;
 	}
 #endif
@@ -593,7 +586,7 @@ static void usb_phy_savecurrent_internal(void)
 {
 #ifdef CONFIG_MTK_UART_USB_SWITCH
 	if (in_uart_mode) {
-		DBG(0, "At UART mode. No usb_phy_savecurrent_internal\n");
+		DBG(0, "At UART mode. No %s\n", __func__);
 		return;
 	}
 #endif
@@ -663,7 +656,7 @@ static void usb_phy_savecurrent_internal(void)
 
 	udelay(1);
 
-	set_usb_phy_mode(PHY_IDLE_MODE);
+	set_usb_phy_mode(PHY_MODE_INVALID);
 }
 
 void usb_phy_savecurrent(void)
@@ -672,14 +665,43 @@ void usb_phy_savecurrent(void)
 	DBG(0, "usb save current success\n");
 }
 
+unsigned int usb_phy_get_efuse_val(struct device *dev)
+{
+	unsigned int efuse_val = 0;
+	struct nvmem_cell *cell;
+	u32 *buf;
+	size_t len;
+
+	/* M_ANALOG8[4:0] => RG_USB20_INTR_CAL[4:0] */
+	cell = nvmem_cell_get(dev, "efuse_idx107");
+	if (cell == NULL) {
+		DBG(0, "nvmem_cell_get return NULL");
+		return 0;
+	}
+	if (IS_ERR(cell)) {
+		DBG(0, "can not get efuse_cell");
+		return 0;
+	}
+
+	buf = (u32 *)nvmem_cell_read(cell, &len);
+	nvmem_cell_put(cell);
+	if (IS_ERR(buf)) {
+		DBG(0, "can not get efuse_buf");
+		return 0;
+	}
+	efuse_val = (*buf & (0x1f<<0)) >> 0;
+	kfree(buf);
+	return efuse_val;
+}
+
 /* M17_USB_PWR Sequence 20160603.xls */
-void usb_phy_recover(void)
+void usb_phy_recover(struct musb *musb)
 {
 	unsigned int efuse_val = 0;
 
 #ifdef CONFIG_MTK_UART_USB_SWITCH
 	if (in_uart_mode) {
-		DBG(0, "At UART mode. No usb_phy_recover\n");
+		DBG(0, "At UART mode. No %s\n", __func__);
 		return;
 	}
 #endif
@@ -755,22 +777,21 @@ void usb_phy_recover(void)
 	udelay(800);
 
 	/* force enter device mode */
-	set_usb_phy_mode(PHY_DEV_ACTIVE);
+	set_usb_phy_mode(PHY_MODE_USB_DEVICE);
 
 	hs_slew_rate_cal();
 
-	/* M_ANALOG8[4:0] => RG_USB20_INTR_CAL[4:0] */
-	efuse_val = (get_devinfo_with_index(107) & (0x1f<<0)) >> 0;
+	efuse_val = musb->efuse_val;
 	if (efuse_val) {
 		DBG(0, "apply efuse setting, RG_USB20_INTR_CAL=0x%x\n",
 			efuse_val);
 		USBPHY_CLR32(0x04, (0x1F<<19));
-		USBPHY_SET32(0x04, (efuse_val<<19));
+		/* Add pass margin */
+		USBPHY_SET32(0x04, ((efuse_val+2)<<19));
 	}
 
 	/* disc threshold to max, RG_USB20_DISCTH[7:4], dft:1000, MAX:1111 */
 	USBPHY_SET32(0x18, (0xf0<<0));
-
 	usb_phy_tuning();
 
 	DBG(0, "usb recovery success\n");
@@ -779,12 +800,6 @@ void usb_phy_recover(void)
 /* BC1.2 */
 void Charger_Detect_Init(void)
 {
-	if ((get_boot_mode() == META_BOOT) ||
-		(get_boot_mode() == ADVMETA_BOOT)) {
-		DBG(0, "%s Skip\n", __func__);
-		return;
-	}
-
 	usb_prepare_enable_clock(true);
 
 	/* wait 50 usec. */
@@ -795,17 +810,12 @@ void Charger_Detect_Init(void)
 
 	usb_prepare_enable_clock(false);
 
-	DBG(0, "Charger_Detect_Init\n");
+	DBG(0, "%s\n", __func__);
 }
+EXPORT_SYMBOL(Charger_Detect_Init);
 
 void Charger_Detect_Release(void)
 {
-	if ((get_boot_mode() == META_BOOT) ||
-		(get_boot_mode() == ADVMETA_BOOT)) {
-		DBG(0, "%s Skip\n", __func__);
-		return;
-	}
-
 	usb_prepare_enable_clock(true);
 
 	/* RG_USB20_BC11_SW_EN = 1'b0 */
@@ -815,8 +825,9 @@ void Charger_Detect_Release(void)
 
 	usb_prepare_enable_clock(false);
 
-	DBG(0, "Charger_Detect_Release\n");
+	DBG(0, "%s\n", __func__);
 }
+EXPORT_SYMBOL(Charger_Detect_Release);
 
 void usb_phy_context_save(void)
 {

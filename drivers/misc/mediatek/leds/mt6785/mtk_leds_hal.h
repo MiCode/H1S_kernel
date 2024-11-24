@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 #ifndef _LEDS_HAL_H
 #define _LEDS_HAL_H
@@ -20,6 +13,14 @@
  * LED HAL functions
  ***************************************************************************/
 extern void mt_leds_wake_lock_init(void);
+extern unsigned int mt_get_bl_brightness(void);
+extern unsigned int mt_get_bl_duty(void);
+extern unsigned int mt_get_bl_div(void);
+extern unsigned int mt_get_bl_frequency(void);
+extern unsigned int *mt_get_div_array(void);
+extern void mt_set_bl_duty(unsigned int level);
+extern void mt_set_bl_div(unsigned int div);
+extern void mt_set_bl_frequency(unsigned int freq);
 extern void mt_led_pwm_disable(int pwm_num);
 extern int mt_led_set_pwm(int pwm_num, struct nled_setting *led);
 extern int mt_led_blink_pmic(enum mt65xx_led_pmic pmic_type,

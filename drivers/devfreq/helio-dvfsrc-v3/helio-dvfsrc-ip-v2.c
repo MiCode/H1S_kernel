@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/fb.h>
 #include <linux/notifier.h>
@@ -95,32 +87,6 @@ static void dvfsrc_get_timestamp(char *p)
 	if (ret < 0)
 		pr_info("dvfsrc snprintf fail\n");
 }
-
-static void dvfsrc_get_sys_stamp(char *p)
-{
-	u64 sys_time;
-	u64 kernel_time;
-	int ret = 0;
-
-	kernel_time = sched_clock_get_cyc(&sys_time);
-#if defined(CONFIG_MTK_QOS_V2)
-	qos_sram_write(DVFSRC_TIMESTAMP_OFFSET,
-		kernel_time);
-	qos_sram_write(DVFSRC_TIMESTAMP_OFFSET + 0x4,
-		kernel_time >> 32);
-	qos_sram_write(DVFSRC_TIMESTAMP_OFFSET + 0x8,
-		sys_time);
-	qos_sram_write(DVFSRC_TIMESTAMP_OFFSET + 0xC,
-		sys_time >> 32);
-#endif
-	if (p) {
-		ret = snprintf(p, TIME_STAMP_SIZE, "0x%llx, 0x%llx",
-			kernel_time, sys_time);
-		if (ret < 0)
-			pr_info("dvfsrc snprintf fail\n");
-	}
-}
-
 
 static int is_dvfsrc_forced(void)
 {
@@ -455,7 +421,6 @@ static irqreturn_t helio_dvfsrc_interrupt(int irq, void *dev_id)
 
 static int dvfsrc_resume(struct helio_dvfsrc *dvfsrc)
 {
-	dvfsrc_get_sys_stamp(sys_stamp);
 #ifdef DVFSRC_SUSPEND_SUPPORT
 	dvfsrc_resume_cb(dvfsrc);
 #endif
@@ -474,11 +439,15 @@ int get_sw_req_vcore_opp(void)
 {
 	int opp = -1;
 	int sw_req = -1;
-	int scp_req = -1;
+	int scp_req = VCORE_OPP_NUM - 1;
 
 	/* return opp 0, if dvfsrc not enable */
 	if (!is_dvfsrc_enabled())
 		return 0;
+	/* return opp 0, if dvfsrc pmqos not ready */
+	if (!is_dvfsrc_qos_enabled())
+		return 0;
+
 	/* 1st get sw req opp  no lock protect is ok*/
 	if (!is_dvfsrc_forced()) {
 		sw_req = (dvfsrc_read(DVFSRC_SW_REQ3) >> VCORE_SW_AP_SHIFT);
@@ -505,12 +474,12 @@ int helio_dvfsrc_config(struct helio_dvfsrc *dvfsrc)
 	if (!vcore_reg_id)
 		pr_info("[DVFSRC] No Vcore regulator\n");
 
-	dvfsrc_get_sys_stamp(sys_stamp);
-#ifdef CONFIG_MTK_WATCHDOG_COMMON
+#if defined(CONFIG_MTK_WATCHDOG_COMMON) || defined(CONFIG_MTK_DBGTOP)
 	dvfsrc_latch_register(1);
 #endif
 	helio_dvfsrc_enable(1);
 	helio_dvfsrc_platform_init(dvfsrc);
+	helio_dvfsrc_qos_init_done();
 
 #if IS_ENABLED(CONFIG_MMPROFILE)
 	mmprofile_enable(1);

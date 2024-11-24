@@ -1,15 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Arch specific cpu topology information
  *
  * Copyright (C) 2016, ARM Ltd.
  * Written by: Juri Lelli, ARM Ltd.
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
- *
- * Released under the GPLv2 only.
- * SPDX-License-Identifier: GPL-2.0
  */
 
 #include <linux/acpi.h>
@@ -21,16 +15,111 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/sched/topology.h>
-#include <linux/sched/energy.h>
 #include <linux/cpuset.h>
 
 DEFINE_PER_CPU(unsigned long, freq_scale) = SCHED_CAPACITY_SCALE;
 DEFINE_PER_CPU(unsigned long, max_cpu_freq);
 DEFINE_PER_CPU(unsigned long, max_freq_scale) = SCHED_CAPACITY_SCALE;
-DEFINE_PER_CPU(unsigned long, min_freq_scale) = 0;
 
 #ifdef CONFIG_NONLINEAR_FREQ_CTL
-#include "arch_topology_plus.c"
+#include "../../drivers/misc/mediatek/base/power/include/mtk_upower.h"
+#include "../../drivers/misc/mediatek/include/mt-plat/mtk_cpufreq_common_api.h"
+
+static inline unsigned long get_freq_capacity(int cpu, unsigned long freq)
+{
+	int i;
+	int tmp;
+	int idx = -1;
+	struct upower_tbl *tbl;
+
+	tbl = upower_get_core_tbl(cpu);
+	for (i = 0; i < tbl->row_num ; i++) {
+		tmp = mt_cpufreq_get_cpu_freq(cpu, i);
+		if (unlikely(!tmp)) {
+			WARN(1, "frequency not in opp table!\n");
+			idx = tbl->row_num - 1;
+			break;
+		}
+		if (tmp >= freq) {
+			idx = i;
+			break;
+		}
+	}
+
+	if (idx < 0)
+		idx = tbl->row_num - 1;
+
+	return tbl->row[idx].cap;
+}
+
+static inline unsigned long get_freq_capacity_lt(int cpu, unsigned long freq)
+{
+	int i;
+	int tmp;
+	int idx = -1;
+	struct upower_tbl *tbl;
+
+	tbl = upower_get_core_tbl(cpu);
+	for (i = tbl->row_num - 1; i >= 0; i--) {
+		tmp = mt_cpufreq_get_cpu_freq(cpu, i);
+		if (unlikely(!tmp)) {
+			WARN(1, "frequency not in opp table!\n");
+			idx = 0;
+			break;
+		}
+		if (tmp <= freq) {
+			idx = i;
+			break;
+		}
+	}
+
+	if (idx < 0)
+		idx = 0;
+
+	return tbl->row[idx].cap;
+}
+
+void arch_set_freq_scale(struct cpumask *cpus, unsigned long cur_freq,
+			 unsigned long max_freq)
+{
+	unsigned long scale;
+	int i;
+	int cpu = cpumask_first(cpus);
+	unsigned long cur_cap, max_cap;
+
+	cur_cap = get_freq_capacity(cpu, cur_freq);
+	max_cap = get_freq_capacity(cpu, max_freq);
+
+	scale = (cur_cap << SCHED_CAPACITY_SHIFT) / max_cap;
+
+	for_each_cpu(i, cpus) {
+		per_cpu(freq_scale, i) = scale;
+		per_cpu(max_cpu_freq, i) = max_freq;
+	}
+}
+
+void arch_set_max_freq_scale(struct cpumask *cpus,
+			     unsigned long policy_max_freq)
+{
+	unsigned long scale, max_freq;
+	int cpu = cpumask_first(cpus);
+	unsigned long policy_max_cap, max_cap;
+
+	if (cpu > nr_cpu_ids)
+		return;
+
+	max_freq = per_cpu(max_cpu_freq, cpu);
+	if (!max_freq)
+		return;
+
+	policy_max_cap = get_freq_capacity_lt(cpu, policy_max_freq);
+	max_cap = get_freq_capacity_lt(cpu, max_freq);
+
+	scale = (policy_max_cap << SCHED_CAPACITY_SHIFT) / max_cap;
+
+	for_each_cpu(cpu, cpus)
+		per_cpu(max_freq_scale, cpu) = scale;
+}
 #else
 void arch_set_freq_scale(struct cpumask *cpus, unsigned long cur_freq,
 			 unsigned long max_freq)
@@ -64,25 +153,6 @@ void arch_set_max_freq_scale(struct cpumask *cpus,
 	for_each_cpu(cpu, cpus)
 		per_cpu(max_freq_scale, cpu) = scale;
 }
-
-void arch_set_min_freq_scale(struct cpumask *cpus,
-			     unsigned long policy_min_freq)
-{
-	unsigned long scale, max_freq;
-	int cpu = cpumask_first(cpus);
-
-	if (cpu > nr_cpu_ids)
-		return;
-
-	max_freq = per_cpu(max_cpu_freq, cpu);
-	if (!max_freq)
-		return;
-
-	scale = (policy_min_freq << SCHED_CAPACITY_SHIFT) / max_freq;
-
-	for_each_cpu(cpu, cpus)
-		per_cpu(min_freq_scale, cpu) = scale;
-}
 #endif
 
 static DEFINE_MUTEX(cpu_scale_mutex);
@@ -115,7 +185,6 @@ static ssize_t cpu_capacity_store(struct device *dev,
 	int i;
 	unsigned long new_capacity;
 	ssize_t ret;
-	cpumask_var_t mask;
 
 	if (!count)
 		return 0;
@@ -127,40 +196,11 @@ static ssize_t cpu_capacity_store(struct device *dev,
 		return -EINVAL;
 
 	mutex_lock(&cpu_scale_mutex);
-
-	if (new_capacity < SCHED_CAPACITY_SCALE) {
-		int highest_score_cpu = 0;
-
-		if (!alloc_cpumask_var(&mask, GFP_KERNEL)) {
-			mutex_unlock(&cpu_scale_mutex);
-			return -ENOMEM;
-		}
-
-		cpumask_andnot(mask, cpu_online_mask,
-				topology_core_cpumask(this_cpu));
-
-		for_each_cpu(i, mask) {
-			if (topology_get_cpu_scale(NULL, i) ==
-					SCHED_CAPACITY_SCALE) {
-				highest_score_cpu = 1;
-				break;
-			}
-		}
-
-		free_cpumask_var(mask);
-
-		if (!highest_score_cpu) {
-			mutex_unlock(&cpu_scale_mutex);
-			return -EINVAL;
-		}
-	}
-
-	for_each_cpu(i, topology_core_cpumask(this_cpu))
+	for_each_cpu(i, &cpu_topology[this_cpu].core_sibling)
 		topology_set_cpu_scale(i, new_capacity);
 	mutex_unlock(&cpu_scale_mutex);
 
-	if (topology_detect_flags())
-		schedule_work(&update_topology_flags_work);
+	schedule_work(&update_topology_flags_work);
 
 	return count;
 }
@@ -186,169 +226,7 @@ static int register_cpu_capacity_sysctl(void)
 }
 subsys_initcall(register_cpu_capacity_sysctl);
 
-enum asym_cpucap_type { no_asym, asym_thread, asym_core, asym_die };
-static enum asym_cpucap_type asym_cpucap = no_asym;
-enum share_cap_type { no_share_cap, share_cap_thread, share_cap_core, share_cap_die};
-/* static enum share_cap_type share_cap = no_share_cap; */
-static enum share_cap_type share_cap = share_cap_core;
-
-#ifdef CONFIG_CPU_FREQ
-int detect_share_cap_flag(void)
-{
-	int cpu;
-	enum share_cap_type share_cap_level = no_share_cap;
-	struct cpufreq_policy *policy;
-
-	for_each_possible_cpu(cpu) {
-		policy = cpufreq_cpu_get(cpu);
-
-		if (!policy)
-			return 0;
-
-		if (share_cap_level < share_cap_thread &&
-			cpumask_equal(topology_sibling_cpumask(cpu),
-				  policy->related_cpus)) {
-			share_cap_level = share_cap_thread;
-			continue;
-		}
-
-		if (cpumask_equal(topology_core_cpumask(cpu),
-				  policy->related_cpus)) {
-			share_cap_level = share_cap_core;
-			continue;
-		}
-
-		if (cpumask_equal(cpu_cpu_mask(cpu),
-				  policy->related_cpus)) {
-			share_cap_level = share_cap_die;
-			continue;
-		}
-	}
-
-	if (share_cap != share_cap_level) {
-		share_cap = share_cap_level;
-		return 1;
-	}
-
-	return 0;
-}
-#else
-int detect_share_cap_flag(void) { return 0; }
-#endif
-
-/*
- * Walk cpu topology to determine sched_domain flags.
- *
- * SD_ASYM_CPUCAPACITY: Indicates the lowest level that spans all cpu
- * capacities found in the system for all cpus, i.e. the flag is set
- * at the same level for all systems. The current algorithm implements
- * this by looking for higher capacities, which doesn't work for all
- * conceivable topology, but don't complicate things until it is
- * necessary.
- */
-int topology_detect_flags(void)
-{
-	unsigned long max_capacity, capacity;
-	enum asym_cpucap_type asym_level = no_asym;
-	int cpu, die_cpu, core, thread, flags_changed = 0;
-
-	for_each_possible_cpu(cpu) {
-		max_capacity = 0;
-
-		if (asym_level >= asym_thread)
-			goto check_core;
-
-		for_each_cpu(thread, topology_sibling_cpumask(cpu)) {
-			capacity = topology_get_cpu_scale(NULL, thread);
-
-			if (capacity > max_capacity) {
-				if (max_capacity != 0)
-					asym_level = asym_thread;
-
-				max_capacity = capacity;
-			}
-		}
-
-check_core:
-		if (asym_level >= asym_core)
-			goto check_die;
-
-		for_each_cpu(core, topology_core_cpumask(cpu)) {
-			capacity = topology_get_cpu_scale(NULL, core);
-
-			if (capacity > max_capacity) {
-				if (max_capacity != 0)
-					asym_level = asym_core;
-
-				max_capacity = capacity;
-			}
-		}
-check_die:
-		for_each_possible_cpu(die_cpu) {
-			capacity = topology_get_cpu_scale(NULL, die_cpu);
-
-			if (capacity > max_capacity) {
-				if (max_capacity != 0) {
-					asym_level = asym_die;
-					goto done;
-				}
-			}
-		}
-	}
-
-done:
-	if (asym_cpucap != asym_level) {
-		asym_cpucap = asym_level;
-		flags_changed = 1;
-		pr_debug("topology flag change detected\n");
-	}
-
-	if (detect_share_cap_flag())
-		flags_changed = 1;
-
-	return flags_changed;
-}
-
-int topology_smt_flags(void)
-{
-	int flags = 0;
-
-	if (asym_cpucap == asym_thread)
-		flags |= SD_ASYM_CPUCAPACITY;
-
-	if (share_cap == share_cap_thread)
-		flags |= SD_SHARE_CAP_STATES;
-
-	return flags;
-}
-
-int topology_core_flags(void)
-{
-	int flags = 0;
-
-	if (asym_cpucap == asym_core)
-		flags |= SD_ASYM_CPUCAPACITY;
-
-	if (share_cap == share_cap_core)
-		flags |= SD_SHARE_CAP_STATES;
-
-	return flags;
-}
-
-int topology_cpu_flags(void)
-{
-	int flags = 0;
-
-	if (asym_cpucap == asym_die)
-		flags |= SD_ASYM_CPUCAPACITY;
-
-	if (share_cap == share_cap_die)
-		flags |= SD_SHARE_CAP_STATES;
-
-	return flags;
-}
-
-static int update_topology = 0;
+static int update_topology;
 
 int topology_update_cpu_topology(void)
 {
@@ -389,12 +267,13 @@ void topology_normalize_cpu_scale(void)
 	pr_debug("cpu_capacity: capacity_scale=%u\n", capacity_scale);
 	mutex_lock(&cpu_scale_mutex);
 	for_each_possible_cpu(cpu) {
+		pr_debug("cpu_capacity: cpu=%d raw_capacity=%u\n",
+			 cpu, raw_capacity[cpu]);
 		capacity = (raw_capacity[cpu] << SCHED_CAPACITY_SHIFT)
 			/ capacity_scale;
 		topology_set_cpu_scale(cpu, capacity);
-		pr_debug("cpu_capacity: CPU%d cpu_capacity=%lu raw_capacity=%u\n",
-			cpu, topology_get_cpu_scale(NULL, cpu),
-			raw_capacity[cpu]);
+		pr_debug("cpu_capacity: CPU%d cpu_capacity=%lu\n",
+			cpu, topology_get_cpu_scale(NULL, cpu));
 	}
 	mutex_unlock(&cpu_scale_mutex);
 }
@@ -471,9 +350,7 @@ init_cpu_capacity_callback(struct notifier_block *nb,
 
 	if (cpumask_empty(cpus_to_visit)) {
 		topology_normalize_cpu_scale();
-		init_sched_energy_costs();
-		if (topology_detect_flags())
-			schedule_work(&update_topology_flags_work);
+		schedule_work(&update_topology_flags_work);
 		free_raw_capacity();
 		pr_debug("cpu_capacity: parsing done\n");
 		schedule_work(&parsing_done_work);

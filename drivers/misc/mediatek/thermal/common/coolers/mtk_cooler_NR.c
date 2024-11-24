@@ -1,15 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -25,7 +18,6 @@
 #else
 #include <linux/clk.h>
 #endif
-#include <mach/wd_api.h>
 #include <linux/slab.h>
 #include <linux/seq_file.h>
 #include <linux/mm.h>
@@ -62,14 +54,14 @@ static char *clNR_mmap;
 /*=============================================================
  */
 
-static int mmap_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
+static vm_fault_t mmap_fault(struct vm_fault *vmf)
 {
 	struct page *page;
 	char *info;
 
 	clNR_dprintk("%s %d\n", __func__, __LINE__);
 	/* the data is in vma->vm_private_data */
-	info = (char *)vma->vm_private_data;
+	info = (char *)vmf->vma->vm_private_data;
 
 	if (!info) {
 		clNR_printk("no data\n");
@@ -106,11 +98,13 @@ struct file *file, const char __user *buffer, size_t count, loff_t *data)
 	char desc[32];
 	char arg_name[32] = { 0 };
 	char trailing[32] = { 0 };
-	int isEnabled, len = 0, arg_val = 0;
-
+	int isEnabled, arg_val = 0;
+	unsigned int len = 0;
 
 	clNR_dprintk("%s %d\n", __func__, __LINE__);
+
 	len = (count < (sizeof(desc) - 1)) ? count : (sizeof(desc) - 1);
+
 	if (copy_from_user(desc, buffer, len))
 		return 0;
 

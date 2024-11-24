@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * drivers/android/staging/vsoc.c
  *
@@ -6,16 +7,6 @@
  * Copyright (C) 2017 Google, Inc.
  *
  * Author: ghartman@google.com
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  *
  * Based on drivers/char/kvm_ivshmem.c - driver for KVM Inter-VM shared memory
  *         Copyright 2009 Cam Macdonell <cam@cs.ualberta.ca>
@@ -157,13 +148,13 @@ static int vsoc_release(struct inode *, struct file *);
 static ssize_t vsoc_read(struct file *, char __user *, size_t, loff_t *);
 static ssize_t vsoc_write(struct file *, const char __user *, size_t, loff_t *);
 static loff_t vsoc_lseek(struct file *filp, loff_t offset, int origin);
-static int do_create_fd_scoped_permission(
-	struct vsoc_device_region *region_p,
-	struct fd_scoped_permission_node *np,
-	struct fd_scoped_permission_arg __user *arg);
-static void do_destroy_fd_scoped_permission(
-	struct vsoc_device_region *owner_region_p,
-	struct fd_scoped_permission *perm);
+static int
+do_create_fd_scoped_permission(struct vsoc_device_region *region_p,
+			       struct fd_scoped_permission_node *np,
+			       struct fd_scoped_permission_arg __user *arg);
+static void
+do_destroy_fd_scoped_permission(struct vsoc_device_region *owner_region_p,
+				struct fd_scoped_permission *perm);
 static long do_vsoc_describe_region(struct file *,
 				    struct vsoc_device_region __user *);
 static ssize_t vsoc_get_area(struct file *filp, __u32 *perm_off);
@@ -212,14 +203,14 @@ static inline phys_addr_t shm_off_to_phys_addr(__u32 offset)
  * Convenience functions to obtain the region from the inode or file.
  * Dangerous to call before validating the inode/file.
  */
-static inline struct vsoc_device_region *vsoc_region_from_inode(
-	struct inode *inode)
+static
+inline struct vsoc_device_region *vsoc_region_from_inode(struct inode *inode)
 {
 	return &vsoc_dev.regions[iminor(inode)];
 }
 
-static inline struct vsoc_device_region *vsoc_region_from_filep(
-	struct file *inode)
+static
+inline struct vsoc_device_region *vsoc_region_from_filep(struct file *inode)
 {
 	return vsoc_region_from_inode(file_inode(inode));
 }
@@ -259,17 +250,18 @@ static struct pci_driver vsoc_pci_driver = {
 	.remove = vsoc_remove_device,
 };
 
-static int do_create_fd_scoped_permission(
-	struct vsoc_device_region *region_p,
-	struct fd_scoped_permission_node *np,
-	struct fd_scoped_permission_arg __user *arg)
+static int
+do_create_fd_scoped_permission(struct vsoc_device_region *region_p,
+			       struct fd_scoped_permission_node *np,
+			       struct fd_scoped_permission_arg __user *arg)
 {
 	struct file *managed_filp;
 	s32 managed_fd;
 	atomic_t *owner_ptr = NULL;
 	struct vsoc_device_region *managed_region_p;
 
-	if (copy_from_user(&np->permission, &arg->perm, sizeof(*np)) ||
+	if (copy_from_user(&np->permission,
+			   &arg->perm, sizeof(np->permission)) ||
 	    copy_from_user(&managed_fd,
 			   &arg->managed_region_fd, sizeof(managed_fd))) {
 		return -EFAULT;
@@ -353,9 +345,9 @@ static int do_create_fd_scoped_permission(
 	return 0;
 }
 
-static void do_destroy_fd_scoped_permission_node(
-	struct vsoc_device_region *owner_region_p,
-	struct fd_scoped_permission_node *node)
+static void
+do_destroy_fd_scoped_permission_node(struct vsoc_device_region *owner_region_p,
+				     struct fd_scoped_permission_node *node)
 {
 	if (node) {
 		do_destroy_fd_scoped_permission(owner_region_p,
@@ -367,17 +359,17 @@ static void do_destroy_fd_scoped_permission_node(
 	}
 }
 
-static void do_destroy_fd_scoped_permission(
-		struct vsoc_device_region *owner_region_p,
-		struct fd_scoped_permission *perm)
+static void
+do_destroy_fd_scoped_permission(struct vsoc_device_region *owner_region_p,
+				struct fd_scoped_permission *perm)
 {
 	atomic_t *owner_ptr = NULL;
 	int prev = 0;
 
 	if (!perm)
 		return;
-	owner_ptr = (atomic_t *)shm_off_to_virtual_addr(
-		owner_region_p->region_begin_offset + perm->owner_offset);
+	owner_ptr = (atomic_t *)shm_off_to_virtual_addr
+		(owner_region_p->region_begin_offset + perm->owner_offset);
 	prev = atomic_xchg(owner_ptr, VSOC_REGION_FREE);
 	if (prev != perm->owned_value)
 		dev_err(&vsoc_dev.dev->dev,
@@ -414,7 +406,7 @@ static int handle_vsoc_cond_wait(struct file *filp, struct vsoc_cond_wait *arg)
 	int ret = 0;
 	struct vsoc_device_region *region_p = vsoc_region_from_filep(filp);
 	atomic_t *address = NULL;
-	struct timespec ts;
+	ktime_t wake_time;
 
 	/* Ensure that the offset is aligned */
 	if (arg->offset & (sizeof(uint32_t) - 1))
@@ -442,14 +434,13 @@ static int handle_vsoc_cond_wait(struct file *filp, struct vsoc_cond_wait *arg)
 		 * We do things this way to flatten differences between 32 bit
 		 * and 64 bit timespecs.
 		 */
-		ts.tv_sec = arg->wake_time_sec;
-		ts.tv_nsec = arg->wake_time_nsec;
-
-		if (!timespec_valid(&ts))
+		if (arg->wake_time_nsec >= NSEC_PER_SEC)
 			return -EINVAL;
+		wake_time = ktime_set(arg->wake_time_sec, arg->wake_time_nsec);
+
 		hrtimer_init_on_stack(&to->timer, CLOCK_MONOTONIC,
 				      HRTIMER_MODE_ABS);
-		hrtimer_set_expires_range_ns(&to->timer, timespec_to_ktime(ts),
+		hrtimer_set_expires_range_ns(&to->timer, wake_time,
 					     current->timer_slack_ns);
 
 		hrtimer_init_sleeper(to, current);
@@ -561,10 +552,10 @@ static long vsoc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			if (!node)
 				return -ENOMEM;
 			INIT_LIST_HEAD(&node->list);
-			rv = do_create_fd_scoped_permission(
-				region_p,
-				node,
-				(struct fd_scoped_permission_arg __user *)arg);
+			rv = do_create_fd_scoped_permission
+				(region_p,
+				 node,
+				 (struct fd_scoped_permission_arg __user *)arg);
 			if (!rv) {
 				mutex_lock(&vsoc_dev.mtx);
 				list_add(&node->list, &vsoc_dev.permissions);
@@ -591,9 +582,7 @@ static long vsoc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 
 	case VSOC_MAYBE_SEND_INTERRUPT_TO_HOST:
-		if (!atomic_xchg(
-			    reg_data->outgoing_signalled,
-			    1)) {
+		if (!atomic_xchg(reg_data->outgoing_signalled, 1)) {
 			writel(reg_num, vsoc_dev.regs + DOORBELL);
 			return 0;
 		} else {
@@ -604,17 +593,16 @@ static long vsoc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case VSOC_SEND_INTERRUPT_TO_HOST:
 		writel(reg_num, vsoc_dev.regs + DOORBELL);
 		return 0;
-
 	case VSOC_WAIT_FOR_INCOMING_INTERRUPT:
-		wait_event_interruptible(
-			reg_data->interrupt_wait_queue,
-			(atomic_read(reg_data->incoming_signalled) != 0));
+		wait_event_interruptible
+			(reg_data->interrupt_wait_queue,
+			 (atomic_read(reg_data->incoming_signalled) != 0));
 		break;
 
 	case VSOC_DESCRIBE_REGION:
-		return do_vsoc_describe_region(
-			filp,
-			(struct vsoc_device_region __user *)arg);
+		return do_vsoc_describe_region
+			(filp,
+			 (struct vsoc_device_region __user *)arg);
 
 	case VSOC_SELF_INTERRUPT:
 		atomic_set(reg_data->incoming_signalled, 1);
@@ -853,8 +841,8 @@ static int vsoc_probe_device(struct pci_dev *pdev,
 	vsoc_dev.regions = (struct vsoc_device_region __force *)
 		((void *)vsoc_dev.layout +
 		 vsoc_dev.layout->vsoc_region_desc_offset);
-	vsoc_dev.msix_entries = kcalloc(
-			vsoc_dev.layout->region_count,
+	vsoc_dev.msix_entries =
+		kcalloc(vsoc_dev.layout->region_count,
 			sizeof(vsoc_dev.msix_entries[0]), GFP_KERNEL);
 	if (!vsoc_dev.msix_entries) {
 		dev_err(&vsoc_dev.dev->dev,
@@ -862,8 +850,8 @@ static int vsoc_probe_device(struct pci_dev *pdev,
 		vsoc_remove_device(pdev);
 		return -ENOSPC;
 	}
-	vsoc_dev.regions_data = kcalloc(
-			vsoc_dev.layout->region_count,
+	vsoc_dev.regions_data =
+		kcalloc(vsoc_dev.layout->region_count,
 			sizeof(vsoc_dev.regions_data[0]), GFP_KERNEL);
 	if (!vsoc_dev.regions_data) {
 		dev_err(&vsoc_dev.dev->dev,
@@ -925,8 +913,8 @@ static int vsoc_probe_device(struct pci_dev *pdev,
 		       name_sz);
 		dev_info(&pdev->dev, "region %d name=%s\n",
 			 i, vsoc_dev.regions_data[i].name);
-		init_waitqueue_head(
-				&vsoc_dev.regions_data[i].interrupt_wait_queue);
+		init_waitqueue_head
+			(&vsoc_dev.regions_data[i].interrupt_wait_queue);
 		init_waitqueue_head(&vsoc_dev.regions_data[i].futex_wait_queue);
 		vsoc_dev.regions_data[i].incoming_signalled =
 			shm_off_to_virtual_addr(region->region_begin_offset) +
@@ -934,11 +922,10 @@ static int vsoc_probe_device(struct pci_dev *pdev,
 		vsoc_dev.regions_data[i].outgoing_signalled =
 			shm_off_to_virtual_addr(region->region_begin_offset) +
 			g_to_h_signal_table->interrupt_signalled_offset;
-		result = request_irq(
-				vsoc_dev.msix_entries[i].vector,
-				vsoc_interrupt, 0,
-				vsoc_dev.regions_data[i].name,
-				vsoc_dev.regions_data + i);
+		result = request_irq(vsoc_dev.msix_entries[i].vector,
+				     vsoc_interrupt, 0,
+				     vsoc_dev.regions_data[i].name,
+				     vsoc_dev.regions_data + i);
 		if (result) {
 			dev_info(&pdev->dev,
 				 "request_irq failed irq=%d vector=%d\n",

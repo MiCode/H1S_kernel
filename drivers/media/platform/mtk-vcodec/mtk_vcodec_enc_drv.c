@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
-* Copyright (c) 2016 MediaTek Inc.
-* Author: PC Chen <pc.chen@mediatek.com>
-*       Tiffany Lin <tiffany.lin@mediatek.com>
-*
-* This program is free software; you can redistribute it and/or modify
-* it under the terms of the GNU General Public License version 2 as
-* published by the Free Software Foundation.
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-* GNU General Public License for more details.
-*/
+ * Copyright (c) 2019 MediaTek Inc.
+ */
 
 #include <linux/slab.h>
 #include <linux/module.h>
@@ -60,7 +50,10 @@ static int fops_vcodec_open(struct file *file)
 	 * used for logging.
 	 */
 	ctx->enc_flush_buf = mtk_buf;
-	ctx->id = dev->id_counter++;
+	dev->id_counter++;
+	if (dev->id_counter == 0)
+		dev->id_counter++;
+	ctx->id = dev->id_counter;
 	v4l2_fh_init(&ctx->fh, video_devdata(file));
 	file->private_data = &ctx->fh;
 	v4l2_fh_add(&ctx->fh);
@@ -88,7 +81,7 @@ static int fops_vcodec_open(struct file *file)
 	src_vq = v4l2_m2m_get_vq(ctx->m2m_ctx,
 		V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE);
 	ctx->enc_flush_buf->vb.vb2_buf.vb2_queue = src_vq;
-	ctx->enc_flush_buf->lastframe = EOS;
+	ctx->enc_flush_buf->lastframe = NON_EOS;
 	ctx->enc_flush_buf->vb.vb2_buf.planes[0].bytesused = 1;
 	mtk_vcodec_enc_set_default_params(ctx);
 
@@ -115,7 +108,6 @@ static int fops_vcodec_open(struct file *file)
 	mtk_v4l2_debug(2, "Create instance [%d]@%p m2m_ctx=%p ",
 				   ctx->id, ctx, ctx->m2m_ctx);
 
-	list_add(&ctx->list, &dev->ctx_list);
 	dev->enc_cnt++;
 
 	mutex_unlock(&dev->dev_mutex);
@@ -155,7 +147,6 @@ static int fops_vcodec_release(struct file *file)
 	v4l2_fh_exit(&ctx->fh);
 	v4l2_ctrl_handler_free(&ctx->ctrl_hdl);
 
-	list_del_init(&ctx->list);
 	kfree(ctx->enc_flush_buf);
 	kfree(ctx);
 	if (dev->enc_cnt > 0)
@@ -174,7 +165,7 @@ static const struct v4l2_file_operations mtk_vcodec_fops = {
 };
 
 /**
- * Suspsend callbacks after user space processes are frozen
+ * Suspend callbacks after user space processes are frozen
  * Since user space processes are frozen, there is no need and cannot hold same
  * mutex that protects lock owner while checking status.
  * If video codec hardware is still active now, must not to enter suspend.
@@ -265,7 +256,7 @@ static int mtk_vcodec_enc_probe(struct platform_device *pdev)
 
 	ret = mtk_vcodec_init_enc_pm(dev);
 	if (ret < 0) {
-		dev_err(&pdev->dev, "Failed to get mt vcodec clock source!");
+		dev_info(&pdev->dev, "Failed to get mt vcodec clock source!");
 		return ret;
 	}
 
@@ -306,6 +297,7 @@ static int mtk_vcodec_enc_probe(struct platform_device *pdev)
 	for (i = 0; i < MTK_VENC_HW_NUM; i++)
 		sema_init(&dev->enc_sem[i], 1);
 
+	mutex_init(&dev->ctx_mutex);
 	mutex_init(&dev->dev_mutex);
 	mutex_init(&dev->enc_dvfs_mutex);
 	spin_lock_init(&dev->irqlock);
@@ -415,6 +407,12 @@ static const struct of_device_id mtk_vcodec_enc_match[] = {
 	{.compatible = "mediatek,mt6885-vcodec-enc",},
 	{.compatible = "mediatek,mt6873-vcodec-enc",},
 	{.compatible = "mediatek,mt6853-vcodec-enc",},
+	{.compatible = "mediatek,mt6779-vcodec-enc",},
+	{.compatible = "mediatek,mt6833-vcodec-enc",},
+	{.compatible = "mediatek,mt6877-vcodec-enc",},
+	{.compatible = "mediatek,mt6781-vcodec-enc",},
+	{.compatible = "mediatek,mt6768-vcodec-enc",},
+	{.compatible = "mediatek,mt6785-vcodec-enc",},
 	{.compatible = "mediatek,venc_gcon",},
 	{},
 };

@@ -49,9 +49,6 @@ struct thread_info {
 	.addr_limit	= KERNEL_DS,		\
 }
 
-#define init_thread_info	(init_thread_union.thread_info)
-#define init_stack		(init_thread_union.stack)
-
 /*
  * A pointer to the struct thread_info for the currently executing thread is
  * held in register $28/$gp.

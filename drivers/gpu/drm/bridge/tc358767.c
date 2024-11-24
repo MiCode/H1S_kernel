@@ -6,6 +6,8 @@
  *
  * Copyright (C) 2016 Pengutronix, Philipp Zabel <p.zabel@pengutronix.de>
  *
+ * Copyright (C) 2016 Zodiac Inflight Innovations
+ *
  * Initially based on: drivers/gpu/drm/i2c/tda998x_drv.c
  *
  * Copyright (C) 2012 Texas Instruments
@@ -1113,7 +1115,7 @@ static bool tc_bridge_mode_fixup(struct drm_bridge *bridge,
 	return true;
 }
 
-static int tc_connector_mode_valid(struct drm_connector *connector,
+static enum drm_mode_status tc_connector_mode_valid(struct drm_connector *connector,
 				   struct drm_display_mode *mode)
 {
 	struct tc_data *tc = connector_to_tc(connector);
@@ -1168,7 +1170,7 @@ static int tc_connector_get_modes(struct drm_connector *connector)
 	if (!edid)
 		return 0;
 
-	drm_mode_connector_update_edid_property(connector, edid);
+	drm_connector_update_edid_property(connector, edid);
 	count = drm_add_edid_modes(connector, edid);
 
 	return count;
@@ -1223,7 +1225,11 @@ static int tc_bridge_attach(struct drm_bridge *bridge)
 
 	drm_display_info_set_bus_formats(&tc->connector.display_info,
 					 &bus_format, 1);
-	drm_mode_connector_attach_encoder(&tc->connector, tc->bridge.encoder);
+	tc->connector.display_info.bus_flags =
+		DRM_BUS_FLAG_DE_HIGH |
+		DRM_BUS_FLAG_PIXDATA_NEGEDGE |
+		DRM_BUS_FLAG_SYNC_NEGEDGE;
+	drm_connector_attach_encoder(&tc->connector, tc->bridge.encoder);
 
 	return 0;
 }

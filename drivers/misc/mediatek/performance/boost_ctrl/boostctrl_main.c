@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/proc_fs.h>
@@ -18,6 +10,7 @@
 int init_boostctrl(struct proc_dir_entry *parent)
 {
 	struct proc_dir_entry *bstctrl_root = NULL;
+	struct proc_dir_entry *easctrl_root = NULL;
 
 	pr_debug("__init %s\n", __func__);
 
@@ -31,7 +24,10 @@ int init_boostctrl(struct proc_dir_entry *parent)
 
 	dram_ctrl_init(bstctrl_root);
 
-	eas_ctrl_init(bstctrl_root);
+	/* EAS */
+	easctrl_root = proc_mkdir("eas_ctrl", bstctrl_root);
+	uclamp_ctrl_init(easctrl_root);
+	eas_ctrl_init(easctrl_root);
 
 	return 0;
 }

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include <linux/device.h>
@@ -22,6 +14,7 @@
 #include <linux/rtc.h>
 #include <linux/timer.h>
 #include "ccci_config.h"
+#include "ccci_common_config.h"
 
 #include "ccci_core.h"
 #include "ccci_bm.h"

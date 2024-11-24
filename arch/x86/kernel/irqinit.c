@@ -62,13 +62,20 @@ void __init init_ISA_irqs(void)
 	struct irq_chip *chip = legacy_pic->chip;
 	int i;
 
-#if defined(CONFIG_X86_64) || defined(CONFIG_X86_LOCAL_APIC)
+	/*
+	 * Try to set up the through-local-APIC virtual wire mode earlier.
+	 *
+	 * On some 32-bit UP machines, whose APIC has been disabled by BIOS
+	 * and then got re-enabled by "lapic", it hangs at boot time without this.
+	 */
 	init_bsp_APIC();
-#endif
+
 	legacy_pic->init(0);
 
-	for (i = 0; i < nr_legacy_irqs(); i++)
+	for (i = 0; i < nr_legacy_irqs(); i++) {
 		irq_set_chip_and_handler(i, chip, handle_level_irq);
+		irq_set_status_flags(i, IRQ_LEVEL);
+	}
 }
 
 void __init init_IRQ(void)
@@ -95,6 +102,7 @@ void __init native_init_IRQ(void)
 	x86_init.irqs.pre_vector_init();
 
 	idt_setup_apic_and_irq_gates();
+	lapic_assign_system_vectors();
 
 	if (!acpi_ioapic && !of_ioapic && nr_legacy_irqs())
 		setup_irq(2, &irq2);

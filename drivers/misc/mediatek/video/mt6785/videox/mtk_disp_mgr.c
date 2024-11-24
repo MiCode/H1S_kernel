@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -382,7 +374,7 @@ int _ioctl_prepare_present_fence(unsigned long arg)
 {
 	int ret = 0;
 	void __user *argp = (void __user *)arg;
-	struct fence_data data;
+	struct mtk_sync_create_fence_data data;
 	struct disp_present_fence pf;
 	static unsigned int fence_idx;
 	struct disp_sync_info *l_info = NULL;
@@ -1110,6 +1102,9 @@ static int _ioctl_wait_all_jobs_done(unsigned long arg)
 	unsigned int session_id = (unsigned int)arg;
 	struct frame_queue_head_t *head;
 	int ret = 0;
+
+	if (session_id > MAX_SESSION_COUNT - 1)
+		return -EINVAL;
 
 	head = get_frame_queue_head(session_id);
 	if (!head) {

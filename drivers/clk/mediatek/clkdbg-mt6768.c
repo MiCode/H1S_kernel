@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2018 MediaTek Inc.
- * Author: Weiyi Lu <weiyi.lu@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/clk-provider.h>
 #include <linux/io.h>
@@ -18,6 +9,7 @@
 #include <mt-plat/devapc_public.h>
 
 #include "clkdbg.h"
+#include "clkchk.h"
 #include "clkchk-mt6768.h"
 
 #define DUMP_INIT_STATE		0
@@ -319,6 +311,12 @@ static const struct fmeter_clk fclks[] = {
 #define INFRA_AO_2		_INFRA_AO(0xAC)
 #define INFRA_AO_3		_INFRA_AO(0xC8)
 
+#if (defined(CONFIG_MACH_MT6877) \
+	|| defined(CONFIG_MACH_MT6768) \
+	|| defined(CONFIG_MACH_MT6781) \
+	|| defined(CONFIG_MACH_MT6739))
+
+#if IS_ENABLED(CONFIG_MTK_DEVAPC) && !IS_ENABLED(CONFIG_DEVAPC_LEGACY)
 static void devapc_dump_regs(void)
 {
 	print_enabled_clks();
@@ -339,6 +337,8 @@ static struct devapc_vio_callbacks devapc_vio_handle = {
 	.id = DEVAPC_SUBSYS_CLKMGR,
 	.debug_dump = devapc_dump_regs,
 };
+#endif
+#endif
 
 static unsigned int mt_get_ckgen_freq(unsigned int ID)
 {
@@ -858,8 +858,15 @@ static int __init clkdbg_mt6768_init(void)
 
 	init_custom_cmds();
 	set_clkdbg_ops(&clkdbg_mt6768_ops);
+#if (defined(CONFIG_MACH_MT6877) \
+	|| defined(CONFIG_MACH_MT6768) \
+	|| defined(CONFIG_MACH_MT6781) \
+	|| defined(CONFIG_MACH_MT6739))
 
+#if IS_ENABLED(CONFIG_MTK_DEVAPC) && !IS_ENABLED(CONFIG_DEVAPC_LEGACY)
 	register_devapc_vio_callback(&devapc_vio_handle);
+#endif
+#endif
 
 #if DUMP_INIT_STATE
 	print_regs();

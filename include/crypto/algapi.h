@@ -17,6 +17,14 @@
 #include <linux/kernel.h>
 #include <linux/skbuff.h>
 
+/*
+ * Maximum values for blocksize and alignmask, used to allocate
+ * static buffers that are big enough for any combination of
+ * ciphers and architectures.
+ */
+#define MAX_CIPHER_BLOCKSIZE		16
+#define MAX_CIPHER_ALIGNMASK		15
+
 struct crypto_aead;
 struct crypto_instance;
 struct module;
@@ -30,7 +38,6 @@ struct crypto_type {
 	int (*init_tfm)(struct crypto_tfm *tfm);
 	void (*show)(struct seq_file *m, struct crypto_alg *alg);
 	int (*report)(struct sk_buff *skb, struct crypto_alg *alg);
-	struct crypto_alg *(*lookup)(const char *name, u32 type, u32 mask);
 	void (*free)(struct crypto_instance *inst);
 
 	unsigned int type;

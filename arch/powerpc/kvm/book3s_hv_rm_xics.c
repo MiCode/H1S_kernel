@@ -61,7 +61,7 @@ static inline void icp_send_hcore_msg(int hcore, struct kvm_vcpu *vcpu)
 	hcpu = hcore << threads_shift;
 	kvmppc_host_rm_ops_hv->rm_core[hcore].rm_data = vcpu;
 	smp_muxed_ipi_set_message(hcpu, PPC_MSG_RM_HOST_ACTION);
-	kvmppc_set_host_ipi(hcpu, 1);
+	kvmppc_set_host_ipi(hcpu);
 	smp_mb();
 	kvmhv_rm_send_ipi(hcpu);
 }
@@ -517,7 +517,7 @@ unsigned long xics_rm_h_xirr(struct kvm_vcpu *vcpu)
 	} while (!icp_rm_try_update(icp, old_state, new_state));
 
 	/* Return the result in GPR4 */
-	vcpu->arch.gpr[4] = xirr;
+	vcpu->arch.regs.gpr[4] = xirr;
 
 	return check_too_hard(xics, icp);
 }

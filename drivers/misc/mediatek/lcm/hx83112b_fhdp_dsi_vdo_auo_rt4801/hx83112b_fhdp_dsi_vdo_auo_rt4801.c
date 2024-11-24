@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "LCM"
@@ -387,12 +379,6 @@ static struct dynamic_fps_info lcm_dynamic_fps_setting[] = {
 	{50, 458},
 	{40, 1115},
 	{30, 2210},
-#if 0
-	{60, 20, 50},
-	{50, 458, 60},
-	{40, 115, 75},
-	{30, 2210, 100},
-#endif
 };
 static void push_table(void *cmdq, struct LCM_setting_table *table,
 		       unsigned int count, unsigned char force_update)
@@ -477,7 +463,7 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 	/* params->dsi.ssc_disable = 1; */
 #ifndef CONFIG_FPGA_EARLY_PORTING
 	/* this value must be in MTK suggested table */
-	params->dsi.PLL_CLOCK = 488;
+	params->dsi.PLL_CLOCK = 490;
 	params->dsi.PLL_CK_CMD = 480;
 #else
 	params->dsi.pll_div1 = 0;
@@ -491,6 +477,12 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 	params->dsi.lcm_esd_check_table[0].cmd = 0x0a;
 	params->dsi.lcm_esd_check_table[0].count = 1;
 	params->dsi.lcm_esd_check_table[0].para_list[0] = 0x9d;
+
+	/* mipi hopping part sample */
+	params->dsi.dynamic_switch_mipi = 1;
+	//params->dsi.vertical_backporch_dyn = 12;
+	//PLL_CLOCK * 2, clock no change
+	params->dsi.data_rate_dyn = 980;
 
 	/* for ARR 2.0 */
 	params->max_refresh_rate = 60;
@@ -507,14 +499,6 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 	params->dsi.dynamic_fps_levels = 4;
 	params->max_refresh_rate = 60;
 	params->min_refresh_rate = 30;
-#if 0
-	/*vertical_frontporch should be related to the max fps*/
-	params->dsi.vertical_frontporch = 20;
-	/*vertical_frontporch_for_low_power
-	 *should be related to the min fps
-	 */
-	params->dsi.vertical_frontporch_for_low_power = 750;
-#endif
 
 	dynamic_fps_levels =
 		sizeof(lcm_dynamic_fps_setting)/sizeof(struct dynamic_fps_info);

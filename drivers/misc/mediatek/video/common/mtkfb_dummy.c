@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /*#include <generated/autoconf.h>*/
@@ -33,6 +25,7 @@
 #include <linux/atomic.h>
 #include <asm/cacheflush.h>
 #include <linux/io.h>
+#include <linux/types.h>
 #include "mtkfb.h"
 #include "mtkfb_info.h"
 #include <linux/bug.h>
@@ -73,7 +66,7 @@ static u32 fb_yres_update;
 /* local variables */
 /* ------------------------------------------------------------------------- */
 
-unsigned int fb_pa;
+unsigned long fb_pa;
 struct fb_info *mtkfb_fbi;
 unsigned int lcd_fps = 6000;
 char mtkfb_lcm_name[256] = { 0 };
@@ -244,9 +237,9 @@ static int mtkfb_check_var(struct fb_var_screeninfo *var, struct fb_info *fbi)
 	struct mtkfb_device *fbdev = (struct mtkfb_device *)fbi->par;
 
 	pr_info("%s, xres=%u, yres=%u, xres_virtual=%u, yres_virtual=%u, xoffset=%u, yoffset=%u, bits_per_pixel=%u)\n",
-			__func__, var->xres, var->yres, var->xres_virtual,
-			var->yres_virtual, var->xoffset, var->yoffset,
-			var->bits_per_pixel);
+	       __func__, var->xres, var->yres, var->xres_virtual,
+	       var->yres_virtual, var->xoffset, var->yoffset,
+	       var->bits_per_pixel);
 
 	bpp = var->bits_per_pixel;
 
@@ -291,18 +284,18 @@ static int mtkfb_check_var(struct fb_var_screeninfo *var, struct fb_info *fbi)
 		}
 	}
 	pr_info("%s, xres=%u, yres=%u, xres_virtual=%u, yres_virtual=%u, xoffset=%u, yoffset=%u, bits_per_pixel=%u)\n",
-			__func__, var->xres, var->yres, var->xres_virtual,
-			var->yres_virtual, var->xoffset, var->yoffset,
-			var->bits_per_pixel);
+	       __func__, var->xres, var->yres, var->xres_virtual,
+	       var->yres_virtual, var->xoffset, var->yoffset,
+	       var->bits_per_pixel);
 	if (var->xres + var->xoffset > var->xres_virtual)
 		var->xoffset = var->xres_virtual - var->xres;
 	if (var->yres + var->yoffset > var->yres_virtual)
 		var->yoffset = var->yres_virtual - var->yres;
 
 	pr_info("%s, xres=%u, yres=%u, xres_virtual=%u, yres_virtual=%u, xoffset=%u, yoffset=%u, bits_per_pixel=%u)\n",
-			__func__, var->xres, var->yres, var->xres_virtual,
-			var->yres_virtual, var->xoffset, var->yoffset,
-			var->bits_per_pixel);
+	       __func__, var->xres, var->yres, var->xres_virtual,
+	       var->yres_virtual, var->xoffset, var->yoffset,
+	       var->bits_per_pixel);
 
 	if (bpp == 16) {
 		var->red.offset = 11;
@@ -421,21 +414,12 @@ static int mtkfb_fbinfo_init(struct fb_info *info)
 
 	var.transp.offset = 24;
 	var.red.length = 8;
-#if 0
-	var.red.offset = 16;
-	var.red.length = 8;
-	var.green.offset = 8;
-	var.green.length = 8;
-	var.blue.offset = 0;
-	var.blue.length = 8;
-#else
 	var.red.offset = 0;
 	var.red.length = 8;
 	var.green.offset = 8;
 	var.green.length = 8;
 	var.blue.offset = 16;
 	var.blue.length = 8;
-#endif
 
 	var.width = 0;
 	var.height = 0;
@@ -640,10 +624,10 @@ phys_addr_t mtkfb_get_fb_base(void)
 
 
 int mtkfb_allocate_framebuffer(phys_addr_t pa_start, phys_addr_t pa_end,
-	unsigned int *va, unsigned int *mva)
+	unsigned long *va, unsigned long *mva)
 {
 	*va = (unsigned long)ioremap_nocache(pa_start, pa_end - pa_start + 1);
-	pr_info("disphal_allocate_fb, pa=%pa, va=0x%08x\n", &pa_start, *va);
+	pr_info("disphal_allocate_fb, pa=%pa, va=0x%08lx\n", &pa_start, *va);
 	{
 		*mva = pa_start & 0xffffffffULL;
 	}
@@ -687,17 +671,15 @@ static int mtkfb_probe(struct device *dev)
 		pr_info("%s: fb_pa = 0x%p\n", __func__, (void *)fb_base);
 
 		mtkfb_allocate_framebuffer(fb_base, (fb_base + vramsize - 1),
-				   (unsigned int *)&fbdev->fb_va_base, &fb_pa);
+				   (unsigned long *)&fbdev->fb_va_base, &fb_pa);
 		fbdev->fb_pa_base = (dma_addr_t) fb_base;
 #else
-#ifdef CONFIG_MTK_M4U
 		struct resource *res =
 			platform_get_resource(pdev, IORESOURCE_MEM, 0);
 
 		disp_hal_allocate_framebuffer(res->start, res->end,
-				(unsigned int *)&fbdev->fb_va_base, &fb_pa);
+				(unsigned long *)&fbdev->fb_va_base, &fb_pa);
 		fbdev->fb_pa_base = res->start;
-#endif
 #endif
 	}
 

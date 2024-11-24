@@ -27,12 +27,12 @@
 #include <linux/slab.h>
 #include <media/rc-core.h>
 
-#include "demux.h"
-#include "dmxdev.h"
-#include "dvb_demux.h"
-#include "dvb_frontend.h"
-#include "dvb_net.h"
-#include "dvbdev.h"
+#include <media/demux.h>
+#include <media/dmxdev.h>
+#include <media/dvb_demux.h>
+#include <media/dvb_frontend.h>
+#include <media/dvb_net.h>
+#include <media/dvbdev.h>
 #include "dvb-pll.h"
 
 #include "stv0299.h"
@@ -986,6 +986,9 @@ static int dm1105_probe(struct pci_dev *pdev,
 	int ret = -ENOMEM;
 	int i;
 
+	if (dm1105_devcount >= ARRAY_SIZE(card))
+		return -ENODEV;
+
 	dev = kzalloc(sizeof(struct dm1105_dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
@@ -1185,6 +1188,7 @@ static void dm1105_remove(struct pci_dev *pdev)
 	struct dvb_demux *dvbdemux = &dev->demux;
 	struct dmx_demux *dmx = &dvbdemux->dmx;
 
+	cancel_work_sync(&dev->ir.work);
 	dm1105_ir_exit(dev);
 	dmx->close(dmx);
 	dvb_net_release(&dev->dvbnet);

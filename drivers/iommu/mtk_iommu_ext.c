@@ -1,16 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2019 MediaTek Inc.
- * Author: Yong Wu <yong.wu@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2021 MediaTek Inc.
  */
+
 #include "mtk_iommu_ext.h"
 #include "mach/pseudo_m4u.h"
 #include "mach/mt_iommu_port.h"
@@ -353,10 +345,15 @@ int mtk_iommu_iova_to_va(struct device *dev,
 	struct page **pages;
 	void *va = NULL;
 	phys_addr_t pa = 0;
+	int ret = 0;
 
-	if (dev == NULL) {
-		pr_notice("%s, %d, dev is null\n",
-		       __func__, __LINE__);
+	if (map_va == NULL)
+		return 1;
+
+	if (dev == NULL || iova == 0) {
+		pr_notice("%s, %d, invalid dev/iova:0x%lx\n",
+		       __func__, __LINE__, iova);
+		*map_va = 0;
 		return 1;
 	}
 
@@ -367,9 +364,10 @@ int mtk_iommu_iova_to_va(struct device *dev,
 
 	if ((domain == NULL) || (pa == 0)) {
 #ifdef IOMMU_DEBUG_ENABLED
-		pr_notice("func %s dom: %p, pa: 0x%lx\n",
-		       __func__, domain, (unsigned long)pa);
+		pr_notice("func %s dom: %p, iova:0x%lx, pa: 0x%lx\n",
+		       __func__, domain, iova, (unsigned long)pa);
 #endif
+		*map_va = 0;
 		return 1;
 	}
 
@@ -377,12 +375,25 @@ int mtk_iommu_iova_to_va(struct device *dev,
 	pages = kmalloc((sizeof(struct page *) * page_count), GFP_KERNEL);
 	if (!pages) {
 		pr_notice("%s:alloc pages fail\n", __func__);
+		*map_va = 0;
 		return 1;
 	}
 
 	for (i = 0; i < page_count; i++) {
 		pa = iommu_iova_to_phys(domain, iova + i * PAGE_SIZE);
+		if (pa == 0) {
+			ret = -1;
+			pr_notice("func %s dom:%p, i:%u,  iova:0x%lx, pa: 0x%lx\n",
+				  __func__, domain, i, iova + i * PAGE_SIZE, (unsigned long)pa);
+			break;
+		}
 		pages[i] = pfn_to_page(pa >> PAGE_SHIFT);
+	}
+
+	if (ret) {
+		*map_va = 0;
+		kfree(pages);
+		return 2;
 	}
 
 	va = vmap(pages, page_count, VM_MAP, PAGE_KERNEL);
@@ -391,7 +402,7 @@ int mtk_iommu_iova_to_va(struct device *dev,
 		pr_notice("func %s map iova(0x%lx) fail to null\n",
 		       __func__, (unsigned long)iova);
 #endif
-	*map_va = (unsigned long)va;
+	*map_va = (uintptr_t)va;
 
 	kfree(pages);
 	return 0;

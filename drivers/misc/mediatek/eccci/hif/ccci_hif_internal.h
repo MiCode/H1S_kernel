@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __CCCI_HIF_INTERNAL_H__
@@ -31,6 +23,7 @@
 #define PACKET_HISTORY_DEPTH 16	/* must be power of 2 */
 
 extern void *ccci_hif[CCCI_HIF_NUM];
+extern struct ccci_hif_ops *ccci_hif_op[CCCI_HIF_NUM];
 extern void set_ccmni_rps(unsigned long value);
 
 struct ccci_log {
@@ -55,7 +48,6 @@ struct ccci_hif_traffic {
 		unsigned long long latest_q_rx_time[MAX_RXQ_NUM];
 #ifdef DPMAIF_DEBUG_LOG
 		unsigned long long isr_time_bak;
-		unsigned long long isr_cnt;
 		unsigned long long rx_done_isr_cnt[MAX_RXQ_NUM];
 		unsigned long long rx_other_isr_cnt[MAX_RXQ_NUM];
 		unsigned long long rx_full_cnt;
@@ -63,12 +55,15 @@ struct ccci_hif_traffic {
 		unsigned long long tx_done_isr_cnt[MAX_TXQ_NUM];
 		unsigned long long tx_other_isr_cnt[MAX_TXQ_NUM];
 #endif
+		unsigned long long isr_cnt;
+
 #ifdef DEBUG_FOR_CCB
 		unsigned long long latest_ccb_isr_time;
 		unsigned int last_ccif_r_ch;
 #endif
 		struct work_struct traffic_work_struct;
 };
+
 
 struct ccci_hif_ops {
 	/* must-have */
@@ -82,9 +77,27 @@ struct ccci_hif_ops {
 		enum DIRECTION dir);
 	int (*broadcast_state)(unsigned char hif_id, enum MD_STATE state);
 	int (*dump_status)(unsigned char hif_id, enum MODEM_DUMP_FLAG dump_flag,
-		int length);
+		void *buff, int length);
 	int (*suspend)(unsigned char hif_id);
 	int (*resume)(unsigned char hif_id);
+
+	int (*init)(unsigned char md_id, unsigned int hif_flag);
+	int (*late_init)(unsigned char hif_id);
+	int (*start)(unsigned char hif_id);
+	int (*pre_stop)(unsigned char hif_id);
+	int (*stop)(unsigned char hif_id);
+	int (*debug)(unsigned char hif_id, enum ccci_hif_debug_flg debug_id,
+		int *paras);
+	int (*send_data)(unsigned char hif_id, int channel_id);
+	void* (*fill_rt_header)(unsigned char hif_id,
+		int packet_size, unsigned int tx_ch, unsigned int txqno);
+
+	int (*stop_for_ee)(unsigned char hif_id);
+	int (*all_q_reset)(unsigned char hif_id);
+	int (*clear_all_queue)(unsigned char hif_id, enum DIRECTION dir);
+	int (*clear)(unsigned char hif_id);
+	void (*set_clk_cg)(unsigned char md_id, unsigned int on);
+	void (*hw_reset)(unsigned char md_id);
 };
 
 enum RX_COLLECT_RESULT {
@@ -101,6 +114,7 @@ void ccci_md_add_log_history(struct ccci_hif_traffic *tinfo,
 		enum DIRECTION dir, int queue_index,
 		struct ccci_header *msg, int is_droped);
 
+#ifndef CCCI_KMODULE_ENABLE
 static inline void *ccci_hif_get_by_id(unsigned char hif_id)
 {
 	if (hif_id >= CCCI_HIF_NUM) {
@@ -110,6 +124,9 @@ static inline void *ccci_hif_get_by_id(unsigned char hif_id)
 	} else
 		return ccci_hif[hif_id];
 }
+#else
+extern void *ccci_hif_get_by_id(unsigned char hif_id);
+#endif
 
 static inline void ccci_hif_queue_status_notify(int md_id, int hif_id,
 	int qno, int dir, int state)
@@ -139,8 +156,7 @@ static inline void ccci_md_inc_tx_seq_num(unsigned char md_id,
 	struct ccci_hif_traffic *traffic_info,
 	struct ccci_header *ccci_h)
 {
-	if (ccci_h->channel >= ARRAY_SIZE(traffic_info->seq_nums[OUT])
-		|| ccci_h->channel < 0) {
+	if (ccci_h->channel >= ARRAY_SIZE(traffic_info->seq_nums[OUT])) {
 		CCCI_NORMAL_LOG(md_id, CORE,
 			"ignore seq inc on channel %x\n",
 			*(((u32 *) ccci_h) + 2));
@@ -161,42 +177,17 @@ static inline void ccci_md_inc_tx_seq_num(unsigned char md_id,
 		ccci_h->assert_bit = 0;
 }
 
-static inline void ccci_md_check_rx_seq_num(unsigned char md_id,
-	struct ccci_hif_traffic *traffic_info,
-	struct ccci_header *ccci_h, int qno)
-{
-	u16 channel, seq_num, assert_bit;
-	unsigned int param[3] = {0};
-
-	channel = ccci_h->channel;
-	seq_num = ccci_h->seq_num;
-	assert_bit = ccci_h->assert_bit;
-
-	if (assert_bit && traffic_info->seq_nums[IN][channel] != 0
-		&& ((seq_num - traffic_info->seq_nums[IN][channel])
-		& 0x7FFF) != 1) {
-		CCCI_ERROR_LOG(md_id, CORE,
-			"channel %d seq number out-of-order %d->%d (data: %X, %X)\n",
-			channel, seq_num, traffic_info->seq_nums[IN][channel],
-			ccci_h->data[0], ccci_h->data[1]);
-		ccci_hif_dump_status(1 << CLDMA_HIF_ID, DUMP_FLAG_CLDMA,
-			1 << qno);
-		param[0] = channel;
-		param[1] = traffic_info->seq_nums[IN][channel];
-		param[2] = seq_num;
-		ccci_md_force_assert(md_id, MD_FORCE_ASSERT_BY_MD_SEQ_ERROR,
-			(char *)param, sizeof(param));
-
-	} else {
-		traffic_info->seq_nums[IN][channel] = seq_num;
-	}
-}
-
 static inline void ccci_channel_update_packet_counter(
 	unsigned long *logic_ch_pkt_cnt, struct ccci_header *ccci_h)
 {
-	if ((ccci_h->channel & 0xFF) < CCCI_MAX_CH_NUM)
+	if ((ccci_h->channel & 0xFFFF) < CCCI_MAX_CH_NUM) {
 		logic_ch_pkt_cnt[ccci_h->channel]++;
+	} else {
+		CCCI_ERROR_LOG(-1, CORE,
+			"channel %d exceeded the threshold %d\n",
+			ccci_h->channel, CCCI_MAX_CH_NUM);
+	}
+
 }
 
 static inline void ccci_channel_dump_packet_counter(
@@ -242,13 +233,14 @@ struct dvfs_ref {
 	int c1_freq; /* Cluster 1 */
 	int c2_freq; /* Cluster 2 */
 	int c3_freq; /* Cluster 3 */
-	u8 dram_lvl;
+	int dram_lvl;
 	u8 irq_affinity;
 	u8 task_affinity;
 	u8 rps;
 };
-
 struct dvfs_ref *mtk_ccci_get_dvfs_table(int is_ul, int *tbl_num);
+extern void ccci_hif_register(unsigned char hif_id, void *hif_per_data,
+	struct ccci_hif_ops *ops);
 
-
+extern void ccmni_set_cur_speed(u64 cur_dl_speed);
 #endif

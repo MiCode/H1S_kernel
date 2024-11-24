@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/err.h>
@@ -24,6 +16,7 @@
 #include <linux/init.h>
 #include <linux/workqueue.h>
 #include <linux/sched/clock.h>
+#include <linux/of.h>
 
 #include "apu_log.h"
 #include "apusys_power_ctl.h"
@@ -34,7 +27,7 @@
 #include "apu_power_api.h"
 #include "pmic_api_buck.h"
 #include "apusys_power_rule_check.h"
-#include "apusys_dbg.h"
+// #include "apusys_dbg.h"
 #include "apusys_power.h"
 #ifdef APUPWR_TAG_TP
 #include "apu_power_tag.h"
@@ -103,27 +96,29 @@ static DECLARE_WORK(d_work_power_init, d_work_power_init_func);
 struct delayed_work d_work_power;
 
 #ifdef CONFIG_PM_SLEEP
-struct wakeup_source pwr_wake_lock;
+struct wakeup_source *pwr_wake_lock;
 #endif
 
 static void apu_pwr_wake_lock(void)
 {
 #ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&pwr_wake_lock);
+	__pm_stay_awake(pwr_wake_lock);
 #endif
 }
 
 static void apu_pwr_wake_unlock(void)
 {
 #ifdef CONFIG_PM_SLEEP
-	__pm_relax(&pwr_wake_lock);
+	__pm_relax(pwr_wake_lock);
 #endif
 }
 
 static void apu_pwr_wake_init(void)
 {
 #ifdef CONFIG_PM_SLEEP
-	wakeup_source_init(&pwr_wake_lock, "apupwr_wakelock");
+	pwr_wake_lock = wakeup_source_register(NULL, "apupwr_wakelock");
+	if (IS_ERR_OR_NULL(pwr_wake_lock))
+		pr_info("%s: wakeup_source_register fail\n", __func__);
 #endif
 }
 
@@ -379,7 +374,7 @@ int apu_device_power_suspend(enum DVFS_USER user, int is_suspend)
 	if (ret) {
 		hal_config_power(PWR_CMD_DUMP_FAIL_STATE, VPU0, NULL);
 #ifndef APUSYS_POWER_BRINGUP
-		apusys_reg_dump();
+		// apusys_reg_dump();
 #endif
 		apu_aee_warn("APUPWR_OFF_FAIL", "user:%d, is_suspend:%d\n",
 							user, is_suspend);
@@ -430,9 +425,14 @@ int apu_device_power_on(enum DVFS_USER user)
 
 	if (pwr_dev->is_power_on == 1) {
 		mutex_unlock(&power_ctl_mtx);
+#if !BYPASS_POWER_OFF
 		LOG_ERR("APUPWR_ON_FAIL, not allow user:%d to pwr on twice\n",
 									user);
 		return -ECANCELED;
+#else
+		LOG_WRN("%s by user:%d bypass\n", __func__, user);
+		return 0;
+#endif
 	}
 
 	LOG_DBG("%s for user:%d, cnt:%d\n", __func__,
@@ -477,7 +477,7 @@ int apu_device_power_on(enum DVFS_USER user)
 	if (ret) {
 		hal_config_power(PWR_CMD_DUMP_FAIL_STATE, VPU0, NULL);
 #ifndef APUSYS_POWER_BRINGUP
-		apusys_reg_dump();
+		// apusys_reg_dump();
 #endif
 		apu_aee_warn("APUPWR_ON_FAIL", "user:%d\n", user);
 		return -ENODEV;
@@ -800,6 +800,9 @@ static int apu_power_probe(struct platform_device *pdev)
 	#endif
 
 	apusys_power_debugfs_init();
+	#if defined(CONFIG_MACH_MT6877)
+	apusys_power_create_procfs();
+	#endif
 	#ifdef APUPWR_TAG_TP
 	apupwr_init_drv_tags();
 	#endif

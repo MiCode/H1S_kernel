@@ -183,7 +183,7 @@ static inline int busy_loop(struct intel_scu_ipc_dev *scu)
 	return 0;
 }
 
-/* Wait till ipc ioc interrupt is received or timeout in 3 HZ */
+/* Wait till ipc ioc interrupt is received or timeout in 10 HZ */
 static inline int ipc_wait_for_interrupt(struct intel_scu_ipc_dev *scu)
 {
 	int status;
@@ -580,11 +580,11 @@ int intel_scu_ipc_i2c_cntrl(u32 addr, u32 *data)
 	if (cmd == IPC_I2C_READ) {
 		writel(addr, scu->i2c_base + IPC_I2C_CNTRL_ADDR);
 		/* Write not getting updated without delay */
-		mdelay(1);
+		usleep_range(1000, 2000);
 		*data = readl(scu->i2c_base + I2C_DATA_ADDR);
 	} else if (cmd == IPC_I2C_WRITE) {
 		writel(*data, scu->i2c_base + I2C_DATA_ADDR);
-		mdelay(1);
+		usleep_range(1000, 2000);
 		writel(addr, scu->i2c_base + IPC_I2C_CNTRL_ADDR);
 	} else {
 		dev_err(scu->dev,

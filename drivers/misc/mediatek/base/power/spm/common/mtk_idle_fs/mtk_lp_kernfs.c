@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/mutex.h>
@@ -194,10 +186,18 @@ int mtk_lp_kernfs_create_file(struct kernfs_node *parent,
 	else
 		ops = &mtk_lp_kernfs_kfops_rw;
 
+/* FIXME
+ *	kn = __kernfs_create_file(parent, attr->name
+ *				, attr->mode & 0755, 4096
+ *				, &mtk_lp_kernfs_kfops_rw
+ *				, (void *)attr, NULL, NULL);
+ */
+
 	kn = __kernfs_create_file(parent, name,
-				mode & 0755,
-				4096, ops,
-				(void *)attr, NULL, NULL);
+				  mode & 0755,
+				  GLOBAL_ROOT_UID, GLOBAL_ROOT_GID,
+				  4096, ops,
+				  (void *)attr, NULL, NULL);
 
 	if (IS_ERR(kn))
 		return PTR_ERR(kn);
@@ -243,9 +243,11 @@ int mtk_lp_kernfs_create_group(struct kobject *kobj
 	kernfs_put(kn);
 	return 0;
 }
+EXPORT_SYMBOL(mtk_lp_kernfs_create_group);
 
 size_t get_mtk_lp_kernfs_bufsz_max(void)
 {
 	return MTK_LP_SYSFS_POWER_BUFFER_SZ;
 }
+EXPORT_SYMBOL(get_mtk_lp_kernfs_bufsz_max);
 

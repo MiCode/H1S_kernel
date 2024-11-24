@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _OV31870MIPI_SETTING_V1_H_
@@ -253,7 +245,7 @@ kal_uint16 addr_data_pair_init_ov13870_v1[] = {
 	0x5e02, 0x4d, 0x5e03, 0x1b, 0x5e04, 0xe0, 0x5e05, 0x10, 0x5e06, 0x3f,
 	0x5e07, 0x30, 0x5e08, 0x04, 0x5e09, 0x0f, 0x5e0a, 0x43, 0x3025, 0x03,
 	0x3664, 0x03, 0x3668, 0xf0, 0x3669, 0x0e, 0x3406, 0x08, 0x3408, 0x03,
-	0x4a00, 0x08, 0x0304, 0x15, 0x4837, 0x0d, 0x401a, 0x40
+	0x4a00, 0x08, 0x0304, 0x15, 0x4837, 0x0d, 0x401a, 0x40, 0x0100, 0x01
 };
 
 kal_uint16 addr_data_pair_preview_ov13870_v1[] = {
@@ -391,43 +383,53 @@ static void sensor_init_v1(void)
 
 static void preview_setting_v1(void)
 {
+	write_cmos_sensor_byte(0x0100, 0x00);
 	sensor_disable_pdaf_vc_full_size_if_enabled();
 
 	/* 2112X1568_60FPS_MIPI_4_LANE_656Mbps */
 	table_write_cmos_sensor_byte(addr_data_pair_preview_ov13870_v1,
 				     sizeof(addr_data_pair_preview_ov13870_v1) /
 					 sizeof(kal_uint16));
+
+	write_cmos_sensor_byte(0x0100, 0x01);
 }
 
 static void capture_setting_v1(void)
 {
+	write_cmos_sensor_byte(0x0100, 0x00);
 	/* 4224X3136_FULL_30FPS_MIPI_4_LANE_1200Mbps */
 	table_write_cmos_sensor_byte(addr_data_pair_capture_ov13870_v1,
 				     sizeof(addr_data_pair_capture_ov13870_v1) /
 					 sizeof(kal_uint16));
+	write_cmos_sensor_byte(0x0100, 0x01);
 }
 
 static void capture_setting_pdaf_raw_v1(void)
 {
+	write_cmos_sensor_byte(0x0100, 0x00);
 	/* 4224X3136_FULL_30FPS_MIPI_4_LANE_1200Mbps with pdaf raw */
 	table_write_cmos_sensor_byte(addr_data_pair_capture_ov13870_v1,
 				     sizeof(addr_data_pair_capture_ov13870_v1) /
 					 sizeof(kal_uint16));
 	write_cmos_sensor_byte(0x5001, 0x04);
+	write_cmos_sensor_byte(0x0100, 0x01);
 }
 
 static void capture_setting_pdaf_vc_v1(void)
 {
+	write_cmos_sensor_byte(0x0100, 0x00);
 	/* 4224X3136_FULL_30FPS_MIPI_4_LANE_1200Mbps with pdaf vc */
 	table_write_cmos_sensor_byte(addr_data_pair_capture_ov13870_v1,
 				     sizeof(addr_data_pair_capture_ov13870_v1) /
 					 sizeof(kal_uint16));
 
 	sensor_enable_pdaf_vc_full_size();
+	write_cmos_sensor_byte(0x0100, 0x01);
 }
 
 static void normal_video_setting_v1(void)
 {
+	write_cmos_sensor_byte(0x0100, 0x00);
 	sensor_disable_pdaf_vc_full_size_if_enabled();
 
 	/* 4224X2376_FULL_16_9_30FPS_MIPI_4_LANE_1200Mbps */
@@ -435,26 +437,34 @@ static void normal_video_setting_v1(void)
 	    addr_data_pair_normal_video_ov13870_v1,
 	    sizeof(addr_data_pair_normal_video_ov13870_v1) /
 		sizeof(kal_uint16));
+
+	write_cmos_sensor_byte(0x0100, 0x01);
 }
 
 static void hs_video_setting_v1(void)
 {
+	write_cmos_sensor_byte(0x0100, 0x00);
 	sensor_disable_pdaf_vc_full_size_if_enabled();
 
 	/* 1056X784_120FPS_MIPI_4_LANE_600Mbps */
 	table_write_cmos_sensor_byte(
 	    addr_data_pair_hs_video_ov13870_v1,
 	    sizeof(addr_data_pair_hs_video_ov13870_v1) / sizeof(kal_uint16));
+
+	write_cmos_sensor_byte(0x0100, 0x01);
 }
 
 static void slim_video_setting_v1(void)
 {
+	write_cmos_sensor_byte(0x0100, 0x00);
 	sensor_disable_pdaf_vc_full_size_if_enabled();
 
 	/* 1056X784_30FPS_MIPI_4_LANE_600Mbps */
 	table_write_cmos_sensor_byte(
 	    addr_data_pair_slim_video_ov13870_v1,
 	    sizeof(addr_data_pair_slim_video_ov13870_v1) / sizeof(kal_uint16));
+
+	write_cmos_sensor_byte(0x0100, 0x01);
 }
 
 static void custom1_setting_v1(void) { preview_setting_v1(); }

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __APUSYS_DAPC_CFG_H__
@@ -88,6 +80,7 @@ extern struct dapc_config dapc_cfg_mt6885;
 extern struct dapc_config dapc_cfg_mt6873;
 extern struct dapc_config dapc_cfg_mt6853;
 extern struct dapc_config dapc_cfg_mt6893;
+extern struct dapc_config dapc_cfg_mt6877;
 
 #define for_each_dapc_slv(cfg, i) \
 	for (i = 0; i < cfg->slv_cnt && cfg->slv[i].sys_idx >= 0; i++)

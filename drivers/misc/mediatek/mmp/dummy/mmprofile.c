@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/miscdevice.h>
@@ -25,17 +17,22 @@
 
 #include <linux/uaccess.h>
 
-#include <mmprofile_internal.h>
+#include "mmprofile_internal.h"
+#include "mmprofile_function.h"
+#include "mmprofile_static_event.h"
+
 /* #pragma GCC optimize ("O0") */
 #define MMP_DEVNAME "mmp"
 
 void mmprofile_start(int start)
 {
 }
+EXPORT_SYMBOL(mmprofile_start);
 
 void mmprofile_enable(int enable)
 {
 }
+EXPORT_SYMBOL(mmprofile_enable);
 
 /* Exposed APIs begin */
 mmp_event mmprofile_register_event(mmp_event parent, const char *name)
@@ -122,11 +119,6 @@ EXPORT_SYMBOL(mmprofile_log_meta_yuv_bitmap);
 /* Exposed APIs end */
 
 /* Driver specific begin */
-#if 0
-static dev_t mmprofile_devno;
-static struct cdev *mmprofile_cdev;
-static struct class *mmprofile_class;
-#endif
 static int mmprofile_release(struct inode *inode, struct file *file)
 {
 	return 0;

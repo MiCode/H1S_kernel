@@ -1,17 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2009 Felix Fietkau <nbd@nbd.name>
  * Copyright (C) 2011-2012 Gabor Juhos <juhosg@openwrt.org>
  * Copyright (c) 2015, The Linux Foundation. All rights reserved.
  * Copyright (c) 2016 John Crispin <john@phrozen.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -488,7 +480,7 @@ qca8k_port_set_status(struct qca8k_priv *priv, int port, int enable)
 	u32 mask = QCA8K_PORT_STATUS_TXMAC | QCA8K_PORT_STATUS_RXMAC;
 
 	/* Port 0 and 6 have no internal PHY */
-	if ((port > 0) && (port < 6))
+	if (port > 0 && port < 6)
 		mask |= QCA8K_PORT_STATUS_LINK_AUTO;
 
 	if (enable)
@@ -519,7 +511,7 @@ qca8k_setup(struct dsa_switch *ds)
 		pr_warn("regmap initialization failed");
 
 	/* Initialize CPU port pad mode (xMII type, delays...) */
-	phy_mode = of_get_phy_mode(ds->dst->cpu_dp->dn);
+	phy_mode = of_get_phy_mode(ds->ports[QCA8K_CPU_PORT].dn);
 	if (phy_mode < 0) {
 		pr_err("Can't find phy-mode for master device\n");
 		return phy_mode;
@@ -552,7 +544,7 @@ qca8k_setup(struct dsa_switch *ds)
 
 	/* Disable MAC by default on all user ports */
 	for (i = 1; i < QCA8K_NUM_PORTS; i++)
-		if (ds->enabled_port_mask & BIT(i))
+		if (dsa_is_user_port(ds, i))
 			qca8k_port_set_status(priv, i, 0);
 
 	/* Forward all unknown frames to CPU port for Linux processing */
@@ -567,12 +559,11 @@ qca8k_setup(struct dsa_switch *ds)
 		/* CPU port gets connected to all user ports of the switch */
 		if (dsa_is_cpu_port(ds, i)) {
 			qca8k_rmw(priv, QCA8K_PORT_LOOKUP_CTRL(QCA8K_CPU_PORT),
-				  QCA8K_PORT_LOOKUP_MEMBER,
-				  ds->enabled_port_mask);
+				  QCA8K_PORT_LOOKUP_MEMBER, dsa_user_ports(ds));
 		}
 
 		/* Invividual user ports get connected to CPU port only */
-		if (ds->enabled_port_mask & BIT(i)) {
+		if (dsa_is_user_port(ds, i)) {
 			int shift = 16 * (i % 2);
 
 			qca8k_rmw(priv, QCA8K_PORT_LOOKUP_CTRL(i),
@@ -642,9 +633,12 @@ qca8k_adjust_link(struct dsa_switch *ds, int port, struct phy_device *phy)
 }
 
 static void
-qca8k_get_strings(struct dsa_switch *ds, int port, uint8_t *data)
+qca8k_get_strings(struct dsa_switch *ds, int port, u32 stringset, uint8_t *data)
 {
 	int i;
+
+	if (stringset != ETH_SS_STATS)
+		return;
 
 	for (i = 0; i < ARRAY_SIZE(ar8327_mib); i++)
 		strncpy(data + i * ETH_GSTRING_LEN, ar8327_mib[i].name,
@@ -673,8 +667,11 @@ qca8k_get_ethtool_stats(struct dsa_switch *ds, int port,
 }
 
 static int
-qca8k_get_sset_count(struct dsa_switch *ds)
+qca8k_get_sset_count(struct dsa_switch *ds, int port, int sset)
 {
+	if (sset != ETH_SS_STATS)
+		return 0;
+
 	return ARRAY_SIZE(ar8327_mib);
 }
 
@@ -741,7 +738,7 @@ qca8k_port_bridge_join(struct dsa_switch *ds, int port, struct net_device *br)
 	int i;
 
 	for (i = 1; i < QCA8K_NUM_PORTS; i++) {
-		if (ds->ports[i].bridge_dev != br)
+		if (dsa_to_port(ds, i)->bridge_dev != br)
 			continue;
 		/* Add this port to the portvlan mask of the other ports
 		 * in the bridge
@@ -766,7 +763,7 @@ qca8k_port_bridge_leave(struct dsa_switch *ds, int port, struct net_device *br)
 	int i;
 
 	for (i = 1; i < QCA8K_NUM_PORTS; i++) {
-		if (ds->ports[i].bridge_dev != br)
+		if (dsa_to_port(ds, i)->bridge_dev != br)
 			continue;
 		/* Remove this port to the portvlan mask of the other ports
 		 * in the bridge
@@ -865,7 +862,7 @@ qca8k_port_fdb_dump(struct dsa_switch *ds, int port,
 }
 
 static enum dsa_tag_protocol
-qca8k_get_tag_protocol(struct dsa_switch *ds)
+qca8k_get_tag_protocol(struct dsa_switch *ds, int port)
 {
 	return DSA_TAG_PROTO_QCA;
 }

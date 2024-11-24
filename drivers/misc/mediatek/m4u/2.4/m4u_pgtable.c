@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <asm/cacheflush.h>
@@ -16,6 +8,12 @@
 #include <linux/dma-mapping.h>
 
 #include "m4u_priv.h"
+
+#ifdef CONFIG_ZONE_DMA32
+#define M4U_SLAB_FLAGS		SLAB_CACHE_DMA32
+#else
+#define M4U_SLAB_FLAGS		SLAB_CACHE_DMA
+#endif
 
 struct m4u_pte_info_t {
 	struct imu_pgd_t *pgd;
@@ -520,7 +518,7 @@ struct kmem_cache *gM4u_pte_kmem;
 int m4u_pte_allocator_init(void)
 {
 	gM4u_pte_kmem = kmem_cache_create("m4u_pte",
-		IMU_BYTES_PER_PTE, IMU_BYTES_PER_PTE, SLAB_CACHE_DMA, NULL);
+		IMU_BYTES_PER_PTE, IMU_BYTES_PER_PTE, M4U_SLAB_FLAGS, NULL);
 	M4UINFO(
 		"%s: gM4u_pte_kmem = 0x%p, IMU_BYTES_PER_PTE = %d\n",
 		__func__, gM4u_pte_kmem,
@@ -556,7 +554,7 @@ int m4u_alloc_pte(struct m4u_domain *domain,
 	/* pte_new_va = (unsigned int)kzalloc(IMU_BYTES_PER_PTE, GFP_KERNEL); */
 	/* pte_new_va = (unsigned int)get_zeroed_page(GFP_KERNEL); */
 	write_unlock_domain(domain);
-	pte_new_va = kmem_cache_zalloc(gM4u_pte_kmem, GFP_KERNEL | GFP_DMA);
+	pte_new_va = kmem_cache_zalloc(gM4u_pte_kmem, GFP_KERNEL);
 	write_lock_domain(domain);
 	if (unlikely(!pte_new_va)) {
 		m4u_aee_print("%s: fail, nomemory\n", __func__);

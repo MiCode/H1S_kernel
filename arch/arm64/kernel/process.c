@@ -36,7 +36,6 @@
 #include <linux/delay.h>
 #include <linux/reboot.h>
 #include <linux/interrupt.h>
-#include <linux/kallsyms.h>
 #include <linux/init.h>
 #include <linux/cpu.h>
 #include <linux/elfcore.h>
@@ -50,6 +49,7 @@
 #include <linux/notifier.h>
 #include <trace/events/power.h>
 #include <linux/percpu.h>
+#include <linux/thread_info.h>
 #include <linux/prctl.h>
 
 #include <asm/alternative.h>
@@ -61,11 +61,10 @@
 #include <asm/processor.h>
 #include <asm/scs.h>
 #include <asm/stacktrace.h>
-#include <asm/esr.h>
 
-#ifdef CONFIG_CC_STACKPROTECTOR
+#ifdef CONFIG_STACKPROTECTOR
 #include <linux/stackprotector.h>
-unsigned long __stack_chk_guard __read_mostly;
+unsigned long __stack_chk_guard __ro_after_init;
 EXPORT_SYMBOL(__stack_chk_guard);
 #endif
 
@@ -76,6 +75,7 @@ void (*pm_power_off)(void);
 EXPORT_SYMBOL_GPL(pm_power_off);
 
 void (*arm_pm_restart)(enum reboot_mode reboot_mode, const char *cmd);
+EXPORT_SYMBOL_GPL(arm_pm_restart);
 
 /*
  * This is our default idle handler.
@@ -174,86 +174,37 @@ void machine_restart(char *cmd)
 	while (1);
 }
 
-/*
- * dump a block of kernel memory from around the given address
- */
-static void show_data(unsigned long addr, int nbytes, const char *name)
+static void print_pstate(struct pt_regs *regs)
 {
-	int	i, j;
-	int	nlines;
-	u32	*p;
+	u64 pstate = regs->pstate;
 
-	/*
-	 * don't attempt to dump non-kernel addresses or
-	 * values that are probably just small negative numbers
-	 */
-	if (addr < VA_START || addr > -256UL)
-		return;
-
-	printk("\n%s: %#lx:\n", name, addr);
-
-	/*
-	 * round address down to a 32 bit boundary
-	 * and always dump a multiple of 32 bytes
-	 */
-	p = (u32 *)(addr & ~(sizeof(u32) - 1));
-	nbytes += (addr & (sizeof(u32) - 1));
-	nlines = (nbytes + 31) / 32;
-
-
-	for (i = 0; i < nlines; i++) {
-		/*
-		 * just display low 16 bits of address to keep
-		 * each line of the dump < 80 characters
-		 */
-		printk("%04lx ", (unsigned long)p & 0xffff);
-		for (j = 0; j < 8; j++) {
-			u32	data;
-			if (probe_kernel_address(p, data)) {
-				pr_cont(" ********");
-			} else {
-				pr_cont(" %08x", data);
-			}
-			++p;
-		}
-		pr_cont("\n");
+	if (compat_user_mode(regs)) {
+		printk("pstate: %08llx (%c%c%c%c %c %s %s %c%c%c)\n",
+			pstate,
+			pstate & PSR_AA32_N_BIT ? 'N' : 'n',
+			pstate & PSR_AA32_Z_BIT ? 'Z' : 'z',
+			pstate & PSR_AA32_C_BIT ? 'C' : 'c',
+			pstate & PSR_AA32_V_BIT ? 'V' : 'v',
+			pstate & PSR_AA32_Q_BIT ? 'Q' : 'q',
+			pstate & PSR_AA32_T_BIT ? "T32" : "A32",
+			pstate & PSR_AA32_E_BIT ? "BE" : "LE",
+			pstate & PSR_AA32_A_BIT ? 'A' : 'a',
+			pstate & PSR_AA32_I_BIT ? 'I' : 'i',
+			pstate & PSR_AA32_F_BIT ? 'F' : 'f');
+	} else {
+		printk("pstate: %08llx (%c%c%c%c %c%c%c%c %cPAN %cUAO)\n",
+			pstate,
+			pstate & PSR_N_BIT ? 'N' : 'n',
+			pstate & PSR_Z_BIT ? 'Z' : 'z',
+			pstate & PSR_C_BIT ? 'C' : 'c',
+			pstate & PSR_V_BIT ? 'V' : 'v',
+			pstate & PSR_D_BIT ? 'D' : 'd',
+			pstate & PSR_A_BIT ? 'A' : 'a',
+			pstate & PSR_I_BIT ? 'I' : 'i',
+			pstate & PSR_F_BIT ? 'F' : 'f',
+			pstate & PSR_PAN_BIT ? '+' : '-',
+			pstate & PSR_UAO_BIT ? '+' : '-');
 	}
-}
-
-static void show_extra_register_data(struct pt_regs *regs, int nbytes)
-{
-	mm_segment_t fs;
-	unsigned int i;
-
-	fs = get_fs();
-	set_fs(KERNEL_DS);
-	show_data(regs->pc - nbytes, nbytes * 2, "PC");
-	show_data(regs->regs[30] - nbytes, nbytes * 2, "LR");
-	show_data(regs->sp - nbytes, nbytes * 2, "SP");
-	for (i = 0; i < 30; i++) {
-		char name[4];
-		snprintf(name, sizeof(name), "X%u", i);
-		show_data(regs->regs[i] - nbytes, nbytes * 2, name);
-	}
-	set_fs(fs);
-}
-
-static unsigned int is_external_abort(void)
-{
-	unsigned int esr_el1 = 0;
-
-	asm volatile ("mrs %0, esr_el1\n\t"
-		      "dsb sy\n\t"
-		      : "=r"(esr_el1) : : "memory");
-
-	if ((ESR_ELx_EC(esr_el1) == ESR_ELx_EC_IABT_LOW) ||
-			(ESR_ELx_EC(esr_el1) == ESR_ELx_EC_IABT_CUR) ||
-			(ESR_ELx_EC(esr_el1) == ESR_ELx_EC_DABT_LOW) ||
-			(ESR_ELx_EC(esr_el1) == ESR_ELx_EC_DABT_CUR))
-		if ((esr_el1 & ESR_ELx_FSC) == ESR_ELx_FSC_EXTABT)
-			return 1;
-
-	return 0;
 }
 
 void __show_regs(struct pt_regs *regs)
@@ -272,9 +223,17 @@ void __show_regs(struct pt_regs *regs)
 	}
 
 	show_regs_print_info(KERN_DEFAULT);
-	print_symbol("pc : %s\n", regs->pc);
-	print_symbol("lr : %s\n", lr);
-	printk("sp : %016llx pstate : %08llx\n", sp, regs->pstate);
+	print_pstate(regs);
+
+	if (!user_mode(regs)) {
+		printk("pc : %pS\n", (void *)regs->pc);
+		printk("lr : %pS\n", (void *)lr);
+	} else {
+		printk("pc : %016llx\n", regs->pc);
+		printk("lr : %016llx\n", lr);
+	}
+
+	printk("sp : %016llx\n", sp);
 
 	i = top_reg;
 
@@ -289,9 +248,6 @@ void __show_regs(struct pt_regs *regs)
 
 		pr_cont("\n");
 	}
-	if (!user_mode(regs) && !is_external_abort())
-		show_extra_register_data(regs, 128);
-	printk("\n");
 }
 
 void show_regs(struct pt_regs * regs)
@@ -305,7 +261,7 @@ static void tls_thread_flush(void)
 	write_sysreg(0, tpidr_el0);
 
 	if (is_compat_task()) {
-		current->thread.tp_value = 0;
+		current->thread.uw.tp_value = 0;
 
 		/*
 		 * We need to ensure ordering between the shadow state and the
@@ -335,11 +291,32 @@ void release_thread(struct task_struct *dead_task)
 {
 }
 
+void arch_release_task_struct(struct task_struct *tsk)
+{
+	fpsimd_release_task(tsk);
+}
+
 int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 {
 	if (current->mm)
 		fpsimd_preserve_current_state();
 	*dst = *src;
+
+	/* We rely on the above assignment to initialize dst's thread_flags: */
+	BUILD_BUG_ON(!IS_ENABLED(CONFIG_THREAD_INFO_IN_TASK));
+
+	/*
+	 * Detach src's sve_state (if any) from dst so that it does not
+	 * get erroneously used or freed prematurely.  dst's sve_state
+	 * will be allocated on demand later on if dst uses SVE.
+	 * For consistency, also clear TIF_SVE here: this could be done
+	 * later in copy_process(), but to avoid tripping up future
+	 * maintainers it is best not to leave TIF_SVE and sve_state in
+	 * an inconsistent state, even temporarily.
+	 */
+	dst->thread.sve_state = NULL;
+	clear_tsk_thread_flag(dst, TIF_SVE);
+
 	return 0;
 }
 
@@ -383,7 +360,7 @@ int copy_thread(unsigned long clone_flags, unsigned long stack_start,
 		 * for the new thread.
 		 */
 		if (clone_flags & CLONE_SETTLS)
-			p->thread.tp_value = childregs->regs[3];
+			p->thread.uw.tp_value = childregs->regs[3];
 	} else {
 		memset(childregs, 0, sizeof(struct pt_regs));
 		childregs->pstate = PSR_MODE_EL1h;
@@ -415,7 +392,7 @@ static void tls_thread_switch(struct task_struct *next)
 	tls_preserve_current_state();
 
 	if (is_compat_thread(task_thread_info(next)))
-		write_sysreg(next->thread.tp_value, tpidrro_el0);
+		write_sysreg(next->thread.uw.tp_value, tpidrro_el0);
 	else if (!arm64_kernel_unmapped_at_el0())
 		write_sysreg(0, tpidrro_el0);
 
@@ -432,6 +409,7 @@ void uao_thread_switch(struct task_struct *next)
 			asm(ALTERNATIVE("nop", SET_PSTATE_UAO(0), ARM64_HAS_UAO));
 	}
 }
+
 /*
  * Force SSBS state on context-switch, since it may be lost after migrating
  * from a CPU which treats the bit as RES0 in a heterogeneous system.
@@ -563,6 +541,28 @@ void arch_setup_new_exec(void)
 {
 	current->mm->context.flags = is_compat_task() ? MMCF_AARCH32 : 0;
 }
+
+#ifdef CONFIG_GCC_PLUGIN_STACKLEAK
+void __used stackleak_check_alloca(unsigned long size)
+{
+	unsigned long stack_left;
+	unsigned long current_sp = current_stack_pointer;
+	struct stack_info info;
+
+	BUG_ON(!on_accessible_stack(current, current_sp, &info));
+
+	stack_left = current_sp - info.low;
+
+	/*
+	 * There's a good chance we're almost out of stack space if this
+	 * is true. Using panic() over BUG() is more likely to give
+	 * reliable debugging output.
+	 */
+	if (size >= stack_left)
+		panic("alloca() over the kernel stack boundary\n");
+}
+EXPORT_SYMBOL(stackleak_check_alloca);
+#endif
 
 #ifdef CONFIG_ARM64_TAGGED_ADDR_ABI
 /*

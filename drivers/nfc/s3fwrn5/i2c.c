@@ -37,8 +37,8 @@ struct s3fwrn5_i2c_phy {
 	struct i2c_client *i2c_dev;
 	struct nci_dev *ndev;
 
-	unsigned int gpio_en;
-	unsigned int gpio_fw_wake;
+	int gpio_en;
+	int gpio_fw_wake;
 
 	struct mutex mutex;
 
@@ -276,7 +276,7 @@ static int s3fwrn5_i2c_remove(struct i2c_client *client)
 	return 0;
 }
 
-static struct i2c_device_id s3fwrn5_i2c_id_table[] = {
+static const struct i2c_device_id s3fwrn5_i2c_id_table[] = {
 	{S3FWRN5_I2C_DRIVER_NAME, 0},
 	{}
 };

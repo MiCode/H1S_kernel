@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+*/
 
 #include <drm/drmP.h>
 #include <linux/clk.h>
@@ -87,10 +79,10 @@ static void mtk_dmdp_aal_stop(struct mtk_ddp_comp *comp,
 		       0x0, ~0);
 }
 
-static void mtk_dmdp_aal_bypass(struct mtk_ddp_comp *comp,
+static void mtk_dmdp_aal_bypass(struct mtk_ddp_comp *comp, int bypass,
 	struct cmdq_pkt *handle)
 {
-	DDPINFO("%s\n", __func__);
+	DDPINFO("%s : bypass = %d\n", __func__, bypass);
 
 	cmdq_pkt_write(handle, comp->cmdq_base, comp->regs_pa + DMDP_AAL_EN,
 		       AAL_EN, ~0);
@@ -105,7 +97,15 @@ static void mtk_dmdp_aal_bypass(struct mtk_ddp_comp *comp,
 static void mtk_dmdp_aal_config(struct mtk_ddp_comp *comp,
 			   struct mtk_ddp_config *cfg, struct cmdq_pkt *handle)
 {
-	unsigned int val = (cfg->w << 16) | (cfg->h);
+	unsigned int val = 0;
+	int width = cfg->w, height = cfg->h;
+
+	if (comp->mtk_crtc->is_dual_pipe)
+		width = cfg->w / 2;
+	else
+		width = cfg->w;
+
+	val = (width << 16) | height;
 
 	DDPINFO("%s: 0x%08x\n", __func__, val);
 	cmdq_pkt_write(handle, comp->cmdq_base, comp->regs_pa + DMDP_AAL_CFG,
@@ -151,6 +151,8 @@ struct aal_backup { /* structure for backup AAL register value */
 	unsigned int DUAL_PIPE_INFO_00;
 	unsigned int DUAL_PIPE_INFO_01;
 	unsigned int TILE_00;
+	unsigned int DRE0_TILE_00;
+	unsigned int DRE1_TILE_00;
 	unsigned int TILE_01;
 	unsigned int TILE_02;
 };
@@ -203,12 +205,20 @@ static void ddp_aal_dre3_backup(struct mtk_ddp_comp *comp)
 		readl(comp->regs + DMDP_AAL_DUAL_PIPE_INFO_00);
 	g_aal_backup.DUAL_PIPE_INFO_01 =
 		readl(comp->regs + DMDP_AAL_DUAL_PIPE_INFO_01);
-	g_aal_backup.TILE_00 =
-		readl(comp->regs + DMDP_AAL_TILE_00);
 	g_aal_backup.TILE_01 =
 		readl(comp->regs + DMDP_AAL_TILE_01);
 	g_aal_backup.TILE_02 =
 		readl(comp->regs + DMDP_AAL_TILE_02);
+	if (comp->mtk_crtc->is_dual_pipe) {
+		if (comp->id == DDP_COMPONENT_DMDP_AAL0)
+			g_aal_backup.DRE0_TILE_00 =
+					readl(comp->regs + DMDP_AAL_TILE_00);
+		else if (comp->id == DDP_COMPONENT_DMDP_AAL1)
+			g_aal_backup.DRE1_TILE_00 =
+					readl(comp->regs + DMDP_AAL_TILE_00);
+	} else
+		g_aal_backup.TILE_00 =
+			readl(comp->regs + DMDP_AAL_TILE_00);
 }
 
 static void ddp_aal_dre_backup(struct mtk_ddp_comp *comp)
@@ -257,12 +267,21 @@ static void ddp_aal_dre3_restore(struct mtk_ddp_comp *comp)
 		g_aal_backup.DUAL_PIPE_INFO_00, ~0);
 	mtk_aal_write_mask(comp->regs + DMDP_AAL_DUAL_PIPE_INFO_01,
 		g_aal_backup.DUAL_PIPE_INFO_01, ~0);
-	mtk_aal_write_mask(comp->regs + DMDP_AAL_TILE_00,
-		g_aal_backup.TILE_00, ~0);
 	mtk_aal_write_mask(comp->regs + DMDP_AAL_TILE_01,
 		g_aal_backup.TILE_01, ~0);
 	mtk_aal_write_mask(comp->regs + DMDP_AAL_TILE_02,
 		g_aal_backup.TILE_02, ~0);
+
+	if (comp->mtk_crtc->is_dual_pipe) {
+		if (comp->id == DDP_COMPONENT_DMDP_AAL0)
+			mtk_aal_write_mask(comp->regs + DMDP_AAL_TILE_00,
+				g_aal_backup.DRE0_TILE_00, ~0);
+		else if (comp->id == DDP_COMPONENT_DMDP_AAL1)
+			mtk_aal_write_mask(comp->regs + DMDP_AAL_TILE_00,
+				g_aal_backup.DRE1_TILE_00, ~0);
+	} else
+		mtk_aal_write_mask(comp->regs + DMDP_AAL_TILE_00,
+			g_aal_backup.TILE_00, ~0);
 }
 
 static void ddp_aal_dre_restore(struct mtk_ddp_comp *comp)

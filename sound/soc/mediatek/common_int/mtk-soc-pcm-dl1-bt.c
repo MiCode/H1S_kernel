@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -113,7 +102,7 @@ static const struct snd_kcontrol_new mtk_dl1bt_control[] = {
 
 static int mtk_dl1bt_probe(struct platform_device *pdev);
 static int mtk_Dl1Bt_close(struct snd_pcm_substream *substream);
-static int mtk_asoc_dl1bt_probe(struct snd_soc_platform *platform);
+static int mtk_asoc_dl1bt_component_probe(struct snd_soc_component *component);
 
 static struct snd_pcm_hardware mtk_dl1bt_pcm_hardware = {
 	.info = (SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
@@ -133,6 +122,9 @@ static struct snd_pcm_hardware mtk_dl1bt_pcm_hardware = {
 
 static int mtk_pcm_dl1Bt_stop(struct snd_pcm_substream *substream)
 {
+#if defined(AUD_DEBUG_LOG)
+	pr_debug("mtk_pcm_dl1Bt_stop\n");
+#endif
 	/* here to turn off digital part */
 	SetIntfConnection(Soc_Aud_InterCon_DisConnect, bt_dl_mem_blk_io,
 			  Soc_Aud_AFE_IO_Block_DAI_BT_OUT);
@@ -162,6 +154,9 @@ static int mtk_pcm_dl1bt_hw_params(struct snd_pcm_substream *substream,
 {
 	int ret = 0;
 
+#if defined(AUD_DEBUG_LOG)
+	pr_debug("mtk_pcm_dl1bt_hw_params\n");
+#endif
 	/* runtime->dma_bytes has to be set manually to allow mmap */
 	substream->runtime->dma_bytes = params_buffer_bytes(hw_params);
 
@@ -237,12 +232,13 @@ static int mtk_dl1bt_pcm_open(struct snd_pcm_substream *substream)
 					    SNDRV_PCM_HW_PARAM_PERIODS);
 
 	/* print for hw pcm information */
-	pr_debug("dl1bt_pcm_open runtime rate = %d channels = %d substream->pcm->device = %d\n",
+	pr_debug(
+		"mtk_dl1bt_pcm_open runtime rate = %d channels = %d substream->pcm->device = %d\n",
 		runtime->rate, runtime->channels, substream->pcm->device);
 
 	if (ret < 0) {
 #if defined(AUD_DEBUG_LOG)
-		pr_debug("Dl1Bt_close\n");
+		pr_debug("mtk_Dl1Bt_close\n");
 #endif
 		mtk_Dl1Bt_close(substream);
 		return ret;
@@ -338,6 +334,7 @@ static int mtk_pcm_dl1bt_start(struct snd_pcm_substream *substream)
 
 static int mtk_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 {
+	pr_debug("mtk_pcm_trigger cmd = %d\n", cmd);
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
@@ -355,6 +352,17 @@ static int mtk_pcm_dl1bt_copy(struct snd_pcm_substream *substream, int channel,
 {
 	return mtk_memblk_copy(substream, channel, pos, dst, count,
 			       pdl1btMemControl, bt_dl_mem_blk);
+}
+
+static int mtk_pcm_dl1bt_silence(struct snd_pcm_substream *substream,
+				 int channel,
+				 unsigned long pos,
+				 unsigned long bytes)
+{
+#if defined(AUD_DEBUG_LOG)
+	pr_debug("%s\n", __func__);
+#endif
+	return 0; /* do nothing */
 }
 
 static void *dummy_page[2];
@@ -375,11 +383,14 @@ static struct snd_pcm_ops mtk_d1lbt_ops = {
 	.trigger = mtk_pcm_trigger,
 	.pointer = mtk_dl1bt_pcm_pointer,
 	.copy_user = mtk_pcm_dl1bt_copy,
+	.fill_silence = mtk_pcm_dl1bt_silence,
 	.page = mtk_pcm_page,
 };
 
-static struct snd_soc_platform_driver mtk_soc_dl1bt_platform = {
-	.ops = &mtk_d1lbt_ops, .probe = mtk_asoc_dl1bt_probe,
+static struct snd_soc_component_driver mtk_soc_dl1bt_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_d1lbt_ops,
+	.probe = mtk_asoc_dl1bt_component_probe,
 };
 
 static int mtk_dl1bt_probe(struct platform_device *pdev)
@@ -387,28 +398,33 @@ static int mtk_dl1bt_probe(struct platform_device *pdev)
 #if defined(AUD_DEBUG_LOG)
 	pr_debug("%s\n", __func__);
 #endif
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	if (pdev->dev.dma_mask == NULL)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
 
-	if (pdev->dev.of_node) {
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_VOIP_BT_OUT);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
-
+	pdev->name = pdev->dev.kobj.name;
 #if defined(AUD_DEBUG_LOG)
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
 #endif
 	mDev = &pdev->dev;
 
-	return snd_soc_register_platform(&pdev->dev, &mtk_soc_dl1bt_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_soc_dl1bt_component,
+					  NULL,
+					  0);
 }
 
-static int mtk_asoc_dl1bt_probe(struct snd_soc_platform *platform)
+static int mtk_asoc_dl1bt_component_probe(struct snd_soc_component *component)
 {
-	AudDrv_Allocate_mem_Buffer(platform->dev, bt_dl_mem_blk,
+#if defined(AUD_DEBUG_LOG)
+	pr_debug("mtk_asoc_dl1bt_probe\n");
+#endif
+	AudDrv_Allocate_mem_Buffer(component->dev, bt_dl_mem_blk,
 				   Dl1_MAX_BUFFER_SIZE);
 	dl1bt_Playback_dma_buf = Get_Mem_Buffer(bt_dl_mem_blk);
-	snd_soc_add_platform_controls(platform, mtk_dl1bt_control,
+	snd_soc_add_component_controls(component, mtk_dl1bt_control,
 				      ARRAY_SIZE(mtk_dl1bt_control));
 
 	return 0;
@@ -416,7 +432,7 @@ static int mtk_asoc_dl1bt_probe(struct snd_soc_platform *platform)
 
 static int mtk_asoc_dl1bt_remove(struct platform_device *pdev)
 {
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /*****************************************************************************/
@@ -56,7 +48,7 @@ static void external_display_enable(unsigned long param)
 	int enable = EXTD_DEV_PARAM(param);
 
 	if (device_id >= DEV_MAX_NUM) {
-		EXTDERR("external_display_enable, device id is invalid!");
+		EXTDERR("%s, device id is invalid!", __func__);
 		return;
 	}
 
@@ -143,165 +135,151 @@ static long mtk_extd_mgr_ioctl(struct file *file, unsigned int cmd,
 
 	switch (cmd) {
 	case MTK_HDMI_AUDIO_VIDEO_ENABLE:
-		{
-			external_display_enable(arg);
-			break;
-		}
+	{
+		external_display_enable(arg);
+		break;
+	}
 	case MTK_HDMI_POWER_ENABLE:
-		{
-			external_display_power_enable(arg);
-			break;
-		}
+	{
+		external_display_power_enable(arg);
+		break;
+	}
 	case MTK_HDMI_VIDEO_CONFIG:
-		{
-			external_display_set_resolution(arg);
-			break;
-		}
+	{
+		external_display_set_resolution(arg);
+		break;
+	}
 	case MTK_HDMI_FORCE_FULLSCREEN_ON:
-		{
-			arg = arg | 0x1;
-			external_display_power_enable(arg);
-			break;
-		}
+	{
+		arg = arg | 0x1;
+		external_display_power_enable(arg);
+		break;
+	}
 	case MTK_HDMI_FORCE_FULLSCREEN_OFF:
-		{
-			arg = arg & 0x0FF0000;
-			external_display_power_enable(arg);
-			break;
-		}
+	{
+		arg = arg & 0x0FF0000;
+		external_display_power_enable(arg);
+		break;
+	}
 	case MTK_HDMI_GET_DEV_INFO:
-		{
-			int displayid = 0;
+	{
+		int displayid = 0;
 
-			if (copy_from_user(&displayid, argp,
-						sizeof(displayid))) {
-				EXTDERR(": copy_from_user failed! line:%d\n",
-					 __LINE__);
-				return -EAGAIN;
+		if (copy_from_user(&displayid, argp,
+			sizeof(displayid))) {
+			EXTDERR(": copy_from_user failed! line:%d\n",
+				__LINE__);
+			return -EAGAIN;
 			}
 			r = external_display_get_dev_info(displayid, argp);
 			break;
-		}
+	}
 	case MTK_HDMI_USBOTG_STATUS:
-		{
-			break;
-		}
+	{
+		break;
+	}
 	case MTK_HDMI_AUDIO_ENABLE:
-		{
-			EXTDINFO("[EXTD]hdmi_set_audio_enable, arg = %lu\n",
-					arg);
-			if (extd_driver[DEV_MHL]
-			    && extd_driver[DEV_MHL]->set_audio_enable)
-				extd_driver[DEV_MHL]->
-				    set_audio_enable((arg & 0x0FF));
-
+	{
+		EXTDINFO("[EXTD]hdmi_set_audio_enable, arg = %lu\n",
+			arg);
+		if (extd_driver[DEV_MHL]
+			&& extd_driver[DEV_MHL]->set_audio_enable) {
+			arg = arg & 0x0FF;
+			extd_driver[DEV_MHL]->set_audio_enable(arg);
 			break;
 		}
+	}
 	case MTK_HDMI_VIDEO_ENABLE:
-		{
-			break;
-		}
+	{
+		break;
+	}
 	case MTK_HDMI_AUDIO_CONFIG:
-		{
-			EXTDINFO("[EXTD]hdmi_audio_format, arg = %lu\n",
-					arg);
-			if (extd_driver[DEV_MHL]
-			    && extd_driver[DEV_MHL]->set_audio_format)
-				extd_driver[DEV_MHL]->set_audio_format(arg);
-
-			break;
-		}
+	{
+		EXTDINFO("[EXTD]hdmi_audio_format, arg = %lu\n",
+			arg);
+		if (extd_driver[DEV_MHL]
+			&& extd_driver[DEV_MHL]->set_audio_format)
+			extd_driver[DEV_MHL]->set_audio_format(arg);
+		break;
+	}
 	case MTK_HDMI_IS_FORCE_AWAKE:
-		{
+	{
 
 #ifdef CONFIG_MTK_INTERNAL_HDMI_SUPPORT
-			r = hdmi_is_force_awake(argp);
+		r = hdmi_is_force_awake(argp);
 #endif
-			break;
-		}
+		break;
+	}
 	case MTK_HDMI_GET_EDID:
-		{
-			if (extd_driver[DEV_MHL]
-			    && extd_driver[DEV_MHL]->get_edid)
-				r = extd_driver[DEV_MHL]->get_edid(argp);
-
-			break;
-		}
+	{
+		if (extd_driver[DEV_MHL]
+			&& extd_driver[DEV_MHL]->get_edid)
+			r = extd_driver[DEV_MHL]->get_edid(argp);
+		break;
+	}
 	case MTK_HDMI_GET_CAPABILITY:
-		{
-			r = external_display_get_capability(*
-							    ((unsigned long *)
-							     argp), argp);
-			break;
-		}
+	{
+		r = external_display_get_capability(
+			*((unsigned long *)argp), argp);
+		break;
+	}
 	case MTK_HDMI_SCREEN_CAPTURE:
-		{
-			break;
-		}
+	{
+		break;
+	}
 	case MTK_HDMI_FACTORY_CHIP_INIT:
-		{
-			if (extd_factory_driver[DEV_MHL]
-			    && extd_factory_driver[DEV_MHL]->factory_mode_test)
-				r = extd_factory_driver[DEV_MHL]->
-				    factory_mode_test(STEP1_CHIP_INIT, NULL);
-
-			break;
-		}
+	{
+		if (extd_factory_driver[DEV_MHL]
+			&& extd_factory_driver[DEV_MHL]->factory_mode_test)
+			r = extd_factory_driver[DEV_MHL]->factory_mode_test(
+				STEP1_CHIP_INIT, NULL);
+		break;
+	}
 	case MTK_HDMI_FACTORY_JUDGE_CALLBACK:
-		{
-			if (extd_factory_driver[DEV_MHL]
-			    && extd_factory_driver[DEV_MHL]->factory_mode_test)
-				r = extd_factory_driver[DEV_MHL]->
-				    factory_mode_test(STEP2_JUDGE_CALLBACK,
-						      argp);
-
-			break;
-		}
+	{
+		if (extd_factory_driver[DEV_MHL]
+			&& extd_factory_driver[DEV_MHL]->factory_mode_test)
+			r = extd_factory_driver[DEV_MHL]->factory_mode_test(
+				STEP2_JUDGE_CALLBACK, argp);
+		break;
+	}
 	case MTK_HDMI_FACTORY_START_DPI_AND_CONFIG:
-		{
-			if (extd_factory_driver[DEV_MHL]
-			    && extd_factory_driver[DEV_MHL]->factory_mode_test)
-				r = extd_factory_driver[DEV_MHL]->
-				    factory_mode_test
-				    (STEP3_START_DPI_AND_CONFIG, (void *)arg);
-
-			break;
-		}
+	{
+		if (extd_factory_driver[DEV_MHL]
+			&& extd_factory_driver[DEV_MHL]->factory_mode_test)
+			r = extd_factory_driver[DEV_MHL]->factory_mode_test(
+				STEP3_START_DPI_AND_CONFIG, (void *)arg);
+		break;
+	}
 	case MTK_HDMI_FACTORY_DPI_STOP_AND_POWER_OFF:
-		{
-			if (extd_factory_driver[DEV_MHL]
-			    && extd_factory_driver[DEV_MHL]->factory_mode_test)
-				r = extd_factory_driver[DEV_MHL]->
-				    factory_mode_test
-				    (STEP4_DPI_STOP_AND_POWER_OFF, (void *)arg);
-
-			break;
-		}
-
+	{
+		if (extd_factory_driver[DEV_MHL]
+			&& extd_factory_driver[DEV_MHL]->factory_mode_test)
+			r = extd_factory_driver[DEV_MHL]->factory_mode_test(
+				STEP4_DPI_STOP_AND_POWER_OFF, (void *)arg);
+		break;
+	}
 	case MTK_HDMI_AUDIO_SETTING:
-		{
-			if (extd_driver[DEV_MHL]
-			    && extd_driver[DEV_MHL]->audio_setting)
-				r = extd_driver[DEV_MHL]->audio_setting(argp);
-			break;
-		}
+	{
+		if (extd_driver[DEV_MHL]
+			&& extd_driver[DEV_MHL]->audio_setting)
+			r = extd_driver[DEV_MHL]->audio_setting(argp);
+		break;
+	}
 	case MTK_HDMI_HDCP_KEY:
-		{
-			if (extd_driver[DEV_MHL]
-			    && extd_driver[DEV_MHL]->install_hdcpkey)
-				r = extd_driver[DEV_MHL]->install_hdcpkey(argp);
-
-			break;
-		}
-
+	{
+		if (extd_driver[DEV_MHL]
+			&& extd_driver[DEV_MHL]->install_hdcpkey)
+			r = extd_driver[DEV_MHL]->install_hdcpkey(argp);
+		break;
+	}
 	default:
-		{
-			EXTDERR
-			    ("[EXTD]ioctl(%d) arguments is not support\n",
+	{
+		EXTDERR("[EXTD]ioctl(%d) arguments is not support\n",
 			     cmd & 0x0ff);
-			r = -EFAULT;
-			break;
-		}
+		r = -EFAULT;
+		break;
+	}
 	}
 
 #ifndef MTK_EXTENSION_MODE_SUPPORT

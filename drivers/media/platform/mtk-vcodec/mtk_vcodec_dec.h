@@ -1,16 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2016 MediaTek Inc.
- * Author: PC Chen <pc.chen@mediatek.com>
- *         Tiffany Lin <tiffany.lin@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _MTK_VCODEC_DEC_H_
@@ -24,6 +14,13 @@
 #define VCODEC_DEC_4K_CODED_HEIGHT      2304U
 #define MTK_VDEC_MAX_W  2048U
 #define MTK_VDEC_MAX_H  1088U
+
+#define V4L2_TYPE_IS_VALID_CROP(type)				\
+	((type) == V4L2_BUF_TYPE_VIDEO_CAPTURE			\
+	 || (type) == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE		\
+	 || (type) == V4L2_BUF_TYPE_VIDEO_OUTPUT		\
+	 || (type) == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE	\
+	 || (type) == V4L2_BUF_TYPE_VIDEO_OVERLAY)
 
 /**
  * struct vdec_fb  - decoder frame buffer

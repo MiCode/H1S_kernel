@@ -46,7 +46,8 @@ static int ccid2_hc_tx_alloc_seq(struct ccid2_hc_tx_sock *hc)
 		return -ENOMEM;
 
 	/* allocate buffer and initialize linked list */
-	seqp = kmalloc(CCID2_SEQBUF_LEN * sizeof(struct ccid2_seq), gfp_any());
+	seqp = kmalloc_array(CCID2_SEQBUF_LEN, sizeof(struct ccid2_seq),
+			     gfp_any());
 	if (seqp == NULL)
 		return -ENOMEM;
 
@@ -136,10 +137,10 @@ static void dccp_tasklet_schedule(struct sock *sk)
 	}
 }
 
-static void ccid2_hc_tx_rto_expire(unsigned long data)
+static void ccid2_hc_tx_rto_expire(struct timer_list *t)
 {
-	struct sock *sk = (struct sock *)data;
-	struct ccid2_hc_tx_sock *hc = ccid2_hc_tx_sk(sk);
+	struct ccid2_hc_tx_sock *hc = from_timer(hc, t, tx_rtotimer);
+	struct sock *sk = hc->sk;
 	const bool sender_was_blocked = ccid2_cwnd_network_limited(hc);
 
 	bh_lock_sock(sk);
@@ -748,8 +749,8 @@ static int ccid2_hc_tx_init(struct ccid *ccid, struct sock *sk)
 	hc->tx_rpdupack  = -1;
 	hc->tx_last_cong = hc->tx_lsndtime = hc->tx_cwnd_stamp = ccid2_jiffies32;
 	hc->tx_cwnd_used = 0;
-	setup_timer(&hc->tx_rtotimer, ccid2_hc_tx_rto_expire,
-			(unsigned long)sk);
+	hc->sk		 = sk;
+	timer_setup(&hc->tx_rtotimer, ccid2_hc_tx_rto_expire, 0);
 	INIT_LIST_HEAD(&hc->tx_av_chunks);
 	return 0;
 }

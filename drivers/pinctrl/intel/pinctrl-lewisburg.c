@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Intel Lewisburg pinctrl/GPIO driver
  *
  * Copyright (C) 2017, Intel Corporation
  * Author: Mika Westerberg <mika.westerberg@linux.intel.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/acpi.h>
@@ -300,9 +297,9 @@ static const struct pinctrl_pin_desc lbg_pins[] = {
 static const struct intel_community lbg_communities[] = {
 	LBG_COMMUNITY(0, 0, 71),
 	LBG_COMMUNITY(1, 72, 132),
-	LBG_COMMUNITY(3, 133, 144),
-	LBG_COMMUNITY(4, 145, 180),
-	LBG_COMMUNITY(5, 181, 246),
+	LBG_COMMUNITY(3, 133, 143),
+	LBG_COMMUNITY(4, 144, 178),
+	LBG_COMMUNITY(5, 179, 246),
 };
 
 static const struct intel_pinctrl_soc_data lbg_soc_data = {

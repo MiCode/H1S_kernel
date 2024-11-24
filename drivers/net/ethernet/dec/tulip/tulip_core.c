@@ -123,10 +123,10 @@ int tulip_debug = TULIP_DEBUG;
 int tulip_debug = 1;
 #endif
 
-static void tulip_timer(unsigned long data)
+static void tulip_timer(struct timer_list *t)
 {
-	struct net_device *dev = (struct net_device *)data;
-	struct tulip_private *tp = netdev_priv(dev);
+	struct tulip_private *tp = from_timer(tp, t, timer);
+	struct net_device *dev = tp->dev;
 
 	if (netif_running(dev))
 		schedule_work(&tp->media_work);
@@ -505,7 +505,7 @@ media_picked:
 	tp->timer.expires = RUN_AT(next_tick);
 	add_timer(&tp->timer);
 #ifdef CONFIG_TULIP_NAPI
-	setup_timer(&tp->oom_timer, oom_timer, (unsigned long)dev);
+	timer_setup(&tp->oom_timer, oom_timer, 0);
 #endif
 }
 
@@ -780,8 +780,7 @@ static void tulip_down (struct net_device *dev)
 
 	spin_unlock_irqrestore (&tp->lock, flags);
 
-	setup_timer(&tp->timer, tulip_tbl[tp->chip_id].media_timer,
-		    (unsigned long)dev);
+	timer_setup(&tp->timer, tulip_tbl[tp->chip_id].media_timer, 0);
 
 	dev->if_port = tp->saved_if_port;
 
@@ -924,6 +923,7 @@ static int private_ioctl (struct net_device *dev, struct ifreq *rq, int cmd)
 			data->phy_id = 1;
 		else
 			return -ENODEV;
+		/* Fall through */
 
 	case SIOCGMIIREG:		/* Read MII PHY register. */
 		if (data->phy_id == 32 && (tp->flags & HAS_NWAY)) {
@@ -1410,8 +1410,10 @@ static int tulip_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	/* alloc_etherdev ensures aligned and zeroed private structures */
 	dev = alloc_etherdev (sizeof (*tp));
-	if (!dev)
+	if (!dev) {
+		pci_disable_device(pdev);
 		return -ENOMEM;
+	}
 
 	SET_NETDEV_DEV(dev, &pdev->dev);
 	if (pci_resource_len (pdev, 0) < tulip_tbl[chip_idx].io_size) {
@@ -1470,8 +1472,7 @@ static int tulip_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 	tp->csr0 = csr0;
 	spin_lock_init(&tp->lock);
 	spin_lock_init(&tp->mii_lock);
-	setup_timer(&tp->timer, tulip_tbl[tp->chip_id].media_timer,
-		    (unsigned long)dev);
+	timer_setup(&tp->timer, tulip_tbl[tp->chip_id].media_timer, 0);
 
 	INIT_WORK(&tp->media_work, tulip_tbl[tp->chip_id].media_task);
 
@@ -1789,6 +1790,7 @@ err_out_free_res:
 
 err_out_free_netdev:
 	free_netdev (dev);
+	pci_disable_device(pdev);
 	return -ENODEV;
 }
 

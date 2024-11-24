@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #include <linux/time.h>
@@ -268,8 +260,8 @@ long long est_next_submit(struct codec_history *hist)
 		return (hist->submit[prev_idx] + MIN_SUBMIT_GAP * 2);
 
 #if SHOW_ALGO_INFO
-	pr_info("est_next_submit first_idx %d(%lld) prev_idx %d(%lld)",
-		first_idx, hist->submit[first_idx],
+	pr_info("%s first_idx %d(%lld) prev_idx %d(%lld)",
+		__func__, first_idx, hist->submit[first_idx],
 		prev_idx, hist->submit[prev_idx]);
 #endif
 
@@ -282,8 +274,8 @@ long long est_next_submit(struct codec_history *hist)
 
 	if (next_submit > MAX_SUBMIT * 2) {
 #if SHOW_ALGO_INFO
-		pr_info("est_next_submit %lld -> MAX SUBMIT(%d)",
-			next_submit, MAX_SUBMIT);
+		pr_info("%s %lld -> MAX SUBMIT(%d)",
+			__func__, next_submit, MAX_SUBMIT);
 #endif
 		next_submit = MAX_SUBMIT * 2;
 	}
@@ -317,6 +309,7 @@ int est_next_job(long long now_us, long long *t_us, int *kcy, int *min_mhz,
 {
 	struct codec_history *hist;
 	long long deadline;
+	long long exec_dur;
 	long long new_mhz;
 
 	if (t_us == 0 || kcy == 0 || min_mhz == 0 || job == 0)
@@ -325,7 +318,7 @@ int est_next_job(long long now_us, long long *t_us, int *kcy, int *min_mhz,
 	hist = find_hist(job->handle, head);
 
 #if SHOW_ALGO_INFO
-	pr_info("est_next_job find_hist %p handle %p\n", hist,
+	pr_info("%s find_hist %p handle %p\n", __func__, hist,
 		(hist == 0) ? 0 : hist->handle);
 #endif
 
@@ -334,7 +327,7 @@ int est_next_job(long long now_us, long long *t_us, int *kcy, int *min_mhz,
 		/* Set *t_us = now_us to signal full speed */
 		*t_us = now_us;
 #if SHOW_ALGO_INFO
-		pr_info("est_next_job not history yet, full speed\n");
+		pr_info("%s not history yet, full speed\n", __func__);
 #endif
 	} else {
 		*kcy += est_new_kcy(hist);
@@ -343,14 +336,19 @@ int est_next_job(long long now_us, long long *t_us, int *kcy, int *min_mhz,
 			*t_us = now_us;
 		else {
 			if (deadline > now_us) {
-				new_mhz = div_64((*kcy) * 1000LL,
-						 (deadline - now_us));
+				exec_dur = deadline - now_us;
+				exec_dur = (exec_dur > (MAX_SUBMIT * 2)) ?
+						(MAX_SUBMIT * 2) : exec_dur;
+				new_mhz = div_64((*kcy) * 1000LL, exec_dur);
 				if (new_mhz > *min_mhz)
 					*min_mhz = (int)new_mhz;
 
+				if (*min_mhz == 0)
+					*min_mhz = 1;
+
 				*t_us = now_us + div_64((*kcy) * 1000LL,
 							(*min_mhz));
-		} else {
+			} else {
 				/**
 				 * Overdue, set *t_us = now_us to signal full
 				 * speed
@@ -363,13 +361,13 @@ int est_next_job(long long now_us, long long *t_us, int *kcy, int *min_mhz,
 			*t_us = now_us;
 
 #if SHOW_ALGO_INFO
-		pr_info("est_next_job deadline %llu, kcy %d\n", deadline, *kcy);
+		pr_info("%s deadline %llu, kcy %d\n", __func__, deadline, *kcy);
 #endif
 	}
 
 #if SHOW_ALGO_INFO
-	pr_info("est_next_job now_us %lld, target_us %lld, min_mhz %d\n",
-		now_us, *t_us, *min_mhz);
+	pr_info("%s now_us %lld, target_us %lld, min_mhz %d\n",
+		__func__, now_us, *t_us, *min_mhz);
 #endif
 
 	/* Stop estimating if no more job or worst time constraint is reached */
@@ -402,8 +400,9 @@ int update_hist_item(struct codec_job *job, struct codec_history *hist)
 	if (hist->cur_cnt > 1 &&
 		(job->submit - hist->submit[prev_idx]) > MAX_SUBMIT_GAP) {
 #if SHOW_ALGO_INFO
-		pr_info("update_hist_item %p, gap (%lld), reset hist\n",
-			hist->handle, (job->submit-hist->submit[prev_idx]));
+		pr_info("%s %p, gap (%lld), reset hist\n",
+			__func__, hist->handle,
+			(job->submit-hist->submit[prev_idx]));
 #endif
 		memset(hist->kcy, 0, sizeof(int)*MAX_HISTORY);
 		memset(hist->submit, 0, sizeof(long long)*MAX_HISTORY);
@@ -431,8 +430,8 @@ int update_hist_item(struct codec_job *job, struct codec_history *hist)
 				(hist->end[hist_idx] - hist->start[hist_idx]) +
 				(job->end - job->start);
 #if SHOW_ALGO_INFO
-		pr_info("update_hist_item 1 kcy %d, time %llu\n",
-			hist->tot_kcy, hist->tot_time);
+		pr_info("%s 1 kcy %d, time %llu\n",
+			__func__, hist->tot_kcy, hist->tot_time);
 #endif
 	} else {
 		hist->cur_cnt++;
@@ -440,8 +439,8 @@ int update_hist_item(struct codec_job *job, struct codec_history *hist)
 			(int)div_64(job->mhz * (job->end - job->start), 1000);
 		hist->tot_time = hist->tot_time + (job->end - job->start);
 #if SHOW_ALGO_INFO
-		pr_info("update_hist_item 2 kcy %d, time %llu, cnt %d\n",
-			hist->tot_kcy, hist->tot_time, hist->cur_cnt);
+		pr_info("%s 2 kcy %d, time %llu, cnt %d\n",
+			__func__, hist->tot_kcy, hist->tot_time, hist->cur_cnt);
 #endif
 	}
 
@@ -452,8 +451,9 @@ int update_hist_item(struct codec_job *job, struct codec_history *hist)
 	hist->end[hist_idx] = job->end;
 
 #if SHOW_ALGO_INFO
-	pr_info("update_hist_item %p, mhz %d, sub %lld, start %lld, end %lld\n",
-		hist->handle, job->mhz, job->submit, job->start, job->end);
+	pr_info("%s %p, mhz %d, sub %lld, start %lld, end %lld\n",
+		__func__, hist->handle, job->mhz,
+		job->submit, job->start, job->end);
 #endif
 	hist->cur_idx = (hist_idx + 1) % MAX_HISTORY;
 
@@ -481,7 +481,7 @@ int update_hist(struct codec_job *job, struct codec_history **head)
 
 		target->handle = job->handle;
 #if SHOW_ALGO_INFO
-		pr_info("update_hist new history %p head %p\n", target, *head);
+		pr_info("%s new history %p head %p\n", __func__, target, *head);
 #endif
 	}
 
@@ -627,18 +627,18 @@ int est_freq(void *handle, struct codec_job **job, struct codec_history *head)
 
 	/* Error case, just run at max freq */
 	if (target_job == 0) {
-		pr_info("est_freq job not found!\n");
+		pr_info("%s job not found!\n", __func__);
 		return DEFAULT_MHZ;
 	}
 
 	if (target_job != *job)
-		pr_info("est_freq target_job != job queue head\n");
+		pr_info("%s target_job != job queue head\n", __func__);
 
 	est_res = est_next_job(cur_time, &end_time, &kcy, &min_mhz, target_job,
 				head);
 
 #if SHOW_ALGO_INFO
-	pr_info("est_freq res %d, min_mhz %d\n", est_res, min_mhz);
+	pr_info("%s res %d, min_mhz %d\n", __func__, est_res, min_mhz);
 #endif
 
 	/* Error case or do it ASAP */
@@ -674,7 +674,7 @@ u64 match_freq(int target_mhz, u64 *freq_list, u32 freq_cnt)
 		res_mhz = freq_list[0];
 
 #if SHOW_ALGO_INFO
-	pr_info("match_freq %d -> %llu\n", target_mhz, res_mhz);
+	pr_info("%s %d -> %llu\n", __func__, target_mhz, res_mhz);
 #endif
 	return res_mhz;
 }

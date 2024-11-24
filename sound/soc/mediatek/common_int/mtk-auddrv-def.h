@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /******************************************************************************
@@ -39,9 +32,7 @@
 #define AUDIO_DEF_H
 
 #include "mtk-auddrv-type-def.h"
-#ifdef CONFIG_MTK_AEE_FEATURE
 #include <mt-plat/aee.h>
-#endif
 
 #define PM_MANAGER_API
 #define AUDIO_MEMORY_SRAM
@@ -95,6 +86,9 @@
 #define BIT_30 0x40000000 /* -1-- ---- ---- ---- ---- ---- ---- ---- */
 #define BIT_31 0x80000000 /* 1--- ---- ---- ---- ---- ---- ---- ---- */
 #define MASK_ALL (0xFFFFFFFF)
+
+/* AFE PCM name */
+#define AFE_PCM_NAME "mtk-afe-pcm"
 
 /* cpu dai name */
 #define MT_SOC_DAI_NAME "mt-soc-dai-driver"

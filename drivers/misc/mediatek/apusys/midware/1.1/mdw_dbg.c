@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/vmalloc.h>
@@ -35,14 +27,9 @@ struct dentry *mdw_dbg_root;
 struct dentry *mdw_dbg_user;
 struct dentry *mdw_dbg_devinfo;
 struct dentry *mdw_dbg_device;
-struct dentry *mdw_dbg_mem;
 struct dentry *mdw_dbg_trace;
 struct dentry *mdw_dbg_test;
 struct dentry *mdw_dbg_log;
-struct dentry *mdw_dbg_boost;
-
-struct dentry *mdw_dbg_debug_root;
-struct dentry *mdw_dbg_debug_log;
 
 u32 g_mdw_klog;
 u32 g_dbg_prop[MDW_DBG_PROP_MAX];
@@ -80,26 +67,6 @@ void mdw_dbg_aee(char *name)
 }
 
 //----------------------------------------------
-// tags log dump
-static int mdw_dbg_dump_log(struct seq_file *s, void *unused)
-{
-	mdw_tag_show(s);
-	return 0;
-}
-
-static int mdw_dbg_open_log(struct inode *inode, struct file *file)
-{
-	return single_open(file, mdw_dbg_dump_log, inode->i_private);
-}
-
-static const struct file_operations mdw_dbg_fops_log = {
-	.open = mdw_dbg_open_log,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
-//----------------------------------------------
 // user table dump
 static int mdw_dbg_dump_usr(struct seq_file *s, void *unused)
 {
@@ -134,29 +101,6 @@ static int mdw_dbg_open_devinfo(struct inode *inode, struct file *file)
 
 static const struct file_operations mdw_dbg_fops_devinfo = {
 	.open = mdw_dbg_open_devinfo,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-	//.write = seq_write,
-};
-
-//----------------------------------------------
-// mem dump
-static int mdw_dbg_dump_mem(struct seq_file *s, void *unused)
-{
-	//mdw_user_print_log();
-	//TODO Change to Tag
-	mdw_usr_aee_mem(s);
-	return 0;
-}
-
-static int mdw_dbg_open_mem(struct inode *inode, struct file *file)
-{
-	return single_open(file, mdw_dbg_dump_mem, inode->i_private);
-}
-
-static const struct file_operations mdw_dbg_fops_mem = {
-	.open = mdw_dbg_open_mem,
 	.read = seq_read,
 	.llseek = seq_lseek,
 	.release = single_release,
@@ -400,9 +344,6 @@ int mdw_dbg_init(void)
 	mdw_dbg_user = debugfs_create_file("user", 0444,
 		mdw_dbg_root, NULL, &mdw_dbg_fops_user);
 
-	/* create user info */
-	mdw_dbg_mem = debugfs_create_file("mem", 0444,
-		mdw_dbg_root, NULL, &mdw_dbg_fops_mem);
 
 	/* create feature option info */
 	mdw_dbg_test = debugfs_create_file("test", 0644,
@@ -417,12 +358,6 @@ int mdw_dbg_init(void)
 	mdw_dbg_trace = debugfs_create_u8("trace_en", 0644,
 		mdw_dbg_root, &cfg_apusys_trace);
 
-	/* tmp log dump node */
-	mdw_dbg_debug_root =  debugfs_create_dir("apusys_debug", NULL);
-	mdw_dbg_debug_log = debugfs_create_file("log", 0444,
-		mdw_dbg_debug_root, NULL, &mdw_dbg_fops_log);
-
-	apusys_dump_init();
 
 	mdw_flw_debug("-\n");
 	return ret;
@@ -430,7 +365,6 @@ int mdw_dbg_init(void)
 
 int mdw_dbg_exit(void)
 {
-	apusys_dump_exit();
 	debugfs_remove_recursive(mdw_dbg_root);
 	return 0;
 }

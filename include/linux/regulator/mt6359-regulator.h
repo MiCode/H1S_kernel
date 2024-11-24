@@ -1,15 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2019 MediaTek Inc.
- * Author: Wen Su <wen.su@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #ifndef __LINUX_REGULATOR_MT6359_H
@@ -25,7 +16,8 @@ enum {
 	MT6359_ID_VPA,
 	MT6359_ID_VPROC2,
 	MT6359_ID_VPROC1,
-	MT6359_ID_VAUD18 = 9,
+	MT6359_ID_VCORE_SSHUB,
+	MT6359_ID_VAUD18 = 10,
 	MT6359_ID_VSIM1,
 	MT6359_ID_VIBR,
 	MT6359_ID_VRF12,
@@ -57,6 +49,7 @@ enum {
 	MT6359_ID_VBBCK,
 	MT6359_ID_VSRAM_PROC1,
 	MT6359_ID_VSIM2,
+	MT6359_ID_VSRAM_OTHERS_SSHUB,
 	MT6359_ID_RG_MAX,
 };
 

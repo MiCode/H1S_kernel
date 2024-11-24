@@ -1,23 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Joey Pan <joey.pan@mediatek.com>
  */
 
 #ifndef __MMPROFILE_H__
 #define __MMPROFILE_H__
+
 #include "mmprofile_static_event.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 #define MMPROFILE_EVENT_NAME_MAX_LEN 31
 
@@ -129,8 +120,7 @@ void mmprofile_enable(int enable);
 unsigned int mmprofile_get_dump_size(void);
 void mmprofile_get_dump_buffer(unsigned int start, unsigned long *p_addr,
 	unsigned int *p_size);
-#endif
-
+#else
 /*
  * if in kernel config CONFIG_MMPROFILE is not set,
  * and the kernel makefile had define
@@ -138,7 +128,6 @@ void mmprofile_get_dump_buffer(unsigned int start, unsigned long *p_addr,
  * , the mmp/ driver is compiled but not built-in.
  * Put dummy API implementation here.
  */
-#ifndef CONFIG_MMPROFILE
 static inline mmp_event mmprofile_register_event(mmp_event parent,
 	const char *name)
 {
@@ -229,7 +218,5 @@ static inline void mmprofile_enable(int enable)
 }
 #endif
 
-#ifdef __cplusplus
-}
-#endif
+
 #endif

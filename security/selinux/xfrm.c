@@ -349,7 +349,7 @@ int selinux_xfrm_state_alloc_acquire(struct xfrm_state *x,
 	int rc;
 	struct xfrm_sec_ctx *ctx;
 	char *ctx_str = NULL;
-	int str_len;
+	u32 str_len;
 
 	if (!polsec)
 		return 0;
@@ -459,7 +459,7 @@ int selinux_xfrm_postroute_last(u32 sk_sid, struct sk_buff *skb,
 	if (dst) {
 		struct dst_entry *iter;
 
-		for (iter = dst; iter != NULL; iter = iter->child) {
+		for (iter = dst; iter != NULL; iter = xfrm_dst_child(iter)) {
 			struct xfrm_state *x = iter->xfrm;
 
 			if (x && selinux_authorizable_xfrm(x))

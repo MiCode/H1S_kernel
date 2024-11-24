@@ -82,9 +82,13 @@ int pvrdma_query_device(struct ib_device *ibdev,
 	props->max_qp = dev->dsr->caps.max_qp;
 	props->max_qp_wr = dev->dsr->caps.max_qp_wr;
 	props->device_cap_flags = dev->dsr->caps.device_cap_flags;
-	props->max_sge = dev->dsr->caps.max_sge;
+	props->max_send_sge = dev->dsr->caps.max_sge;
+	props->max_recv_sge = dev->dsr->caps.max_sge;
 	props->max_sge_rd = PVRDMA_GET_CAP(dev, dev->dsr->caps.max_sge,
 					   dev->dsr->caps.max_sge_rd);
+	props->max_srq = dev->dsr->caps.max_srq;
+	props->max_srq_wr = dev->dsr->caps.max_srq_wr;
+	props->max_srq_sge = dev->dsr->caps.max_srq_sge;
 	props->max_cq = dev->dsr->caps.max_cq;
 	props->max_cqe = dev->dsr->caps.max_cqe;
 	props->max_mr = dev->dsr->caps.max_mr;
@@ -151,7 +155,8 @@ int pvrdma_query_port(struct ib_device *ibdev, u8 port,
 	props->gid_tbl_len = resp->attrs.gid_tbl_len;
 	props->port_cap_flags =
 		pvrdma_port_cap_flags_to_ib(resp->attrs.port_cap_flags);
-	props->port_cap_flags |= IB_PORT_CM_SUP | IB_PORT_IP_BASED_GIDS;
+	props->port_cap_flags |= IB_PORT_CM_SUP;
+	props->ip_gids = true;
 	props->max_msg_sz = resp->attrs.max_msg_sz;
 	props->bad_pkey_cntr = resp->attrs.bad_pkey_cntr;
 	props->qkey_viol_cntr = resp->attrs.qkey_viol_cntr;

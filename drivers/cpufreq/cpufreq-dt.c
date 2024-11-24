@@ -16,6 +16,7 @@
 #include <linux/cpu_cooling.h>
 #include <linux/cpufreq.h>
 #include <linux/cpumask.h>
+#include <linux/energy_model.h>
 #include <linux/err.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -152,6 +153,7 @@ static int resources_available(void)
 
 static int cpufreq_init(struct cpufreq_policy *policy)
 {
+	struct em_data_callback em_cb = EM_DATA_CB(of_dev_pm_opp_get_cpu_power);
 	struct cpufreq_frequency_table *freq_table;
 	struct opp_table *opp_table = NULL;
 	struct private_data *priv;
@@ -160,7 +162,7 @@ static int cpufreq_init(struct cpufreq_policy *policy)
 	unsigned int transition_latency;
 	bool fallback = false;
 	const char *name;
-	int ret;
+	int ret, nr_opp;
 
 	cpu_dev = get_cpu_device(policy->cpu);
 	if (!cpu_dev) {
@@ -237,6 +239,7 @@ static int cpufreq_init(struct cpufreq_policy *policy)
 		ret = -EPROBE_DEFER;
 		goto out_free_opp;
 	}
+	nr_opp = ret;
 
 	if (fallback) {
 		cpumask_setall(policy->cpus);
@@ -260,15 +263,9 @@ static int cpufreq_init(struct cpufreq_policy *policy)
 	priv->cpu_dev = cpu_dev;
 	policy->driver_data = priv;
 	policy->clk = cpu_clk;
+	policy->freq_table = freq_table;
 
 	policy->suspend_freq = dev_pm_opp_get_suspend_opp_freq(cpu_dev) / 1000;
-
-	ret = cpufreq_table_validate_and_show(policy, freq_table);
-	if (ret) {
-		dev_err(cpu_dev, "%s: invalid frequency table: %d\n", __func__,
-			ret);
-		goto out_free_cpufreq_table;
-	}
 
 	/* Support turbo/boost mode */
 	if (policy_has_boost_freq(policy)) {
@@ -285,6 +282,8 @@ static int cpufreq_init(struct cpufreq_policy *policy)
 
 	policy->cpuinfo.transition_latency = transition_latency;
 	policy->dvfs_possible_from_any_cpu = true;
+
+	em_register_perf_domain(policy->cpus, nr_opp, &em_cb);
 
 	return 0;
 
@@ -323,33 +322,8 @@ static int cpufreq_exit(struct cpufreq_policy *policy)
 static void cpufreq_ready(struct cpufreq_policy *policy)
 {
 	struct private_data *priv = policy->driver_data;
-	struct device_node *np = of_node_get(priv->cpu_dev->of_node);
 
-	if (WARN_ON(!np))
-		return;
-
-	/*
-	 * For now, just loading the cooling device;
-	 * thermal DT code takes care of matching them.
-	 */
-	if (of_find_property(np, "#cooling-cells", NULL)) {
-		u32 power_coefficient = 0;
-
-		of_property_read_u32(np, "dynamic-power-coefficient",
-				     &power_coefficient);
-
-		priv->cdev = of_cpufreq_power_cooling_register(np,
-				policy, power_coefficient, NULL);
-		if (IS_ERR(priv->cdev)) {
-			dev_err(priv->cpu_dev,
-				"running cpufreq without cooling device: %ld\n",
-				PTR_ERR(priv->cdev));
-
-			priv->cdev = NULL;
-		}
-	}
-
-	of_node_put(np);
+	priv->cdev = of_cpufreq_cooling_register(policy);
 }
 
 static struct cpufreq_driver dt_cpufreq_driver = {
@@ -381,8 +355,14 @@ static int dt_cpufreq_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	if (data && data->have_governor_per_policy)
-		dt_cpufreq_driver.flags |= CPUFREQ_HAVE_GOVERNOR_PER_POLICY;
+	if (data) {
+		if (data->have_governor_per_policy)
+			dt_cpufreq_driver.flags |= CPUFREQ_HAVE_GOVERNOR_PER_POLICY;
+
+		dt_cpufreq_driver.resume = data->resume;
+		if (data->suspend)
+			dt_cpufreq_driver.suspend = data->suspend;
+	}
 
 	ret = cpufreq_register_driver(&dt_cpufreq_driver);
 	if (ret)

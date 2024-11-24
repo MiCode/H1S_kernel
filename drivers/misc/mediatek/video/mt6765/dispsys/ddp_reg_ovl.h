@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _DDP_REG_OVL_H_
@@ -415,5 +407,8 @@
 	#define OVL_SBCH_CON_FLD_EL1_SBCH_TRANS_INVALID	REG_FLD_MSB_LSB(21, 21)
 	#define OVL_SBCH_CON_FLD_EL2_SBCH_TRANS_INVALID	REG_FLD_MSB_LSB(22, 22)
 #define DISP_REG_OVL_SECURE				(0xFC0UL)
-
+	#define OVL_SECURE_FLD_L0_EN			REG_FLD_MSB_LSB(0, 0)
+	#define OVL_SECURE_FLD_L1_EN			REG_FLD_MSB_LSB(1, 1)
+	#define OVL_SECURE_FLD_L2_EN			REG_FLD_MSB_LSB(2, 2)
+	#define OVL_SECURE_FLD_L3_EN			REG_FLD_MSB_LSB(3, 3)
 #endif

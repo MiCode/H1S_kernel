@@ -124,7 +124,6 @@
 	(min(1270, ((ql) > 0) ? (QLA_TGT_DATASEGS_PER_CMD_24XX + \
 		QLA_TGT_DATASEGS_PER_CONT_24XX*((ql) - 1)) : 0))
 #endif
-#endif
 
 #define GET_TARGET_ID(ha, iocb) ((HAS_EXTENDED_IDS(ha))			\
 			 ? le16_to_cpu((iocb)->u.isp2x.target.extended)	\
@@ -257,6 +256,7 @@ struct ctio_to_2xxx {
 #ifndef CTIO_RET_TYPE
 #define CTIO_RET_TYPE	0x17		/* CTIO return entry */
 #define ATIO_TYPE7 0x06 /* Accept target I/O entry for 24xx */
+#endif
 
 struct fcp_hdr {
 	uint8_t  r_ctl;
@@ -682,7 +682,7 @@ struct qla_tgt_cmd;
  * target module (tcm_qla2xxx).
  */
 struct qla_tgt_func_tmpl {
-
+	struct qla_tgt_cmd *(*find_cmd_by_tag)(struct fc_port *, uint64_t);
 	int (*handle_cmd)(struct scsi_qla_host *, struct qla_tgt_cmd *,
 			unsigned char *, uint32_t, int, int, int);
 	void (*handle_data)(struct qla_tgt_cmd *);
@@ -966,6 +966,8 @@ struct qla_tgt_mgmt_cmd {
 	unsigned int flags;
 	uint32_t reset_count;
 #define QLA24XX_MGMT_SEND_NACK	1
+	struct work_struct work;
+	uint64_t unpacked_lun;
 	union {
 		struct atio_from_isp atio;
 		struct imm_ntfy_from_isp imm_ntfy;
@@ -993,7 +995,7 @@ struct qla_tgt_prm {
 
 /* Check for Switch reserved address */
 #define IS_SW_RESV_ADDR(_s_id) \
-	((_s_id.b.domain == 0xff) && (_s_id.b.area == 0xfc))
+	((_s_id.b.domain == 0xff) && ((_s_id.b.area & 0xf0) == 0xf0))
 
 #define QLA_TGT_XMIT_DATA		1
 #define QLA_TGT_XMIT_STATUS		2
@@ -1016,7 +1018,7 @@ extern void qlt_fc_port_deleted(struct scsi_qla_host *, fc_port_t *, int);
 extern int __init qlt_init(void);
 extern void qlt_exit(void);
 extern void qlt_update_vp_map(struct scsi_qla_host *, int);
-
+extern void qlt_free_session_done(struct work_struct *);
 /*
  * This macro is used during early initializations when host->active_mode
  * is not set. Right now, ha value is ignored.
@@ -1072,7 +1074,7 @@ extern void qlt_free_cmd(struct qla_tgt_cmd *cmd);
 extern void qlt_async_event(uint16_t, struct scsi_qla_host *, uint16_t *);
 extern void qlt_enable_vha(struct scsi_qla_host *);
 extern void qlt_vport_create(struct scsi_qla_host *, struct qla_hw_data *);
-extern void qlt_rff_id(struct scsi_qla_host *, struct ct_sns_req *);
+extern u8 qlt_rff_id(struct scsi_qla_host *);
 extern void qlt_init_atio_q_entries(struct scsi_qla_host *);
 extern void qlt_24xx_process_atio_queue(struct scsi_qla_host *, uint8_t);
 extern void qlt_24xx_config_rings(struct scsi_qla_host *);

@@ -1,19 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2019 MediaTek Inc.
  */
 
 #ifndef _MT_MMC_BLOCK_H
 #define _MT_MMC_BLOCK_H
 
+#include <linux/bits.h>
 #include <linux/types.h>
 #include <linux/sched.h>
 #include <linux/mmc/core.h>
@@ -25,12 +18,13 @@
 int mt_mmc_biolog_init(void);
 int mt_mmc_biolog_exit(void);
 
-void mt_bio_queue_alloc(struct task_struct *thread, struct request_queue *q);
+void mt_bio_queue_alloc(struct task_struct *thread,
+	struct request_queue *q, bool ext_sd);
 void mt_bio_queue_free(struct task_struct *thread);
 
-void mt_biolog_mmcqd_req_check(void);
-void mt_biolog_mmcqd_req_start(struct mmc_host *host);
-void mt_biolog_mmcqd_req_end(struct mmc_data *data);
+void mt_biolog_mmcqd_req_check(bool ext_sd);
+void mt_biolog_mmcqd_req_start(struct mmc_host *host, struct request *req, bool ext_sd);
+void mt_biolog_mmcqd_req_end(struct mmc_data *data, bool ext_sd);
 
 void mt_biolog_cmdq_check(void);
 void mt_biolog_cmdq_queue_task(unsigned int task_id, struct mmc_request *req);
@@ -40,8 +34,10 @@ void mt_biolog_cmdq_isdone_start(unsigned int task_id, struct mmc_request *req);
 void mt_biolog_cmdq_isdone_end(unsigned int task_id);
 
 void mt_biolog_cqhci_check(void);
-void mt_biolog_cqhci_queue_task(unsigned int task_id, struct mmc_request *req);
+void mt_biolog_cqhci_queue_task(struct mmc_host *host,
+	unsigned int task_id, struct mmc_request *req);
 void mt_biolog_cqhci_complete(unsigned int task_id);
+extern void mtk_btag_commit_req(struct request *rq);
 
 #define MMC_BIOLOG_RINGBUF_MAX 120
 #define MMC_BIOLOG_CONTEXTS 10       /* number of request queues */

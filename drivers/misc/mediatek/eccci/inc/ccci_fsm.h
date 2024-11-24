@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __CCCI_FSM_H__
@@ -29,9 +21,7 @@ enum MD_STATE_FOR_USER ccci_fsm_get_md_state_for_user(int md_id);
 
 extern void mdee_set_ex_time_str(unsigned char md_id, unsigned int type,
 	char *str);
-
 int ccci_fsm_is_normal_mdee(void);
 int ccci_fsm_increase_devapc_dump_counter(void);
-
 #endif /* __CCCI_FSM_H__ */
 

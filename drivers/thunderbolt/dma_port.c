@@ -170,24 +170,22 @@ static int dma_port_write(struct tb_ctl *ctl, const void *buffer, u64 route,
 
 static int dma_find_port(struct tb_switch *sw)
 {
-	int port, ret;
-	u32 type;
+	static const int ports[] = { 3, 5, 7 };
+	int i;
 
 	/*
-	 * The DMA (NHI) port is either 3 or 5 depending on the
-	 * controller. Try both starting from 5 which is more common.
+	 * The DMA (NHI) port is either 3, 5 or 7 depending on the
+	 * controller. Try all of them.
 	 */
-	port = 5;
-	ret = dma_port_read(sw->tb->ctl, &type, tb_route(sw), port, 2, 1,
-			    DMA_PORT_TIMEOUT);
-	if (!ret && (type & 0xffffff) == TB_TYPE_NHI)
-		return port;
+	for (i = 0; i < ARRAY_SIZE(ports); i++) {
+		u32 type;
+		int ret;
 
-	port = 3;
-	ret = dma_port_read(sw->tb->ctl, &type, tb_route(sw), port, 2, 1,
-			    DMA_PORT_TIMEOUT);
-	if (!ret && (type & 0xffffff) == TB_TYPE_NHI)
-		return port;
+		ret = dma_port_read(sw->tb->ctl, &type, tb_route(sw), ports[i],
+				    2, 1, DMA_PORT_TIMEOUT);
+		if (!ret && (type & 0xffffff) == TB_TYPE_NHI)
+			return ports[i];
+	}
 
 	return -ENODEV;
 }
@@ -369,14 +367,14 @@ int dma_port_flash_read(struct tb_dma_port *dma, unsigned int address,
 			void *buf, size_t size)
 {
 	unsigned int retries = DMA_PORT_RETRIES;
-	unsigned int offset;
-
-	offset = address & 3;
-	address = address & ~3;
 
 	do {
-		u32 nbytes = min_t(u32, size, MAIL_DATA_DWORDS * 4);
+		unsigned int offset;
+		size_t nbytes;
 		int ret;
+
+		offset = address & 3;
+		nbytes = min_t(size_t, size + offset, MAIL_DATA_DWORDS * 4);
 
 		ret = dma_port_flash_read_block(dma, address, dma->buf,
 						ALIGN(nbytes, 4));
@@ -389,6 +387,7 @@ int dma_port_flash_read(struct tb_dma_port *dma, unsigned int address,
 			return ret;
 		}
 
+		nbytes -= offset;
 		memcpy(buf, dma->buf + offset, nbytes);
 
 		size -= nbytes;

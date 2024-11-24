@@ -1,13 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright 2013 Freescale Semiconductor, Inc.
  *
  * Author: Fabio Estevam <fabio.estevam@freescale.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
+
+#include <dt-bindings/gpio/gpio.h>
 
 / {
 	aliases {
@@ -28,7 +26,14 @@
 		status = "disabled";
 	};
 
-	memory {
+	gpio-poweroff {
+		compatible = "gpio-poweroff";
+		gpios = <&gpio2 4 0>;
+		pinctrl-0 = <&pinctrl_power_off>;
+		pinctrl-names = "default";
+	};
+
+	memory@10000000 {
 		reg = <0x10000000 0x40000000>;
 	};
 
@@ -94,7 +99,7 @@
 &fec {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_enet>;
-	phy-mode = "rgmii";
+	phy-mode = "rgmii-id";
 	status = "okay";
 };
 
@@ -172,6 +177,12 @@
 			>;
 		};
 
+		pinctrl_power_off: poweroffgrp {
+			fsl,pins = <
+				MX6QDL_PAD_NANDF_D4__GPIO2_IO04		0x30
+			>;
+		};
+
 		pinctrl_touchscreenp7: touchscreenp7grp {
 			fsl,pins = <
 				MX6QDL_PAD_SD2_DAT0__GPIO1_IO15		0x70
@@ -201,6 +212,7 @@
 				MX6QDL_PAD_SD3_DAT1__SD3_DATA1		0x17059
 				MX6QDL_PAD_SD3_DAT2__SD3_DATA2		0x17059
 				MX6QDL_PAD_SD3_DAT3__SD3_DATA3		0x17059
+				MX6QDL_PAD_SD3_DAT5__GPIO7_IO00		0x1b0b0
 			>;
 		};
 
@@ -208,8 +220,8 @@
 			fsl,pins = <
 				MX6QDL_PAD_DI0_PIN2__AUD6_TXD		0x1b0b0
 				MX6QDL_PAD_DI0_PIN3__AUD6_TXFS		0x1b0b0
-				MX6QDL_PAD_DI0_PIN4__AUD6_RXD		0x1b0b0
-				MX6QDL_PAD_DI0_PIN15__AUD6_TXC		0x1b0b0
+				MX6QDL_PAD_DI0_PIN4__AUD6_RXD		0x13080
+				MX6QDL_PAD_DI0_PIN15__AUD6_TXC		0x13080
 				MX6QDL_PAD_EIM_EB2__GPIO2_IO30		0x1b0b0
 			>;
 		};
@@ -218,8 +230,8 @@
 			fsl,pins = <
 				MX6QDL_PAD_DI0_PIN2__AUD6_TXD		0x1b0b0
 				MX6QDL_PAD_DI0_PIN3__GPIO4_IO19		0x1b0b0
-				MX6QDL_PAD_DI0_PIN4__AUD6_RXD		0x1b0b0
-				MX6QDL_PAD_DI0_PIN15__AUD6_TXC		0x1b0b0
+				MX6QDL_PAD_DI0_PIN4__AUD6_RXD		0x13080
+				MX6QDL_PAD_DI0_PIN15__AUD6_TXC		0x13080
 				MX6QDL_PAD_EIM_EB2__GPIO2_IO30		0x1b0b0
 			>;
 		};
@@ -228,8 +240,8 @@
 			fsl,pins = <
 				MX6QDL_PAD_DI0_PIN2__GPIO4_IO18		0x1b0b0
 				MX6QDL_PAD_DI0_PIN3__GPIO4_IO19		0x1b0b0
-				MX6QDL_PAD_DI0_PIN4__AUD6_RXD		0x1b0b0
-				MX6QDL_PAD_DI0_PIN15__AUD6_TXC		0x1b0b0
+				MX6QDL_PAD_DI0_PIN4__AUD6_RXD		0x13080
+				MX6QDL_PAD_DI0_PIN15__AUD6_TXC		0x13080
 				MX6QDL_PAD_EIM_EB2__GPIO2_IO30		0x1b0b0
 			>;
 		};
@@ -267,7 +279,7 @@
 &usdhc3 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_usdhc3>;
-	non-removable;
+	cd-gpios = <&gpio7 0 GPIO_ACTIVE_LOW>;
 	status = "okay";
 };
 

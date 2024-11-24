@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #include <linux/slab.h>
@@ -16,7 +8,7 @@
 #include <linux/errno.h>
 #include <linux/memory.h>
 #include <sched/sched.h>
-#include <mt-plat/mtk_lpae.h>
+/* #include <mt-plat/mtk_lpae.h> */
 
 #include "cmdq_record.h"
 #include "cmdq_core.h"
@@ -2319,32 +2311,6 @@ void cmdq_mdp_meta_replace_sec_addr(struct op_meta *metas,
 			struct mdp_submit *user_job,
 			struct cmdqRecStruct *handle)
 {
-#if 0
-	struct cmdqSecAddrMetadataStruct *addr;
-	int i;
-
-	CMDQ_LOG("%s start:%d, %d\n", __func__,
-		user_job->secData.is_secure,
-		user_job->secData.addrMetadataCount);
-
-	if (!user_job->secData.is_secure)
-		return;
-
-	addr = (struct cmdqSecAddrMetadataStruct *)
-		(unsigned long)handle->secData.addrMetadatas;
-	for (i = 0; i < handle->secData.addrMetadataCount; i++) {
-		u32 idx = addr[i].instrIndex;
-
-		CMDQ_LOG("sec[%u](i:%u,t:%u,h:%#llx,b:%#x,o:%#x,s:%d,p:%d)\n",
-			i, addr[i].instrIndex, addr[i].type,
-			addr[i].baseHandle, addr[i].blockOffset,
-			addr[i].offset, addr[i].size, addr[i].port);
-
-		CMDQ_LOG("[M] change meta[%u] (%u, %u, %#x, %#x, %#x)\n", idx,
-			metas[idx].op, metas[idx].engine, metas[idx].offset,
-			metas[idx].value, metas[idx].mask);
-	}
-#endif
 }
 
 void cmdq_mdp_op_readback(struct cmdqRecStruct *handle, u16 engine,

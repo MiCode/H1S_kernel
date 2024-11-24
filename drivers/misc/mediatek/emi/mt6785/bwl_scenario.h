@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 SET_BWL_CEN_REG(BWL_ENV_LPDDR4_2CH, BWL_SCN_ICFP, 0x00000100, 0x20107244)
 SET_BWL_CEN_REG(BWL_ENV_LPDDR4_2CH, BWL_SCN_ICFP, 0x00000108, 0x10107044)

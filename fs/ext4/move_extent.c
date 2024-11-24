@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: LGPL-2.1
 /*
  * Copyright (c) 2008,2009 NEC Software Tohoku, Ltd.
  * Written by Takashi Sato <t-sato@yk.jp.nec.com>
  *            Akira Fujita <a-fujita@rs.jp.nec.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2.1 of the GNU Lesser General Public License
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/fs.h>
@@ -45,7 +37,6 @@ get_ext_path(struct inode *inode, ext4_lblk_t lblock,
 		*ppath = NULL;
 		return -ENODATA;
 	}
-	*ppath = path;
 	return 0;
 }
 
@@ -142,9 +133,7 @@ mext_page_double_lock(struct inode *inode1, struct inode *inode2,
 		mapping[0] = inode1->i_mapping;
 		mapping[1] = inode2->i_mapping;
 	} else {
-		pgoff_t tmp = index1;
-		index1 = index2;
-		index2 = tmp;
+		swap(index1, index2);
 		mapping[0] = inode2->i_mapping;
 		mapping[1] = inode1->i_mapping;
 	}
@@ -615,8 +604,6 @@ ext4_move_extents(struct file *o_filp, struct file *d_filp, __u64 orig_blk,
 	lock_two_nondirectories(orig_inode, donor_inode);
 
 	/* Wait for all existing dio workers */
-	ext4_inode_block_unlocked_dio(orig_inode);
-	ext4_inode_block_unlocked_dio(donor_inode);
 	inode_dio_wait(orig_inode);
 	inode_dio_wait(donor_inode);
 
@@ -629,6 +616,7 @@ ext4_move_extents(struct file *o_filp, struct file *d_filp, __u64 orig_blk,
 		goto out;
 	o_end = o_start + len;
 
+	*moved_len = 0;
 	while (o_start < o_end) {
 		struct ext4_extent *ex;
 		ext4_lblk_t cur_blk, next_blk;
@@ -684,7 +672,7 @@ ext4_move_extents(struct file *o_filp, struct file *d_filp, __u64 orig_blk,
 		 */
 		ext4_double_up_write_data_sem(orig_inode, donor_inode);
 		/* Swap original branches with new branches */
-		move_extent_per_page(o_filp, donor_inode,
+		*moved_len += move_extent_per_page(o_filp, donor_inode,
 				     orig_page_index, donor_page_index,
 				     offset_in_page, cur_len,
 				     unwritten, &ret);
@@ -694,9 +682,6 @@ ext4_move_extents(struct file *o_filp, struct file *d_filp, __u64 orig_blk,
 		o_start += cur_len;
 		d_start += cur_len;
 	}
-	*moved_len = o_start - orig_blk;
-	if (*moved_len > len)
-		*moved_len = len;
 
 out:
 	if (*moved_len) {
@@ -707,8 +692,6 @@ out:
 	ext4_ext_drop_refs(path);
 	kfree(path);
 	ext4_double_up_write_data_sem(orig_inode, donor_inode);
-	ext4_inode_resume_unlocked_dio(orig_inode);
-	ext4_inode_resume_unlocked_dio(donor_inode);
 	unlock_two_nondirectories(orig_inode, donor_inode);
 
 	return ret;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * bdc_ep.c - BRCM BDC USB3.0 device controller endpoint related functions
  *
@@ -6,12 +7,6 @@
  * Author: Ashwini Pahuja
  *
  * Based on drivers under drivers/usb/
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
- *
  */
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -143,9 +138,9 @@ static int ep_bd_list_alloc(struct bdc_ep *ep)
 		__func__, ep, num_tabs);
 
 	/* Allocate memory for table array */
-	ep->bd_list.bd_table_array = kzalloc(
-					num_tabs * sizeof(struct bd_table *),
-					GFP_ATOMIC);
+	ep->bd_list.bd_table_array = kcalloc(num_tabs,
+					     sizeof(struct bd_table *),
+					     GFP_ATOMIC);
 	if (!ep->bd_list.bd_table_array)
 		return -ENOMEM;
 
@@ -156,7 +151,7 @@ static int ep_bd_list_alloc(struct bdc_ep *ep)
 		if (!bd_table)
 			goto fail;
 
-		bd_table->start_bd = dma_pool_alloc(bdc->bd_table_pool,
+		bd_table->start_bd = dma_pool_zalloc(bdc->bd_table_pool,
 							GFP_ATOMIC,
 							&dma);
 		if (!bd_table->start_bd) {
@@ -172,7 +167,6 @@ static int ep_bd_list_alloc(struct bdc_ep *ep)
 			(unsigned long long)bd_table->dma, prev_table);
 
 		ep->bd_list.bd_table_array[index] = bd_table;
-		memset(bd_table->start_bd, 0, bd_p_tab * sizeof(struct bdc_bd));
 		if (prev_table)
 			chain_table(prev_table, bd_table, bd_p_tab);
 
@@ -621,7 +615,6 @@ int bdc_ep_enable(struct bdc_ep *ep)
 	}
 	bdc_dbg_bd_list(bdc, ep);
 	/* only for ep0: config ep is called for ep0 from connect event */
-	ep->flags |= BDC_EP_ENABLED;
 	if (ep->ep_num == 1)
 		return ret;
 
@@ -765,10 +758,13 @@ static int ep_dequeue(struct bdc_ep *ep, struct bdc_req *req)
 					__func__, ep->name, start_bdi, end_bdi);
 	dev_dbg(bdc->dev, "ep_dequeue ep=%p ep->desc=%p\n",
 						ep, (void *)ep->usb_ep.desc);
-	/* Stop the ep to see where the HW is ? */
-	ret = bdc_stop_ep(bdc, ep->ep_num);
-	/* if there is an issue with stopping ep, then no need to go further */
-	if (ret)
+	/* if still connected, stop the ep to see where the HW is ? */
+	if (!(bdc_readl(bdc->regs, BDC_USPC) & BDC_PST_MASK)) {
+		ret = bdc_stop_ep(bdc, ep->ep_num);
+		/* if there is an issue, then no need to go further */
+		if (ret)
+			return 0;
+	} else
 		return 0;
 
 	/*
@@ -1917,7 +1913,9 @@ static int bdc_gadget_ep_disable(struct usb_ep *_ep)
 		__func__, ep->name, ep->flags);
 
 	if (!(ep->flags & BDC_EP_ENABLED)) {
-		dev_warn(bdc->dev, "%s is already disabled\n", ep->name);
+		if (bdc->gadget.speed != USB_SPEED_UNKNOWN)
+			dev_warn(bdc->dev, "%s is already disabled\n",
+				 ep->name);
 		return 0;
 	}
 	spin_lock_irqsave(&bdc->lock, flags);

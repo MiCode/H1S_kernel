@@ -118,7 +118,7 @@ static void clk_gate2_disable_unused(struct clk_hw *hw)
 	spin_unlock_irqrestore(gate->lock, flags);
 }
 
-static struct clk_ops clk_gate2_ops = {
+static const struct clk_ops clk_gate2_ops = {
 	.enable = clk_gate2_enable,
 	.disable = clk_gate2_disable,
 	.disable_unused = clk_gate2_disable_unused,
@@ -133,7 +133,7 @@ struct clk *clk_register_gate2(struct device *dev, const char *name,
 {
 	struct clk_gate2 *gate;
 	struct clk *clk;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 
 	gate = kzalloc(sizeof(struct clk_gate2), GFP_KERNEL);
 	if (!gate)

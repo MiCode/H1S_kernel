@@ -106,14 +106,6 @@ static asmlinkage struct job_sha256* (*sha256_job_mgr_flush)
 static asmlinkage struct job_sha256* (*sha256_job_mgr_get_comp_job)
 			(struct sha256_mb_mgr *state);
 
-inline void sha256_init_digest(uint32_t *digest)
-{
-	static const uint32_t initial_digest[SHA256_DIGEST_LENGTH] = {
-				SHA256_H0, SHA256_H1, SHA256_H2, SHA256_H3,
-				SHA256_H4, SHA256_H5, SHA256_H6, SHA256_H7};
-	memcpy(digest, initial_digest, sizeof(initial_digest));
-}
-
 inline uint32_t sha256_pad(uint8_t padblock[SHA256_BLOCK_SIZE * 2],
 			 uint64_t total_len)
 {
@@ -245,10 +237,8 @@ static struct sha256_hash_ctx *sha256_ctx_mgr_submit(struct sha256_ctx_mgr *mgr,
 					  uint32_t len,
 					  int flags)
 {
-	if (flags & (~HASH_ENTIRE)) {
-		/* User should not pass anything other than FIRST, UPDATE
-		 * or LAST
-		 */
+	if (flags & ~(HASH_UPDATE | HASH_LAST)) {
+		/* User should not pass anything other than UPDATE or LAST */
 		ctx->error = HASH_CTX_ERROR_INVALID_FLAGS;
 		return ctx;
 	}
@@ -259,21 +249,10 @@ static struct sha256_hash_ctx *sha256_ctx_mgr_submit(struct sha256_ctx_mgr *mgr,
 		return ctx;
 	}
 
-	if ((ctx->status & HASH_CTX_STS_COMPLETE) && !(flags & HASH_FIRST)) {
+	if (ctx->status & HASH_CTX_STS_COMPLETE) {
 		/* Cannot update a finished job. */
 		ctx->error = HASH_CTX_ERROR_ALREADY_COMPLETED;
 		return ctx;
-	}
-
-	if (flags & HASH_FIRST) {
-		/* Init digest */
-		sha256_init_digest(ctx->job.result_digest);
-
-		/* Reset byte counter */
-		ctx->total_length = 0;
-
-		/* Clear extra blocks */
-		ctx->partial_block_buffer_length = 0;
 	}
 
 	/* If we made it here, there was no error during this call to submit */
@@ -766,9 +745,8 @@ static struct ahash_alg sha256_mb_areq_alg = {
 			 * algo may not have completed before hashing thread
 			 * sleep
 			 */
-			.cra_flags	= CRYPTO_ALG_TYPE_AHASH |
-						CRYPTO_ALG_ASYNC |
-						CRYPTO_ALG_INTERNAL,
+			.cra_flags	= CRYPTO_ALG_ASYNC |
+					  CRYPTO_ALG_INTERNAL,
 			.cra_blocksize	= SHA256_BLOCK_SIZE,
 			.cra_module	= THIS_MODULE,
 			.cra_list	= LIST_HEAD_INIT
@@ -891,11 +869,16 @@ static struct ahash_alg sha256_mb_async_alg = {
 		.base = {
 			.cra_name               = "sha256",
 			.cra_driver_name        = "sha256_mb",
-			.cra_priority           = 200,
-			.cra_flags              = CRYPTO_ALG_TYPE_AHASH |
-							CRYPTO_ALG_ASYNC,
+			/*
+			 * Low priority, since with few concurrent hash requests
+			 * this is extremely slow due to the flush delay.  Users
+			 * whose workloads would benefit from this can request
+			 * it explicitly by driver name, or can increase its
+			 * priority at runtime using NETLINK_CRYPTO.
+			 */
+			.cra_priority           = 50,
+			.cra_flags              = CRYPTO_ALG_ASYNC,
 			.cra_blocksize          = SHA256_BLOCK_SIZE,
-			.cra_type               = &crypto_ahash_type,
 			.cra_module             = THIS_MODULE,
 			.cra_list               = LIST_HEAD_INIT
 				(sha256_mb_async_alg.halg.base.cra_list),

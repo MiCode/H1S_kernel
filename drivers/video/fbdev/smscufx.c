@@ -100,7 +100,6 @@ struct ufx_data {
 	struct kref kref;
 	int fb_count;
 	bool virtualized; /* true when physical usb device not present */
-	struct delayed_work free_framebuffer_work;
 	atomic_t usb_active; /* 0 = update virtual buffer, but no usb traffic */
 	atomic_t lost_pixels; /* 1 = a render op failed. Need screen refresh */
 	u8 *edid; /* null until we read edid from hw or get from sysfs */
@@ -139,6 +138,8 @@ static struct urb *ufx_get_urb(struct ufx_data *dev);
 static int ufx_submit_urb(struct ufx_data *dev, struct urb * urb, size_t len);
 static int ufx_alloc_urb_list(struct ufx_data *dev, int count, size_t size);
 static void ufx_free_urb_list(struct ufx_data *dev);
+
+static DEFINE_MUTEX(disconnect_mutex);
 
 /* reads a control register */
 static int ufx_reg_read(struct ufx_data *dev, u32 index, u32 *data)
@@ -1073,9 +1074,13 @@ static int ufx_ops_open(struct fb_info *info, int user)
 	if (user == 0 && !console)
 		return -EBUSY;
 
+	mutex_lock(&disconnect_mutex);
+
 	/* If the USB device is gone, we don't accept new opens */
-	if (dev->virtualized)
+	if (dev->virtualized) {
+		mutex_unlock(&disconnect_mutex);
 		return -ENODEV;
+	}
 
 	dev->fb_count++;
 
@@ -1086,8 +1091,7 @@ static int ufx_ops_open(struct fb_info *info, int user)
 
 		struct fb_deferred_io *fbdefio;
 
-		fbdefio = kzalloc(sizeof(struct fb_deferred_io), GFP_KERNEL);
-
+		fbdefio = kzalloc(sizeof(*fbdefio), GFP_KERNEL);
 		if (fbdefio) {
 			fbdefio->delay = UFX_DEFIO_WRITE_DELAY;
 			fbdefio->deferred_io = ufx_dpy_deferred_io;
@@ -1099,6 +1103,8 @@ static int ufx_ops_open(struct fb_info *info, int user)
 
 	pr_debug("open /dev/fb%d user=%d fb_info=%p count=%d",
 		info->node, user, info, dev->fb_count);
+
+	mutex_unlock(&disconnect_mutex);
 
 	return 0;
 }
@@ -1112,14 +1118,23 @@ static void ufx_free(struct kref *kref)
 {
 	struct ufx_data *dev = container_of(kref, struct ufx_data, kref);
 
-	/* this function will wait for all in-flight urbs to complete */
-	if (dev->urbs.count > 0)
-		ufx_free_urb_list(dev);
-
-	pr_debug("freeing ufx_data %p", dev);
-
 	kfree(dev);
 }
+
+static void ufx_ops_destory(struct fb_info *info)
+{
+	struct ufx_data *dev = info->par;
+	int node = info->node;
+
+	/* Assume info structure is freed after this point */
+	framebuffer_release(info);
+
+	pr_debug("fb_info for /dev/fb%d has been freed", node);
+
+	/* release reference taken by kref_init in probe() */
+	kref_put(&dev->kref, ufx_free);
+}
+
 
 static void ufx_release_urb_work(struct work_struct *work)
 {
@@ -1129,14 +1144,9 @@ static void ufx_release_urb_work(struct work_struct *work)
 	up(&unode->dev->urbs.limit_sem);
 }
 
-static void ufx_free_framebuffer_work(struct work_struct *work)
+static void ufx_free_framebuffer(struct ufx_data *dev)
 {
-	struct ufx_data *dev = container_of(work, struct ufx_data,
-					    free_framebuffer_work.work);
 	struct fb_info *info = dev->info;
-	int node = info->node;
-
-	unregister_framebuffer(info);
 
 	if (info->cmap.len != 0)
 		fb_dealloc_cmap(&info->cmap);
@@ -1147,11 +1157,6 @@ static void ufx_free_framebuffer_work(struct work_struct *work)
 	fb_destroy_modelist(&info->modelist);
 
 	dev->info = NULL;
-
-	/* Assume info structure is freed after this point */
-	framebuffer_release(info);
-
-	pr_debug("fb_info for /dev/fb%d has been freed", node);
 
 	/* ref taken in probe() as part of registering framebfufer */
 	kref_put(&dev->kref, ufx_free);
@@ -1164,11 +1169,13 @@ static int ufx_ops_release(struct fb_info *info, int user)
 {
 	struct ufx_data *dev = info->par;
 
+	mutex_lock(&disconnect_mutex);
+
 	dev->fb_count--;
 
 	/* We can't free fb_info here - fbmem will touch it when we return */
 	if (dev->virtualized && (dev->fb_count == 0))
-		schedule_delayed_work(&dev->free_framebuffer_work, HZ);
+		ufx_free_framebuffer(dev);
 
 	if ((dev->fb_count == 0) && (info->fbdefio)) {
 		fb_deferred_io_cleanup(info);
@@ -1181,6 +1188,8 @@ static int ufx_ops_release(struct fb_info *info, int user)
 		  info->node, user, dev->fb_count);
 
 	kref_put(&dev->kref, ufx_free);
+
+	mutex_unlock(&disconnect_mutex);
 
 	return 0;
 }
@@ -1288,13 +1297,13 @@ static struct fb_ops ufx_ops = {
 	.fb_blank = ufx_ops_blank,
 	.fb_check_var = ufx_ops_check_var,
 	.fb_set_par = ufx_ops_set_par,
+	.fb_destroy = ufx_ops_destory,
 };
 
 /* Assumes &info->lock held by caller
  * Assumes no active clients have framebuffer open */
 static int ufx_realloc_framebuffer(struct ufx_data *dev, struct fb_info *info)
 {
-	int retval = -ENOMEM;
 	int old_len = info->fix.smem_len;
 	int new_len;
 	unsigned char *old_fb = info->screen_base;
@@ -1309,10 +1318,8 @@ static int ufx_realloc_framebuffer(struct ufx_data *dev, struct fb_info *info)
 		 * Alloc system memory for virtual framebuffer
 		 */
 		new_fb = vmalloc(new_len);
-		if (!new_fb) {
-			pr_err("Virtual framebuffer alloc failed");
-			goto error;
-		}
+		if (!new_fb)
+			return -ENOMEM;
 
 		if (info->screen_base) {
 			memcpy(new_fb, old_fb, old_len);
@@ -1324,11 +1331,7 @@ static int ufx_realloc_framebuffer(struct ufx_data *dev, struct fb_info *info)
 		info->fix.smem_start = (unsigned long) new_fb;
 		info->flags = smscufx_info_flags;
 	}
-
-	retval = 0;
-
-error:
-	return retval;
+	return 0;
 }
 
 /* sets up I2C Controller for 100 Kbps, std. speed, 7-bit addr, master,
@@ -1621,8 +1624,8 @@ static int ufx_usb_probe(struct usb_interface *interface,
 {
 	struct usb_device *usbdev;
 	struct ufx_data *dev;
-	struct fb_info *info = NULL;
-	int retval = -ENOMEM;
+	struct fb_info *info;
+	int retval;
 	u32 id_rev, fpga_rev;
 
 	/* usb initialization */
@@ -1632,7 +1635,7 @@ static int ufx_usb_probe(struct usb_interface *interface,
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (dev == NULL) {
 		dev_err(&usbdev->dev, "ufx_usb_probe: failed alloc of dev struct\n");
-		goto error;
+		return -ENOMEM;
 	}
 
 	/* we need to wait for both usb and fbdev to spin down on disconnect */
@@ -1653,9 +1656,8 @@ static int ufx_usb_probe(struct usb_interface *interface,
 	dev_dbg(dev->gdev, "fb_defio enable=%d\n", fb_defio);
 
 	if (!ufx_alloc_urb_list(dev, WRITES_IN_FLIGHT, MAX_TRANSFER)) {
-		retval = -ENOMEM;
 		dev_err(dev->gdev, "ufx_alloc_urb_list failed\n");
-		goto error;
+		goto e_nomem;
 	}
 
 	/* We don't register a new USB class. Our client interface is fbdev */
@@ -1663,26 +1665,21 @@ static int ufx_usb_probe(struct usb_interface *interface,
 	/* allocates framebuffer driver structure, not framebuffer memory */
 	info = framebuffer_alloc(0, &usbdev->dev);
 	if (!info) {
-		retval = -ENOMEM;
 		dev_err(dev->gdev, "framebuffer_alloc failed\n");
-		goto error;
+		goto e_nomem;
 	}
 
 	dev->info = info;
 	info->par = dev;
 	info->pseudo_palette = dev->pseudo_palette;
 	info->fbops = &ufx_ops;
+	INIT_LIST_HEAD(&info->modelist);
 
 	retval = fb_alloc_cmap(&info->cmap, 256, 0);
 	if (retval < 0) {
 		dev_err(dev->gdev, "fb_alloc_cmap failed %x\n", retval);
-		goto error;
+		goto destroy_modedb;
 	}
-
-	INIT_DELAYED_WORK(&dev->free_framebuffer_work,
-			  ufx_free_framebuffer_work);
-
-	INIT_LIST_HEAD(&info->modelist);
 
 	retval = ufx_reg_read(dev, 0x3000, &id_rev);
 	check_warn_goto_error(retval, "error %d reading 0x3000 register from device", retval);
@@ -1737,33 +1734,31 @@ static int ufx_usb_probe(struct usb_interface *interface,
 	return 0;
 
 error:
-	if (dev) {
-		if (info) {
-			if (info->cmap.len != 0)
-				fb_dealloc_cmap(&info->cmap);
-			if (info->monspecs.modedb)
-				fb_destroy_modedb(info->monspecs.modedb);
-			vfree(info->screen_base);
-
-			fb_destroy_modelist(&info->modelist);
-
-			framebuffer_release(info);
-		}
-
-		kref_put(&dev->kref, ufx_free); /* ref for framebuffer */
-		kref_put(&dev->kref, ufx_free); /* last ref from kref_init */
-
-		/* dev has been deallocated. Do not dereference */
-	}
-
+	fb_dealloc_cmap(&info->cmap);
+destroy_modedb:
+	fb_destroy_modedb(info->monspecs.modedb);
+	vfree(info->screen_base);
+	fb_destroy_modelist(&info->modelist);
+	framebuffer_release(info);
+put_ref:
+	kref_put(&dev->kref, ufx_free); /* ref for framebuffer */
+	kref_put(&dev->kref, ufx_free); /* last ref from kref_init */
 	return retval;
+
+e_nomem:
+	retval = -ENOMEM;
+	goto put_ref;
 }
 
 static void ufx_usb_disconnect(struct usb_interface *interface)
 {
 	struct ufx_data *dev;
+	struct fb_info *info;
+
+	mutex_lock(&disconnect_mutex);
 
 	dev = usb_get_intfdata(interface);
+	info = dev->info;
 
 	pr_debug("USB disconnect starting\n");
 
@@ -1777,12 +1772,17 @@ static void ufx_usb_disconnect(struct usb_interface *interface)
 
 	/* if clients still have us open, will be freed on last close */
 	if (dev->fb_count == 0)
-		schedule_delayed_work(&dev->free_framebuffer_work, 0);
+		ufx_free_framebuffer(dev);
 
-	/* release reference taken by kref_init in probe() */
-	kref_put(&dev->kref, ufx_free);
+	/* this function will wait for all in-flight urbs to complete */
+	if (dev->urbs.count > 0)
+		ufx_free_urb_list(dev);
 
-	/* consider ufx_data freed */
+	pr_debug("freeing ufx_data %p", dev);
+
+	unregister_framebuffer(info);
+
+	mutex_unlock(&disconnect_mutex);
 }
 
 static struct usb_driver ufx_driver = {
@@ -1875,7 +1875,7 @@ static int ufx_alloc_urb_list(struct ufx_data *dev, int count, size_t size)
 	INIT_LIST_HEAD(&dev->urbs.list);
 
 	while (i < count) {
-		unode = kzalloc(sizeof(struct urb_node), GFP_KERNEL);
+		unode = kzalloc(sizeof(*unode), GFP_KERNEL);
 		if (!unode)
 			break;
 		unode->dev = dev;

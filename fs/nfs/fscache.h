@@ -57,6 +57,23 @@ struct nfs_fscache_key {
 };
 
 /*
+ * Definition of the auxiliary data attached to NFS inode storage objects
+ * within the cache.
+ *
+ * The contents of this struct are recorded in the on-disk local cache in the
+ * auxiliary data attached to the data storage object backing an inode.  This
+ * permits coherency to be managed when a new inode binds to an already extant
+ * cache object.
+ */
+struct nfs_fscache_inode_auxdata {
+	s64	mtime_sec;
+	s64	mtime_nsec;
+	s64	ctime_sec;
+	s64	ctime_nsec;
+	u64	change_attr;
+};
+
+/*
  * fscache-index.c
  */
 extern struct fscache_netfs nfs_fscache_netfs;
@@ -171,7 +188,7 @@ static inline void nfs_fscache_wait_on_invalidate(struct inode *inode)
  */
 static inline const char *nfs_server_fscache_state(struct nfs_server *server)
 {
-	if (server->fscache && (server->options & NFS_OPTION_FSCACHE))
+	if (server->fscache)
 		return "yes";
 	return "no ";
 }

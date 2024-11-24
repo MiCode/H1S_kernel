@@ -876,6 +876,16 @@ static int do_vmbus_entry(const char *filename, void *symval,
 	return 1;
 }
 
+/* Looks like: rpmsg:S */
+static int do_rpmsg_entry(const char *filename, void *symval,
+			  char *alias)
+{
+	DEF_FIELD_ADDR(symval, rpmsg_device_id, name);
+	sprintf(alias, RPMSG_DEVICE_MODALIAS_FMT, *name);
+
+	return 1;
+}
+
 /* Looks like: i2c:S */
 static int do_i2c_entry(const char *filename, void *symval,
 			char *alias)
@@ -1205,6 +1215,20 @@ static int do_hda_entry(const char *filename, void *symval, char *alias)
 	return 1;
 }
 
+/* Looks like: sdw:mNpN */
+static int do_sdw_entry(const char *filename, void *symval, char *alias)
+{
+	DEF_FIELD(symval, sdw_device_id, mfg_id);
+	DEF_FIELD(symval, sdw_device_id, part_id);
+
+	strcpy(alias, "sdw:");
+	ADD(alias, "m", mfg_id != 0, mfg_id);
+	ADD(alias, "p", part_id != 0, part_id);
+
+	add_wildcard(alias);
+	return 1;
+}
+
 /* Looks like: fsl-mc:vNdN */
 static int do_fsl_mc_entry(const char *filename, void *symval,
 			   char *alias)
@@ -1213,6 +1237,42 @@ static int do_fsl_mc_entry(const char *filename, void *symval,
 	DEF_FIELD_ADDR(symval, fsl_mc_device_id, obj_type);
 
 	sprintf(alias, "fsl-mc:v%08Xd%s", vendor, *obj_type);
+	return 1;
+}
+
+/* Looks like: tbsvc:kSpNvNrN */
+static int do_tbsvc_entry(const char *filename, void *symval, char *alias)
+{
+	DEF_FIELD(symval, tb_service_id, match_flags);
+	DEF_FIELD_ADDR(symval, tb_service_id, protocol_key);
+	DEF_FIELD(symval, tb_service_id, protocol_id);
+	DEF_FIELD(symval, tb_service_id, protocol_version);
+	DEF_FIELD(symval, tb_service_id, protocol_revision);
+
+	strcpy(alias, "tbsvc:");
+	if (match_flags & TBSVC_MATCH_PROTOCOL_KEY)
+		sprintf(alias + strlen(alias), "k%s", *protocol_key);
+	else
+		strcat(alias + strlen(alias), "k*");
+	ADD(alias, "p", match_flags & TBSVC_MATCH_PROTOCOL_ID, protocol_id);
+	ADD(alias, "v", match_flags & TBSVC_MATCH_PROTOCOL_VERSION,
+	    protocol_version);
+	ADD(alias, "r", match_flags & TBSVC_MATCH_PROTOCOL_REVISION,
+	    protocol_revision);
+
+	add_wildcard(alias);
+	return 1;
+}
+
+/* Looks like: typec:idNmN */
+static int do_typec_entry(const char *filename, void *symval, char *alias)
+{
+	DEF_FIELD(symval, typec_device_id, svid);
+	DEF_FIELD(symval, typec_device_id, mode);
+
+	sprintf(alias, "typec:id%04X", svid);
+	ADD(alias, "m", mode != TYPEC_ANY_MODE, mode);
+
 	return 1;
 }
 
@@ -1265,6 +1325,7 @@ static const struct devtable devtable[] = {
 	{"bcma", SIZE_bcma_device_id, do_bcma_entry},
 	{"virtio", SIZE_virtio_device_id, do_virtio_entry},
 	{"vmbus", SIZE_hv_vmbus_device_id, do_vmbus_entry},
+	{"rpmsg", SIZE_rpmsg_device_id, do_rpmsg_entry},
 	{"i2c", SIZE_i2c_device_id, do_i2c_entry},
 	{"spi", SIZE_spi_device_id, do_spi_entry},
 	{"dmi", SIZE_dmi_system_id, do_dmi_entry},
@@ -1281,7 +1342,10 @@ static const struct devtable devtable[] = {
 	{"rapidio", SIZE_rio_device_id, do_rio_entry},
 	{"ulpi", SIZE_ulpi_device_id, do_ulpi_entry},
 	{"hdaudio", SIZE_hda_device_id, do_hda_entry},
+	{"sdw", SIZE_sdw_device_id, do_sdw_entry},
 	{"fslmc", SIZE_fsl_mc_device_id, do_fsl_mc_entry},
+	{"tbsvc", SIZE_tb_service_id, do_tbsvc_entry},
+	{"typec", SIZE_typec_device_id, do_typec_entry},
 };
 
 /* Create MODULE_ALIAS() statements.
@@ -1331,7 +1395,7 @@ void handle_moddevtable(struct module *mod, struct elf_info *info,
 	/* First handle the "special" cases */
 	if (sym_is(name, namelen, "usb"))
 		do_usb_table(symval, sym->st_size, mod);
-	if (sym_is(name, namelen, "of"))
+	else if (sym_is(name, namelen, "of"))
 		do_of_table(symval, sym->st_size, mod);
 	else if (sym_is(name, namelen, "pnp"))
 		do_pnp_device_entry(symval, sym->st_size, mod);

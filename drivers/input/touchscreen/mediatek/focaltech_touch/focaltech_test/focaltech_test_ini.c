@@ -1,15 +1,7 @@
-/************************************************************************
- * Copyright (C) 2012-2019, Focaltech Systems (R)£¬All Rights Reserved.
- *
- * File Name: focaltech_test_ini.c
- *
- * Author: Focaltech Driver Team
- *
- * Created: 2016-08-01
- *
- * Abstract: parsing function of INI file
- *
- ************************************************************************/
+/* SPDX-License-Identifier: GPL-2.0 */	
+/*	
+ * Copyright (c) 2019 MediaTek Inc.	
+*/
 #include "focaltech_test.h"
 
 /*****************************************************************************

@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/types.h>
@@ -56,7 +49,6 @@
 //#define VPU_LOAD_FW_SUPPORT
 
 static struct vpu_device *vpu_device;
-static struct wakeup_source vpu_wake_lock;
 static struct list_head device_debug_list;
 static struct mutex debug_list_mutex;
 static bool sdsp_locked;
@@ -178,7 +170,7 @@ enum m4u_callback_ret_t vpu_m4u_fault_callback(int port,
 	unsigned int mva, void *data)
 #else
 enum mtk_iommu_callback_ret_t vpu_m4u_fault_callback(int port,
-	unsigned long mva, void *data)
+	unsigned int mva, void *data)
 #endif
 {
 	LOG_DBG("[m4u] fault callback: port=%d, mva=0x%x", port, mva);
@@ -321,7 +313,8 @@ int vpu_put_request_to_pool(struct vpu_user *user, struct vpu_request *req)
 						(struct ion_handle *)
 						(req->buf_ion_infos[k]));
 				}
-				return -EINVAL;
+				ret = -EINVAL;
+				goto out;
 			} else {
 				if (g_vpu_log_level > Log_STATE_MACHINE)
 					LOG_INF("[vpu_drv]cnt_%d,%s=0x%p\n",
@@ -367,11 +360,6 @@ int vpu_put_request_to_pool(struct vpu_user *user, struct vpu_request *req)
 			break;
 		}
 	}
-
-	#if 0
-	LOG_DBG("[vpu] push request to euque CORE_IDNEX (0x%x/0x%x)...\n",
-		req->requested_core, req_core);
-	#endif
 
 	if (req_core >= MTK_VPU_CORE) {
 		LOG_ERR("wrong core index (0x%x/%d/%d)",
@@ -430,40 +418,6 @@ bool vpu_user_is_running(struct vpu_user *user)
 
 int vpu_flush_requests_from_queue(struct vpu_user *user)
 {
-#if 0
-	struct list_head *head, *temp;
-	struct vpu_request *req;
-
-	mutex_lock(&user->data_mutex);
-
-	if (!user->running && list_empty(&user->enque_list)) {
-		mutex_unlock(&user->data_mutex);
-		return 0;
-	}
-
-	user->flushing = true;
-	mutex_unlock(&user->data_mutex);
-
-	/* the running request will add to the deque before interrupt */
-	wait_event_interruptible(user->deque_wait, !user->running);
-
-	while (user->running)
-		ndelay(1000);
-
-	mutex_lock(&user->data_mutex);
-	/* push the remaining enque to the deque */
-	list_for_each_safe(head, temp, &user->enque_list) {
-		req = vlist_node_of(head, struct vpu_request);
-		req->status = VPU_REQ_STATUS_FLUSH;
-		list_del_init(head);
-		list_add_tail(head, &user->deque_list);
-	}
-
-	user->flushing = false;
-	LOG_DBG("flushed queue, user:%d\n", user->id);
-
-	mutex_unlock(&user->data_mutex);
-#endif
 	return 0;
 }
 
@@ -1134,8 +1088,7 @@ static long vpu_ioctl(struct file *flip, unsigned int cmd, unsigned long arg)
 
 		/*opp_step counted by vpu driver*/
 	if (req->power_param.boost_value != 0xff) {
-		if (req->power_param.boost_value >= 0 &&
-			req->power_param.boost_value <= 100) {
+		if (req->power_param.boost_value <= 100) {
 			req->power_param.opp_step =
 			vpu_boost_value_to_opp(req->power_param.boost_value);
 			req->power_param.freq_step =
@@ -1189,9 +1142,9 @@ static long vpu_ioctl(struct file *flip, unsigned int cmd, unsigned long arg)
 		}
 
 		if (copy_from_user(req->buf_ion_infos,
-			u_req->buf_ion_infos,
-			req->buffer_count * VPU_MAX_NUM_PLANE
-			* sizeof(uint64_t))) {
+				u_req->buf_ion_infos,
+				req->buffer_count * VPU_MAX_NUM_PLANE
+				* sizeof(uint64_t))) {
 			LOG_ERR("[ENQUE] %s, ret=%d\n",
 				"copy 'buf_share_fds' failed", ret);
 		} else if (vpu_put_request_to_pool(user, req)) {
@@ -1217,7 +1170,6 @@ static long vpu_ioctl(struct file *flip, unsigned int cmd, unsigned long arg)
 			LOG_INF("[vpu] VPU_IOCTL_DEQUE_REQUEST + ");
 
 		u_req = (struct vpu_request *) arg;
-		#if 1
 		ret = get_user(kernel_request_id, &u_req->request_id);
 		if (ret) {
 			LOG_ERR("[REG] get 'req id' failed,%d\n", ret);
@@ -1229,13 +1181,6 @@ static long vpu_ioctl(struct file *flip, unsigned int cmd, unsigned long arg)
 			(unsigned long)(kernel_request_id));
 
 		ret = vpu_get_request_from_queue(user, kernel_request_id, &req);
-		#else
-		LOG_DBG("[vpu] dequee test: user_id_0x%lx, request_id_0x%lx",
-				(unsigned long)user,
-				(unsigned long)(u_req->request_id));
-
-		ret = vpu_get_request_from_queue(user, u_req->request_id, &req);
-		#endif
 		if (ret) {
 			LOG_ERR("[DEQUE] pop request failed, ret=%d\n", ret);
 			goto out;
@@ -1340,7 +1285,7 @@ static long vpu_ioctl(struct file *flip, unsigned int cmd, unsigned long arg)
 
 		break;
 	}
-		case VPU_IOCTL_CREATE_ALGO:
+	case VPU_IOCTL_CREATE_ALGO:
 	{
 #ifdef VPU_LOAD_FW_SUPPORT
 		struct vpu_create_algo *u_create_algo;
@@ -1622,7 +1567,8 @@ static long vpu_ioctl(struct file *flip, unsigned int cmd, unsigned long arg)
 			/* Enable IRQ */
 			for (i = 0 ; i < MTK_VPU_CORE ; i++) {
 				enable_irq(vpu_device->irq_num[i]);
-				mutex_unlock(&vpu_device->sdsp_control_mutex[i]);
+				mutex_unlock(
+					&vpu_device->sdsp_control_mutex[i]);
 			}
 			sdsp_locked = false;
 			LOG_WRN("DSP_SEC_UNLOCK mutex-m unlock\n");
@@ -1755,7 +1701,7 @@ out:
 static int vpu_probe(struct platform_device *pdev)
 {
 	int ret = 0;
-	unsigned int core = 0;
+	int core = 0;
 	struct device *dev;
 	struct device_node *node;
 	unsigned int irq_info[3] = {0};
@@ -1820,8 +1766,8 @@ static int vpu_probe(struct platform_device *pdev)
 	vpu_device->vpu_base[core] = (unsigned long) of_iomap(node, 0);
 	/* get physical address of binary data loaded by LK */
 	if (vpu_num_devs == 0) {
-		uint32_t phy_addr;
-		uint32_t phy_size;
+		uint32_t phy_addr = 0;
+		uint32_t phy_size = 0;
 
 		if (of_property_read_u32(node, "bin-phy-addr", &phy_addr) ||
 			of_property_read_u32(node, "bin-size", &phy_size)) {
@@ -1881,7 +1827,7 @@ static int vpu_probe(struct platform_device *pdev)
 		/* Get IRQ Flag from device node */
 		if (of_property_read_u32_array(pdev->dev.of_node,
 				"interrupts", irq_info, ARRAY_SIZE(irq_info))) {
-			dev_err(&pdev->dev, "get irq flags from DTS fail!!\n");
+			dev_info(&pdev->dev, "get irq flags from DTS fail!!\n");
 			return -ENODEV;
 		}
 		vpu_device->irq_trig_level = irq_info[2];
@@ -1909,7 +1855,7 @@ static int vpu_probe(struct platform_device *pdev)
 		/* Register char driver */
 		ret = vpu_reg_chardev();
 		if (ret) {
-			dev_err(vpu_device->dev[vpu_num_devs-1], "register char failed");
+			dev_info(&pdev->dev, "register char failed");
 			return ret;
 		}
 		/* Create class register */
@@ -1924,13 +1870,10 @@ static int vpu_probe(struct platform_device *pdev)
 					NULL, VPU_DEV_NAME);
 		if (IS_ERR(dev)) {
 			ret = PTR_ERR(dev);
-			dev_err(vpu_device->dev[vpu_num_devs-1],
-				"Failed to create device: /dev/%s, err = %d",
+			dev_info(&pdev->dev, "Failed to create device: /dev/%s, err = %d",
 				VPU_DEV_NAME, ret);
 			goto out;
 		}
-
-		wakeup_source_init(&vpu_wake_lock, "vpu_lock_wakelock");
 
 out:
 		if (ret < 0)
@@ -2037,9 +1980,15 @@ static int __init VPU_INIT(void)
 	for (i = 0 ; i < MTK_VPU_CORE ; i++) {
 		char name[16];
 
-		snprintf(name, 16, "vpu%d", i);
-		vpu_pool_init(&vpu_device->pool[i], name, VPU_POOL);
-		vpu_device->service_core_available[i] = true;
+		ret = snprintf(name, 16, "vpu%d", i);
+		if (ret >= 0 && ret < 16) {
+			vpu_pool_init(&vpu_device->pool[i], name, VPU_POOL);
+			vpu_device->service_core_available[i] = true;
+			ret = 0;
+		} else {
+			LOG_ERR("%s: snprintf: %d\n", __func__, ret);
+			return -ENODEV;
+		}
 	}
 /*init priority list*/
 	for (i = 0 ; i < MTK_VPU_CORE ; i++) {

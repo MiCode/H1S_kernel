@@ -5,6 +5,7 @@
  * PaX/grsecurity.
  */
 #include <linux/refcount.h>
+#include <asm/bug.h>
 
 /*
  * This is the first portion of the refcount error handling, which lives in
@@ -17,7 +18,7 @@
 #define _REFCOUNT_EXCEPTION				\
 	".pushsection .text..refcount\n"		\
 	"111:\tlea %[counter], %%" _ASM_CX "\n"		\
-	"112:\t" ASM_UD0 "\n"				\
+	"112:\t" ASM_UD2 "\n"				\
 	ASM_UNREACHABLE					\
 	".popsection\n"					\
 	"113:\n"					\

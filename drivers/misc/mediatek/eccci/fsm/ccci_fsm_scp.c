@@ -1,25 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include "ccci_config.h"
+#include "ccci_common_config.h"
 #include "ccci_fsm_internal.h"
 
 #ifdef FEATURE_SCP_CCCI_SUPPORT
-#if (MD_GENERATION >= 6297)
-#include "scp_ipi_pin.h"
-#else
-#include "scp_ipi.h"
-#endif
+#include <scp.h>
+
 
 static atomic_t scp_state = ATOMIC_INIT(SCP_CCCI_STATE_INVALID);
 static struct ccci_ipi_msg scp_ipi_tx_msg;
@@ -74,7 +64,7 @@ static int ccci_scp_ipi_send(int md_id, int op_id, void *data)
 	}
 #else
 	if (scp_ipi_send(IPI_APCCCI, &scp_ipi_tx_msg,
-		sizeof(scp_ipi_tx_msg), 1, SCP_A_ID) != SCP_IPI_DONE) {
+			sizeof(scp_ipi_tx_msg), 1, SCP_A_ID) != SCP_IPI_DONE) {
 		CCCI_ERROR_LOG(md_id, FSM, "IPI send fail!\n");
 		ret = -CCCI_ERR_MD_NOT_READY;
 	}
@@ -83,24 +73,32 @@ static int ccci_scp_ipi_send(int md_id, int op_id, void *data)
 	return ret;
 }
 
+extern struct ccci_fsm_ctl *fsm_get_entity_by_md_id(int md_id);
 static void ccci_scp_md_state_sync_work(struct work_struct *work)
 {
 	struct ccci_fsm_scp *scp_ctl = container_of(work,
 		struct ccci_fsm_scp, scp_md_state_sync_work);
+	struct ccci_fsm_ctl *ctl = fsm_get_entity_by_md_id(scp_ctl->md_id);
 	int ret;
-	enum MD_STATE_FOR_USER state =
-		ccci_fsm_get_md_state_for_user(scp_ctl->md_id);
+	enum MD_STATE_FOR_USER state;
 	int count = 0;
 
-	switch (state) {
-	case MD_STATE_READY:
+	if (ctl == NULL) {
+		CCCI_ERROR_LOG(-1, FSM, "%s ctl is NULL !\n", __func__);
+		return;
+	}
+
+	switch (ctl->md_state) {
+	case READY:
 		switch (scp_ctl->md_id) {
 		case MD_SYS1:
 			while (count < SCP_BOOT_TIMEOUT/EVENT_POLL_INTEVAL) {
 				if (atomic_read(&scp_state) ==
 					SCP_CCCI_STATE_BOOTING
 					|| atomic_read(&scp_state)
-					== SCP_CCCI_STATE_RBREADY)
+					== SCP_CCCI_STATE_RBREADY
+					|| atomic_read(&scp_state)
+					== SCP_CCCI_STATE_STOP)
 					break;
 				count++;
 				msleep(EVENT_POLL_INTEVAL);
@@ -127,15 +125,21 @@ static void ccci_scp_md_state_sync_work(struct work_struct *work)
 			break;
 		};
 		break;
-	case MD_STATE_EXCEPTION:
-		ccci_scp_ipi_send(scp_ctl->md_id,
-			CCCI_OP_MD_STATE, &state);
+	case INVALID:
+	case GATED:
+		state = MD_STATE_INVALID;
+		ccci_scp_ipi_send(scp_ctl->md_id, CCCI_OP_MD_STATE, &state);
+		break;
+	case EXCEPTION:
+		state = MD_STATE_EXCEPTION;
+		ccci_scp_ipi_send(scp_ctl->md_id, CCCI_OP_MD_STATE, &state);
 		break;
 	default:
 		break;
 	};
 }
 
+extern void scp_set_clk_off(void);
 static void ccci_scp_ipi_rx_work(struct work_struct *work)
 {
 	struct ccci_ipi_msg *ipi_msg_ptr = NULL;
@@ -194,6 +198,11 @@ static void ccci_scp_ipi_rx_work(struct work_struct *work)
 					ipi_msg_ptr->md_id);
 				ccci_scp_ipi_send(ipi_msg_ptr->md_id,
 					CCCI_OP_MD_STATE, &data);
+				break;
+			case SCP_CCCI_STATE_STOP:
+				CCCI_NORMAL_LOG(ipi_msg_ptr->md_id, FSM,
+						"MD INVALID,scp send ack to ap\n");
+				scp_set_clk_off();
 				break;
 			default:
 				break;
@@ -282,16 +291,15 @@ int fsm_ccism_init_ack_handler(int md_id, int data)
 #endif
 	return 0;
 }
-/* phase out:architecture design adjustment */
-/*
- *#ifdef CONFIG_MTK_SIM_LOCK_POWER_ON_WRITE_PROTECT
- *static int fsm_sim_lock_handler(int md_id, int data)
- *{
- *	fsm_monitor_send_message(md_id, CCCI_MD_MSG_RANDOM_PATTERN, 0);
- *	return 0;
- *}
- *#endif
- */
+
+#ifdef CONFIG_MTK_SIM_LOCK_POWER_ON_WRITE_PROTECT
+static int fsm_sim_lock_handler(int md_id, int data)
+{
+	fsm_monitor_send_message(md_id, CCCI_MD_MSG_RANDOM_PATTERN, 0);
+	return 0;
+}
+#endif
+
 static int fsm_sim_type_handler(int md_id, int data)
 {
 	struct ccci_per_md *per_md_data = ccci_get_per_md_data(md_id);
@@ -324,6 +332,7 @@ void fsm_scp_init0(void)
 	ccci_skb_queue_init(&scp_ipi_rx_skb_list, 16, 16, 0);
 	atomic_set(&scp_state, SCP_CCCI_STATE_BOOTING);
 }
+EXPORT_SYMBOL(fsm_scp_init0);
 #endif
 
 int fsm_scp_init(struct ccci_fsm_scp *scp_ctl)
@@ -339,13 +348,10 @@ int fsm_scp_init(struct ccci_fsm_scp *scp_ctl)
 	register_ccci_sys_call_back(scp_ctl->md_id, CCISM_SHM_INIT_ACK,
 		fsm_ccism_init_ack_handler);
 #endif
-/* phase out:architecture design adjustment */
-/*
- *#ifdef CONFIG_MTK_SIM_LOCK_POWER_ON_WRITE_PROTECT
- *	register_ccci_sys_call_back(scp_ctl->md_id, SIM_LOCK_RANDOM_PATTERN,
- *		fsm_sim_lock_handler);
- *#endif
- */
+#ifdef CONFIG_MTK_SIM_LOCK_POWER_ON_WRITE_PROTECT
+	register_ccci_sys_call_back(scp_ctl->md_id, SIM_LOCK_RANDOM_PATTERN,
+		fsm_sim_lock_handler);
+#endif
 	register_ccci_sys_call_back(scp_ctl->md_id, MD_SIM_TYPE,
 		fsm_sim_type_handler);
 

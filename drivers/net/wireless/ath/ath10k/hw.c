@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2015 Qualcomm Atheros, Inc.
+ * Copyright (c) 2014-2017 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -310,7 +310,13 @@ static struct ath10k_hw_ce_dst_src_wm_regs wcn3990_wm_dst_ring = {
 	.wm_high	= &wcn3990_dst_wm_high,
 };
 
-struct ath10k_hw_ce_regs wcn3990_ce_regs = {
+static struct ath10k_hw_ce_ctrl1_upd wcn3990_ctrl1_upd = {
+	.shift = 19,
+	.mask = 0x00080000,
+	.enable = 0x00000000,
+};
+
+const struct ath10k_hw_ce_regs wcn3990_ce_regs = {
 	.sr_base_addr		= 0x00000000,
 	.sr_size_addr		= 0x00000008,
 	.dr_base_addr		= 0x0000000c,
@@ -320,8 +326,6 @@ struct ath10k_hw_ce_regs wcn3990_ce_regs = {
 	.dst_wr_index_addr	= 0x00000040,
 	.current_srri_addr	= 0x00000044,
 	.current_drri_addr	= 0x00000048,
-	.ddr_addr_for_rri_low	= 0x00000004,
-	.ddr_addr_for_rri_high	= 0x00000008,
 	.ce_rri_low		= 0x0024C004,
 	.ce_rri_high		= 0x0024C008,
 	.host_ie_addr		= 0x0000002c,
@@ -331,6 +335,7 @@ struct ath10k_hw_ce_regs wcn3990_ce_regs = {
 	.misc_regs		= &wcn3990_misc_reg,
 	.wm_srcr		= &wcn3990_wm_src_ring,
 	.wm_dstr		= &wcn3990_wm_dst_ring,
+	.upd			= &wcn3990_ctrl1_upd,
 };
 
 const struct ath10k_hw_values wcn3990_values = {
@@ -457,7 +462,7 @@ static struct ath10k_hw_ce_dst_src_wm_regs qcax_wm_dst_ring = {
 	.wm_high	= &qcax_dst_wm_high,
 };
 
-struct ath10k_hw_ce_regs qcax_ce_regs = {
+const struct ath10k_hw_ce_regs qcax_ce_regs = {
 	.sr_base_addr		= 0x00000000,
 	.sr_size_addr		= 0x00000004,
 	.dr_base_addr		= 0x00000008,
@@ -604,8 +609,13 @@ static void ath10k_hw_qca988x_set_coverage_class(struct ath10k *ar,
 
 	/* Only modify registers if the core is started. */
 	if ((ar->state != ATH10K_STATE_ON) &&
-	    (ar->state != ATH10K_STATE_RESTARTED))
+	    (ar->state != ATH10K_STATE_RESTARTED)) {
+		spin_lock_bh(&ar->data_lock);
+		/* Store config value for when radio boots up */
+		ar->fw_coverage.coverage_class = value;
+		spin_unlock_bh(&ar->data_lock);
 		goto unlock;
+	}
 
 	/* Retrieve the current values of the two registers that need to be
 	 * adjusted.
@@ -637,7 +647,7 @@ static void ath10k_hw_qca988x_set_coverage_class(struct ath10k *ar,
 		ar->fw_coverage.reg_ack_cts_timeout_orig = timeout_reg;
 	ar->fw_coverage.reg_phyclk = phyclk_reg;
 
-	/* Calculat new value based on the (original) firmware calculation. */
+	/* Calculate new value based on the (original) firmware calculation. */
 	slottime_reg = ar->fw_coverage.reg_slottime_orig;
 	timeout_reg = ar->fw_coverage.reg_ack_cts_timeout_orig;
 
@@ -926,3 +936,5 @@ const struct ath10k_hw_ops qca6174_ops = {
 	.set_coverage_class = ath10k_hw_qca988x_set_coverage_class,
 	.enable_pll_clk = ath10k_hw_qca6174_enable_pll_clock,
 };
+
+const struct ath10k_hw_ops wcn3990_ops = {};

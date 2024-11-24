@@ -1,19 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
+
 /*******************************************************************************
  *
  * Filename:
@@ -851,7 +841,7 @@ mtk_voice_usb_pointer_cap(struct snd_pcm_substream *substream)
 		Awb_Block->u4DataRemained += Hw_Get_bytes;
 
 		/*
-		 *pr_debug("%s RIdx=%x WIdx =%x Remain=%x Size=%x,bytes=%x\n",
+		 * pr_debug("%s RIdx=%x WIdx =%x Remain=%x Size=%x,bytes=%x\n",
 		 *	__func__, Awb_Block->u4DMAReadIdx,
 		 *	Awb_Block->u4WriteIdx, Awb_Block->u4DataRemained,
 		 *	Awb_Block->u4BufferSize, Hw_Get_bytes);
@@ -903,13 +893,15 @@ mtk_voice_usb_pointer(struct snd_pcm_substream *substream)
 		return mtk_voice_usb_pointer_cap(substream);
 }
 
-static int mtk_voice_usb_copy(struct snd_pcm_substream *substream, int channel,
-			      unsigned long pos, void __user *dst,
-			      unsigned long count)
+static int mtk_voice_usb_copy(struct snd_pcm_substream *substream,
+			      int channel,
+			      unsigned long pos,
+			      void __user *buf,
+			      unsigned long bytes)
 {
 	int stream = substream->stream;
 
-	return mtk_memblk_copy(substream, channel, pos, dst, count,
+	return mtk_memblk_copy(substream, channel, pos, buf, bytes,
 			       Get_Mem_ControlT(usb_mem_blk[stream]),
 			       usb_mem_blk[stream]);
 }
@@ -926,9 +918,9 @@ static struct snd_pcm_ops mtk_voice_usb_ops = {
 	.copy_user = mtk_voice_usb_copy,
 };
 
-static int mtk_voice_usb_platform_probe(struct snd_soc_platform *platform)
+static int mtk_voice_usb_component_probe(struct snd_soc_component *component)
 {
-	snd_soc_add_platform_controls(platform, speech_usb_controls,
+	snd_soc_add_component_controls(component, speech_usb_controls,
 				      ARRAY_SIZE(speech_usb_controls));
 	return 0;
 }
@@ -950,32 +942,37 @@ static void mtk_voice_usb_pcm_free(struct snd_pcm *pcm)
 	snd_pcm_lib_preallocate_free_for_all(pcm);
 }
 
-static struct snd_soc_platform_driver mtk_soc_voice_usb_platform = {
+static struct snd_soc_component_driver mtk_soc_voice_usb_component = {
+	.name = AFE_PCM_NAME,
 	.ops = &mtk_voice_usb_ops,
-	.probe = mtk_voice_usb_platform_probe,
+	.probe = mtk_voice_usb_component_probe,
 	.pcm_new = mtk_voice_usb_pcm_new,
 	.pcm_free = mtk_voice_usb_pcm_free,
 };
 
 static int mtk_voice_usb_probe(struct platform_device *pdev)
 {
-	if (pdev->dev.of_node) {
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_VOICE_USB);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	usb_memif_lpbk.dev = &pdev->dev;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
-	return snd_soc_register_platform(&pdev->dev,
-					 &mtk_soc_voice_usb_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_soc_voice_usb_component,
+					  NULL,
+					  0);
 }
 
 static int mtk_voice_usb_remove(struct platform_device *pdev)
 {
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

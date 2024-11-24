@@ -26,47 +26,58 @@ information is helpful.  Any exploit code is very helpful and will not
 be released without consent from the reporter unless it has already been
 made public.
 
-Disclosure
-----------
+Disclosure and embargoed information
+------------------------------------
 
-The goal of the Linux kernel security team is to work with the
-bug submitter to bug resolution as well as disclosure.  We prefer
-to fully disclose the bug as soon as possible.  It is reasonable to
-delay disclosure when the bug or the fix is not yet fully understood,
-the solution is not well-tested or for vendor coordination.  However, we
-expect these delays to be short, measurable in days, not weeks or months.
-A disclosure date is negotiated by the security team working with the
-bug submitter as well as vendors.  However, the kernel security team
-holds the final say when setting a disclosure date.  The timeframe for
-disclosure is from immediate (esp. if it's already publicly known)
-to a few weeks.  As a basic default policy, we expect report date to
-disclosure date to be on the order of 7 days.
+The security list is not a disclosure channel.  For that, see Coordination
+below.
 
-Coordination
-------------
+Once a robust fix has been developed, the release process starts.  Fixes
+for publicly known bugs are released immediately.
 
-Fixes for sensitive bugs, such as those that might lead to privilege
-escalations, may need to be coordinated with the private
-<linux-distros@vs.openwall.org> mailing list so that distribution vendors
-are well prepared to issue a fixed kernel upon public disclosure of the
-upstream fix. Distros will need some time to test the proposed patch and
-will generally request at least a few days of embargo, and vendor update
-publication prefers to happen Tuesday through Thursday. When appropriate,
-the security team can assist with this coordination, or the reporter can
-include linux-distros from the start. In this case, remember to prefix
-the email Subject line with "[vs]" as described in the linux-distros wiki:
-<http://oss-security.openwall.org/wiki/mailing-lists/distros#how-to-use-the-lists>
+Although our preference is to release fixes for publicly undisclosed bugs
+as soon as they become available, this may be postponed at the request of
+the reporter or an affected party for up to 7 calendar days from the start
+of the release process, with an exceptional extension to 14 calendar days
+if it is agreed that the criticality of the bug requires more time.  The
+only valid reason for deferring the publication of a fix is to accommodate
+the logistics of QA and large scale rollouts which require release
+coordination.
+
+Whilst embargoed information may be shared with trusted individuals in
+order to develop a fix, such information will not be published alongside
+the fix or on any other disclosure channel without the permission of the
+reporter.  This includes but is not limited to the original bug report
+and followup discussions (if any), exploits, CVE information or the
+identity of the reporter.
+
+In other words our only interest is in getting bugs fixed.  All other
+information submitted to the security list and any followup discussions
+of the report are treated confidentially even after the embargo has been
+lifted, in perpetuity.
+
+Coordination with other groups
+------------------------------
+
+The kernel security team strongly recommends that reporters of potential
+security issues NEVER contact the "linux-distros" mailing list until
+AFTER discussing it with the kernel security team.  Do not Cc: both
+lists at once.  You may contact the linux-distros mailing list after a
+fix has been agreed on and you fully understand the requirements that
+doing so will impose on you and the kernel community.
+
+The different lists have different goals and the linux-distros rules do
+not contribute to actually fixing any potential security problems.
 
 CVE assignment
 --------------
 
-The security team does not normally assign CVEs, nor do we require them
-for reports or fixes, as this can needlessly complicate the process and
-may delay the bug handling. If a reporter wishes to have a CVE identifier
-assigned ahead of public disclosure, they will need to contact the private
-linux-distros list, described above. When such a CVE identifier is known
-before a patch is provided, it is desirable to mention it in the commit
-message, though.
+The security team does not assign CVEs, nor do we require them for
+reports or fixes, as this can needlessly complicate the process and may
+delay the bug handling.  If a reporter wishes to have a CVE identifier
+assigned, they should find one by themselves, for example by contacting
+MITRE directly.  However under no circumstances will a patch inclusion
+be delayed to wait for a CVE identifier to arrive.
 
 Non-disclosure agreements
 -------------------------

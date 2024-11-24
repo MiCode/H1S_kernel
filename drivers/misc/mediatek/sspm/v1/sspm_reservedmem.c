@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2011-2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include <linux/module.h>       /* needed by all modules */
@@ -42,6 +34,7 @@
 #include "sspm_reservedmem.h"
 #define _SSPM_INTERNAL_
 #include "sspm_reservedmem_define.h"
+#define MEMORY_TBL_ELEM_NUM (2)
 
 #ifdef CONFIG_OF_RESERVED_MEM
 #include <linux/of_reserved_mem.h>
@@ -116,7 +109,6 @@ phys_addr_t sspm_reserve_mem_get_size(unsigned int id)
 }
 EXPORT_SYMBOL_GPL(sspm_reserve_mem_get_size);
 
-#ifdef SSPM_SHARE_BUFFER_SUPPORT
 void __iomem *sspm_base;
 phys_addr_t sspm_sbuf_get(unsigned int offset)
 {
@@ -134,11 +126,14 @@ phys_addr_t sspm_sbuf_get(unsigned int offset)
 	}
 }
 EXPORT_SYMBOL_GPL(sspm_sbuf_get);
-#endif
 
-int sspm_reserve_memory_init(void)
+int sspm_reserve_memory_init(struct platform_device *pdev)
 {
 	unsigned int id;
+	unsigned int sspm_mem_num = 0;
+	unsigned int i, m_idx, m_size;
+	int ret;
+	const char *mem_key;
 	phys_addr_t accumlate_memory_size;
 
 	if (NUMS_MEM_ID == 0)
@@ -146,7 +141,45 @@ int sspm_reserve_memory_init(void)
 
 	if (sspm_mem_base_phys == 0)
 		return -1;
+	/* Get reserved memory */
+	ret = of_property_read_string(pdev->dev.of_node, "sspm_mem_key",
+			&mem_key);
+	if (ret) {
+		pr_info("[SSPM] cannot find property\n");
+		return -EINVAL;
+	}
 
+	/* Set reserved memory table */
+	sspm_mem_num = of_property_count_u32_elems(
+				pdev->dev.of_node,
+				"sspm_mem_tbl")
+				/ MEMORY_TBL_ELEM_NUM;
+	if (sspm_mem_num <= 0) {
+		pr_info("[SSPM] SSPM_mem_tbl not found\n");
+		sspm_mem_num = 0;
+	}
+	for (i = 0; i < sspm_mem_num; i++) {
+		ret = of_property_read_u32_index(pdev->dev.of_node,
+				"sspm_mem_tbl",
+				i * MEMORY_TBL_ELEM_NUM,
+				&m_idx);
+		if (ret) {
+			pr_info("Cannot get memory index(%d)\n", i);
+			return -1;
+		}
+		ret = of_property_read_u32_index(pdev->dev.of_node,
+				"sspm_mem_tbl",
+				(i * MEMORY_TBL_ELEM_NUM) + 1,
+				&m_size);
+		if (ret) {
+			pr_info("Cannot get memory size(%d)\n", i);
+			return -1;
+		}
+		if (m_idx >= NUMS_MEM_ID) {
+			pr_notice("[SSPM] skip unexpected index, %d\n", m_idx);
+			continue;
+		}
+	}
 	accumlate_memory_size = 0;
 	sspm_mem_base_virt = (phys_addr_t)(uintptr_t)
 			ioremap_wc(sspm_mem_base_phys, sspm_mem_size);
@@ -189,7 +222,6 @@ void sspm_lock_emi_mpu(void)
 }
 
 
-#ifdef SSPM_SHARE_BUFFER_SUPPORT
 int sspm_sbuf_init(void)
 {
 	struct device *dev = &sspm_pdev->dev;
@@ -205,4 +237,3 @@ int sspm_sbuf_init(void)
 	}
 	return 0;
 }
-#endif

@@ -27,11 +27,39 @@
 
 #include <asm/asm-offsets.h>
 #include <asm/cpufeature.h>
-#include <asm/cputype.h>
+#include <asm/debug-monitors.h>
 #include <asm/page.h>
 #include <asm/pgtable-hwdef.h>
 #include <asm/ptrace.h>
 #include <asm/thread_info.h>
+
+	.macro save_and_disable_daif, flags
+	mrs	\flags, daif
+	msr	daifset, #0xf
+	.endm
+
+	.macro disable_daif
+	msr	daifset, #0xf
+	.endm
+
+	.macro enable_daif
+	msr	daifclr, #0xf
+	.endm
+
+	.macro	restore_daif, flags:req
+	msr	daif, \flags
+	.endm
+
+	/* Only on aarch64 pstate, PSR_D_BIT is different for aarch32 */
+	.macro	inherit_daif, pstate:req, tmp:req
+	and	\tmp, \pstate, #(PSR_D_BIT | PSR_A_BIT | PSR_I_BIT | PSR_F_BIT)
+	msr	daif, \tmp
+	.endm
+
+	/* IRQ is the lowest priority flag, unconditionally unmask the rest. */
+	.macro enable_da_f
+	msr	daifclr, #(8 | 4 | 1)
+	.endm
 
 /*
  * Enable and disable interrupts.
@@ -54,10 +82,15 @@
 	.endm
 
 /*
- * Enable and disable debug exceptions.
+ * Save/disable and restore interrupts.
  */
-	.macro	disable_dbg
-	msr	daifset, #8
+	.macro	save_and_disable_irqs, olddaif
+	mrs	\olddaif, daif
+	disable_irq
+	.endm
+
+	.macro	restore_irqs, olddaif
+	msr	daif, \olddaif
 	.endm
 
 	.macro	enable_dbg
@@ -67,28 +100,19 @@
 	.macro	disable_step_tsk, flgs, tmp
 	tbz	\flgs, #TIF_SINGLESTEP, 9990f
 	mrs	\tmp, mdscr_el1
-	bic	\tmp, \tmp, #1
+	bic	\tmp, \tmp, #DBG_MDSCR_SS
 	msr	mdscr_el1, \tmp
 	isb	// Synchronise with enable_dbg
 9990:
 	.endm
 
+	/* call with daif masked */
 	.macro	enable_step_tsk, flgs, tmp
 	tbz	\flgs, #TIF_SINGLESTEP, 9990f
-	disable_dbg
 	mrs	\tmp, mdscr_el1
-	orr	\tmp, \tmp, #1
+	orr	\tmp, \tmp, #DBG_MDSCR_SS
 	msr	mdscr_el1, \tmp
 9990:
-	.endm
-
-/*
- * Enable both debug exceptions and interrupts. This is likely to be
- * faster than two daifclr operations, since writes to this register
- * are self-synchronising.
- */
-	.macro	enable_dbg_and_irq
-	msr	daifclr, #(8 | 2)
 	.endm
 
 /*
@@ -99,10 +123,41 @@
 	.endm
 
 /*
+ * RAS Error Synchronization barrier
+ */
+	.macro  esb
+#ifdef CONFIG_ARM64_RAS_EXTN
+	hint    #16
+#else
+	nop
+#endif
+	.endm
+
+/*
  * Value prediction barrier
  */
 	.macro	csdb
 	hint	#20
+	.endm
+
+/*
+ * Clear Branch History instruction
+ */
+	.macro clearbhb
+	hint	#22
+	.endm
+
+/*
+ * Speculation barrier
+ */
+	.macro	sb
+alternative_if_not ARM64_HAS_SB
+	dsb	nsh
+	isb
+alternative_else
+	SB_BARRIER_INSN
+	nop
+alternative_endif
 	.endm
 
 /*
@@ -185,25 +240,15 @@ lr	.req	x30		// link register
 
 /*
  * Pseudo-ops for PC-relative adr/ldr/str <reg>, <symbol> where
- * <symbol> is within the range +/- 4 GB of the PC when running
- * in core kernel context. In module context, a movz/movk sequence
- * is used, since modules may be loaded far away from the kernel
- * when KASLR is in effect.
+ * <symbol> is within the range +/- 4 GB of the PC.
  */
 	/*
 	 * @dst: destination register (64 bit wide)
 	 * @sym: name of the symbol
 	 */
 	.macro	adr_l, dst, sym
-#ifndef MODULE
 	adrp	\dst, \sym
 	add	\dst, \dst, :lo12:\sym
-#else
-	movz	\dst, #:abs_g3:\sym
-	movk	\dst, #:abs_g2_nc:\sym
-	movk	\dst, #:abs_g1_nc:\sym
-	movk	\dst, #:abs_g0_nc:\sym
-#endif
 	.endm
 
 	/*
@@ -214,7 +259,6 @@ lr	.req	x30		// link register
 	 *       the address
 	 */
 	.macro	ldr_l, dst, sym, tmp=
-#ifndef MODULE
 	.ifb	\tmp
 	adrp	\dst, \sym
 	ldr	\dst, [\dst, :lo12:\sym]
@@ -222,15 +266,6 @@ lr	.req	x30		// link register
 	adrp	\tmp, \sym
 	ldr	\dst, [\tmp, :lo12:\sym]
 	.endif
-#else
-	.ifb	\tmp
-	adr_l	\dst, \sym
-	ldr	\dst, [\dst]
-	.else
-	adr_l	\tmp, \sym
-	ldr	\dst, [\tmp]
-	.endif
-#endif
 	.endm
 
 	/*
@@ -240,28 +275,18 @@ lr	.req	x30		// link register
 	 *       while <src> needs to be preserved.
 	 */
 	.macro	str_l, src, sym, tmp
-#ifndef MODULE
 	adrp	\tmp, \sym
 	str	\src, [\tmp, :lo12:\sym]
-#else
-	adr_l	\tmp, \sym
-	str	\src, [\tmp]
-#endif
 	.endm
 
 	/*
-	 * @dst: Result of per_cpu(sym, smp_processor_id()), can be SP for
-	 *       non-module code
+	 * @dst: Result of per_cpu(sym, smp_processor_id()) (can be SP)
 	 * @sym: The name of the per-cpu variable
 	 * @tmp: scratch register
 	 */
 	.macro adr_this_cpu, dst, sym, tmp
-#ifndef MODULE
 	adrp	\tmp, \sym
 	add	\dst, \tmp, #:lo12:\sym
-#else
-	adr_l	\dst, \sym
-#endif
 alternative_if_not ARM64_HAS_VIRT_HOST_EXTN
 	mrs	\tmp, tpidr_el1
 alternative_else
@@ -359,10 +384,26 @@ alternative_endif
  * tcr_set_idmap_t0sz - update TCR.T0SZ so that we can load the ID map
  */
 	.macro	tcr_set_idmap_t0sz, valreg, tmpreg
-#ifndef CONFIG_ARM64_VA_BITS_48
 	ldr_l	\tmpreg, idmap_t0sz
 	bfi	\valreg, \tmpreg, #TCR_T0SZ_OFFSET, #TCR_TxSZ_WIDTH
-#endif
+	.endm
+
+/*
+ * tcr_compute_pa_size - set TCR.(I)PS to the highest supported
+ * ID_AA64MMFR0_EL1.PARange value
+ *
+ *	tcr:		register with the TCR_ELx value to be updated
+ *	pos:		IPS or PS bitfield position
+ *	tmp{0,1}:	temporary registers
+ */
+	.macro	tcr_compute_pa_size, tcr, pos, tmp0, tmp1
+	mrs	\tmp0, ID_AA64MMFR0_EL1
+	// Narrow PARange to fit the PS field in TCR_ELx
+	ubfx	\tmp0, \tmp0, #ID_AA64MMFR0_PARANGE_SHIFT, #3
+	mov	\tmp1, #ID_AA64MMFR0_PARANGE_MAX
+	cmp	\tmp0, \tmp1
+	csel	\tmp0, \tmp1, \tmp0, hi
+	bfi	\tcr, \tmp0, \pos, #3
 	.endm
 
 /*
@@ -406,6 +447,27 @@ alternative_endif
 	cmp	\kaddr, \size
 	b.lo	9998b
 	dsb	\domain
+	.endm
+
+/*
+ * Macro to perform an instruction cache maintenance for the interval
+ * [start, end)
+ *
+ * 	start, end:	virtual addresses describing the region
+ *	label:		A label to branch to on user fault.
+ * 	Corrupts:	tmp1, tmp2
+ */
+	.macro invalidate_icache_by_line start, end, tmp1, tmp2, label
+	icache_line_size \tmp1, \tmp2
+	sub	\tmp2, \tmp1, #1
+	bic	\tmp2, \start, \tmp2
+9997:
+USER(\label, ic	ivau, \tmp2)			// invalidate I line PoU
+	add	\tmp2, \tmp2, \tmp1
+	cmp	\tmp2, \end
+	b.lo	9997b
+	dsb	ish
+	isb
 	.endm
 
 /*
@@ -505,6 +567,45 @@ alternative_endif
 	mrs	\rd, sp_el0
 	.endm
 
+/*
+ * Arrange a physical address in a TTBR register, taking care of 52-bit
+ * addresses.
+ *
+ * 	phys:	physical address, preserved
+ * 	ttbr:	returns the TTBR value
+ */
+	.macro	phys_to_ttbr, ttbr, phys
+#ifdef CONFIG_ARM64_PA_BITS_52
+	orr	\ttbr, \phys, \phys, lsr #46
+	and	\ttbr, \ttbr, #TTBR_BADDR_MASK_52
+#else
+	mov	\ttbr, \phys
+#endif
+	.endm
+
+	.macro	phys_to_pte, pte, phys
+#ifdef CONFIG_ARM64_PA_BITS_52
+	/*
+	 * We assume \phys is 64K aligned and this is guaranteed by only
+	 * supporting this configuration with 64K pages.
+	 */
+	orr	\pte, \phys, \phys, lsr #36
+	and	\pte, \pte, #PTE_ADDR_MASK
+#else
+	mov	\pte, \phys
+#endif
+	.endm
+
+	.macro	pte_to_phys, phys, pte
+#ifdef CONFIG_ARM64_PA_BITS_52
+	ubfiz	\phys, \pte, #(48 - 16 - 12), #16
+	bfxil	\phys, \pte, #16, #32
+	lsl	\phys, \phys, #16
+#else
+	and	\phys, \pte, #PTE_ADDR_MASK
+#endif
+	.endm
+
 /**
  * Errata workaround prior to disable MMU. Insert an ISB immediately prior
  * to executing the MSR that will change SCTLR_ELn[M] from a value of 1 to 0.
@@ -515,47 +616,167 @@ alternative_endif
 #endif
 	.endm
 
-	.macro	pte_to_phys, phys, pte
-	and	\phys, \pte, #(((1 << (48 - PAGE_SHIFT)) - 1) << PAGE_SHIFT)
+	/*
+	 * frame_push - Push @regcount callee saved registers to the stack,
+	 *              starting at x19, as well as x29/x30, and set x29 to
+	 *              the new value of sp. Add @extra bytes of stack space
+	 *              for locals.
+	 */
+	.macro		frame_push, regcount:req, extra
+	__frame		st, \regcount, \extra
+	.endm
+
+	/*
+	 * frame_pop  - Pop the callee saved registers from the stack that were
+	 *              pushed in the most recent call to frame_push, as well
+	 *              as x29/x30 and any extra stack space that may have been
+	 *              allocated.
+	 */
+	.macro		frame_pop
+	__frame		ld
+	.endm
+
+	.macro		__frame_regs, reg1, reg2, op, num
+	.if		.Lframe_regcount == \num
+	\op\()r		\reg1, [sp, #(\num + 1) * 8]
+	.elseif		.Lframe_regcount > \num
+	\op\()p		\reg1, \reg2, [sp, #(\num + 1) * 8]
+	.endif
+	.endm
+
+	.macro		__frame, op, regcount, extra=0
+	.ifc		\op, st
+	.if		(\regcount) < 0 || (\regcount) > 10
+	.error		"regcount should be in the range [0 ... 10]"
+	.endif
+	.if		((\extra) % 16) != 0
+	.error		"extra should be a multiple of 16 bytes"
+	.endif
+	.ifdef		.Lframe_regcount
+	.if		.Lframe_regcount != -1
+	.error		"frame_push/frame_pop may not be nested"
+	.endif
+	.endif
+	.set		.Lframe_regcount, \regcount
+	.set		.Lframe_extra, \extra
+	.set		.Lframe_local_offset, ((\regcount + 3) / 2) * 16
+	stp		x29, x30, [sp, #-.Lframe_local_offset - .Lframe_extra]!
+	mov		x29, sp
+	.endif
+
+	__frame_regs	x19, x20, \op, 1
+	__frame_regs	x21, x22, \op, 3
+	__frame_regs	x23, x24, \op, 5
+	__frame_regs	x25, x26, \op, 7
+	__frame_regs	x27, x28, \op, 9
+
+	.ifc		\op, ld
+	.if		.Lframe_regcount == -1
+	.error		"frame_push/frame_pop may not be nested"
+	.endif
+	ldp		x29, x30, [sp], #.Lframe_local_offset + .Lframe_extra
+	.set		.Lframe_regcount, -1
+	.endif
 	.endm
 
 /*
- * Check the MIDR_EL1 of the current CPU for a given model and a range of
- * variant/revision. See asm/cputype.h for the macros used below.
+ * Check whether to yield to another runnable task from kernel mode NEON code
+ * (which runs with preemption disabled).
  *
- *	model:		MIDR_CPU_MODEL of CPU
- *	rv_min:		Minimum of MIDR_CPU_VAR_REV()
- *	rv_max:		Maximum of MIDR_CPU_VAR_REV()
- *	res:		Result register.
- *	tmp1, tmp2, tmp3: Temporary registers
+ * if_will_cond_yield_neon
+ *        // pre-yield patchup code
+ * do_cond_yield_neon
+ *        // post-yield patchup code
+ * endif_yield_neon    <label>
  *
- * Corrupts: res, tmp1, tmp2, tmp3
- * Returns:  0, if the CPU id doesn't match. Non-zero otherwise
+ * where <label> is optional, and marks the point where execution will resume
+ * after a yield has been performed. If omitted, execution resumes right after
+ * the endif_yield_neon invocation. Note that the entire sequence, including
+ * the provided patchup code, will be omitted from the image if CONFIG_PREEMPT
+ * is not defined.
+ *
+ * As a convenience, in the case where no patchup code is required, the above
+ * sequence may be abbreviated to
+ *
+ * cond_yield_neon <label>
+ *
+ * Note that the patchup code does not support assembler directives that change
+ * the output section, any use of such directives is undefined.
+ *
+ * The yield itself consists of the following:
+ * - Check whether the preempt count is exactly 1, in which case disabling
+ *   preemption once will make the task preemptible. If this is not the case,
+ *   yielding is pointless.
+ * - Check whether TIF_NEED_RESCHED is set, and if so, disable and re-enable
+ *   kernel mode NEON (which will trigger a reschedule), and branch to the
+ *   yield fixup code.
+ *
+ * This macro sequence may clobber all CPU state that is not guaranteed by the
+ * AAPCS to be preserved across an ordinary function call.
  */
-	.macro	cpu_midr_match model, rv_min, rv_max, res, tmp1, tmp2, tmp3
-	mrs		\res, midr_el1
-	mov_q		\tmp1, (MIDR_REVISION_MASK | MIDR_VARIANT_MASK)
-	mov_q		\tmp2, MIDR_CPU_MODEL_MASK
-	and		\tmp3, \res, \tmp2	// Extract model
-	and		\tmp1, \res, \tmp1	// rev & variant
-	mov_q		\tmp2, \model
-	cmp		\tmp3, \tmp2
-	cset		\res, eq
-	cbz		\res, .Ldone\@		// Model matches ?
 
-	.if (\rv_min != 0)			// Skip min check if rv_min == 0
-	mov_q		\tmp3, \rv_min
-	cmp		\tmp1, \tmp3
-	cset		\res, ge
-	.endif					// \rv_min != 0
-	/* Skip rv_max check if rv_min == rv_max && rv_min != 0 */
-	.if ((\rv_min != \rv_max) || \rv_min == 0)
-	mov_q		\tmp2, \rv_max
-	cmp		\tmp1, \tmp2
-	cset		\tmp2, le
-	and		\res, \res, \tmp2
-	.endif
-.Ldone\@:
+	.macro		cond_yield_neon, lbl
+	if_will_cond_yield_neon
+	do_cond_yield_neon
+	endif_yield_neon	\lbl
 	.endm
 
+	.macro		if_will_cond_yield_neon
+#ifdef CONFIG_PREEMPT
+	get_thread_info	x0
+	ldr		w1, [x0, #TSK_TI_PREEMPT]
+	ldr		x0, [x0, #TSK_TI_FLAGS]
+	cmp		w1, #PREEMPT_DISABLE_OFFSET
+	csel		x0, x0, xzr, eq
+	tbnz		x0, #TIF_NEED_RESCHED, .Lyield_\@	// needs rescheduling?
+	/* fall through to endif_yield_neon */
+	.subsection	1
+.Lyield_\@ :
+#else
+	.section	".discard.cond_yield_neon", "ax"
+#endif
+	.endm
+
+	.macro		do_cond_yield_neon
+	bl		kernel_neon_end
+	bl		kernel_neon_begin
+	.endm
+
+	.macro		endif_yield_neon, lbl
+	.ifnb		\lbl
+	b		\lbl
+	.else
+	b		.Lyield_out_\@
+	.endif
+	.previous
+.Lyield_out_\@ :
+	.endm
+
+	.macro __mitigate_spectre_bhb_loop      tmp
+#ifdef CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY
+alternative_cb  spectre_bhb_patch_loop_iter
+	mov	\tmp, #32		// Patched to correct the immediate
+alternative_cb_end
+.Lspectre_bhb_loop\@:
+	b	. + 4
+	subs	\tmp, \tmp, #1
+	b.ne	.Lspectre_bhb_loop\@
+	dsb	nsh
+	isb
+#endif /* CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY */
+	.endm
+
+	/* Save/restores x0-x3 to the stack */
+	.macro __mitigate_spectre_bhb_fw
+#ifdef CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY
+	stp	x0, x1, [sp, #-16]!
+	stp	x2, x3, [sp, #-16]!
+	mov	w0, #ARM_SMCCC_ARCH_WORKAROUND_3
+alternative_cb	arm64_update_smccc_conduit
+	nop					// Patched to SMC/HVC #0
+alternative_cb_end
+	ldp	x2, x3, [sp], #16
+	ldp	x0, x1, [sp], #16
+#endif /* CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY */
+	.endm
 #endif	/* __ASM_ASSEMBLER_H */

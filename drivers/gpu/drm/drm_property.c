@@ -26,6 +26,9 @@
 
 #include "drm_crtc_internal.h"
 
+#define MAX_BLOB_PROP_SIZE	(PAGE_SIZE * 30)
+#define MAX_BLOB_PROP_COUNT	250
+
 /**
  * DOC: overview
  *
@@ -50,11 +53,27 @@
  * IOCTL and in the get/set property IOCTL.
  */
 
-static bool drm_property_type_valid(struct drm_property *property)
+static bool drm_property_flags_valid(u32 flags)
 {
-	if (property->flags & DRM_MODE_PROP_EXTENDED_TYPE)
-		return !(property->flags & DRM_MODE_PROP_LEGACY_TYPE);
-	return !!(property->flags & DRM_MODE_PROP_LEGACY_TYPE);
+	u32 legacy_type = flags & DRM_MODE_PROP_LEGACY_TYPE;
+	u32 ext_type = flags & DRM_MODE_PROP_EXTENDED_TYPE;
+
+	/* Reject undefined/deprecated flags */
+	if (flags & ~(DRM_MODE_PROP_LEGACY_TYPE |
+		      DRM_MODE_PROP_EXTENDED_TYPE |
+		      DRM_MODE_PROP_IMMUTABLE |
+		      DRM_MODE_PROP_ATOMIC))
+		return false;
+
+	/* We want either a legacy type or an extended type, but not both */
+	if (!legacy_type == !ext_type)
+		return false;
+
+	/* Only one legacy type at a time please */
+	if (legacy_type && !is_power_of_2(legacy_type))
+		return false;
+
+	return true;
 }
 
 /**
@@ -72,11 +91,18 @@ static bool drm_property_type_valid(struct drm_property *property)
  * Returns:
  * A pointer to the newly created property on success, NULL on failure.
  */
-struct drm_property *drm_property_create(struct drm_device *dev, int flags,
-					 const char *name, int num_values)
+struct drm_property *drm_property_create(struct drm_device *dev,
+					 u32 flags, const char *name,
+					 int num_values)
 {
 	struct drm_property *property = NULL;
 	int ret;
+
+	if (WARN_ON(!drm_property_flags_valid(flags)))
+		return NULL;
+
+	if (WARN_ON(strlen(name) >= DRM_PROP_NAME_LEN))
+		return NULL;
 
 	property = kzalloc(sizeof(struct drm_property), GFP_KERNEL);
 	if (!property)
@@ -99,14 +125,10 @@ struct drm_property *drm_property_create(struct drm_device *dev, int flags,
 	property->num_values = num_values;
 	INIT_LIST_HEAD(&property->enum_list);
 
-	if (name) {
-		strncpy(property->name, name, DRM_PROP_NAME_LEN);
-		property->name[DRM_PROP_NAME_LEN-1] = '\0';
-	}
+	strncpy(property->name, name, DRM_PROP_NAME_LEN);
+	property->name[DRM_PROP_NAME_LEN-1] = '\0';
 
 	list_add_tail(&property->head, &dev->mode_config.property_list);
-
-	WARN_ON(!drm_property_type_valid(property));
 
 	return property;
 fail:
@@ -135,10 +157,10 @@ EXPORT_SYMBOL(drm_property_create);
  * Returns:
  * A pointer to the newly created property on success, NULL on failure.
  */
-struct drm_property *drm_property_create_enum(struct drm_device *dev, int flags,
-					 const char *name,
-					 const struct drm_prop_enum_list *props,
-					 int num_values)
+struct drm_property *drm_property_create_enum(struct drm_device *dev,
+					      u32 flags, const char *name,
+					      const struct drm_prop_enum_list *props,
+					      int num_values)
 {
 	struct drm_property *property;
 	int i, ret;
@@ -150,9 +172,9 @@ struct drm_property *drm_property_create_enum(struct drm_device *dev, int flags,
 		return NULL;
 
 	for (i = 0; i < num_values; i++) {
-		ret = drm_property_add_enum(property, i,
-				      props[i].type,
-				      props[i].name);
+		ret = drm_property_add_enum(property,
+					    props[i].type,
+					    props[i].name);
 		if (ret) {
 			drm_property_destroy(dev, property);
 			return NULL;
@@ -184,13 +206,13 @@ EXPORT_SYMBOL(drm_property_create_enum);
  * A pointer to the newly created property on success, NULL on failure.
  */
 struct drm_property *drm_property_create_bitmask(struct drm_device *dev,
-					 int flags, const char *name,
-					 const struct drm_prop_enum_list *props,
-					 int num_props,
-					 uint64_t supported_bits)
+						 u32 flags, const char *name,
+						 const struct drm_prop_enum_list *props,
+						 int num_props,
+						 uint64_t supported_bits)
 {
 	struct drm_property *property;
-	int i, ret, index = 0;
+	int i, ret;
 	int num_values = hweight64(supported_bits);
 
 	flags |= DRM_MODE_PROP_BITMASK;
@@ -202,14 +224,9 @@ struct drm_property *drm_property_create_bitmask(struct drm_device *dev,
 		if (!(supported_bits & (1ULL << props[i].type)))
 			continue;
 
-		if (WARN_ON(index >= num_values)) {
-			drm_property_destroy(dev, property);
-			return NULL;
-		}
-
-		ret = drm_property_add_enum(property, index++,
-				      props[i].type,
-				      props[i].name);
+		ret = drm_property_add_enum(property,
+					    props[i].type,
+					    props[i].name);
 		if (ret) {
 			drm_property_destroy(dev, property);
 			return NULL;
@@ -221,8 +238,8 @@ struct drm_property *drm_property_create_bitmask(struct drm_device *dev,
 EXPORT_SYMBOL(drm_property_create_bitmask);
 
 static struct drm_property *property_create_range(struct drm_device *dev,
-					 int flags, const char *name,
-					 uint64_t min, uint64_t max)
+						  u32 flags, const char *name,
+						  uint64_t min, uint64_t max)
 {
 	struct drm_property *property;
 
@@ -255,9 +272,9 @@ static struct drm_property *property_create_range(struct drm_device *dev,
  * Returns:
  * A pointer to the newly created property on success, NULL on failure.
  */
-struct drm_property *drm_property_create_range(struct drm_device *dev, int flags,
-					 const char *name,
-					 uint64_t min, uint64_t max)
+struct drm_property *drm_property_create_range(struct drm_device *dev,
+					       u32 flags, const char *name,
+					       uint64_t min, uint64_t max)
 {
 	return property_create_range(dev, DRM_MODE_PROP_RANGE | flags,
 			name, min, max);
@@ -284,8 +301,8 @@ EXPORT_SYMBOL(drm_property_create_range);
  * A pointer to the newly created property on success, NULL on failure.
  */
 struct drm_property *drm_property_create_signed_range(struct drm_device *dev,
-					 int flags, const char *name,
-					 int64_t min, int64_t max)
+						      u32 flags, const char *name,
+						      int64_t min, int64_t max)
 {
 	return property_create_range(dev, DRM_MODE_PROP_SIGNED_RANGE | flags,
 			name, I642U64(min), I642U64(max));
@@ -311,7 +328,7 @@ EXPORT_SYMBOL(drm_property_create_signed_range);
  * A pointer to the newly created property on success, NULL on failure.
  */
 struct drm_property *drm_property_create_object(struct drm_device *dev,
-						int flags, const char *name,
+						u32 flags, const char *name,
 						uint32_t type)
 {
 	struct drm_property *property;
@@ -347,8 +364,8 @@ EXPORT_SYMBOL(drm_property_create_object);
  * Returns:
  * A pointer to the newly created property on success, NULL on failure.
  */
-struct drm_property *drm_property_create_bool(struct drm_device *dev, int flags,
-					      const char *name)
+struct drm_property *drm_property_create_bool(struct drm_device *dev,
+					      u32 flags, const char *name)
 {
 	return drm_property_create_range(dev, flags, name, 0, 1);
 }
@@ -357,7 +374,6 @@ EXPORT_SYMBOL(drm_property_create_bool);
 /**
  * drm_property_add_enum - add a possible value to an enumeration property
  * @property: enumeration property to change
- * @index: index of the new enumeration
  * @value: value of the new enumeration
  * @name: symbolic name of the new enumeration
  *
@@ -369,32 +385,35 @@ EXPORT_SYMBOL(drm_property_create_bool);
  * Returns:
  * Zero on success, error code on failure.
  */
-int drm_property_add_enum(struct drm_property *property, int index,
+int drm_property_add_enum(struct drm_property *property,
 			  uint64_t value, const char *name)
 {
 	struct drm_property_enum *prop_enum;
+	int index = 0;
 
-	if (!(drm_property_type_is(property, DRM_MODE_PROP_ENUM) ||
-			drm_property_type_is(property, DRM_MODE_PROP_BITMASK)))
+	if (WARN_ON(strlen(name) >= DRM_PROP_NAME_LEN))
+		return -EINVAL;
+
+	if (WARN_ON(!drm_property_type_is(property, DRM_MODE_PROP_ENUM) &&
+		    !drm_property_type_is(property, DRM_MODE_PROP_BITMASK)))
 		return -EINVAL;
 
 	/*
 	 * Bitmask enum properties have the additional constraint of values
 	 * from 0 to 63
 	 */
-	if (drm_property_type_is(property, DRM_MODE_PROP_BITMASK) &&
-			(value > 63))
+	if (WARN_ON(drm_property_type_is(property, DRM_MODE_PROP_BITMASK) &&
+		    value > 63))
 		return -EINVAL;
 
-	if (!list_empty(&property->enum_list)) {
-		list_for_each_entry(prop_enum, &property->enum_list, head) {
-			if (prop_enum->value == value) {
-				strncpy(prop_enum->name, name, DRM_PROP_NAME_LEN);
-				prop_enum->name[DRM_PROP_NAME_LEN-1] = '\0';
-				return 0;
-			}
-		}
+	list_for_each_entry(prop_enum, &property->enum_list, head) {
+		if (WARN_ON(prop_enum->value == value))
+			return -EINVAL;
+		index++;
 	}
+
+	if (WARN_ON(index >= property->num_values))
+		return -EINVAL;
 
 	prop_enum = kzalloc(sizeof(struct drm_property_enum), GFP_KERNEL);
 	if (!prop_enum)
@@ -540,7 +559,8 @@ drm_property_create_blob(struct drm_device *dev, size_t length,
 	struct drm_property_blob *blob;
 	int ret;
 
-	if (!length || length > INT_MAX - sizeof(struct drm_property_blob))
+	if (!length || length > MAX_BLOB_PROP_SIZE -
+				sizeof(struct drm_property_blob))
 		return ERR_PTR(-EINVAL);
 
 	blob = kvzalloc(sizeof(struct drm_property_blob)+length, GFP_KERNEL);
@@ -550,6 +570,7 @@ drm_property_create_blob(struct drm_device *dev, size_t length,
 	/* This must be explicitly initialised, so we can safely call list_del
 	 * on it in the removal handler, even if it isn't in a file list. */
 	INIT_LIST_HEAD(&blob->head_file);
+	blob->data = (void *)blob + sizeof(*blob);
 	blob->length = length;
 	blob->dev = dev;
 
@@ -765,11 +786,20 @@ int drm_mode_createblob_ioctl(struct drm_device *dev,
 			      void *data, struct drm_file *file_priv)
 {
 	struct drm_mode_create_blob *out_resp = data;
-	struct drm_property_blob *blob;
+	struct drm_property_blob *blob, *bt;
 	int ret = 0;
+	u32 count = 0;
 
 	if (!drm_core_check_feature(dev, DRIVER_MODESET))
 		return -EINVAL;
+
+	mutex_lock(&dev->mode_config.blob_lock);
+	list_for_each_entry(bt, &file_priv->blobs, head_file)
+		count++;
+	mutex_unlock(&dev->mode_config.blob_lock);
+
+	if (count >= MAX_BLOB_PROP_COUNT)
+		return -EOPNOTSUPP;
 
 	blob = drm_property_create_blob(dev, out_resp->length, NULL);
 	if (IS_ERR(blob))

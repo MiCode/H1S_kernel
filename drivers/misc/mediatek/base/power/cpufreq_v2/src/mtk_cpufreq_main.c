@@ -1,18 +1,11 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
-#include <linux/cpufreq.h>
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 #include <linux/random.h>
+#include <linux/pm_opp.h>
 #include <mt-plat/met_drv.h>
+#include <linux/energy_model.h>
 /* project includes */
 #include "mach/mtk_ppm_api.h"
 
@@ -723,7 +716,7 @@ static void _hps_request_wrapper(struct mt_cpu_dvfs *p,
 		return;
 
 	/* action switch */
-	switch (action & ~CPU_TASKS_FROZEN) {
+	switch (action) {
 	case CPUFREQ_CPU_ONLINE:
 		aee_record_cpu_dvfs_cb(2);
 		if (act_p->armpll_is_available == 0 && act_p == p)
@@ -852,7 +845,8 @@ static int _mt_cpufreq_cpu_CB(enum hp_action action,
 	dev = get_cpu_device(cpu);
 
 	if (dev) {
-		switch (action & ~CPU_TASKS_FROZEN) {
+/* 		switch (action & ~CPU_TASKS_FROZEN) { */
+		switch (action) {
 		case CPUFREQ_CPU_ONLINE:
 		case CPUFREQ_CPU_DOWN_PREPARE:
 		case CPUFREQ_CPU_DOWN_FAIED:
@@ -1111,12 +1105,16 @@ static int _mt_cpufreq_target(struct cpufreq_policy *policy,
 static int _mt_cpufreq_init(struct cpufreq_policy *policy)
 {
 	int ret = -EINVAL;
+	int pd_ret = -EINVAL;
+	struct device *cpu_dev;
+	struct em_data_callback em_cb = EM_DATA_CB(of_dev_pm_opp_get_cpu_power);
 
 	FUNC_ENTER(FUNC_LV_MODULE);
 
 	policy->shared_type = CPUFREQ_SHARED_TYPE_ANY;
 	cpumask_setall(policy->cpus);
 
+	cpu_dev = get_cpu_device(policy->cpu);
 	policy->cpuinfo.transition_latency = 1000;
 
 	{
@@ -1162,6 +1160,17 @@ static int _mt_cpufreq_init(struct cpufreq_policy *policy)
 #endif
 		cpufreq_unlock();
 	}
+
+	if (dev_pm_opp_of_get_sharing_cpus(cpu_dev, policy->cpus))
+		tag_pr_notice("failed to share opp framework table\n");
+
+	if (dev_pm_opp_of_cpumask_add_table(policy->cpus))
+		tag_pr_notice("failed to add opp framework table\n");
+
+	pd_ret = em_register_perf_domain(policy->cpus, NR_FREQ, &em_cb);
+
+	if (pd_ret)
+		tag_pr_notice("energy model regist fail\n");
 
 	if (ret)
 		tag_pr_notice("failed to setup frequency table\n");

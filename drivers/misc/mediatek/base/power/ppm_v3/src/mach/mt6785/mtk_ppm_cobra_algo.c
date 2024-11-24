@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -645,7 +638,8 @@ void ppm_cobra_init(void)
 	cobra_tbl = ioremap_nocache(PPM_COBRA_TBL_SRAM_ADDR,
 					PPM_COBRA_TBL_SRAM_SIZE);
 #else
-	cobra_tbl = kzalloc(PPM_COBRA_TBL_SRAM_SIZE, GFP_KERNEL);
+	cobra_tbl = kzalloc(sizeof(struct ppm_cobra_data), GFP_KERNEL);
+	ppm_info("cobra_tbl: %p\n", cobra_tbl);
 #endif
 	if (!cobra_tbl) {
 		WARN_ON(1);
@@ -776,7 +770,7 @@ void ppm_cobra_dump_tbl(struct seq_file *m)
 static unsigned int get_limit_opp_and_budget(void)
 {
 	unsigned int power = 0;
-	unsigned int i, j, k, idx;
+	unsigned int i, j, k, idx, core;
 
 	for (i = 0; i <= get_cluster_min_cpufreq_idx(PPM_CLUSTER_L); i++) {
 		cobra_lookup_data.limit[PPM_CLUSTER_L].opp = i;
@@ -786,19 +780,18 @@ static unsigned int get_limit_opp_and_budget(void)
 			cobra_lookup_data.limit[PPM_CLUSTER_B].opp = j;
 
 			for_each_ppm_clusters(k) {
-				if (!cobra_lookup_data.limit[k].core)
+				core = cobra_lookup_data.limit[k].core;
+
+				if (!core)
 					continue;
 
-				idx =
-					get_idx_in_pwr_tbl(k) +
-					cobra_lookup_data.limit[k].core - 1;
+				idx = get_idx_in_pwr_tbl(k) + core - 1;
 
 				if (idx >= TOTAL_CORE_NUM ||
 					i >= DVFS_OPP_NUM ||
 					j >= DVFS_OPP_NUM) {
-					ppm_info("[%p] idx:%d i:%d j:%d core:%d\n",
-						cobra_tbl, idx, i, j,
-						cobra_lookup_data.limit[k].core);
+					ppm_info("[%p] idx: %d i:%d j:%d core:%d\n",
+						cobra_tbl, idx, i, j, core);
 					return 0;
 				}
 
@@ -819,7 +812,7 @@ static unsigned int get_limit_opp_and_budget(void)
 
 static void ppm_cobra_lookup_by_budget(struct seq_file *m)
 {
-	unsigned int i, j;
+	int i, j;
 	unsigned int power;
 
 	seq_puts(m, "\n========================================================\n");

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Joey Pan <joey.pan@mediatek.com>
  */
 
 #ifndef __LCM_DRV_H__
@@ -95,13 +87,10 @@ enum LCM_IOCTL {
 	LCM_IOCTL_NULL = 0,
 };
 
-
-
 enum LCM_Send_Cmd_Mode {
 	LCM_SEND_IN_CMD = 0,
 	LCM_SEND_IN_VDO
 };
-
 
 /* DBI related enumerations */
 
@@ -209,8 +198,10 @@ enum LCM_LANE_NUM {
 
 enum LCM_DSI_FORMAT {
 	LCM_DSI_FORMAT_RGB565 = 0,
-	LCM_DSI_FORMAT_RGB666 = 1,
-	LCM_DSI_FORMAT_RGB888 = 2
+	LCM_DSI_FORMAT_RGB666_LOOSELY = 1,
+	LCM_DSI_FORMAT_RGB666 = 2,
+	LCM_DSI_FORMAT_RGB888 = 3,
+	LCM_DSI_FORMAT_RGB101010 = 4,
 };
 
 
@@ -307,15 +298,6 @@ struct LCM_DBI_DATA_FORMAT {
 	enum LCM_DBI_DATA_WIDTH width;
 };
 
-enum  LCM_DBI_C_WIRE_NUM {
-	LCM_DBI_C_3WIRE = 1,
-	LCM_DBI_C_4WIRE = 2,
-};
-
-enum LCM_DBI_C_DATA_PIN_NUM {
-	LCM_DBI_C_1DATA_PIN = 1,
-	LCM_DBI_C_2DATA_PIN = 2,
-};
 
 struct LCM_DBI_SERIAL_PARAMS {
 	enum LCM_POLARITY cs_polarity;
@@ -340,9 +322,6 @@ struct LCM_DBI_SERIAL_PARAMS {
 	unsigned int sif_div2;
 	unsigned int sif_hw_cs;
 /* ////////////////////////////////// */
-
-	enum LCM_DBI_C_WIRE_NUM wire_num;
-	enum LCM_DBI_C_DATA_PIN_NUM datapin_num;
 };
 
 
@@ -382,6 +361,42 @@ struct LCM_UFOE_CONFIG_PARAMS {
 };
 /* ------------------------------------------------------------------------- */
 
+#ifdef CONFIG_MTK_MT6382_BDG
+struct LCM_DSC_CONFIG_PARAMS {
+	unsigned int ver; /* [7:4] major [3:0] minor */
+	unsigned int slice_width;
+	unsigned int bit_per_pixel;
+	unsigned int slice_mode;
+	unsigned int rgb_swap;
+	unsigned int dsc_cfg;
+	unsigned int dsc_line_buf_depth;
+	unsigned int bit_per_channel;
+	unsigned int rct_on;
+	unsigned int bp_enable;
+	unsigned int pic_height; /* need to check */
+	unsigned int pic_width;  /* need to check */
+	unsigned int slice_height;
+	unsigned int chunk_size;
+	unsigned int dec_delay;
+	unsigned int xmit_delay;
+	unsigned int scale_value;
+	unsigned int increment_interval;
+	unsigned int line_bpg_offset;
+	unsigned int decrement_interval;
+	unsigned int nfl_bpg_offset;
+	unsigned int slice_bpg_offset;
+	unsigned int initial_offset;
+	unsigned int final_offset;
+	unsigned int flatness_minqp;
+	unsigned int flatness_maxqp;
+	unsigned int rc_model_size;
+	unsigned int rc_edge_factor;
+	unsigned int rc_quant_incr_limit0;
+	unsigned int rc_quant_incr_limit1;
+	unsigned int rc_tgt_offset_hi;
+	unsigned int rc_tgt_offset_lo;
+};
+#else
 struct LCM_DSC_CONFIG_PARAMS {
 	unsigned int slice_width;
 	unsigned int slice_hight;
@@ -410,10 +425,10 @@ struct LCM_DSC_CONFIG_PARAMS {
 	unsigned int flatness_maxqp;
 	unsigned int rc_mode1_size;
 };
+#endif
 
 
 struct LCM_DBI_PARAMS {
-	enum LCM_CTRL ctrl;
 	/* common parameters for serial & parallel interface */
 	unsigned int port;
 	enum LCM_DBI_CLOCK_FREQ clock_freq;
@@ -528,6 +543,7 @@ enum MIPITX_PHY_PORT {
 	MIPITX_PHY_PORT_NUM
 };
 
+/*ARR*/
 #define DYNAMIC_FPS_LEVELS 10
 struct dynamic_fps_info {
 	unsigned int fps;
@@ -535,15 +551,15 @@ struct dynamic_fps_info {
 	/*unsigned int idle_check_interval;*//*ms*/
 };
 
-
 /*DynFPS*/
 enum DynFPS_LEVEL {
 	DFPS_LEVEL0 = 0,
 	DFPS_LEVEL1,
+	DFPS_LEVEL2,
 	DFPS_LEVELNUM,
 };
 
-#define DFPS_LEVELS 2
+#define DFPS_LEVELS 3
 enum FPS_CHANGE_INDEX {
 	DYNFPS_NOT_DEFINED = 0,
 	DYNFPS_DSI_VFP = 1,
@@ -668,6 +684,7 @@ struct LCM_DSI_PARAMS {
 	/* PLL_CLOCK = (int) PLL_CLOCK */
 	unsigned int PLL_CLOCK;
 	/* data_rate = PLL_CLOCK x 2 */
+	unsigned int ap_data_rate;
 	unsigned int data_rate;
 	unsigned int PLL_CK_VDO;
 	unsigned int PLL_CK_CMD;
@@ -678,6 +695,8 @@ struct LCM_DSI_PARAMS {
 	unsigned int cont_clock;
 	unsigned int ufoe_enable;
 	unsigned int dsc_enable;
+	unsigned int bdg_dsc_enable;
+	unsigned int bdg_ssc_disable;
 	struct LCM_UFOE_CONFIG_PARAMS ufoe_params;
 	struct LCM_DSC_CONFIG_PARAMS dsc_params;
 	unsigned int edp_panel;
@@ -790,6 +809,7 @@ struct LCM_PARAMS {
 	unsigned int corner_pattern_height_bot;
 	unsigned int corner_pattern_tp_size;
 	void *corner_pattern_lt_addr;
+
 	int lcm_color_mode;
 	unsigned int min_luminance;
 	unsigned int average_luminance;
@@ -798,6 +818,9 @@ struct LCM_PARAMS {
 #ifdef CONFIG_MTK_HIGH_FRAME_RATE
 	enum LCM_Send_Cmd_Mode sendmode;
 #endif
+
+	unsigned int hbm_en_time;
+	unsigned int hbm_dis_time;
 };
 
 
@@ -999,6 +1022,10 @@ struct LCM_DRIVER {
 	/* /////////////////////////CABC backlight related function */
 	void (*set_backlight)(unsigned int level);
 	void (*set_backlight_cmdq)(void *handle, unsigned int level);
+	bool (*get_hbm_state)(void);
+	bool (*get_hbm_wait)(void);
+	bool (*set_hbm_wait)(bool wait);
+	bool (*set_hbm_cmdq)(bool en, void *qhandle);
 	void (*set_pwm)(unsigned int divider);
 	unsigned int (*get_pwm)(unsigned int divider);
 	void (*set_backlight_mode)(unsigned int mode);

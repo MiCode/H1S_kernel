@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2018 MediaTek Inc.
  */
 
 #ifndef __MTK_DCM_AUTOGEN_H__
@@ -152,11 +144,6 @@ bool dcm_infracfg_ao_ssusb_is_on(void);
 void dcm_infracfg_ao_ssusb(int on);
 bool dcm_infracfg_ao_usb_is_on(void);
 void dcm_infracfg_ao_usb(int on);
-#if 0
-/* SECURITY_AO */
-bool dcm_security_ao_infra_dxcc_is_on(void);
-void dcm_security_ao_infra_dxcc(int on);
-#endif
 /* MCUCFG */
 bool dcm_mcucfg_mcsi_dcm_is_on(void);
 void dcm_mcucfg_mcsi_dcm(int on);
@@ -201,48 +188,6 @@ void dcm_chn0_emi_dcm_emi_group(int on);
 /* CHN1_EMI */
 bool dcm_chn1_emi_dcm_emi_group_is_on(void);
 void dcm_chn1_emi_dcm_emi_group(int on);
-#if 0
-/* GCE */
-bool dcm_gce_gce_dcm_is_on(void);
-void dcm_gce_gce_dcm(int on);
-/* AUDIO */
-bool dcm_audio_audio_bus_is_on(void);
-void dcm_audio_audio_bus(int on);
-/* EFUSEC */
-bool dcm_efusec_efuse_dcm_is_on(void);
-void dcm_efusec_efuse_dcm(int on);
-/* MFGCFG */
-bool dcm_mfgcfg_meg_is_on(void);
-void dcm_mfgcfg_meg(int on);
-bool dcm_mfgcfg_mfg_is_on(void);
-void dcm_mfgcfg_mfg(int on);
-/* MMSYS_CONFIG */
-bool dcm_mmsys_config_mmsys_config_is_on(void);
-void dcm_mmsys_config_mmsys_config(int on);
-/* SMI_COMMON */
-bool dcm_smi_common_smi_comm_is_on(void);
-void dcm_smi_common_smi_comm(int on);
-/* SMI_LARB0 */
-bool dcm_smi_larb0_smi_larb0_is_on(void);
-void dcm_smi_larb0_smi_larb0(int on);
-/* SMI_LARB2 */
-bool dcm_smi_larb2_smi_larb2_is_on(void);
-void dcm_smi_larb2_smi_larb2(int on);
-/* SMI_LARB1 */
-bool dcm_smi_larb1_smi_larb1_is_on(void);
-void dcm_smi_larb1_smi_larb1(int on);
-/* VENC */
-bool dcm_venc_venc_cg_ctrl_is_on(void);
-void dcm_venc_venc_cg_ctrl(int on);
-bool dcm_venc_venc_dcm_ctrl_is_on(void);
-void dcm_venc_venc_dcm_ctrl(int on);
-/* JPGENC */
-bool dcm_jpgenc_jpgenc_is_on(void);
-void dcm_jpgenc_jpgenc(int on);
-/* SMI_LARB3 */
-bool dcm_smi_larb3_smi_larb3_is_on(void);
-void dcm_smi_larb3_smi_larb3(int on);
-#endif
 
 #endif /* __MTK_DCM_AUTOGEN_H__ */
 

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -90,7 +82,7 @@ void __iomem *spm_base;
 void __iomem *sleep_reg_md_base;
 
 static struct platform_device *pspmdev;
-static struct wakeup_source spm_wakelock;
+static struct wakeup_source *spm_wakelock;
 
 /* FIXME: should not used externally !!! */
 void *mt_spm_base_get(void)
@@ -101,7 +93,7 @@ EXPORT_SYMBOL(mt_spm_base_get);
 
 void spm_pm_stay_awake(int sec)
 {
-	__pm_wakeup_event(&spm_wakelock, HZ * sec);
+	__pm_wakeup_event(spm_wakelock, HZ * sec);
 }
 
 static void spm_register_init(unsigned int *spm_irq_0_ptr)
@@ -282,7 +274,7 @@ static int spm_module_init(void)
 	struct mtk_idle_sysfs_handle pParent2ND;
 	struct mtk_idle_sysfs_handle *pParent = NULL;
 
-	wakeup_source_init(&spm_wakelock, "spm");
+	spm_wakelock = wakeup_source_register(NULL, "spm");
 
 	spm_register_init(&spm_irq_0);
 

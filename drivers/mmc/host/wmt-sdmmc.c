@@ -853,7 +853,7 @@ static int wmt_mci_probe(struct platform_device *pdev)
 	if (IS_ERR(priv->clk_sdmmc)) {
 		dev_err(&pdev->dev, "Error getting clock\n");
 		ret = PTR_ERR(priv->clk_sdmmc);
-		goto fail5;
+		goto fail5_and_a_half;
 	}
 
 	ret = clk_prepare_enable(priv->clk_sdmmc);
@@ -863,13 +863,20 @@ static int wmt_mci_probe(struct platform_device *pdev)
 	/* configure the controller to a known 'ready' state */
 	wmt_reset_hardware(mmc);
 
-	mmc_add_host(mmc);
+	ret = mmc_add_host(mmc);
+	if (ret)
+		goto fail7;
 
 	dev_info(&pdev->dev, "WMT SDHC Controller initialized\n");
 
 	return 0;
+fail7:
+	clk_disable_unprepare(priv->clk_sdmmc);
 fail6:
 	clk_put(priv->clk_sdmmc);
+fail5_and_a_half:
+	dma_free_coherent(&pdev->dev, mmc->max_blk_count * 16,
+			  priv->dma_desc_buffer, priv->dma_desc_device_addr);
 fail5:
 	free_irq(dma_irq, priv);
 fail4:
@@ -886,7 +893,6 @@ static int wmt_mci_remove(struct platform_device *pdev)
 {
 	struct mmc_host *mmc;
 	struct wmt_mci_priv *priv;
-	struct resource *res;
 	u32 reg_tmp;
 
 	mmc = platform_get_drvdata(pdev);
@@ -914,9 +920,6 @@ static int wmt_mci_remove(struct platform_device *pdev)
 	clk_disable_unprepare(priv->clk_sdmmc);
 	clk_put(priv->clk_sdmmc);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	release_mem_region(res->start, resource_size(res));
-
 	mmc_free_host(mmc);
 
 	dev_info(&pdev->dev, "WMT MCI device removed\n");
@@ -928,8 +931,7 @@ static int wmt_mci_remove(struct platform_device *pdev)
 static int wmt_mci_suspend(struct device *dev)
 {
 	u32 reg_tmp;
-	struct platform_device *pdev = to_platform_device(dev);
-	struct mmc_host *mmc = platform_get_drvdata(pdev);
+	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct wmt_mci_priv *priv;
 
 	if (!mmc)
@@ -953,8 +955,7 @@ static int wmt_mci_suspend(struct device *dev)
 static int wmt_mci_resume(struct device *dev)
 {
 	u32 reg_tmp;
-	struct platform_device *pdev = to_platform_device(dev);
-	struct mmc_host *mmc = platform_get_drvdata(pdev);
+	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct wmt_mci_priv *priv;
 
 	if (mmc) {

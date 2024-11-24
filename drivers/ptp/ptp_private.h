@@ -68,9 +68,13 @@ struct ptp_clock {
  * that a writer might concurrently increment the tail does not
  * matter, since the queue remains nonempty nonetheless.
  */
-static inline int queue_cnt(struct timestamp_event_queue *q)
+static inline int queue_cnt(const struct timestamp_event_queue *q)
 {
-	int cnt = q->tail - q->head;
+	/*
+	 * Paired with WRITE_ONCE() in enqueue_external_timestamp(),
+	 * ptp_read(), extts_fifo_show().
+	 */
+	int cnt = READ_ONCE(q->tail) - READ_ONCE(q->head);
 	return cnt < 0 ? PTP_MAX_TIMESTAMPS + cnt : cnt;
 }
 
@@ -90,7 +94,7 @@ int ptp_open(struct posix_clock *pc, fmode_t fmode);
 ssize_t ptp_read(struct posix_clock *pc,
 		 uint flags, char __user *buf, size_t cnt);
 
-uint ptp_poll(struct posix_clock *pc,
+__poll_t ptp_poll(struct posix_clock *pc,
 	      struct file *fp, poll_table *wait);
 
 /*

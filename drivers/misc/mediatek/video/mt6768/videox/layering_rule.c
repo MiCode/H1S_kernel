@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/delay.h>
 #include <linux/sched.h>
@@ -27,6 +19,7 @@
 #if defined(CONFIG_MTK_DRAMC)
 #include "mtk_dramc.h"
 #endif
+#include "mmdvfs_pmqos.h"
 #include "layering_rule.h"
 #include "disp_drv_log.h"
 #include "ddp_rsz.h"
@@ -38,6 +31,30 @@
 static struct layering_rule_ops l_rule_ops;
 static struct layering_rule_info_t l_rule_info;
 
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+int emi_bound_table[HRT_BOUND_NUM][HRT_LEVEL_NUM] = {
+	/* HRT_BOUND_TYPE_LP4 */
+	{350, 600, 700, 700},
+	/* HRT_BOUND_TYPE_LP4_PLUS */
+	{200, 300, 400, 400},
+	/* HRT_BOUND_TYPE_LP3 */
+	{350, 350, 350, 350},
+	/* HRT_BOUND_TYPE_LP3_PLUS */
+	{300, 300, 300, 300},
+	/* HRT_BOUND_TYPE_LP4_1CH */
+	{350, 350, 350, 350},
+	/* HRT_BOUND_TYPE_LP4_HYBRID */
+	{400, 400, 400, 600},
+	/* HRT_BOUND_TYPE_LP3_HD */
+	{750, 750, 750, 750},
+	/* HRT_BOUND_TYPE_LP4_HD */
+	{750, 1350, 1550, 1550},
+	/* HRT_BOUND_TYPE_LP3_HD_PLUS */
+	{650, 650, 650, 650},
+	/* HRT_BOUND_TYPE_LP4_HD_PLUS */
+	{650, 1100, 1350, 1350},
+};
+#else
 int emi_bound_table[HRT_BOUND_NUM][HRT_LEVEL_NUM] = {
 	/* HRT_BOUND_TYPE_LP4 */
 	{350, 600, 700, 700},
@@ -60,6 +77,7 @@ int emi_bound_table[HRT_BOUND_NUM][HRT_LEVEL_NUM] = {
 	/* HRT_BOUND_TYPE_LP4_HD_PLUS */
 	{650, 1100, 1350, 1350},
 };
+#endif
 
 int larb_bound_table[HRT_BOUND_NUM][HRT_LEVEL_NUM] = {
 	/* HRT_BOUND_TYPE_LP4 */
@@ -102,6 +120,20 @@ static enum HRT_LEVEL max_hrt_level = HRT_LEVEL_NUM - 1;
  */
 #ifndef CONFIG_MTK_ROUND_CORNER_SUPPORT
 static int layer_mapping_table[HRT_TB_NUM][TOTAL_OVL_LAYER_NUM] = {
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+	/* HRT_TB_TYPE_GENERAL */
+	{0x00010001, 0x00030003, 0x00030007, 0x0003000F, 0x0003000F, 0x0003000F,
+	0x0003000F},
+	/* HRT_TB_TYPE_RPO_L0 */
+	{0x00010001, 0x00030005, 0x0003000D, 0x0003001D, 0x0003003D, 0x0003003D,
+	0x0003003D},
+	/* HRT_TB_TYPE_RPO_DIM_L0 */
+	{0x00010001, 0x00030003, 0x00030007, 0x0003000F, 0x0003001F, 0x0003003F,
+	0x0003003F},
+	/* HRT_TB_TYPE_RPO_BOTH */
+	{0x00010001, 0x00030003, 0x00030007, 0x0003000F, 0x0003001F, 0x0003003F,
+	0x0003003F},
+#else
 	/* HRT_TB_TYPE_GENERAL */
 	{0x00010001, 0x00030003, 0x00030007, 0x0003000F, 0x0003001F, 0x0003003F,
 	0x0003003F, 0x0003003F, 0x0003003F, 0x0003003F, 0x0003003F, 0x0003003F},
@@ -114,10 +146,21 @@ static int layer_mapping_table[HRT_TB_NUM][TOTAL_OVL_LAYER_NUM] = {
 	/* HRT_TB_TYPE_RPO_BOTH */
 	{0x00010001, 0x00030003, 0x00030007, 0x0003000F, 0x0003001F, 0x0003003F,
 	0x0003003F, 0x0003003F, 0x0003003F, 0x0003003F, 0x0003003F, 0x0003003F},
+#endif
 };
 
 #else
 static int layer_mapping_table[HRT_TB_NUM][TOTAL_OVL_LAYER_NUM] = {
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+	/* HRT_TB_TYPE_GENERAL */
+	{0x00010001, 0x00030003, 0x00030007, 0x0003000F, 0x0003000F},
+	/* HRT_TB_TYPE_RPO_L0 */
+	{0x00010001, 0x00030005, 0x0003000D, 0x0003001D, 0x0003001D},
+	/* HRT_TB_TYPE_RPO_DIM_L0 */
+	{0x00010001, 0x00030003, 0x00030007, 0x0003000F, 0x0003001F},
+	/* HRT_TB_TYPE_RPO_BOTH */
+	{0x00010001, 0x00030003, 0x00030007, 0x0003000F, 0x0003001F},
+#else
 	/* HRT_TB_TYPE_GENERAL */
 	{0x00010001, 0x00030003, 0x00030007, 0x0003000F, 0x0003001F, 0x0003001F,
 	0x0003001F, 0x0003001F, 0x0003001F, 0x0003001F},
@@ -130,6 +173,7 @@ static int layer_mapping_table[HRT_TB_NUM][TOTAL_OVL_LAYER_NUM] = {
 	/* HRT_TB_TYPE_RPO_BOTH */
 	{0x00010001, 0x00030003, 0x00030007, 0x0003000F, 0x0003001F, 0x0003001F,
 	0x0003001F, 0x0003001F, 0x0003001F, 0x0003001F},
+#endif
 };
 #endif
 /**
@@ -145,11 +189,19 @@ static int larb_mapping_table[HRT_TB_NUM] = {
  */
 #ifndef CONFIG_MTK_ROUND_CORNER_SUPPORT
 static int ovl_mapping_table[HRT_TB_NUM] = {
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+	0x00020008, 0x00020008, 0x00020008, 0x00020008,
+#else
 	0x00020022, 0x00020022, 0x00020022, 0x00020022,
+#endif
 };
 #else
 static int ovl_mapping_table[HRT_TB_NUM] = {
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+	0x00020004, 0x00020004, 0x00020004, 0x00020004,
+#else
 	0x00020012, 0x00020012, 0x00020012, 0x00020012,
+#endif
 };
 #endif
 #define GET_SYS_STATE(sys_state) \
@@ -471,54 +523,68 @@ static void layering_rule_senario_decision(struct disp_layer_info *disp_info)
 		l_rule_info.layer_tb_idx | (l_rule_info.bound_tb_idx << 16));
 }
 
-static bool filter_by_hw_limitation(struct disp_layer_info *disp_info)
+static bool filter_by_yuv_layers(struct disp_layer_info *disp_info)
 {
 	bool flag = false;
-	unsigned int i = 0;
+	unsigned int disp_idx = 0, i = 0;
 	struct layer_config *info;
-	unsigned int disp_idx = 0;
-	unsigned int layer_cnt = 0;
+	unsigned int yuv_cnt = 0;
 
-	for (disp_idx = 0 ; disp_idx < 2; ++disp_idx) {
-		if (disp_info->layer_num[disp_idx] < 1)
-			continue;
-
-		/* display not support RGBA1010102 & RGBA_FP16 */
+	for (disp_idx = 0; disp_idx < 2; disp_idx++) {
+		yuv_cnt = 0;
 		for (i = 0; i < disp_info->layer_num[disp_idx]; i++) {
 			info = &(disp_info->input_config[disp_idx][i]);
-			if (info->src_fmt != DISP_FORMAT_RGBA1010102 &&
-					info->src_fmt != DISP_FORMAT_RGBA_FP16)
+
+			if (is_gles_layer(disp_info, disp_idx, i))
 				continue;
 
-			/* push to GPU */
-			if (disp_info->gles_head[disp_idx] == -1 ||
-					i < disp_info->gles_head[disp_idx])
-				disp_info->gles_head[disp_idx] = i;
-			if (disp_info->gles_tail[disp_idx] == -1 ||
-					i > disp_info->gles_tail[disp_idx])
-				disp_info->gles_tail[disp_idx] = i;
+			/* display not support RGBA1010102 & RGBA_FP16 */
+			if (info->src_fmt == DISP_FORMAT_RGBA1010102 ||
+				info->src_fmt == DISP_FORMAT_RGBA_FP16) {
+				rollback_layer_to_GPU(disp_info, disp_idx, i);
+				flag = true;
+				continue;
+			}
+
+			/* ovl support total 1 yuv layer, align to mt6853*/
+			if (is_yuv(info->src_fmt)) {
+				yuv_cnt++;
+				if (yuv_cnt > 1) {
+					rollback_layer_to_GPU(disp_info, disp_idx, i);
+					flag = true;
+				}
+			}
 		}
 	}
 
-	disp_idx = 1;
-	for (i = 0; i < disp_info->layer_num[disp_idx]; i++) {
-		info = &(disp_info->input_config[disp_idx][i]);
-		if (is_gles_layer(disp_info, disp_idx, i))
+	return flag;
+}
+
+static bool filter_by_sec_display(struct disp_layer_info *disp_info)
+{
+	bool flag = false;
+	unsigned int i, layer_cnt = 0;
+
+	for (i = 0; i < disp_info->layer_num[HRT_SECONDARY]; i++) {
+		if (is_gles_layer(disp_info, HRT_SECONDARY, i))
 			continue;
 
 		layer_cnt++;
 		if (layer_cnt > SECONDARY_OVL_LAYER_NUM) {
-			/* push to GPU */
-			if (disp_info->gles_head[disp_idx] == -1 ||
-				i < disp_info->gles_head[disp_idx])
-				disp_info->gles_head[disp_idx] = i;
-			if (disp_info->gles_tail[disp_idx] == -1 ||
-				i > disp_info->gles_tail[disp_idx])
-				disp_info->gles_tail[disp_idx] = i;
-
-			flag = false;
+			rollback_layer_to_GPU(disp_info, HRT_SECONDARY, i);
+			flag = true;
 		}
 	}
+
+	return flag;
+}
+
+static bool filter_by_hw_limitation(struct disp_layer_info *disp_info)
+{
+	bool flag = false;
+
+	flag |= filter_by_yuv_layers(disp_info);
+	flag |= filter_by_sec_display(disp_info);
 
 	return flag;
 }
@@ -575,6 +641,53 @@ static bool post_hw_limitation(struct disp_layer_info *disp_info)
 	}
 
 	return flag;
+}
+
+static void clear_layer(struct disp_layer_info *disp_info)
+{
+	int di = 0;
+	int i = 0;
+	struct layer_config *c;
+
+	for (di = 0; di < 2; di++) {
+		int g_head = disp_info->gles_head[di];
+		int top = -1;
+
+		if (disp_info->layer_num[di] <= 0)
+			continue;
+		if (g_head == -1)
+			continue;
+
+		for (i = disp_info->layer_num[di] - 1; i >= g_head; i--) {
+			c = &disp_info->input_config[di][i];
+			if (has_layer_cap(c, LAYERING_OVL_ONLY) &&
+			    has_layer_cap(c, CLIENT_CLEAR_LAYER)) {
+				top = i;
+				break;
+			}
+		}
+		if (top == -1)
+			continue;
+		if (!is_gles_layer(disp_info, di, top))
+			continue;
+
+		c = &disp_info->input_config[di][top];
+		c->layer_caps |= DISP_CLIENT_CLEAR_LAYER;
+		DISPMSG("%s:D%d:L%d\n", __func__, di, top);
+
+		disp_info->gles_head[di] = 0;
+		disp_info->gles_tail[di] = disp_info->layer_num[di] - 1;
+		for (i = 0; i < disp_info->layer_num[di]; i++) {
+			c = &disp_info->input_config[di][i];
+
+			c->ext_sel_layer = -1;
+
+			if (i == top)
+				c->ovl_id = 0;
+			else
+				c->ovl_id = 1;
+		}
+	}
 }
 
 static int get_hrt_bound(int is_larb, int hrt_level)
@@ -686,4 +799,5 @@ static struct layering_rule_ops l_rule_ops = {
 	.rollback_to_gpu_by_hw_limitation = filter_by_hw_limitation,
 	.unset_disp_rsz_attr = lr_unset_disp_rsz_attr,
 	.adjust_hrt_level = post_hw_limitation,
+	.clear_layer = clear_layer,
 };

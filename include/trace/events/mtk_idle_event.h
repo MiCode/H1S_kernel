@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2017 Mediatek Inc.
  */
 
 #undef TRACE_SYSTEM
@@ -358,6 +350,54 @@ TRACE_EVENT(idle_cg,
 	TP_printk("id = %d %d", (int)__entry->id, (int)__entry->enable)
 );
 
+TRACE_EVENT(idle_clkcfg_state,
+
+	TP_PROTO(
+		int id,
+		u32 value
+	),
+
+	TP_ARGS(id, value),
+
+	TP_STRUCT__entry(
+		__field(int, id)
+		__field(u32, value)
+	),
+
+	TP_fast_assign(
+		__entry->id = id;
+		__entry->value = value;
+	),
+
+	TP_printk("id = %d 0x%08x", (int)__entry->id, (u32)__entry->value)
+);
+
+
+TRACE_EVENT(idle_check_clkmux,
+
+	TP_PROTO(
+		int idle_type,
+		int id,
+		u32 value
+	),
+
+	TP_ARGS(idle_type, id, value),
+
+	TP_STRUCT__entry(
+		__field(int, idle_type)
+		__field(int, id)
+		__field(u32, value)
+	),
+
+	TP_fast_assign(
+		__entry->idle_type = idle_type;
+		__entry->id = id;
+		__entry->value = value;
+	),
+
+	TP_printk("type = %d, id = %d 0x%08x",
+		(int)__entry->idle_type, (int)__entry->id, (u32)__entry->value)
+);
 
 #endif /* _TRACE_MTK_IDLE_EVENT_H */
 

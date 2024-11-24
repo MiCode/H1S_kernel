@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
  */
 
 #ifndef __CMDQ_HELPER_EXT_H__
@@ -47,6 +46,7 @@ enum TASK_STATE_ENUM {
 
 /* max count of input */
 #define CMDQ_MAX_COMMAND_SIZE		(0x80000000)
+#define CMDQ_MAX_SIMULATE_COMMAND_SIZE	(0x80000)
 #define CMDQ_MAX_DUMP_REG_COUNT		(2048)
 #define CMDQ_MAX_WRITE_ADDR_COUNT	(PAGE_SIZE / sizeof(u32))
 #define CMDQ_MAX_DBG_STR_LEN		(1024)
@@ -770,6 +770,9 @@ struct cmdqRecStruct {
 	void *sec_client_meta;
 	enum cmdq_sec_rec_meta_type sec_meta_type;
 	u32 sec_meta_size;
+
+	/* Readback slot protection */
+	s32 slot_ids[8];
 };
 
 /* TODO: add controller support */
@@ -1009,6 +1012,8 @@ s32 cmdq_pkt_flush_async_ex(struct cmdqRecStruct *handle,
 	CmdqAsyncFlushCB cb, u64 user_data, bool auto_release);
 
 s32 cmdq_pkt_stop(struct cmdqRecStruct *handle);
+
+void cmdq_core_dump_active(void);
 
 /* mailbox helper functions */
 

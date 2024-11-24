@@ -1,19 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #ifndef __DPMAIF_REG_H__
 #define __DPMAIF_REG_H__
 
+#include <linux/io.h>
 #include <mt-plat/sync_write.h>
 #include "ccci_config.h"
 
@@ -49,16 +42,6 @@ extern struct hif_dpmaif_ctrl *dpmaif_ctrl;
  *
  ***********************************************************************/
 #ifdef MT6297
-#if 0
-#define BASE_NADDR_NRL2_DPMAIF_UL                0x1022D000
-#define BASE_NADDR_NRL2_DPMAIF_DL                0x1022D100
-#define BASE_NADDR_NRL2_DPMAIF_RDMA              0x1022D200
-#define BASE_NADDR_NRL2_DPMAIF_WDMA              0x1022D300
-#define BASE_NADDR_NRL2_DPMAIF_AP_MISC           0x1022D400
-#define BASE_NADDR_NRL2_DPMAIF_AO_UL             0x10014000
-#define BASE_NADDR_NRL2_DPMAIF_AO_DL             0x10014400
-#define BASE_NADDR_NRL2_DPMAIF_DL_AO_CFG         0x10014800
-#else
 #define BASE_NADDR_NRL2_DPMAIF_UL                0
 #define BASE_NADDR_NRL2_DPMAIF_DL                0
 #define BASE_NADDR_NRL2_DPMAIF_RDMA              0
@@ -68,7 +51,6 @@ extern struct hif_dpmaif_ctrl *dpmaif_ctrl;
 #define BASE_NADDR_NRL2_DPMAIF_AO_DL             0
 #define BASE_NADDR_NRL2_DPMAIF_DL_AO_CFG         0
 #define BASE_NADDR_NRL2_DPMAIF_PD_MD_MISC        0
-#endif
 #else
  #ifdef DVT_DEFINITION
 #define DPMAIF_PD_BASE                     0x1022D000
@@ -657,9 +639,23 @@ extern struct hif_dpmaif_ctrl *dpmaif_ctrl;
 #define DPMA_WRITE_PD_DL(a, v)
 #define DPMA_WRITE_AO_DL(a, v)
 #else
-#define dpmaif_write32(b, a, v)	mt_reg_sync_writel(v, (b)+(a))
-#define dpmaif_write16(b, a, v)	mt_reg_sync_writew(v, (b)+(a))
-#define dpmaif_write8(b, a, v)		mt_reg_sync_writeb(v, (b)+(a))
+#define dpmaif_write32(b, a, v)	\
+do { \
+	writel(v, (b) + (a)); \
+	mb(); /* make sure register access in order */ \
+} while (0)
+
+#define dpmaif_write16(b, a, v)	\
+do { \
+	writew(v, (b) + (a)); \
+	mb(); /* make sure register access in order */ \
+} while (0)
+
+#define dpmaif_write8(b, a, v) \
+do { \
+	writeb(v, (b) + (a)); \
+	mb(); /* make sure register access in order */ \
+} while (0)
 
 #define dpmaif_read32(b, a)		ioread32((void __iomem *)((b)+(a)))
 #define dpmaif_read16(b, a)		ioread16((void __iomem *)((b)+(a)))
@@ -874,7 +870,7 @@ extern struct hif_dpmaif_ctrl *dpmaif_ctrl;
 #else
 #define DPMAIF_UL_INT_QDONE_MSK	(0x0F << UL_INT_DONE_OFFSET)
 #define DPMAIF_UL_INT_EMPTY_MSK	(0x0F << UL_INT_EMPTY_OFFSET)
-#define DPMAIF_UL_INT_MD_NOTREADY_MSK	(0x0F << UL_INT_MD_NOTRDY_OFFSET)
+#define DPMAIF_UL_INT_MD_NOTREADY_MSK	(0x0E << UL_INT_MD_NOTRDY_OFFSET)
 #define DPMAIF_UL_INT_MD_PWR_NOTREADY_MSK	\
 	(0x0F << UL_INT_PWR_NOTRDY_OFFSET)
 #define DPMAIF_UL_INT_ERR_MSK		(0x0F << UL_INT_LEN_ERR_OFFSET)
@@ -912,4 +908,7 @@ extern struct hif_dpmaif_ctrl *dpmaif_ctrl;
 	(AP_DL_L2INTR_ERR_En_Msk | \
 	DPMAIF_DL_INT_QDONE_MSK)
 #endif
+/* dl&ul mask check */
+#define AP_DL_L2INTR_Msk_Check ((~AP_DL_L2INTR_En_Msk)&0x1FFF)
+#define AP_UL_L2INTR_Msk_Check ((~AP_UL_L2INTR_En_Msk)&0x1FFF)
 #endif				/* __DPMAIF_REG_H__ */

@@ -10,16 +10,26 @@
 #include <linux/rwsem.h>
 #include <linux/sysctl.h>
 #include <linux/err.h>
+#include <linux/android_kabi.h>
 
-#define UID_GID_MAP_MAX_EXTENTS 5
+#define UID_GID_MAP_MAX_BASE_EXTENTS 5
+#define UID_GID_MAP_MAX_EXTENTS 340
 
-struct uid_gid_map {	/* 64 bytes -- 1 cache line */
+struct uid_gid_extent {
+	u32 first;
+	u32 lower_first;
+	u32 count;
+};
+
+struct uid_gid_map { /* 64 bytes -- 1 cache line */
 	u32 nr_extents;
-	struct uid_gid_extent {
-		u32 first;
-		u32 lower_first;
-		u32 count;
-	} extent[UID_GID_MAP_MAX_EXTENTS];
+	union {
+		struct uid_gid_extent extent[UID_GID_MAP_MAX_BASE_EXTENTS];
+		struct {
+			struct uid_gid_extent *forward;
+			struct uid_gid_extent *reverse;
+		};
+	};
 };
 
 #define USERNS_SETGROUPS_ALLOWED 1UL
@@ -67,6 +77,9 @@ struct user_namespace {
 #endif
 	struct ucounts		*ucounts;
 	int ucount_max[UCOUNT_COUNTS];
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 } __randomize_layout;
 
 struct ucounts {

@@ -3,7 +3,6 @@
 // mt6768-mt6358.c  --  mt6768 mt6358 ALSA SoC machine driver
 //
 // Copyright (c) 2018 MediaTek Inc.
-// Copyright (C) 2021 XiaoMi, Inc.
 // Author: Michael Hsiao <michael.hsiao@mediatek.com>
 
 #include <linux/module.h>
@@ -11,6 +10,7 @@
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 
+#include "../common/mtk-afe-platform-driver.h"
 #include "mt6768-afe-common.h"
 #include "mt6768-afe-clk.h"
 #include "mt6768-afe-gpio.h"
@@ -114,30 +114,6 @@ static const struct snd_kcontrol_new mt6768_mt6358_controls[] = {
 		     mt6768_spk_i2s_in_type_get, NULL),
 };
 
-
-
-#ifdef CONFIG_SND_SOC_CS35L41
-static int cs35l41_dailink_init(struct snd_soc_pcm_runtime *rtd)
-{
-	struct snd_soc_card *card = rtd->card;
-	struct snd_soc_codec *spk_cdc = rtd->codec_dais[0]->codec;
-	struct snd_soc_dapm_context *cs35l41_dapm = snd_soc_codec_get_dapm(spk_cdc);
-	//dev_info(card->dev, "%s: found codec[%s]\n", __func__, dev_name(spk_cdc->dev));
-	snd_soc_dapm_ignore_suspend(cs35l41_dapm, "AMP Playback");
-	snd_soc_dapm_ignore_suspend(cs35l41_dapm, "AMP Capture");
-	snd_soc_dapm_ignore_suspend(cs35l41_dapm, "DSP1");
-	snd_soc_dapm_ignore_suspend(cs35l41_dapm, "Main AMP");
-	snd_soc_dapm_ignore_suspend(cs35l41_dapm, "ASPRX1");
-	snd_soc_dapm_ignore_suspend(cs35l41_dapm, "ASPRX2");
-	snd_soc_dapm_ignore_suspend(cs35l41_dapm, "ASPTX1");
-	snd_soc_dapm_ignore_suspend(cs35l41_dapm, "ASPTX2");
-	snd_soc_dapm_ignore_suspend(cs35l41_dapm, "SPK");
-	snd_soc_dapm_sync(cs35l41_dapm);
-	dev_info(card->dev, "%s: dapm ignore suspend[%s]\n", __func__, dev_name(spk_cdc->dev));
-	return 0;
-}
-#endif
-
 /*
  * define mtk_spk_i2s_mck node in dts when need mclk,
  * BE i2s need assign snd_soc_ops = mt6768_mt6358_i2s_ops
@@ -160,8 +136,12 @@ static const struct snd_soc_ops mt6768_mt6358_i2s_ops = {
 
 static int mt6768_mt6358_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 {
-	struct mtk_base_afe *afe = snd_soc_platform_get_drvdata(rtd->platform);
+	struct snd_soc_component *component =
+		snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
 	struct mt6768_afe_private *afe_priv = afe->platform_priv;
+	struct snd_soc_component *codec_component =
+		snd_soc_rtdcom_lookup(rtd, CODEC_MT6358_NAME);
 	int phase = 0;
 	unsigned int monitor = 0;
 	int test_done_1, test_done_2 = 0;
@@ -174,7 +154,7 @@ static int mt6768_mt6358_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 	mt6768_afe_gpio_request(afe, true, MT6768_DAI_ADDA, 1);
 	mt6768_afe_gpio_request(afe, true, MT6768_DAI_ADDA, 0);
 
-	mt6358_mtkaif_calibration_enable(&rtd->codec->component);
+	mt6358_mtkaif_calibration_enable(codec_component);
 
 	/* set clock protocol 2 */
 	regmap_update_bits(afe->regmap, AFE_AUD_PAD_TOP, 0xff, 0x38);
@@ -193,7 +173,7 @@ static int mt6768_mt6358_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 	     phase <= afe_priv->mtkaif_calibration_num_phase &&
 	     afe_priv->mtkaif_calibration_ok;
 	     phase++) {
-		mt6358_set_mtkaif_calibration_phase(&rtd->codec->component,
+		mt6358_set_mtkaif_calibration_phase(codec_component,
 						    phase, phase);
 
 		regmap_update_bits(afe_priv->topckgen, CKSYS_AUD_TOP_CFG,
@@ -252,17 +232,17 @@ static int mt6768_mt6358_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 	}
 
 	if (!afe_priv->mtkaif_calibration_ok)
-		mt6358_set_mtkaif_calibration_phase(&rtd->codec->component,
+		mt6358_set_mtkaif_calibration_phase(codec_component,
 						    0, 0);
 	else
-		mt6358_set_mtkaif_calibration_phase(&rtd->codec->component,
+		mt6358_set_mtkaif_calibration_phase(codec_component,
 			afe_priv->mtkaif_chosen_phase[0],
 			afe_priv->mtkaif_chosen_phase[1]);
 
 	/* disable rx fifo */
 	regmap_update_bits(afe->regmap, AFE_AUD_PAD_TOP, 0xff, 0x38);
 
-	mt6358_mtkaif_calibration_disable(&rtd->codec->component);
+	mt6358_mtkaif_calibration_disable(codec_component);
 
 	mt6768_afe_gpio_request(afe, false, MT6768_DAI_ADDA, 1);
 	mt6768_afe_gpio_request(afe, false, MT6768_DAI_ADDA, 0);
@@ -278,18 +258,21 @@ static int mt6768_mt6358_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 static int mt6768_mt6358_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct mt6358_codec_ops ops;
-	struct mtk_base_afe *afe = snd_soc_platform_get_drvdata(rtd->platform);
+	struct snd_soc_component *component =
+		snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
 	struct mt6768_afe_private *afe_priv = afe->platform_priv;
 	struct snd_soc_dapm_context *dapm = &rtd->card->dapm;
-
+	struct snd_soc_component *codec_component =
+		snd_soc_rtdcom_lookup(rtd, CODEC_MT6358_NAME);
 	ops.enable_dc_compensation = mt6768_enable_dc_compensation;
 	ops.set_lch_dc_compensation = mt6768_set_lch_dc_compensation;
 	ops.set_rch_dc_compensation = mt6768_set_rch_dc_compensation;
 	ops.adda_dl_gain_control = mt6768_adda_dl_gain_control;
-	mt6358_set_codec_ops(&rtd->codec->component, &ops);
+	mt6358_set_codec_ops(codec_component, &ops);
 
 	/* set mtkaif protocol */
-	mt6358_set_mtkaif_protocol(&rtd->codec->component,
+	mt6358_set_mtkaif_protocol(codec_component,
 				   MT6358_MTKAIF_PROTOCOL_1);
 	afe_priv->mtkaif_protocol = MT6358_MTKAIF_PROTOCOL_1;
 
@@ -330,7 +313,9 @@ static const struct snd_pcm_hardware mt6768_mt6358_vow_hardware = {
 static int mt6768_mt6358_vow_startup(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct mtk_base_afe *afe = snd_soc_platform_get_drvdata(rtd->platform);
+	struct snd_soc_component *component =
+		snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
 	struct snd_soc_component *component = NULL;
 	struct snd_soc_rtdcom_list *rtdcom = NULL;
 
@@ -350,7 +335,9 @@ static int mt6768_mt6358_vow_startup(struct snd_pcm_substream *substream)
 static void mt6768_mt6358_vow_shutdown(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct mtk_base_afe *afe = snd_soc_platform_get_drvdata(rtd->platform);
+	struct snd_soc_component *component =
+		snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
 	struct snd_soc_component *component = NULL;
 	struct snd_soc_rtdcom_list *rtdcom = NULL;
 
@@ -570,40 +557,16 @@ static struct snd_soc_dai_link mt6768_mt6358_dai_links[] = {
 		.ignore_suspend = 1,
 		.init = mt6768_mt6358_init,
 	},
-#ifdef CONFIG_SND_SOC_CS35L41
 	{
 		.name = "I2S3",
 		.cpu_dai_name = "I2S3",
-		.codec_dai_name = "cs35l41-pcm",
-		.codec_name = "spi3.0",
-		.dai_fmt = SND_SOC_DAIFMT_I2S |
-			SND_SOC_DAIFMT_CBS_CFS |
-			SND_SOC_DAIFMT_NB_NF,
-		.no_pcm = 1,
-		.dpcm_playback = 1,
-		.ignore_suspend = 1,
-		.be_hw_params_fixup = mt6768_i2s_hw_params_fixup,
-		.init = &cs35l41_dailink_init,
-	},
-	{
-		.name = "I2S0",
-		.cpu_dai_name = "I2S0",
-		.codec_dai_name = "cs35l41-pcm",
-		.codec_name = "spi3.0",
-		.dai_fmt = SND_SOC_DAIFMT_I2S |
-			SND_SOC_DAIFMT_CBS_CFS |
-			SND_SOC_DAIFMT_NB_NF,
-		.no_pcm = 1,
-		.dpcm_capture = 1,
-		.ignore_suspend = 1,
-		.be_hw_params_fixup = mt6768_i2s_hw_params_fixup,
-	},
+#ifdef CONFIG_SND_SOC_FS16XX
+		.codec_dai_name = "fs16xx-aif",
+		.codec_name = "fs16xx",
 #else
-	{
-		.name = "I2S3",
-		.cpu_dai_name = "I2S3",
 		.codec_dai_name = "snd-soc-dummy-dai",
 		.codec_name = "snd-soc-dummy",
+#endif
 		.no_pcm = 1,
 		.dpcm_playback = 1,
 		.ignore_suspend = 1,
@@ -612,14 +575,18 @@ static struct snd_soc_dai_link mt6768_mt6358_dai_links[] = {
 	{
 		.name = "I2S0",
 		.cpu_dai_name = "I2S0",
+#ifdef CONFIG_SND_SOC_FS16XX
+		.codec_dai_name = "fs16xx-aif",
+		.codec_name = "fs16xx",
+#else
 		.codec_dai_name = "snd-soc-dummy-dai",
 		.codec_name = "snd-soc-dummy",
+#endif
 		.no_pcm = 1,
 		.dpcm_capture = 1,
 		.ignore_suspend = 1,
 		.be_hw_params_fixup = mt6768_i2s_hw_params_fixup,
 	},
-#endif
 	{
 		.name = "I2S1",
 		.cpu_dai_name = "I2S1",

@@ -1,20 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __MT_MSDC_DEUBG__
 #define __MT_MSDC_DEUBG__
 #include "mtk_sd.h"
-
+#include <linux/seq_file.h>
 /* #define MTK_MSDC_ERROR_TUNE_DEBUG */
 
 enum {
@@ -77,7 +69,7 @@ do {    \
 	}   \
 } while (0)
 
-#if 1
+#ifndef MTK_MMC_PRINT_PERIOD
 #define ERR_MSG(fmt, args...) \
 	pr_info(TAGMSDC"%d -> "fmt" <- %s() : L<%d> PID<%s><0x%x>\n", \
 		host->id, ##args, __func__, __LINE__, current->comm, \
@@ -127,7 +119,7 @@ do { \
 		host->id, ##args, __func__, __LINE__, current->comm, \
 		current->pid)
 
-#if 0
+#ifdef MTK_MMC_PRINT_IRQ_MSG
 /* PID in ISR in not corrent */
 #define IRQ_MSG(fmt, args...) \
 	pr_info(TAGMSDC"%d -> "fmt" <- %s() : L<%d>\n", \
@@ -188,10 +180,7 @@ int multi_rw_compare(struct seq_file *m, int host_num,
 void dbg_add_host_log(struct mmc_host *mmc, int type, int cmd, int arg);
 void dbg_add_sirq_log(struct mmc_host *mmc, int type,
 		int cmd, int arg, int cpu, unsigned long active_reqs);
-void dbg_add_sd_log(struct mmc_host *mmc, int type, int cmd, int arg);
 void mmc_cmd_dump(char **buff, unsigned long *size, struct seq_file *m,
-		struct mmc_host *mmc, u32 latest_cnt);
-void sd_cmd_dump(char **buff, unsigned long *size, struct seq_file *m,
 		struct mmc_host *mmc, u32 latest_cnt);
 void msdc_dump_host_state(char **buff, unsigned long *size,
 		struct seq_file *m, struct msdc_host *host);

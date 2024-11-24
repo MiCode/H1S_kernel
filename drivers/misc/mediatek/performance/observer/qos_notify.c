@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 #define pr_fmt(fmt) "pob_qos: " fmt
 #include <linux/notifier.h>
@@ -34,29 +26,6 @@
 #include "pob_pfm.h"
 
 #define TRACELOG_SIZE 512
-
-#define POB_QOS_SYSTRACE_LIST(macro) \
-	macro(QOSSEQ, 0), \
-	macro(BWBOUND, 1), \
-	macro(BWTOTAL, 2), \
-	macro(BWCPU, 3), \
-	macro(BWGPU, 4), \
-	macro(BWMM, 5), \
-	macro(BWMD, 6), \
-	macro(BWAPU, 7), \
-	macro(BWVPU, 8), \
-	macro(BWMDLA, 9), \
-	macro(BWCAM, 10), \
-	macro(BWVENC, 11), \
-	macro(BWIMG, 12), \
-	macro(BWMDP, 13), \
-	macro(LATCPU, 14), \
-	macro(LATVPU, 15), \
-	macro(LATMDLA, 16), \
-	macro(MAX, 17), \
-
-#define POB_QOS_GENERATE_ENUM(name, shft) POB_QOS_DEBUG_##name = 1U << shft
-#define POB_QOS_GENERATE_STRING(name, unused) #name
 
 struct pob_qos_trace_info {
 	uint32_t flag;
@@ -206,11 +175,46 @@ int pob_qos_ind_client_isemtpy(void)
 }
 
 enum {
-	POB_QOS_SYSTRACE_LIST(POB_QOS_GENERATE_ENUM)
+	POB_QOS_DEBUG_QOSSEQ  = 1U << 0,
+	POB_QOS_DEBUG_BWBOUND = 1U << 1,
+	POB_QOS_DEBUG_BWTOTAL = 1U << 2,
+	POB_QOS_DEBUG_BWCPU   = 1U << 3,
+	POB_QOS_DEBUG_BWGPU   = 1U << 4,
+	POB_QOS_DEBUG_BWMM    = 1U << 5,
+	POB_QOS_DEBUG_BWMD    = 1U << 6,
+	POB_QOS_DEBUG_BWAPU   = 1U << 7,
+	POB_QOS_DEBUG_BWVPU   = 1U << 8,
+	POB_QOS_DEBUG_BWMDLA  = 1U << 9,
+	POB_QOS_DEBUG_BWCAM   = 1U << 10,
+	POB_QOS_DEBUG_BWVENC  = 1U << 11,
+	POB_QOS_DEBUG_BWIMG   = 1U << 12,
+	POB_QOS_DEBUG_BWMDP   = 1U << 13,
+	POB_QOS_DEBUG_LATCPU  = 1U << 14,
+	POB_QOS_DEBUG_LATVPU  = 1U << 15,
+	POB_QOS_DEBUG_LATMDLA = 1U << 16,
+	POB_QOS_DEBUG_MAX     = 1U << 17,
 };
 
+
 static const char * const mask_string[] = {
-	POB_QOS_SYSTRACE_LIST(POB_QOS_GENERATE_STRING)
+	"QOSSEQ",
+	"BWBOUND",
+	"BWTOTAL",
+	"BWCPU",
+	"BWGPU",
+	"BWMM",
+	"BWMD",
+	"BWAPU",
+	"BWVPU",
+	"BWMDLA",
+	"BWCAM",
+	"BWVENC",
+	"BWIMG",
+	"BWMDP",
+	"LATCPU",
+	"LATVPU",
+	"LATMDLA",
+	"MAX",
 };
 
 static const char * const PQBP_str[] = {

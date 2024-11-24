@@ -15,8 +15,38 @@
 #
 
 MTK_TOP = $(srctree)/drivers/misc/mediatek/
+
+ifeq ($(CONFIG_MACH_MT6893),y)
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/base/include/
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/fstb/
+else ifeq ($(CONFIG_MACH_MT6877),y)
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/base/include/
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/fstb/
+else ifeq ($(CONFIG_MACH_MT6781),y)
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/base/include/
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/fstb/
+else ifeq ($(CONFIG_MACH_MT6739),y)
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/base/include/
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/fstb/
+else ifeq ($(CONFIG_MACH_MT6833),y)
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/base/include/
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/fstb/
+else ifeq ($(CONFIG_MACH_MT6768),y)
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/base/include/
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/fstb/
+else ifeq ($(CONFIG_MACH_MT6771),y)
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/base/include/
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/fstb/
+else ifeq ($(CONFIG_MACH_MT6785),y)
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/base/include/
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/fstb/
+else ifeq ($(CONFIG_MACH_MT6885),y)
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/base/include/
+ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3_topology/fstb/
+else
 ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3/base/include/
 ccflags-y  += -I$(MTK_TOP)/performance/fpsgo_v3/fstb/
+endif
 
 obj-y += gbe1_main.o
 obj-y += gbe2_main.o

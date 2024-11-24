@@ -9,15 +9,15 @@
 #ifndef _LINUX_PAGEVEC_H
 #define _LINUX_PAGEVEC_H
 
-/* 14 pointers + two long's align the pagevec structure to a power of two */
-#define PAGEVEC_SIZE	14
+/* 15 pointers + header align the pagevec structure to a power of two */
+#define PAGEVEC_SIZE	15
 
 struct page;
 struct address_space;
 
 struct pagevec {
-	unsigned long nr;
-	unsigned long cold;
+	unsigned char nr;
+	bool percpu_pvec_drained;
 	struct page *pages[PAGEVEC_SIZE];
 };
 
@@ -50,10 +50,10 @@ static inline unsigned pagevec_lookup_tag(struct pagevec *pvec,
 	return pagevec_lookup_range_tag(pvec, mapping, index, (pgoff_t)-1, tag);
 }
 
-static inline void pagevec_init(struct pagevec *pvec, int cold)
+static inline void pagevec_init(struct pagevec *pvec)
 {
 	pvec->nr = 0;
-	pvec->cold = cold;
+	pvec->percpu_pvec_drained = false;
 }
 
 static inline void pagevec_reinit(struct pagevec *pvec)

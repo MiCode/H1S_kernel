@@ -75,6 +75,14 @@ config DWMAC_LPC18XX
 	---help---
 	  Support for NXP LPC18xx/43xx DWMAC Ethernet.
 
+config DWMAC_MEDIATEK
+	tristate "MediaTek MT27xx GMAC support"
+	depends on OF && (ARCH_MEDIATEK || COMPILE_TEST)
+	help
+	  Support for MediaTek GMAC Ethernet controller.
+
+	  This selects the MT2712 SoC support for the stmmac driver.
+
 config DWMAC_MESON
 	tristate "Amlogic Meson dwmac support"
 	default ARCH_MESON
@@ -110,7 +118,7 @@ config DWMAC_ROCKCHIP
 
 config DWMAC_SOCFPGA
 	tristate "SOCFPGA dwmac support"
-	default ARCH_SOCFPGA
+	default (ARCH_SOCFPGA || ARCH_STRATIX10)
 	depends on OF && (ARCH_SOCFPGA || ARCH_STRATIX10 || COMPILE_TEST)
 	select MFD_SYSCON
 	help
@@ -159,6 +167,7 @@ config DWMAC_SUN8I
 	tristate "Allwinner sun8i GMAC support"
 	default ARCH_SUNXI
 	depends on OF && (ARCH_SUNXI || COMPILE_TEST)
+	select MDIO_BUS_MUX
 	---help---
 	  Support for Allwinner H3 A83T A64 EMAC ethernet controllers.
 

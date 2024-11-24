@@ -361,16 +361,12 @@ done:
 	return rv;
 }
 
-static void vcc_rx_timer(unsigned long index)
+static void vcc_rx_timer(struct timer_list *t)
 {
+	struct vcc_port *port = from_timer(port, t, rx_timer);
 	struct vio_driver_state *vio;
-	struct vcc_port *port;
 	unsigned long flags;
 	int rv;
-
-	port = vcc_get_ne(index);
-	if (!port)
-		return;
 
 	spin_lock_irqsave(&port->lock, flags);
 	port->rx_timer.expires = 0;
@@ -391,17 +387,13 @@ done:
 	vcc_put(port, false);
 }
 
-static void vcc_tx_timer(unsigned long index)
+static void vcc_tx_timer(struct timer_list *t)
 {
-	struct vcc_port *port;
+	struct vcc_port *port = from_timer(port, t, tx_timer);
 	struct vio_vcc *pkt;
 	unsigned long flags;
 	int tosend = 0;
 	int rv;
-
-	port = vcc_get_ne(index);
-	if (!port)
-		return;
 
 	spin_lock_irqsave(&port->lock, flags);
 	port->tx_timer.expires = 0;
@@ -594,24 +586,29 @@ static int vcc_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 		return -ENOMEM;
 
 	name = kstrdup(dev_name(&vdev->dev), GFP_KERNEL);
+	if (!name) {
+		rv = -ENOMEM;
+		goto free_port;
+	}
 
 	rv = vio_driver_init(&port->vio, vdev, VDEV_CONSOLE_CON, vcc_versions,
 			     ARRAY_SIZE(vcc_versions), NULL, name);
 	if (rv)
-		goto free_port;
+		goto free_name;
 
 	port->vio.debug = vcc_dbg_vio;
 	vcc_ldc_cfg.debug = vcc_dbg_ldc;
 
 	rv = vio_ldc_alloc(&port->vio, &vcc_ldc_cfg, port);
 	if (rv)
-		goto free_port;
+		goto free_name;
 
 	spin_lock_init(&port->lock);
 
 	port->index = vcc_table_add(port);
 	if (port->index == -1) {
 		pr_err("VCC: no more TTY indices left for allocation\n");
+		rv = -ENOMEM;
 		goto free_ldc;
 	}
 
@@ -638,6 +635,11 @@ static int vcc_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 		goto unreg_tty;
 	}
 	port->domain = kstrdup(domain, GFP_KERNEL);
+	if (!port->domain) {
+		rv = -ENOMEM;
+		goto unreg_tty;
+	}
+
 
 	mdesc_release(hp);
 
@@ -645,13 +647,8 @@ static int vcc_probe(struct vio_dev *vdev, const struct vio_device_id *id)
 	if (rv)
 		goto free_domain;
 
-	init_timer(&port->rx_timer);
-	port->rx_timer.function = vcc_rx_timer;
-	port->rx_timer.data = port->index;
-
-	init_timer(&port->tx_timer);
-	port->tx_timer.function = vcc_tx_timer;
-	port->tx_timer.data = port->index;
+	timer_setup(&port->rx_timer, vcc_rx_timer, 0);
+	timer_setup(&port->tx_timer, vcc_tx_timer, 0);
 
 	dev_set_drvdata(&vdev->dev, port);
 
@@ -672,8 +669,9 @@ free_table:
 	vcc_table_remove(port->index);
 free_ldc:
 	vio_ldc_free(&port->vio);
-free_port:
+free_name:
 	kfree(name);
+free_port:
 	kfree(port);
 
 	return rv;

@@ -1326,14 +1326,14 @@ static const struct snd_kcontrol_new ultrasound_filter_mixer_controls[] = {
 
 
 
-unsigned int elliptic_add_platform_controls(void *platform)
+unsigned int elliptic_add_component_controls(void *platform)
 {
     const unsigned int num_controls =
         ARRAY_SIZE(ultrasound_filter_mixer_controls);
 
     if (platform != NULL) {
-        snd_soc_add_platform_controls(
-            (struct snd_soc_platform *)platform,
+        snd_soc_add_component_controls(
+            (struct snd_soc_component *)platform,
             ultrasound_filter_mixer_controls,
             num_controls);
     } else {

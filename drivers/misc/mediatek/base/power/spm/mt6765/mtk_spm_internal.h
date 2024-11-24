@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2016 MediaTek Inc.
  */
 
 #ifndef __MTK_SPM_INTERNAL_H__
@@ -18,7 +10,7 @@
 #include <linux/spinlock.h>
 #include <linux/io.h>
 
-#include <mt-plat/mtk_secure_api.h>
+#include <mtk_idle_smc.h>
 #include <mt-plat/sync_write.h>
 #include <mt-plat/aee.h>
 
@@ -32,6 +24,16 @@
 /* For mt6763, use cpuidle_v2/mtk_cpuidle.h */
 /* For mt6739/mt6775/mt6771 or later project, use cpuidle_v3/mtk_cpuidle.h */
 #include <cpuidle_v3/mtk_cpuidle.h> /* atf/dormant header file */
+
+
+
+/********************************************************************
+ * dpidle/sodi3/sodi default feature enable/disable
+ *******************************************************************/
+#define MTK_IDLE_FEATURE_ENABLE_DPIDLE  (1)
+#define MTK_IDLE_FEATURE_ENABLE_SODI    (1)
+#define MTK_IDLE_FEATURE_ENABLE_SODI3   (1)
+
 
 /**************************************
  * Config and Parameter
@@ -50,10 +52,6 @@
 #define PCM_WDT_TIMEOUT		(30 * 32768)	/* 30s */
 /* PCM_TIMER_VAL */
 #define PCM_TIMER_MAX		(0xffffffff - PCM_WDT_TIMEOUT)
-
-/* SMC call's marco */
-#define SMC_CALL(_name, _arg0, _arg1, _arg2) \
-	mt_secure_call(MTK_SIP_KERNEL_SPM_##_name, _arg0, _arg1, _arg2, 0)
 
 extern spinlock_t __spm_lock;
 
@@ -175,7 +173,7 @@ void mtk_spm_irq_restore(void);
  * mtk_spm_internal.c
  ***********************************************************/
 
-long int spm_get_current_time_ms(void);
+long spm_get_current_time_ms(void);
 void rekick_vcorefs_scenario(void); /* FIXME: To be removed */
 int __spm_get_pcm_timer_val(const struct pwr_ctrl *pwrctrl);
 void __spm_set_pwrctrl_pcm_flags(struct pwr_ctrl *pwrctrl, u32 flags);
@@ -245,6 +243,7 @@ enum {
 	SPMFW_LP4X_2CH_3200,
 	SPMFW_LP3_1CH_1866,
 	SPMFW_LP4_2CH_2400,
+	SPMFW_LP4X_2CH_2400,
 };
 
 int spm_get_spmfw_idx(void);

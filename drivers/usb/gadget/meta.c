@@ -1,19 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Gadget Driver for Android
+ * MTK FASTMETA Gadget Driver for Android
  *
- * Copyright (C) 2008 Google, Inc.
+ * Copyright (c) 2008 Google, Inc.
+ * Copyright (c) 2015 MediaTek Inc.
  * Author: Mike Lockwood <lockwood@android.com>
  *         Benoit Goby <benoit@android.com>
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
 #include <linux/init.h>
@@ -30,12 +22,9 @@
 
 /* Add for HW/SW connect */
 #include "mtk_gadget.h"
-/* Add for HW/SW connect */
 
-#include "u_fs.h"
-
-#include "f_mass_storage.h"
-
+#include "function/u_fs.h"
+#include "function/f_mass_storage.h"
 
 MODULE_AUTHOR("Mike Lockwood");
 MODULE_DESCRIPTION("Android Composite USB Driver");
@@ -48,12 +37,8 @@ static const char longname[] = "Gadget Android";
 #define VENDOR_ID		0x0E8D
 #define PRODUCT_ID		0x0001
 
-#ifdef CONFIG_MTK_BOOT
-#include <mt-plat/mtk_boot_common.h>
-#endif
-
 #ifdef CONFIG_MTPROF
-#include "bootprof.h"
+#include <linux/bootprof.h>
 #endif
 
 static int quick_vcom_num;
@@ -174,6 +159,20 @@ static struct usb_configuration android_config_driver = {
 #endif
 };
 
+#ifdef CONFIG_MTPROF
+static void bootprof_log(char *str)
+{
+	static int first_shot = 1;
+
+	if (first_shot) {
+		bootprof_log_boot(str);
+		first_shot = 0;
+	}
+}
+#else
+static void bootprof_log(char *str) {}
+#endif
+
 static void android_work(struct work_struct *data)
 {
 	struct android_dev *dev = container_of(data, struct android_dev, work);
@@ -201,16 +200,11 @@ static void android_work(struct work_struct *data)
 	if (uevent_envp) {
 		kobject_uevent_env(&dev->dev->kobj, KOBJ_CHANGE, uevent_envp);
 		pr_notice("%s: sent uevent %s\n", __func__, uevent_envp[0]);
-#ifdef CONFIG_MTPROF
-		if (uevent_envp == configured) {
-			static int first_shot = 1;
 
-			if (first_shot) {
-				log_boot("USB configured");
-				first_shot = 0;
-			}
-		}
-#endif
+		if (IS_ENABLED(CONFIG_MTPROF))
+			if (uevent_envp == configured)
+				bootprof_log("USB configured");
+
 	} else {
 		pr_notice("%s: did not send uevent (%d %d %p)\n", __func__,
 			 dev->connected, dev->sw_connected, cdev->config);
@@ -486,7 +480,8 @@ static int mass_storage_function_bind_config(struct android_usb_function *f,
 	return 0;
 }
 
-static ssize_t mass_storage_inquiry_show(struct device *dev,
+/* mass_storage: storage_inquiry_show */
+static ssize_t inquiry_string_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct fsg_opts *fsg_opts;
@@ -499,7 +494,8 @@ static ssize_t mass_storage_inquiry_show(struct device *dev,
 	return fsg_inquiry_show(fsg_opts->common, buf);
 }
 
-static ssize_t mass_storage_inquiry_store(struct device *dev,
+/* mass_storage: storage_inquiry_store */
+static ssize_t inquiry_string_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
 {
 	struct fsg_opts *fsg_opts;
@@ -512,9 +508,7 @@ static ssize_t mass_storage_inquiry_store(struct device *dev,
 	return fsg_inquiry_store(fsg_opts->common, buf, size);
 }
 
-static DEVICE_ATTR(inquiry_string, 0644,
-					mass_storage_inquiry_show,
-					mass_storage_inquiry_store);
+static DEVICE_ATTR_RW(inquiry_string);
 
 static struct device_attribute *mass_storage_function_attributes[] = {
 	&dev_attr_inquiry_string,
@@ -639,7 +633,7 @@ android_unbind_enabled_functions(struct android_dev *dev,
 	}
 }
 
-static int android_enable_function(struct android_dev *dev, char *name)
+static int android_enable_function(struct android_dev *dev, const char *name)
 {
 	struct android_usb_function **functions = dev->functions;
 	struct android_usb_function *f;
@@ -810,16 +804,10 @@ static ssize_t enable_store(struct device *pdev, struct device_attribute *attr,
 		pr_notice("[USB]%s: enable 0->1 case, idVendor=0x%x, idProduct=0x%x\n",
 				__func__,
 				device_desc.idVendor, device_desc.idProduct);
-#ifdef CONFIG_MTPROF
-		{
-			static int first_shot = 1;
 
-			if (first_shot) {
-				log_boot("USB ready");
-				first_shot = 0;
-			}
-		}
-#endif
+		if (IS_ENABLED(CONFIG_MTPROF))
+			bootprof_log("USB ready");
+
 	} else if (!enabled && dev->enabled) {
 		pr_notice("[USB]%s: enable 1->0 case, idVendor=0x%x, idProduct=0x%x\n",
 				__func__,
@@ -951,12 +939,10 @@ DESCRIPTOR_STRING_ATTR(iManufacturer, manufacturer_string);
 DESCRIPTOR_STRING_ATTR(iProduct, product_string);
 DESCRIPTOR_STRING_ATTR(iSerial, serial_str);
 
-static DEVICE_ATTR(functions, 0444, functions_show,
-						 functions_store);
-static DEVICE_ATTR(enable, 0444, enable_show, enable_store);
-static DEVICE_ATTR(state, 0444, state_show, NULL);
-static DEVICE_ATTR(log, 0644, log_show,
-						 log_store);
+static DEVICE_ATTR_RW(functions);
+static DEVICE_ATTR_RW(enable);
+static DEVICE_ATTR_RO(state);
+static DEVICE_ATTR_RW(log);
 
 static struct device_attribute *android_usb_attributes[] = {
 	&dev_attr_idVendor,
@@ -1149,8 +1135,9 @@ android_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *c)
 
 	req->zero = 0;
 	req->length = 0;
+	/* no need for FASTMETA */
 	/* req->complete = dev->setup_complete; */
-	req->complete = composite_setup_complete;
+	/* req->complete = composite_setup_complete; */
 	gadget->ep0->driver_data = cdev;
 
 	list_for_each_entry(f, &dev->enabled_functions, enabled_list) {
@@ -1297,29 +1284,44 @@ void enable_meta_vcom(int mode)
 
 static const char TAG_NAME[] = "androidboot.usbconfig=";
 
-int acm_shortcut(void)
+int meta_dt_get_mboot_params(void)
 {
+	struct device_node *np_chosen;
+	struct tag_bootmode *tag = NULL;
 	char *ptr;
-	char mode = 0;
+	char mode;
 
-#ifdef CONFIG_MTK_BOOT
-	if (get_boot_mode() != META_BOOT)
-		return 0;
-#else
-	return 0;
-#endif
+	np_chosen = of_find_node_by_path("/chosen");
+	if (!np_chosen)
+		np_chosen = of_find_node_by_path("/chosen@0");
 
-	ptr = strstr(saved_command_line, TAG_NAME);
-	if (ptr) {
-		mode = *(ptr + strlen(TAG_NAME));
+	tag = (struct tag_bootmode *)of_get_property(np_chosen, "atag,boot",
+						    NULL);
+	if (!tag) {
+		pr_notice("%s: fail to get atag,boot\n", __func__);
+	} else {
+		pr_notice("bootmode: 0x%x boottype: 0x%x\n",
+				tag->bootmode, tag->boottype);
+
+		/* check androidboot.usbconfig mode */
+		ptr = strstr(saved_command_line, TAG_NAME);
+		if (ptr) {
+			mode = *(ptr + strlen(TAG_NAME));
+		} else {
+			pr_notice("cannot find \"androidboot.usbconfig=\"\n");
+			return 0;
+		}
+
+		if (mode == '1' || mode == '2') {
+			pr_notice("Mediatek FASTMETA mode [%c]\n", mode);
+
 		if (mode == '1')
 			return 1;
 		else if (mode == '2')
 			return 2;
-
-		pr_notice("not fast mode [%c]\n", mode);
-	} else
-		pr_notice("cat not find \"androidboot.usbconfig=\" in cmdline\n");
+		}
+		pr_notice("not FASTMETA mode [%c]\n", mode);
+	}
 	return 0;
 }
 
@@ -1329,7 +1331,7 @@ static int __init meta_usb_init(void)
 	int err;
 	int config = 0;
 
-	config = acm_shortcut();
+	config = meta_dt_get_mboot_params();
 
 	if (!config)
 		return 0;

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/delay.h>
@@ -49,6 +41,9 @@
 #include "disp_arr.h"
 #include "primary_display.h"
 
+static struct mutex cb_table_lock;
+#define DISP_MAX_FPSCHG_CALLBACK 5
+static FPS_CHG_CALLBACK fps_chg_callback_table[DISP_MAX_FPSCHG_CALLBACK];
 
 /* used by ARR2.0 */
 int primary_display_get_cur_refresh_rate(void)
@@ -61,7 +56,8 @@ int primary_display_get_max_refresh_rate(void)
 	int ret = -1;
 
 	/* _primary_path_lock(__func__); */
-	if (pgc->plcm->params->max_refresh_rate != 0)
+	if ((pgc && pgc->plcm && pgc->plcm->params) &&
+		(pgc->plcm->params->max_refresh_rate != 0))
 		ret = pgc->plcm->params->max_refresh_rate;
 	else
 		ret = 60;
@@ -75,7 +71,8 @@ int primary_display_get_min_refresh_rate(void)
 	int ret = -1;
 
 	/* _primary_path_lock(__func__); */
-	if (pgc->plcm->params->min_refresh_rate != 0)
+	if ((pgc && pgc->plcm && pgc->plcm->params) &&
+		(pgc->plcm->params->min_refresh_rate != 0))
 		ret = pgc->plcm->params->min_refresh_rate;
 	else
 		ret = 60;
@@ -102,3 +99,15 @@ int primary_display_set_refresh_rate(unsigned int refresh_rate)
 	return ret;
 }
 
+void disp_invoke_fps_chg_callbacks(unsigned int new_fps)
+{
+	unsigned int i = 0;
+
+	DISPMSG("[fps]: %s,new_fps =%d\n", __func__, new_fps);
+	mutex_lock(&cb_table_lock);
+	for (i = 0; i < DISP_MAX_FPSCHG_CALLBACK; i++) {
+		if (fps_chg_callback_table[i])
+			fps_chg_callback_table[i](new_fps);
+	}
+	mutex_unlock(&cb_table_lock);
+}

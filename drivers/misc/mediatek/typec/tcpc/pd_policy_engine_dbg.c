@@ -1,16 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * Power Delivery Policy Engine for DBGACC
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "inc/pd_core.h"
@@ -31,11 +21,11 @@ void pe_dbg_ready_entry(struct pd_port *pd_port)
 	pd_reset_protocol_layer(pd_port, false);
 
 	if (pd_port->data_role == PD_ROLE_UFP) {
-		PE_INFO("Custom_DBGACC : UFP\r\n");
+		PE_INFO("Custom_DBGACC : UFP\n");
 		state = PD_CONNECT_PE_READY_DBGACC_UFP;
 		pd_set_rx_enable(pd_port, PD_RX_CAP_PE_READY_UFP);
 	} else {
-		PE_INFO("Custom_DBGACC : DFP\r\n");
+		PE_INFO("Custom_DBGACC : DFP\n");
 		state = PD_CONNECT_PE_READY_DBGACC_DFP;
 		pd_set_rx_enable(pd_port, PD_RX_CAP_PE_READY_DFP);
 	}

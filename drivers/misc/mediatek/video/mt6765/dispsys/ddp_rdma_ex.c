@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "RDMA"
@@ -33,8 +25,6 @@
 
 static unsigned int rdma_fps[RDMA_INSTANCES] = { 60, 60 };
 static struct golden_setting_context *rdma_golden_setting;
-
-int polling_rdma_output_line_enable = 1;
 
 /*****************************************************************************/
 unsigned int rdma_index(enum DISP_MODULE_ENUM module)
@@ -522,7 +512,7 @@ void rdma_set_ultra_l(unsigned int idx, unsigned int bpp, void *handle,
 }
 
 #else
-
+/* new from mt6763 */
 /* set ultra registers */
 void rdma_set_ultra_l(unsigned int idx, unsigned int bpp, void *handle,
 	struct golden_setting_context *p_golden_setting)
@@ -545,6 +535,7 @@ void rdma_set_ultra_l(unsigned int idx, unsigned int bpp, void *handle,
 	unsigned long long consume_rate = 0;
 	unsigned long long consume_rate_div_tmp = 0;
 	unsigned long long consume_rate_div = 0;
+	unsigned int if_fps = 60;
 	unsigned int fifo_valid_size = 384;
 	unsigned int fifo_off_drs_enter = 0;
 	unsigned int fifo_off_drs_leave = 0;
@@ -661,7 +652,7 @@ void rdma_set_ultra_l(unsigned int idx, unsigned int bpp, void *handle,
 			fifo_off_ultra = 0;
 		consume_rate = rdma_golden_setting->dst_width;
 		consume_rate = consume_rate * rdma_golden_setting->dst_height
-				*frame_rate * Bytes_per_sec;
+				*if_fps * Bytes_per_sec;
 		do_div(consume_rate, 1000);
 
 	} else {
@@ -673,10 +664,11 @@ void rdma_set_ultra_l(unsigned int idx, unsigned int bpp, void *handle,
 		consume_rate = rdma_golden_setting->ext_dst_width;
 		consume_rate = consume_rate *
 				rdma_golden_setting->ext_dst_height
-				* frame_rate * Bytes_per_sec;
+				* if_fps * Bytes_per_sec;
 
 		do_div(consume_rate, 1000);
 	}
+
 	consume_rate *= 1250;
 	do_div(consume_rate, 16*1000);
 	consume_rate_div_tmp = consume_rate;
@@ -704,7 +696,6 @@ void rdma_set_ultra_l(unsigned int idx, unsigned int bpp, void *handle,
 	issue_req_threshold =
 		(fifo_valid_size - preultra_low) < 255
 				? (fifo_valid_size - preultra_low) : 255;
-
 
 	/* output valid should < total rdma data size, or hang will happen */
 	temp = rdma_golden_setting->rdma_width;
@@ -1031,6 +1022,7 @@ int rdma_clock_on(enum DISP_MODULE_ENUM module, void *handle)
 
 int rdma_clock_off(enum DISP_MODULE_ENUM module, void *handle)
 {
+	DISPCHECK("%s clock_off\n", ddp_get_module_name(module));
 	ddp_clk_disable_unprepare(ddp_get_module_clk_id(module));
 	return 0;
 }
@@ -1337,7 +1329,7 @@ int rdma_switch_to_nonsec(enum DISP_MODULE_ENUM module,
 	cmdq_engine = rdma_to_cmdq_engine(module);
 	if (rdma_is_sec[rdma_idx] == 1) {
 		/* rdma is in sec stat, we need to switch it to nonsec */
-		struct cmdqRecStruct *nonsec_switch_handle = { 0 };
+		struct cmdqRecStruct *nonsec_switch_handle;
 		int ret;
 
 		ret = cmdqRecCreate(
@@ -1495,9 +1487,8 @@ static int _rdma_partial_update(enum DISP_MODULE_ENUM module, void *arg,
 	void *handle)
 {
 	struct disp_rect *roi = (struct disp_rect *)arg;
-	unsigned int width = (unsigned int)roi->width;
-	unsigned int height = (unsigned int)roi->height;
-
+	int width = roi->width;
+	int height = roi->height;
 	unsigned int idx = rdma_index(module);
 	unsigned int offset = DISP_RDMA_INDEX_OFFSET * idx;
 
@@ -1509,10 +1500,10 @@ static int _rdma_partial_update(enum DISP_MODULE_ENUM module, void *arg,
 }
 
 int rdma_ioctl(enum DISP_MODULE_ENUM module, void *cmdq_handle,
-	unsigned int ioctl_cmd, unsigned long *params)
+	enum DDP_IOCTL_NAME ioctl_cmd, void *params)
 {
 	int ret = 0;
-	enum DDP_IOCTL_NAME ioctl = (enum DDP_IOCTL_NAME)ioctl_cmd;
+	enum DDP_IOCTL_NAME ioctl = ioctl_cmd;
 	unsigned int idx = rdma_index(module);
 
 	switch (ioctl) {
@@ -1550,61 +1541,10 @@ static int rdma_build_cmdq(enum DISP_MODULE_ENUM module, void *handle,
 		 * rdma will hold dvfs request forever
 		 * we reset here to solve this issue
 		 */
-
-		/*
-		 * Because SPM DVFS isn't reference to RDMA.
-		 * Revert this workaround.
-		 */
-		/* rdma_reset_by_cmdq(module, handle); */
-
+		rdma_reset_by_cmdq(module, handle);
 	}
 
 	return 0;
-}
-
-/* SW workaround.
- * Polling RDMA output line isn't 0 && RDMA status is run,
- * before switching mm clock mux in cmd mode.
- */
-void polling_rdma_output_line_is_not_zero(void)
-{
-	unsigned int idx = rdma_index(DISP_MODULE_RDMA0);
-	unsigned int offset = DISP_RDMA_INDEX_OFFSET * idx;
-	unsigned int loop_cnt = 0;
-
-	if (polling_rdma_output_line_enable &&
-		!primary_display_is_video_mode()) {
-		/* pr_info("%s start\n", __func__); */
-
-		while (loop_cnt < 1*1000) {
-			if (DISP_REG_GET(offset +
-					DISP_REG_RDMA_OUT_LINE_CNT) ||
-				!(DISP_REG_GET(offset +
-					DISP_REG_RDMA_DBG_OUT1) & 0x1))
-				break;
-			loop_cnt++;
-			udelay(1);
-		}
-#if 0
-		if (loop_cnt)
-			pr_info(
-			"%s delay loop_cnt=%d, outline=0x%x\n",
-				__func__,
-				loop_cnt,
-				DISP_REG_GET(offset +
-					DISP_REG_RDMA_OUT_LINE_CNT));
-#endif
-
-		if (loop_cnt == 1000)
-			DDPAEE(
-				"%s delay loop_cnt=%d, outline=0x%x\n",
-				__func__,
-				loop_cnt,
-				DISP_REG_GET(offset +
-					DISP_REG_RDMA_OUT_LINE_CNT));
-
-		/* pr_info("%s done\n", __func__); */
-	}
 }
 
 struct DDP_MODULE_DRIVER ddp_driver_rdma = {

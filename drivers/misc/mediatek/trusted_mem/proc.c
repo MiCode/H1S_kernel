@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define PR_FMT_HEADER_MUST_BE_INCLUDED_BEFORE_ALL_HDRS
@@ -24,13 +17,12 @@
 #include <linux/version.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
-
-#if defined(CONFIG_MTK_ION)
-#include <ion.h>
-#include <ion_priv.h>
-#include <mtk/ion_drv.h>
-#include <mtk/mtk_ion.h>
-#endif
+#include <linux/sizes.h>
+#include <linux/mod_devicetable.h>
+#include <linux/platform_device.h>
+#include <linux/dma-mapping.h>
+#include <linux/dma-direct.h>
+#include <linux/kallsyms.h>
 
 #include "private/tmem_error.h"
 #include "private/tmem_utils.h"
@@ -39,6 +31,8 @@
 
 #include "private/ut_cmd.h"
 #include "tee_impl/tee_invoke.h"
+
+#include "memory_ssmr.h"
 
 static int tmem_open(struct inode *inode, struct file *file)
 {
@@ -91,89 +85,9 @@ static void trusted_mem_device_chunk_free(enum TRUSTED_MEM_TYPE mem_type)
 		g_common_mem_handle[mem_type] = 0;
 }
 
-#if defined(CONFIG_MTK_ION)
-static unsigned int get_ion_heap_mask_id(enum TRUSTED_MEM_TYPE mem_type)
-{
-	switch (mem_type) {
-	case TRUSTED_MEM_SVP:
-		return ION_HEAP_MULTIMEDIA_SEC_MASK;
-	case TRUSTED_MEM_PROT:
-		return ION_HEAP_MULTIMEDIA_PROT_MASK;
-	case TRUSTED_MEM_WFD:
-		return ION_HEAP_MULTIMEDIA_WFD_MASK;
-	case TRUSTED_MEM_2D_FR:
-		return ION_HEAP_MULTIMEDIA_2D_FR_MASK;
-	case TRUSTED_MEM_HAPP:
-		return ION_HEAP_MULTIMEDIA_HAPP_MASK;
-	case TRUSTED_MEM_HAPP_EXTRA:
-		return ION_HEAP_MULTIMEDIA_HAPP_EXTRA_MASK;
-	case TRUSTED_MEM_SDSP:
-		return ION_HEAP_MULTIMEDIA_SDSP_MASK;
-	case TRUSTED_MEM_SDSP_SHARED:
-		return ION_HEAP_MULTIMEDIA_SDSP_SHARED_MASK;
-	default:
-		return ION_HEAP_MULTIMEDIA_SEC_MASK;
-	}
-}
-#endif
-
 static void trusted_mem_device_ion_alloc_free(enum TRUSTED_MEM_TYPE mem_type)
 {
-#if defined(CONFIG_MTK_ION)
-	u32 min_chunk_sz = tmem_core_get_min_chunk_size(mem_type);
-	struct ion_client *kern_ion_client;
-	struct ion_handle *kern_ion_handle;
-
-	pr_info("%d ion alloc sz: 0x%x\n", mem_type, min_chunk_sz);
-
-	kern_ion_client = ion_client_create(g_ion_device, "cpa_ion_client");
-	if (INVALID(kern_ion_client)) {
-		pr_err("%d create ion client failed!\n", mem_type);
-		return;
-	}
-
-	if (tmem_core_is_regmgr_region_on(mem_type)
-	    || !IS_ZERO(tmem_core_get_regmgr_region_ref_cnt(mem_type))) {
-		pr_err("%d region should be offlined!\n", mem_type);
-		ion_client_destroy(kern_ion_client);
-		return;
-	}
-
-	kern_ion_handle = ion_alloc(kern_ion_client, min_chunk_sz, 0,
-				    get_ion_heap_mask_id(mem_type), 0);
-
-	if (tmem_core_is_device_registered(mem_type)) {
-		/* Expect allocation to be passed if device is registered */
-		if (IS_ERR(kern_ion_handle))
-			pr_err("%d expect to be passed!\n", mem_type);
-		else if (!tmem_core_is_regmgr_region_on(mem_type))
-			pr_err("%d region should be onlined!\n", mem_type);
-		else if (IS_ZERO(tmem_core_get_regmgr_region_ref_cnt(mem_type)))
-			pr_err("%d region should be referenced!\n", mem_type);
-		else
-			pr_info("%s:%d %d ion alloc tested pass!\n", __func__,
-				__LINE__, mem_type);
-	} else {
-		/* Expect allocation to be failed if device is not registered */
-		if (!IS_ERR(kern_ion_handle))
-			pr_err("%d expect to be failed!\n", mem_type);
-		else if (tmem_core_is_regmgr_region_on(mem_type))
-			pr_err("%d region should not be onlined!\n", mem_type);
-		else if (!IS_ZERO(
-				 tmem_core_get_regmgr_region_ref_cnt(mem_type)))
-			pr_err("%d region should not be referenced!\n",
-			       mem_type);
-		else
-			pr_info("%s:%d %d ion alloc tested pass!\n", __func__,
-				__LINE__, mem_type);
-	}
-
-	if (!IS_ERR(kern_ion_handle))
-		ion_free(kern_ion_client, kern_ion_handle);
-	ion_client_destroy(kern_ion_client);
-#else
 	pr_info("%d ion interface is not supported!\n", mem_type);
-#endif
 }
 
 static void trusted_mem_device_common_operations(u64 cmd, u64 param1,
@@ -382,9 +296,30 @@ MODULE_PARM_DESC(ut_saturation_stress_pmem_min_chunk_size,
 		 "set pmem minimal chunk size for saturation stress tests");
 #endif
 
-static int __init trusted_mem_init(void)
+static int trusted_mem_init(struct platform_device *pdev)
 {
 	pr_info("%s:%d\n", __func__, __LINE__);
+
+	ssmr_probe(pdev);
+
+	trusted_mem_subsys_init();
+
+#ifdef TCORE_UT_TESTS_SUPPORT
+	tmem_ut_server_init();
+	tmem_ut_cases_init();
+#endif
+
+#ifdef TEE_DEVICES_SUPPORT
+	tee_smem_devs_init();
+#endif
+
+#ifdef MTEE_DEVICES_SUPPORT
+	mtee_mchunks_init();
+#endif
+
+#if IS_ENABLED(CONFIG_MTK_GZ_KREE)
+	tmem_mpu_vio_init();
+#endif
 
 	trusted_mem_create_proc_entry();
 
@@ -392,12 +327,44 @@ static int __init trusted_mem_init(void)
 	return TMEM_OK;
 }
 
-static void __exit trusted_mem_exit(void)
+static int trusted_mem_exit(struct platform_device *pdev)
 {
+#if IS_ENABLED(CONFIG_MTK_GZ_KREE)
+	tmem_mpu_vio_exit();
+#endif
+
+#ifdef MTEE_DEVICES_SUPPORT
+	mtee_mchunks_exit();
+#endif
+
+#ifdef TEE_DEVICES_SUPPORT
+	tee_smem_devs_exit();
+#endif
+
+#ifdef TCORE_UT_TESTS_SUPPORT
+	tmem_ut_cases_exit();
+	tmem_ut_server_exit();
+#endif
+
+	trusted_mem_subsys_exit();
+
+	return 0;
 }
 
-late_initcall(trusted_mem_init);
-module_exit(trusted_mem_exit);
+static const struct of_device_id tm_of_match_table[] = {
+	{ .compatible = "mediatek,trusted_mem"},
+	{},
+};
+
+static struct platform_driver trusted_mem_driver = {
+	.probe = trusted_mem_init,
+	.remove = trusted_mem_exit,
+	.driver = {
+		.name = "trusted_mem",
+		.of_match_table = tm_of_match_table,
+	},
+};
+module_platform_driver(trusted_mem_driver);
 
 MODULE_AUTHOR("MediaTek Inc.");
 MODULE_LICENSE("GPL");

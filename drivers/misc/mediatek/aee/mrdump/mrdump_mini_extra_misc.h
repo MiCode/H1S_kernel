@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 /*
@@ -29,4 +21,6 @@ EXTRA_MISC(get_ufs_aee_buffer, "UFS", (100 * 1024))
 EXTRA_MISC(get_blockio_aee_buffer, "BLOCKIO", (300 * 1024))
 EXTRA_MISC(get_ccci_aee_buffer, "CCCI", (300 * 1024))
 EXTRA_MISC(get_md_aee_buffer, "MD", (512 * 1024))
+#ifdef CONFIG_MTK_AUDIODSP_SUPPORT
 EXTRA_MISC(get_adsp_misc_buffer, "ADSP", (512 * 1024))
+#endif

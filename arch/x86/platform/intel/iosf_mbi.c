@@ -68,7 +68,7 @@ static int iosf_mbi_pci_read_mdr(u32 mcrx, u32 mcr, u32 *mdr)
 
 fail_read:
 	dev_err(&mbi_pdev->dev, "PCI config access failed with %d\n", result);
-	return result;
+	return pcibios_err_to_errno(result);
 }
 
 static int iosf_mbi_pci_write_mdr(u32 mcrx, u32 mcr, u32 mdr)
@@ -97,7 +97,7 @@ static int iosf_mbi_pci_write_mdr(u32 mcrx, u32 mcr, u32 mdr)
 
 fail_write:
 	dev_err(&mbi_pdev->dev, "PCI config access failed with %d\n", result);
-	return result;
+	return pcibios_err_to_errno(result);
 }
 
 int iosf_mbi_read(u8 port, u8 opcode, u32 offset, u32 *mdr)
@@ -218,14 +218,23 @@ int iosf_mbi_register_pmic_bus_access_notifier(struct notifier_block *nb)
 }
 EXPORT_SYMBOL(iosf_mbi_register_pmic_bus_access_notifier);
 
+int iosf_mbi_unregister_pmic_bus_access_notifier_unlocked(
+	struct notifier_block *nb)
+{
+	iosf_mbi_assert_punit_acquired();
+
+	return blocking_notifier_chain_unregister(
+				&iosf_mbi_pmic_bus_access_notifier, nb);
+}
+EXPORT_SYMBOL(iosf_mbi_unregister_pmic_bus_access_notifier_unlocked);
+
 int iosf_mbi_unregister_pmic_bus_access_notifier(struct notifier_block *nb)
 {
 	int ret;
 
 	/* Wait for the bus to go inactive before unregistering */
 	mutex_lock(&iosf_mbi_punit_mutex);
-	ret = blocking_notifier_chain_unregister(
-				&iosf_mbi_pmic_bus_access_notifier, nb);
+	ret = iosf_mbi_unregister_pmic_bus_access_notifier_unlocked(nb);
 	mutex_unlock(&iosf_mbi_punit_mutex);
 
 	return ret;
@@ -238,6 +247,12 @@ int iosf_mbi_call_pmic_bus_access_notifier_chain(unsigned long val, void *v)
 				&iosf_mbi_pmic_bus_access_notifier, val, v);
 }
 EXPORT_SYMBOL(iosf_mbi_call_pmic_bus_access_notifier_chain);
+
+void iosf_mbi_assert_punit_acquired(void)
+{
+	WARN_ON(!mutex_is_locked(&iosf_mbi_punit_mutex));
+}
+EXPORT_SYMBOL(iosf_mbi_assert_punit_acquired);
 
 #ifdef CONFIG_IOSF_MBI_DEBUG
 static u32	dbg_mdr;

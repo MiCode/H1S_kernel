@@ -1,30 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2012-2019, FocalTech Systems, Ltd., all rights reserved.
+ * Copyright (C) 2016 MediaTek Inc.
  */
 
-/*****************************************************************************
- *
- * File Name: focaltech_esdcheck.c
- *
- *    Author: Focaltech Driver Team
- *
- *   Created: 2016-08-03
- *
- *  Abstract: ESD check function
- *
- *   Version: v1.0
- *
- * Revision History:
- *        v1.0:
- *            First release. By luougojin 2016-08-03
- *        v1.1: By luougojin 2017-02-15
- *            1. Add LCD_ESD_PATCH to control idc_esdcheck_lcderror
- *****************************************************************************/
-
-/*****************************************************************************
- * Included header files
- *****************************************************************************/
 #include "focaltech_core.h"
 
 #if FTS_ESDCHECK_EN

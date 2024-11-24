@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/platform_device.h>
@@ -295,7 +288,8 @@ int vpu_dmp_create_locked(int c, struct vpu_request *req,
 
 	d = vpu_dmp_get(c);
 	if (!d) {
-		pr_info("%s: vpu%d: vpu_dmp_get: %d\n", __func__, c, d);
+		pr_info("%s: vpu%d: vpu_dmp_get: %lx\n", __func__, c,
+			(unsigned long)d);
 		goto out;
 	}
 	d->time = sched_clock();
@@ -303,10 +297,8 @@ int vpu_dmp_create_locked(int c, struct vpu_request *req,
 	va_start(args, fmt);
 	ret = vsnprintf(d->info, VPU_DMP_INFO_SZ, fmt, args);
 	va_end(args);
-	if (ret) {
+	if (ret < 0)
 		pr_info("%s: vsnprintf: %d\n", __func__, ret);
-		goto out;
-	}
 
 #define VPU_DMP_STATE(a) \
 	pr_info("%s: vpu%d: %s done. pc: 0x%x\n", \

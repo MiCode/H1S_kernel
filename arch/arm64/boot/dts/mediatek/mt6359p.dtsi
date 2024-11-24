@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 &main_pmic {
 	compatible = "mediatek,mt6359-pmic";
@@ -191,6 +183,12 @@
 				  "fg_cur_l";
 	};
 
+	pmic_efuse: pmic_efuse {
+		compatible = "mediatek,mt6359-efuse";
+		#address-cells = <1>;
+		#size-cells = <1>;
+	};
+
 	pmic_auxadc: mt635x-auxadc {
 		compatible = "mediatek,mt6359-auxadc";
 		#io-channel-cells = <1>;
@@ -239,6 +237,20 @@
 			channel = <AUXADC_VBIF>;
 			resistance-ratio = <5 2>;
 		};
+	};
+
+	mtk_ts_pmic: mtk_ts_pmic {
+		compatible = "mediatek,mtk_ts_pmic";
+		io-channels =
+			<&pmic_auxadc AUXADC_CHIP_TEMP>,
+			<&pmic_auxadc AUXADC_VCORE_TEMP>,
+			<&pmic_auxadc AUXADC_VPROC_TEMP>;
+		io-channel-names =
+			"pmic_chip_temp",
+			"pmic_buck1_temp",
+			"pmic_buck2_temp";
+		interconnects = <&pmic_auxadc 1>;
+		#interconnect-cells = <1>;
 	};
 
 	mt6359regulator: mt6359regulator {
@@ -366,7 +378,6 @@
 			regulator-enable-ramp-delay = <200>;
 		};
 		mt_pmic_vaud18_ldo_reg: ldo_vaud18 {
-			compatible = "regulator-fixed";
 			regulator-name = "vaud18";
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
@@ -391,7 +402,6 @@
 			regulator-enable-ramp-delay = <480>;
 		};
 		mt_pmic_vusb_ldo_reg: ldo_vusb {
-			compatible = "regulator-fixed";
 			regulator-name = "vusb";
 			regulator-min-microvolt = <3000000>;
 			regulator-max-microvolt = <3000000>;
@@ -416,14 +426,12 @@
 			regulator-enable-ramp-delay = <1920>;
 		};
 		mt_pmic_vcn18_ldo_reg: ldo_vcn18 {
-			compatible = "regulator-fixed";
 			regulator-name = "vcn18";
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
 			regulator-enable-ramp-delay = <240>;
 		};
 		mt_pmic_vfe28_ldo_reg: ldo_vfe28 {
-			compatible = "regulator-fixed";
 			regulator-name = "vfe28";
 			regulator-min-microvolt = <2800000>;
 			regulator-max-microvolt = <2800000>;
@@ -448,7 +456,6 @@
 			regulator-enable-ramp-delay = <240>;
 		};
 		mt_pmic_vaux18_ldo_reg: ldo_vaux18 {
-			compatible = "regulator-fixed";
 			regulator-name = "vaux18";
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
@@ -479,7 +486,6 @@
 			regulator-enable-ramp-delay = <480>;
 		};
 		mt_pmic_vbif28_ldo_reg: ldo_vbif28 {
-			compatible = "regulator-fixed";
 			regulator-name = "vbif28";
 			regulator-min-microvolt = <2800000>;
 			regulator-max-microvolt = <2800000>;
@@ -566,6 +572,7 @@
 	};	/* End of mt6359regulator */
 	mt6359_rtc: mt6359_rtc {
 		compatible = "mediatek,mt6359-rtc";
+		bootmode = <&chosen>;
 		interrupts = <INT_RTC IRQ_TYPE_NONE>;
 		interrupt-names = "rtc";
 		base = <0x580>;
@@ -574,4 +581,16 @@
 		compatible = "mediatek,mt6359p-misc";
 		base = <0x580>;
 	};
+	/*mt6359_snd: mt6359_snd {
+		compatible = "mediatek,mt6359-sound";
+		mediatek,pwrap-regmap = <&pwrap>;
+		nvmem = <&pmic_efuse>;
+		nvmem-names = "pmic-hp-efuse";
+		io-channels =
+			<&pmic_auxadc AUXADC_HPOFS_CAL>,
+			<&pmic_auxadc AUXADC_ACCDET>;
+		io-channel-names =
+			"pmic_hpofs_cal",
+			"pmic_accdet";
+	};*/
 };/* End of main_pmic */

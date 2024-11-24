@@ -94,12 +94,14 @@ static int ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	snprintf(sp->dirname, IBMASM_NAME_SIZE, "%d", sp->number);
 	snprintf(sp->devname, IBMASM_NAME_SIZE, "%s%d", DRIVER_NAME, sp->number);
 
-	if (ibmasm_event_buffer_init(sp)) {
+	result = ibmasm_event_buffer_init(sp);
+	if (result) {
 		dev_err(sp->dev, "Failed to allocate event buffer\n");
 		goto error_eventbuffer;
 	}
 
-	if (ibmasm_heartbeat_init(sp)) {
+	result = ibmasm_heartbeat_init(sp);
+	if (result) {
 		dev_err(sp->dev, "Failed to allocate heartbeat command\n");
 		goto error_heartbeat;
 	}
@@ -123,7 +125,7 @@ static int ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	result = ibmasm_init_remote_input_dev(sp);
 	if (result) {
 		dev_err(sp->dev, "Failed to initialize remote queue\n");
-		goto error_send_message;
+		goto error_init_remote;
 	}
 
 	result = ibmasm_send_driver_vpd(sp);
@@ -143,8 +145,9 @@ static int ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	return 0;
 
 error_send_message:
-	disable_sp_interrupts(sp->base_address);
 	ibmasm_free_remote_input_dev(sp);
+error_init_remote:
+	disable_sp_interrupts(sp->base_address);
 	free_irq(sp->irq, (void *)sp);
 error_request_irq:
 	iounmap(sp->base_address);

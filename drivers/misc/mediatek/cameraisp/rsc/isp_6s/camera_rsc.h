@@ -1,15 +1,6 @@
-/*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+//
+// Copyright (c) 2015 MediaTek Inc.
 
 #ifndef _MT_RSC_H
 #define _MT_RSC_H
@@ -41,7 +32,11 @@
 
 #define RSC_REG_RANGE           (0x1000)
 
-#define RSC_BASE_HW   0x1b003000
+#ifdef CONFIG_MACH_MT6781
+#define RSC_BASE_HW   0x1C003000
+#else
+#define RSC_BASE_HW   0x1B003000
+#endif
 
 /*This macro is for setting irq status represnted
  * by a local variable,RSCInfo.IrqInfo.Status[RSC_IRQ_TYPE_INT_RSC_ST]

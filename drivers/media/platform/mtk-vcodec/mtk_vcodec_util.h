@@ -1,17 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
-* Copyright (c) 2016 MediaTek Inc.
-* Author: PC Chen <pc.chen@mediatek.com>
-*       Tiffany Lin <tiffany.lin@mediatek.com>
-*
-* This program is free software; you can redistribute it and/or modify
-* it under the terms of the GNU General Public License version 2 as
-* published by the Free Software Foundation.
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-* GNU General Public License for more details.
-*/
+ * Copyright (c) 2019 MediaTek Inc.
+ */
 
 #ifndef _MTK_VCODEC_UTIL_H_
 #define _MTK_VCODEC_UTIL_H_
@@ -22,6 +12,9 @@
 
 /* #define FPGA_PWRCLK_API_DISABLE */
 /* #define FPGA_INTERRUPT_API_DISABLE */
+
+#define LOG_PARAM_INFO_SIZE 64
+#define LOG_PROPERTY_SIZE 1024
 
 struct mtk_vcodec_mem {
 	size_t length;
@@ -159,10 +152,13 @@ void mtk_vcodec_set_curr_ctx(struct mtk_vcodec_dev *dev,
 	struct mtk_vcodec_ctx *ctx, unsigned int hw_id);
 struct mtk_vcodec_ctx *mtk_vcodec_get_curr_ctx(struct mtk_vcodec_dev *dev,
 	unsigned int hw_id);
+void mtk_vcodec_add_ctx_list(struct mtk_vcodec_ctx *ctx);
+void mtk_vcodec_del_ctx_list(struct mtk_vcodec_ctx *ctx);
 struct vdec_fb *mtk_vcodec_get_fb(struct mtk_vcodec_ctx *ctx);
 int mtk_vdec_put_fb(struct mtk_vcodec_ctx *ctx, int type);
 void mtk_enc_put_buf(struct mtk_vcodec_ctx *ctx);
 void v4l2_m2m_buf_queue_check(struct v4l2_m2m_ctx *m2m_ctx,
 		void *vbuf);
-
+void mtk_vcodec_set_log(struct mtk_vcodec_ctx *ctx, char *val);
+void mtk_vcodec_get_log(struct mtk_vcodec_ctx *ctx, char *val);
 #endif /* _MTK_VCODEC_UTIL_H_ */

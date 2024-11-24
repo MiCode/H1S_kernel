@@ -336,7 +336,7 @@ static void virtscsi_handle_transport_reset(struct virtio_scsi *vscsi,
 		}
 		break;
 	default:
-		pr_info("Unsupport virtio scsi event reason %x\n", event->reason);
+		pr_info("Unsupported virtio scsi event reason %x\n", event->reason);
 	}
 }
 
@@ -389,7 +389,7 @@ static void virtscsi_handle_event(struct work_struct *work)
 		virtscsi_handle_param_change(vscsi, event);
 		break;
 	default:
-		pr_err("Unsupport virtio scsi event %x\n", event->event);
+		pr_err("Unsupported virtio scsi event %x\n", event->event);
 	}
 	virtscsi_kick_event(vscsi, event_node);
 }
@@ -513,20 +513,29 @@ static void virtio_scsi_init_hdr_pi(struct virtio_device *vdev,
 
 	if (sc->sc_data_direction == DMA_TO_DEVICE)
 		cmd_pi->pi_bytesout = cpu_to_virtio32(vdev,
-							blk_rq_sectors(rq) *
-							bi->tuple_size);
+						      bio_integrity_bytes(bi,
+							blk_rq_sectors(rq)));
 	else if (sc->sc_data_direction == DMA_FROM_DEVICE)
 		cmd_pi->pi_bytesin = cpu_to_virtio32(vdev,
-						       blk_rq_sectors(rq) *
-						       bi->tuple_size);
+						     bio_integrity_bytes(bi,
+							blk_rq_sectors(rq)));
 }
 #endif
 
-static int virtscsi_queuecommand(struct virtio_scsi *vscsi,
-				 struct virtio_scsi_vq *req_vq,
+static struct virtio_scsi_vq *virtscsi_pick_vq_mq(struct virtio_scsi *vscsi,
+						  struct scsi_cmnd *sc)
+{
+	u32 tag = blk_mq_unique_tag(sc->request);
+	u16 hwq = blk_mq_unique_tag_to_hwq(tag);
+
+	return &vscsi->req_vqs[hwq];
+}
+
+static int virtscsi_queuecommand(struct Scsi_Host *shost,
 				 struct scsi_cmnd *sc)
 {
-	struct Scsi_Host *shost = virtio_scsi_host(vscsi->vdev);
+	struct virtio_scsi *vscsi = shost_priv(shost);
+	struct virtio_scsi_vq *req_vq = virtscsi_pick_vq_mq(vscsi, sc);
 	struct virtio_scsi_cmd *cmd = scsi_cmd_priv(sc);
 	unsigned long flags;
 	int req_size;
@@ -567,32 +576,6 @@ static int virtscsi_queuecommand(struct virtio_scsi *vscsi,
 		return SCSI_MLQUEUE_HOST_BUSY;
 	}
 	return 0;
-}
-
-static int virtscsi_queuecommand_single(struct Scsi_Host *sh,
-					struct scsi_cmnd *sc)
-{
-	struct virtio_scsi *vscsi = shost_priv(sh);
-
-	return virtscsi_queuecommand(vscsi, &vscsi->req_vqs[0], sc);
-}
-
-static struct virtio_scsi_vq *virtscsi_pick_vq_mq(struct virtio_scsi *vscsi,
-						  struct scsi_cmnd *sc)
-{
-	u32 tag = blk_mq_unique_tag(sc->request);
-	u16 hwq = blk_mq_unique_tag_to_hwq(tag);
-
-	return &vscsi->req_vqs[hwq];
-}
-
-static int virtscsi_queuecommand_multi(struct Scsi_Host *sh,
-				       struct scsi_cmnd *sc)
-{
-	struct virtio_scsi *vscsi = shost_priv(sh);
-	struct virtio_scsi_vq *req_vq = virtscsi_pick_vq_mq(vscsi, sc);
-
-	return virtscsi_queuecommand(vscsi, req_vq, sc);
 }
 
 static int virtscsi_tmf(struct virtio_scsi *vscsi, struct virtio_scsi_cmd *cmd)
@@ -748,34 +731,13 @@ static enum blk_eh_timer_return virtscsi_eh_timed_out(struct scsi_cmnd *scmnd)
 	return BLK_EH_RESET_TIMER;
 }
 
-static struct scsi_host_template virtscsi_host_template_single = {
+static struct scsi_host_template virtscsi_host_template = {
 	.module = THIS_MODULE,
 	.name = "Virtio SCSI HBA",
 	.proc_name = "virtio_scsi",
 	.this_id = -1,
 	.cmd_size = sizeof(struct virtio_scsi_cmd),
-	.queuecommand = virtscsi_queuecommand_single,
-	.change_queue_depth = virtscsi_change_queue_depth,
-	.eh_abort_handler = virtscsi_abort,
-	.eh_device_reset_handler = virtscsi_device_reset,
-	.eh_timed_out = virtscsi_eh_timed_out,
-	.slave_alloc = virtscsi_device_alloc,
-
-	.dma_boundary = UINT_MAX,
-	.use_clustering = ENABLE_CLUSTERING,
-	.target_alloc = virtscsi_target_alloc,
-	.target_destroy = virtscsi_target_destroy,
-	.track_queue_depth = 1,
-	.force_blk_mq = 1,
-};
-
-static struct scsi_host_template virtscsi_host_template_multi = {
-	.module = THIS_MODULE,
-	.name = "Virtio SCSI HBA",
-	.proc_name = "virtio_scsi",
-	.this_id = -1,
-	.cmd_size = sizeof(struct virtio_scsi_cmd),
-	.queuecommand = virtscsi_queuecommand_multi,
+	.queuecommand = virtscsi_queuecommand,
 	.change_queue_depth = virtscsi_change_queue_depth,
 	.eh_abort_handler = virtscsi_abort,
 	.eh_device_reset_handler = virtscsi_device_reset,
@@ -830,9 +792,10 @@ static int virtscsi_init(struct virtio_device *vdev,
 	struct irq_affinity desc = { .pre_vectors = 2 };
 
 	num_vqs = vscsi->num_queues + VIRTIO_SCSI_VQ_BASE;
-	vqs = kmalloc(num_vqs * sizeof(struct virtqueue *), GFP_KERNEL);
-	callbacks = kmalloc(num_vqs * sizeof(vq_callback_t *), GFP_KERNEL);
-	names = kmalloc(num_vqs * sizeof(char *), GFP_KERNEL);
+	vqs = kmalloc_array(num_vqs, sizeof(struct virtqueue *), GFP_KERNEL);
+	callbacks = kmalloc_array(num_vqs, sizeof(vq_callback_t *),
+				  GFP_KERNEL);
+	names = kmalloc_array(num_vqs, sizeof(char *), GFP_KERNEL);
 
 	if (!callbacks || !vqs || !names) {
 		err = -ENOMEM;
@@ -881,7 +844,6 @@ static int virtscsi_probe(struct virtio_device *vdev)
 	u32 sg_elems, num_targets;
 	u32 cmd_per_lun;
 	u32 num_queues;
-	struct scsi_host_template *hostt;
 
 	if (!vdev->config->get) {
 		dev_err(&vdev->dev, "%s failure: config access disabled\n",
@@ -891,15 +853,11 @@ static int virtscsi_probe(struct virtio_device *vdev)
 
 	/* We need to know how many queues before we allocate. */
 	num_queues = virtscsi_config_get(vdev, num_queues) ? : 1;
+	num_queues = min_t(unsigned int, nr_cpu_ids, num_queues);
 
 	num_targets = virtscsi_config_get(vdev, max_target) + 1;
 
-	if (num_queues == 1)
-		hostt = &virtscsi_host_template_single;
-	else
-		hostt = &virtscsi_host_template_multi;
-
-	shost = scsi_host_alloc(hostt,
+	shost = scsi_host_alloc(&virtscsi_host_template,
 		sizeof(*vscsi) + sizeof(vscsi->req_vqs[0]) * num_queues);
 	if (!shost)
 		return -ENOMEM;

@@ -44,8 +44,6 @@ struct prev_kprobe {
 struct kprobe_ctlblk {
 	unsigned int kprobe_status;
 	struct prev_kprobe prev_kprobe;
-	struct pt_regs jprobe_saved_regs;
-	char jprobes_stack[MAX_STACK_SIZE];
 };
 
 void arch_remove_kprobe(struct kprobe *);
@@ -54,20 +52,20 @@ int kprobe_exceptions_notify(struct notifier_block *self,
 			     unsigned long val, void *data);
 
 /* optinsn template addresses */
-extern __visible kprobe_opcode_t optprobe_template_entry;
-extern __visible kprobe_opcode_t optprobe_template_val;
-extern __visible kprobe_opcode_t optprobe_template_call;
-extern __visible kprobe_opcode_t optprobe_template_end;
-extern __visible kprobe_opcode_t optprobe_template_sub_sp;
-extern __visible kprobe_opcode_t optprobe_template_add_sp;
-extern __visible kprobe_opcode_t optprobe_template_restore_begin;
-extern __visible kprobe_opcode_t optprobe_template_restore_orig_insn;
-extern __visible kprobe_opcode_t optprobe_template_restore_end;
+extern __visible kprobe_opcode_t optprobe_template_entry[];
+extern __visible kprobe_opcode_t optprobe_template_val[];
+extern __visible kprobe_opcode_t optprobe_template_call[];
+extern __visible kprobe_opcode_t optprobe_template_end[];
+extern __visible kprobe_opcode_t optprobe_template_sub_sp[];
+extern __visible kprobe_opcode_t optprobe_template_add_sp[];
+extern __visible kprobe_opcode_t optprobe_template_restore_begin[];
+extern __visible kprobe_opcode_t optprobe_template_restore_orig_insn[];
+extern __visible kprobe_opcode_t optprobe_template_restore_end[];
 
 #define MAX_OPTIMIZED_LENGTH	4
 #define MAX_OPTINSN_SIZE				\
-	((unsigned long)&optprobe_template_end -	\
-	 (unsigned long)&optprobe_template_entry)
+	((unsigned long)optprobe_template_end -	\
+	 (unsigned long)optprobe_template_entry)
 #define RELATIVEJUMP_SIZE	4
 
 struct arch_optimized_insn {

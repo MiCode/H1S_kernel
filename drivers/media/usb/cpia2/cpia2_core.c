@@ -2176,6 +2176,18 @@ static void reset_camera_struct(struct camera_data *cam)
  *
  *  cpia2_init_camera_struct
  *
+ *  Deinitialize camera struct
+ *****************************************************************************/
+void cpia2_deinit_camera_struct(struct camera_data *cam, struct usb_interface *intf)
+{
+	v4l2_device_unregister(&cam->v4l2_dev);
+	kfree(cam);
+}
+
+/******************************************************************************
+ *
+ *  cpia2_init_camera_struct
+ *
  *  Initializes camera struct, does not call reset to fill in defaults.
  *****************************************************************************/
 struct camera_data *cpia2_init_camera_struct(struct usb_interface *intf)
@@ -2370,12 +2382,12 @@ long cpia2_read(struct camera_data *cam,
  *  cpia2_poll
  *
  *****************************************************************************/
-unsigned int cpia2_poll(struct camera_data *cam, struct file *filp,
+__poll_t cpia2_poll(struct camera_data *cam, struct file *filp,
 			poll_table *wait)
 {
-	unsigned int status = v4l2_ctrl_poll(filp, wait);
+	__poll_t status = v4l2_ctrl_poll(filp, wait);
 
-	if ((poll_requested_events(wait) & (POLLIN | POLLRDNORM)) &&
+	if ((poll_requested_events(wait) & (EPOLLIN | EPOLLRDNORM)) &&
 			!cam->streaming) {
 		/* Start streaming */
 		cpia2_usb_stream_start(cam,
@@ -2385,7 +2397,7 @@ unsigned int cpia2_poll(struct camera_data *cam, struct file *filp,
 	poll_wait(filp, &cam->wq_stream, wait);
 
 	if (cam->curbuff->status == FRAME_READY)
-		status |= POLLIN | POLLRDNORM;
+		status |= EPOLLIN | EPOLLRDNORM;
 
 	return status;
 }

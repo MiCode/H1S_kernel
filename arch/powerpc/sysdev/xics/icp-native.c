@@ -145,7 +145,7 @@ static unsigned int icp_native_get_irq(void)
 
 static void icp_native_cause_ipi(int cpu)
 {
-	kvmppc_set_host_ipi(cpu, 1);
+	kvmppc_set_host_ipi(cpu);
 	icp_native_set_qirr(cpu, IPI_PRIORITY);
 }
 
@@ -164,7 +164,7 @@ void icp_native_cause_ipi_rm(int cpu)
 	 * Just like the cause_ipi functions, it is required to
 	 * include a full barrier before causing the IPI.
 	 */
-	xics_phys = paca[cpu].kvm_hstate.xics_phys;
+	xics_phys = paca_ptrs[cpu]->kvm_hstate.xics_phys;
 	mb();
 	__raw_rm_writeb(IPI_PRIORITY, xics_phys + XICS_MFRR);
 }
@@ -184,7 +184,7 @@ void icp_native_flush_interrupt(void)
 	if (vec == XICS_IPI) {
 		/* Clear pending IPI */
 		int cpu = smp_processor_id();
-		kvmppc_set_host_ipi(cpu, 0);
+		kvmppc_clear_host_ipi(cpu);
 		icp_native_set_qirr(cpu, 0xff);
 	} else {
 		pr_err("XICS: hw interrupt 0x%x to offline cpu, disabling\n",
@@ -205,7 +205,7 @@ static irqreturn_t icp_native_ipi_action(int irq, void *dev_id)
 {
 	int cpu = smp_processor_id();
 
-	kvmppc_set_host_ipi(cpu, 0);
+	kvmppc_clear_host_ipi(cpu);
 	icp_native_set_qirr(cpu, 0xff);
 
 	return smp_ipi_demux();
@@ -240,19 +240,19 @@ static int __init icp_native_map_one_cpu(int hw_id, unsigned long addr,
 	rname = kasprintf(GFP_KERNEL, "CPU %d [0x%x] Interrupt Presentation",
 			  cpu, hw_id);
 
+	if (!rname)
+		return -ENOMEM;
 	if (!request_mem_region(addr, size, rname)) {
-		pr_warning("icp_native: Could not reserve ICP MMIO"
-			   " for CPU %d, interrupt server #0x%x\n",
-			   cpu, hw_id);
+		pr_warn("icp_native: Could not reserve ICP MMIO for CPU %d, interrupt server #0x%x\n",
+			cpu, hw_id);
 		return -EBUSY;
 	}
 
 	icp_native_regs[cpu] = ioremap(addr, size);
 	kvmppc_set_xics_phys(cpu, addr);
 	if (!icp_native_regs[cpu]) {
-		pr_warning("icp_native: Failed ioremap for CPU %d, "
-			   "interrupt server #0x%x, addr %#lx\n",
-			   cpu, hw_id, addr);
+		pr_warn("icp_native: Failed ioremap for CPU %d, interrupt server #0x%x, addr %#lx\n",
+			cpu, hw_id, addr);
 		release_mem_region(addr, size);
 		return -ENOMEM;
 	}

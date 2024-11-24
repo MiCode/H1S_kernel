@@ -7,12 +7,13 @@
 #ifndef __MTK_LPM_MODULE_H__
 #define __MTK_LPM_MODULE_H__
 
-#include <linux/arm-smccc.h>
-#include <mt-plat/mtk_secure_api.h>
+#include<linux/arm-smccc.h>
+#include<linux/soc/mediatek/mtk_sip_svc.h>
+
 
 #define mtk_lpm_smc_impl(p1, p2, p3, p4, p5, res) \
-			arm_smccc_smc(p1, p2, p3, p4\
-			, p5, 0, 0, 0, &res)
+			arm_smccc_smc(p1, p2, p3, p4,\
+			p5, 0, 0, 0, &res)
 
 
 #define mtk_lpm_smc(_funcid, _lp_id, _act, _val1, _val2) ({\
@@ -34,10 +35,10 @@
 #define MT_LPM_SMC_ACT_COMPAT		(1<<31UL)
 
 
-#define MT_LPM_SMC_MAGIC		0xDA000000
-#define MT_LPM_SMC_USER_MASK		0xff
-#define MT_LPM_SMC_USER_SHIFT		16
-#define MT_LPM_SMC_USER_ID_MASK		0x0000ffff
+#define MT_LPM_SMC_MAGIC                        0xDA000000
+#define MT_LPM_SMC_USER_MASK            0xff
+#define MT_LPM_SMC_USER_SHIFT           16
+#define MT_LPM_SMC_USER_ID_MASK         0x0000ffff
 
 enum mt_lpm_smc_user_id {
 	mt_lpm_smc_user_cpu_pm = 0,
@@ -51,7 +52,7 @@ enum mt_lpm_smc_user_id {
 /* sink user id to smc's user id */
 #define MT_LPM_SMC_USER_SINK(user, uid) \
 		(((uid & MT_LPM_SMC_USER_ID_MASK)\
-		| ((user & MT_LPM_SMC_USER_MASK)\
+			| ((user & MT_LPM_SMC_USER_MASK)\
 			<< MT_LPM_SMC_USER_SHIFT))\
 		| MT_LPM_SMC_MAGIC)
 
@@ -99,14 +100,15 @@ enum MT_CPU_PM_SMC_UID {
 	IRQ_REMAIN_LIST_ALLOC,
 	IRQ_REMAIN_IRQ_ADD,
 	IRQ_REMAIN_IRQ_SUBMIT,
+	MBOX_INFO,
 };
 
 #define mtk_lpm_smc_cpu_pm(_lp_id, _act, _val1, _val2) ({\
 		mtk_lpm_smc(MTK_SIP_MTK_LPM_CONTROL,\
-				MT_LPM_SMC_USER_CPU_PM(_lp_id),\
-				_act, _val1, _val2); })
+					MT_LPM_SMC_USER_CPU_PM(_lp_id),\
+					_act, _val1, _val2); })
 
-/* spm debug smc definition */
+/* pm debug smc definition */
 
 enum MT_SPM_DBG_SMC_UID {
 	/* spm dbg function ID*/
@@ -135,12 +137,13 @@ enum MT_SPM_DBG_SMC_UID {
 	MT_SPM_DBG_SMC_UID_RC_BBLPM,
 	MT_SPM_DBG_SMC_UID_RC_TRACE,
 	MT_SPM_DBG_SMC_UID_RC_TRACE_TIME,
+	MT_SPM_DBG_SMC_UID_RC_GPIO200_DATAIN,
 };
 
 #define mtk_lpm_smc_spm_dbg(_lp_id, _act, _val1, _val2) ({\
 		mtk_lpm_smc(MTK_SIP_MTK_LPM_CONTROL,\
-				MT_LPM_SMC_USER_SPM_DBG(_lp_id),\
-				_act, _val1, _val2); })
+					MT_LPM_SMC_USER_SPM_DBG(_lp_id),\
+					_act, _val1, _val2); })
 
 
 /* spm smc definition */
@@ -159,8 +162,8 @@ enum MT_SPM_SMC_UID {
 };
 #define mtk_lpm_smc_spm(_lp_id, _act, _val1, _val2) ({\
 		mtk_lpm_smc(MTK_SIP_MTK_LPM_CONTROL,\
-				MT_LPM_SMC_USER_SPM(_lp_id),\
-				_act, _val1, _val2); })
+					MT_LPM_SMC_USER_SPM(_lp_id),\
+					_act, _val1, _val2); })
 
 enum MT_CPU_PM_LP_SMC_UID {
 	LP_CPC_COMMAND,

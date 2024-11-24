@@ -169,12 +169,13 @@ static struct line6_pcm_properties pod_pcm_properties = {
 	.bytes_per_channel = 3 /* SNDRV_PCM_FMTBIT_S24_3LE */
 };
 
+
 static const char pod_version_header[] = {
-	0xf2, 0x7e, 0x7f, 0x06, 0x02
+	0xf0, 0x7e, 0x7f, 0x06, 0x02
 };
 
 /* forward declarations: */
-static void pod_startup2(unsigned long data);
+static void pod_startup2(struct timer_list *t);
 static void pod_startup3(struct usb_line6_pod *pod);
 
 static char *pod_alloc_sysex_buffer(struct usb_line6_pod *pod, int code,
@@ -286,13 +287,12 @@ static void pod_startup1(struct usb_line6_pod *pod)
 	CHECK_STARTUP_PROGRESS(pod->startup_progress, POD_STARTUP_INIT);
 
 	/* delay startup procedure: */
-	line6_start_timer(&pod->startup_timer, POD_STARTUP_DELAY, pod_startup2,
-			  (unsigned long)pod);
+	line6_start_timer(&pod->startup_timer, POD_STARTUP_DELAY, pod_startup2);
 }
 
-static void pod_startup2(unsigned long data)
+static void pod_startup2(struct timer_list *t)
 {
-	struct usb_line6_pod *pod = (struct usb_line6_pod *)data;
+	struct usb_line6_pod *pod = from_timer(pod, t, startup_timer);
 	struct usb_line6 *line6 = &pod->line6;
 
 	CHECK_STARTUP_PROGRESS(pod->startup_progress, POD_STARTUP_VERSIONREQ);
@@ -413,16 +413,11 @@ static int pod_init(struct usb_line6 *line6,
 	line6->process_message = line6_pod_process_message;
 	line6->disconnect = line6_pod_disconnect;
 
-	init_timer(&pod->startup_timer);
+	timer_setup(&pod->startup_timer, NULL, 0);
 	INIT_WORK(&pod->startup_work, pod_startup4);
 
 	/* create sysfs entries: */
 	err = snd_card_add_dev_attr(line6->card, &pod_dev_attr_group);
-	if (err < 0)
-		return err;
-
-	/* initialize MIDI subsystem: */
-	err = line6_init_midi(line6);
 	if (err < 0)
 		return err;
 

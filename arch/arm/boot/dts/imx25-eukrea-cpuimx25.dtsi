@@ -17,7 +17,8 @@
 	model = "Eukrea CPUIMX25";
 	compatible = "eukrea,cpuimx25", "fsl,imx25";
 
-	memory {
+	memory@80000000 {
+		device_type = "memory";
 		reg = <0x80000000 0x4000000>; /* 64M */
 	};
 };
@@ -34,7 +35,7 @@
 	pinctrl-0 = <&pinctrl_i2c1>;
 	status = "okay";
 
-	pcf8563@51 {
+	rtc@51 {
 		compatible = "nxp,pcf8563";
 		reg = <0x51>;
 	};

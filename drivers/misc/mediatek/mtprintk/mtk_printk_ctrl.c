@@ -9,7 +9,7 @@
 #include <linux/uaccess.h>
 #include <linux/seq_file.h>
 #include <linux/delay.h>
-#include <linux/sched/clock.h>
+//#include <linux/module.h>
 #include <linux/moduleparam.h>
 
 #include "mt-plat/mtk_printk_ctrl.h"
@@ -21,8 +21,9 @@
 /* --------------------------------------------------- */
 /*                     Define Proc entry               */
 /* --------------------------------------------------- */
+extern unsigned long long sched_clock(void);
 
-#ifdef CONFIG_MTK_PRINTK_UART_CONSOLE
+#ifdef CONFIG_PRINTK_MTK_UART_CONSOLE
 /*
  * printk_ctrl:
  * 0: uart printk enable
@@ -66,7 +67,7 @@ EXPORT_SYMBOL_GPL(mt_enable_uart);
 static int mt_printk_ctrl_show(struct seq_file *m, void *v)
 {
 	seq_puts(m, "=== mt printk controller ===\n");
-#ifdef CONFIG_MTK_PRINTK_UART_CONSOLE
+#ifdef CONFIG_PRINTK_MTK_UART_CONSOLE
 	seq_puts(m, "0:   printk uart disable\n");
 	seq_puts(m, "1:   printk uart enable\n");
 #endif
@@ -79,7 +80,7 @@ static int mt_printk_ctrl_show(struct seq_file *m, void *v)
 #endif
 	seq_puts(m, "=== mt printk controller ===\n\n");
 	seq_printf(m, "kernel log buffer len: %dKB\n", log_buf_len_get()/1024);
-#ifdef CONFIG_MTK_PRINTK_UART_CONSOLE
+#ifdef CONFIG_PRINTK_MTK_UART_CONSOLE
 	seq_printf(m, "printk uart enable: %d\n", mt_get_uartlog_status());
 #endif
 #ifdef CONFIG_LOG_TOO_MUCH_WARNING
@@ -132,7 +133,7 @@ static ssize_t mt_printk_ctrl_write(struct file *filp,
 		return ret;
 
 	switch (val) {
-#ifdef CONFIG_MTK_PRINTK_UART_CONSOLE
+#ifdef CONFIG_PRINTK_MTK_UART_CONSOLE
 	case 0:
 		mt_disable_uart();
 		break;

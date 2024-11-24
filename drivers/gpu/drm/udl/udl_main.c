@@ -11,6 +11,7 @@
  * more details.
  */
 #include <drm/drmP.h>
+#include <drm/drm_crtc_helper.h>
 #include "udl_drv.h"
 
 /* -BULK_SIZE as per usb-skeleton. Can we get full page and avoid overhead? */
@@ -169,7 +170,6 @@ static void udl_free_urb_list(struct drm_device *dev)
 	struct list_head *node;
 	struct urb_node *unode;
 	struct urb *urb;
-	unsigned long flags;
 
 	DRM_DEBUG("Waiting for completes and freeing all render urbs\n");
 
@@ -177,12 +177,12 @@ static void udl_free_urb_list(struct drm_device *dev)
 	while (count--) {
 		down(&udl->urbs.limit_sem);
 
-		spin_lock_irqsave(&udl->urbs.lock, flags);
+		spin_lock_irq(&udl->urbs.lock);
 
 		node = udl->urbs.list.next; /* have reserved one with sem */
 		list_del_init(node);
 
-		spin_unlock_irqrestore(&udl->urbs.lock, flags);
+		spin_unlock_irq(&udl->urbs.lock);
 
 		unode = list_entry(node, struct urb_node, entry);
 		urb = unode->urb;
@@ -267,7 +267,6 @@ struct urb *udl_get_urb(struct drm_device *dev)
 	struct list_head *entry;
 	struct urb_node *unode;
 	struct urb *urb = NULL;
-	unsigned long flags;
 
 	/* Wait for an in-flight buffer to complete and get re-queued */
 	ret = down_timeout(&udl->urbs.limit_sem, GET_URB_TIMEOUT);
@@ -278,14 +277,14 @@ struct urb *udl_get_urb(struct drm_device *dev)
 		goto error;
 	}
 
-	spin_lock_irqsave(&udl->urbs.lock, flags);
+	spin_lock_irq(&udl->urbs.lock);
 
 	BUG_ON(list_empty(&udl->urbs.list)); /* reserved one with limit_sem */
 	entry = udl->urbs.list.next;
 	list_del_init(entry);
 	udl->urbs.available--;
 
-	spin_unlock_irqrestore(&udl->urbs.lock, flags);
+	spin_unlock_irq(&udl->urbs.lock);
 
 	unode = list_entry(entry, struct urb_node, entry);
 	urb = unode->urb;
@@ -318,6 +317,8 @@ int udl_init(struct udl_device *udl)
 
 	DRM_DEBUG("\n");
 
+	mutex_init(&udl->gem_lock);
+
 	if (!udl_parse_vendor_descriptor(dev, udl->udev)) {
 		ret = -ENODEV;
 		DRM_ERROR("firmware not recognized. Assume incompatible device\n");
@@ -341,13 +342,10 @@ int udl_init(struct udl_device *udl)
 	if (ret)
 		goto err;
 
-	ret = drm_vblank_init(dev, 1);
-	if (ret)
-		goto err_fb;
+	drm_kms_helper_poll_init(dev);
 
 	return 0;
-err_fb:
-	udl_fbdev_cleanup(dev);
+
 err:
 	if (udl->urbs.count)
 		udl_free_urb_list(dev);
@@ -364,6 +362,8 @@ int udl_drop_usb(struct drm_device *dev)
 void udl_fini(struct drm_device *dev)
 {
 	struct udl_device *udl = to_udl(dev);
+
+	drm_kms_helper_poll_fini(dev);
 
 	if (udl->urbs.count)
 		udl_free_urb_list(dev);

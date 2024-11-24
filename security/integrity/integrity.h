@@ -15,6 +15,7 @@
 #include <linux/integrity.h>
 #include <crypto/sha.h>
 #include <linux/key.h>
+#include <linux/audit.h>
 
 /* iint action cache flags */
 #define IMA_MEASURE		0x00000001
@@ -25,33 +26,40 @@
 #define IMA_COLLECTED		0x00000020
 #define IMA_AUDIT		0x00000040
 #define IMA_AUDITED		0x00000080
+#define IMA_HASH		0x00000100
+#define IMA_HASHED		0x00000200
 
 /* iint cache flags */
 #define IMA_ACTION_FLAGS	0xff000000
-#define IMA_ACTION_RULE_FLAGS	0x06000000
 #define IMA_DIGSIG_REQUIRED	0x01000000
 #define IMA_PERMIT_DIRECTIO	0x02000000
 #define IMA_NEW_FILE		0x04000000
 #define EVM_IMMUTABLE_DIGSIG	0x08000000
+#define IMA_FAIL_UNVERIFIABLE_SIGS	0x10000000
 
 #define IMA_DO_MASK		(IMA_MEASURE | IMA_APPRAISE | IMA_AUDIT | \
-				 IMA_APPRAISE_SUBMASK)
+				 IMA_HASH | IMA_APPRAISE_SUBMASK)
 #define IMA_DONE_MASK		(IMA_MEASURED | IMA_APPRAISED | IMA_AUDITED | \
-				 IMA_COLLECTED | IMA_APPRAISED_SUBMASK)
+				 IMA_HASHED | IMA_COLLECTED | \
+				 IMA_APPRAISED_SUBMASK)
 
 /* iint subaction appraise cache flags */
-#define IMA_FILE_APPRAISE	0x00000100
-#define IMA_FILE_APPRAISED	0x00000200
-#define IMA_MMAP_APPRAISE	0x00000400
-#define IMA_MMAP_APPRAISED	0x00000800
-#define IMA_BPRM_APPRAISE	0x00001000
-#define IMA_BPRM_APPRAISED	0x00002000
-#define IMA_READ_APPRAISE	0x00004000
-#define IMA_READ_APPRAISED	0x00008000
+#define IMA_FILE_APPRAISE	0x00001000
+#define IMA_FILE_APPRAISED	0x00002000
+#define IMA_MMAP_APPRAISE	0x00004000
+#define IMA_MMAP_APPRAISED	0x00008000
+#define IMA_BPRM_APPRAISE	0x00010000
+#define IMA_BPRM_APPRAISED	0x00020000
+#define IMA_READ_APPRAISE	0x00040000
+#define IMA_READ_APPRAISED	0x00080000
+#define IMA_CREDS_APPRAISE	0x00100000
+#define IMA_CREDS_APPRAISED	0x00200000
 #define IMA_APPRAISE_SUBMASK	(IMA_FILE_APPRAISE | IMA_MMAP_APPRAISE | \
-				 IMA_BPRM_APPRAISE | IMA_READ_APPRAISE)
+				 IMA_BPRM_APPRAISE | IMA_READ_APPRAISE | \
+				 IMA_CREDS_APPRAISE)
 #define IMA_APPRAISED_SUBMASK	(IMA_FILE_APPRAISED | IMA_MMAP_APPRAISED | \
-				 IMA_BPRM_APPRAISED | IMA_READ_APPRAISED)
+				 IMA_BPRM_APPRAISED | IMA_READ_APPRAISED | \
+				 IMA_CREDS_APPRAISED)
 
 /* iint cache atomic_flags */
 #define IMA_CHANGE_XATTR	0
@@ -114,10 +122,13 @@ struct integrity_iint_cache {
 	unsigned long flags;
 	unsigned long measured_pcrs;
 	unsigned long atomic_flags;
+	unsigned long real_ino;
+	dev_t real_dev;
 	enum integrity_status ima_file_status:4;
 	enum integrity_status ima_mmap_status:4;
 	enum integrity_status ima_bprm_status:4;
 	enum integrity_status ima_read_status:4;
+	enum integrity_status ima_creds_status:4;
 	enum integrity_status evm_status:4;
 	struct ima_digest_data *ima_hash;
 };
@@ -130,12 +141,12 @@ struct integrity_iint_cache *integrity_iint_find(struct inode *inode);
 int integrity_kernel_read(struct file *file, loff_t offset,
 			  void *addr, unsigned long count);
 
-int __init integrity_read_file(const char *path, char **data);
-
 #define INTEGRITY_KEYRING_EVM		0
 #define INTEGRITY_KEYRING_IMA		1
 #define INTEGRITY_KEYRING_MODULE	2
 #define INTEGRITY_KEYRING_MAX		3
+
+extern struct dentry *integrity_dir;
 
 #ifdef CONFIG_INTEGRITY_SIGNATURE
 
@@ -191,6 +202,13 @@ static inline void evm_load_x509(void)
 void integrity_audit_msg(int audit_msgno, struct inode *inode,
 			 const unsigned char *fname, const char *op,
 			 const char *cause, int result, int info);
+
+static inline struct audit_buffer *
+integrity_audit_log_start(struct audit_context *ctx, gfp_t gfp_mask, int type)
+{
+	return audit_log_start(ctx, gfp_mask, type);
+}
+
 #else
 static inline void integrity_audit_msg(int audit_msgno, struct inode *inode,
 				       const unsigned char *fname,
@@ -198,4 +216,11 @@ static inline void integrity_audit_msg(int audit_msgno, struct inode *inode,
 				       int result, int info)
 {
 }
+
+static inline struct audit_buffer *
+integrity_audit_log_start(struct audit_context *ctx, gfp_t gfp_mask, int type)
+{
+	return NULL;
+}
+
 #endif

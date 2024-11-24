@@ -45,6 +45,7 @@
  *
  */
 
+#include <linux/bitfield.h>
 #include <linux/pci.h>
 #include <linux/io.h>
 #include <linux/delay.h>
@@ -55,11 +56,6 @@
 #include "hfi.h"
 #include "chip_registers.h"
 #include "aspm.h"
-
-/* link speed vector for Gen3 speed - not in Linux headers */
-#define GEN1_SPEED_VECTOR 0x1
-#define GEN2_SPEED_VECTOR 0x2
-#define GEN3_SPEED_VECTOR 0x3
 
 /*
  * This file contains PCIe utility routines.
@@ -162,6 +158,7 @@ int hfi1_pcie_ddinit(struct hfi1_devdata *dd, struct pci_dev *pdev)
 	unsigned long len;
 	resource_size_t addr;
 	int ret = 0;
+	u32 rcv_array_count;
 
 	addr = pci_resource_start(pdev, 0);
 	len = pci_resource_len(pdev, 0);
@@ -183,9 +180,17 @@ int hfi1_pcie_ddinit(struct hfi1_devdata *dd, struct pci_dev *pdev)
 		return -ENOMEM;
 	}
 	dd_dev_info(dd, "UC base1: %p for %x\n", dd->kregbase1, RCV_ARRAY);
-	dd->chip_rcv_array_count = readq(dd->kregbase1 + RCV_ARRAY_CNT);
-	dd_dev_info(dd, "RcvArray count: %u\n", dd->chip_rcv_array_count);
-	dd->base2_start  = RCV_ARRAY + dd->chip_rcv_array_count * 8;
+
+	/* verify that reads actually work, save revision for reset check */
+	dd->revision = readq(dd->kregbase1 + CCE_REVISION);
+	if (dd->revision == ~(u64)0) {
+		dd_dev_err(dd, "Cannot read chip CSRs\n");
+		goto nomem;
+	}
+
+	rcv_array_count = readq(dd->kregbase1 + RCV_ARRAY_CNT);
+	dd_dev_info(dd, "RcvArray count: %u\n", rcv_array_count);
+	dd->base2_start  = RCV_ARRAY + rcv_array_count * 8;
 
 	dd->kregbase2 = ioremap_nocache(
 		addr + dd->base2_start,
@@ -211,13 +216,13 @@ int hfi1_pcie_ddinit(struct hfi1_devdata *dd, struct pci_dev *pdev)
 	 * to write an entire cacheline worth of entries in one shot.
 	 */
 	dd->rcvarray_wc = ioremap_wc(addr + RCV_ARRAY,
-				     dd->chip_rcv_array_count * 8);
+				     rcv_array_count * 8);
 	if (!dd->rcvarray_wc) {
 		dd_dev_err(dd, "WC mapping of receive array failed\n");
 		goto nomem;
 	}
 	dd_dev_info(dd, "WC RcvArray: %p for %x\n",
-		    dd->rcvarray_wc, dd->chip_rcv_array_count * 8);
+		    dd->rcvarray_wc, rcv_array_count * 8);
 
 	dd->flags |= HFI1_PRESENT;	/* chip.c CSR routines now work */
 	return 0;
@@ -262,17 +267,11 @@ static u32 extract_speed(u16 linkstat)
 	case PCI_EXP_LNKSTA_CLS_5_0GB:
 		speed = 5000; /* Gen 2, 5GHz */
 		break;
-	case GEN3_SPEED_VECTOR:
+	case PCI_EXP_LNKSTA_CLS_8_0GB:
 		speed = 8000; /* Gen 3, 8GHz */
 		break;
 	}
 	return speed;
-}
-
-/* return the PCIe link speed from the given link status */
-static u32 extract_width(u16 linkstat)
-{
-	return (linkstat & PCI_EXP_LNKSTA_NLW) >> PCI_EXP_LNKSTA_NLW_SHIFT;
 }
 
 /* read the link status and set dd->{lbus_width,lbus_speed,lbus_info} */
@@ -287,7 +286,7 @@ static void update_lbus_info(struct hfi1_devdata *dd)
 		return;
 	}
 
-	dd->lbus_width = extract_width(linkstat);
+	dd->lbus_width = FIELD_GET(PCI_EXP_LNKSTA_NLW, linkstat);
 	dd->lbus_speed = extract_speed(linkstat);
 	snprintf(dd->lbus_info, sizeof(dd->lbus_info),
 		 "PCIe,%uMHz,x%u", dd->lbus_speed, dd->lbus_width);
@@ -317,7 +316,7 @@ int pcie_speeds(struct hfi1_devdata *dd)
 		return ret;
 	}
 
-	if ((linkcap & PCI_EXP_LNKCAP_SLS) != GEN3_SPEED_VECTOR) {
+	if ((linkcap & PCI_EXP_LNKCAP_SLS) != PCI_EXP_LNKCAP_SLS_8_0GB) {
 		dd_dev_info(dd,
 			    "This HFI is not Gen3 capable, max speed 0x%x, need 0x3\n",
 			    linkcap & PCI_EXP_LNKCAP_SLS);
@@ -345,25 +344,19 @@ int pcie_speeds(struct hfi1_devdata *dd)
 /*
  * Returns:
  *	- actual number of interrupts allocated or
- *	- 0 if fell back to INTx.
  *      - error
  */
 int request_msix(struct hfi1_devdata *dd, u32 msireq)
 {
 	int nvec;
 
-	nvec = pci_alloc_irq_vectors(dd->pcidev, 1, msireq,
-				     PCI_IRQ_MSIX | PCI_IRQ_LEGACY);
+	nvec = pci_alloc_irq_vectors(dd->pcidev, msireq, msireq, PCI_IRQ_MSIX);
 	if (nvec < 0) {
 		dd_dev_err(dd, "pci_alloc_irq_vectors() failed: %d\n", nvec);
 		return nvec;
 	}
 
 	tune_pcie_caps(dd);
-
-	/* check for legacy IRQ */
-	if (nvec == 1 && !dd->pcidev->msix_enabled)
-		return 0;
 
 	return nvec;
 }
@@ -696,9 +689,6 @@ const struct pci_error_handlers hfi1_pci_err_handler = {
 /* gasket block secondary bus reset delay */
 #define SBR_DELAY_US 200000	/* 200ms */
 
-/* mask for PCIe capability register lnkctl2 target link speed */
-#define LNKCTL2_TARGET_LINK_SPEED_MASK 0xf
-
 static uint pcie_target = 3;
 module_param(pcie_target, uint, S_IRUGO);
 MODULE_PARM_DESC(pcie_target, "PCIe target speed (0 skip, 1-3 Gen1-3)");
@@ -900,16 +890,11 @@ static int trigger_sbr(struct hfi1_devdata *dd)
 		}
 
 	/*
-	 * A secondary bus reset (SBR) issues a hot reset to our device.
-	 * The following routine does a 1s wait after the reset is dropped
-	 * per PCI Trhfa (recovery time).  PCIe 3.0 section 6.6.1 -
-	 * Conventional Reset, paragraph 3, line 35 also says that a 1s
-	 * delay after a reset is required.  Per spec requirements,
-	 * the link is either working or not after that point.
+	 * This is an end around to do an SBR during probe time. A new API needs
+	 * to be implemented to have cleaner interface but this fixes the
+	 * current brokenness
 	 */
-	pci_reset_bridge_secondary_bus(dev->bus->self);
-
-	return 0;
+	return pci_bridge_secondary_bus_reset(dev->bus->self);
 }
 
 /*
@@ -1033,6 +1018,7 @@ int do_pcie_gen3_transition(struct hfi1_devdata *dd)
 	int do_retry, retry_count = 0;
 	int intnum = 0;
 	uint default_pset;
+	uint pset = pcie_pset;
 	u16 target_vector, target_speed;
 	u16 lnkctl2, vendor;
 	u8 div;
@@ -1046,13 +1032,13 @@ int do_pcie_gen3_transition(struct hfi1_devdata *dd)
 		return 0;
 
 	if (pcie_target == 1) {			/* target Gen1 */
-		target_vector = GEN1_SPEED_VECTOR;
+		target_vector = PCI_EXP_LNKCTL2_TLS_2_5GT;
 		target_speed = 2500;
 	} else if (pcie_target == 2) {		/* target Gen2 */
-		target_vector = GEN2_SPEED_VECTOR;
+		target_vector = PCI_EXP_LNKCTL2_TLS_5_0GT;
 		target_speed = 5000;
 	} else if (pcie_target == 3) {		/* target Gen3 */
-		target_vector = GEN3_SPEED_VECTOR;
+		target_vector = PCI_EXP_LNKCTL2_TLS_8_0GT;
 		target_speed = 8000;
 	} else {
 		/* off or invalid target - skip */
@@ -1200,16 +1186,16 @@ retry:
 	 *
 	 * Set Gen3EqPsetReqVec, leave other fields 0.
 	 */
-	if (pcie_pset == UNSET_PSET)
-		pcie_pset = default_pset;
-	if (pcie_pset > 10) {	/* valid range is 0-10, inclusive */
+	if (pset == UNSET_PSET)
+		pset = default_pset;
+	if (pset > 10) {	/* valid range is 0-10, inclusive */
 		dd_dev_err(dd, "%s: Invalid Eq Pset %u, setting to %d\n",
-			   __func__, pcie_pset, default_pset);
-		pcie_pset = default_pset;
+			   __func__, pset, default_pset);
+		pset = default_pset;
 	}
-	dd_dev_info(dd, "%s: using EQ Pset %u\n", __func__, pcie_pset);
+	dd_dev_info(dd, "%s: using EQ Pset %u\n", __func__, pset);
 	pci_write_config_dword(dd->pcidev, PCIE_CFG_REG_PL106,
-			       ((1 << pcie_pset) <<
+			       ((1 << pset) <<
 			PCIE_CFG_REG_PL106_GEN3_EQ_PSET_REQ_VEC_SHIFT) |
 			PCIE_CFG_REG_PL106_GEN3_EQ_EVAL2MS_DISABLE_SMASK |
 			PCIE_CFG_REG_PL106_GEN3_EQ_PHASE23_EXIT_MODE_SMASK);
@@ -1239,10 +1225,10 @@ retry:
 		/* apply static CTLE tunings */
 		u8 pcie_dc, pcie_lf, pcie_hf, pcie_bw;
 
-		pcie_dc = ctle_tunings[pcie_pset][0];
-		pcie_lf = ctle_tunings[pcie_pset][1];
-		pcie_hf = ctle_tunings[pcie_pset][2];
-		pcie_bw = ctle_tunings[pcie_pset][3];
+		pcie_dc = ctle_tunings[pset][0];
+		pcie_lf = ctle_tunings[pset][1];
+		pcie_hf = ctle_tunings[pset][2];
+		pcie_bw = ctle_tunings[pset][3];
 		write_gasket_interrupt(dd, intnum++, 0x0026, 0x0200 | pcie_dc);
 		write_gasket_interrupt(dd, intnum++, 0x0026, 0x0100 | pcie_lf);
 		write_gasket_interrupt(dd, intnum++, 0x0026, 0x0000 | pcie_hf);
@@ -1291,8 +1277,8 @@ retry:
 	dd_dev_info(dd, "%s: ..old link control2: 0x%x\n", __func__,
 		    (u32)lnkctl2);
 	/* only write to parent if target is not as high as ours */
-	if ((lnkctl2 & LNKCTL2_TARGET_LINK_SPEED_MASK) < target_vector) {
-		lnkctl2 &= ~LNKCTL2_TARGET_LINK_SPEED_MASK;
+	if ((lnkctl2 & PCI_EXP_LNKCTL2_TLS) < target_vector) {
+		lnkctl2 &= ~PCI_EXP_LNKCTL2_TLS;
 		lnkctl2 |= target_vector;
 		dd_dev_info(dd, "%s: ..new link control2: 0x%x\n", __func__,
 			    (u32)lnkctl2);
@@ -1317,7 +1303,7 @@ retry:
 
 	dd_dev_info(dd, "%s: ..old link control2: 0x%x\n", __func__,
 		    (u32)lnkctl2);
-	lnkctl2 &= ~LNKCTL2_TARGET_LINK_SPEED_MASK;
+	lnkctl2 &= ~PCI_EXP_LNKCTL2_TLS;
 	lnkctl2 |= target_vector;
 	dd_dev_info(dd, "%s: ..new link control2: 0x%x\n", __func__,
 		    (u32)lnkctl2);

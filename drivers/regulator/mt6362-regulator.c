@@ -349,8 +349,16 @@ static const struct mt6362_regulator_irqt irqts[] = {
 static int mt6362_regulator_irq_register(struct regulator_dev *rdev)
 {
 	struct device *dev = rdev_get_dev(rdev);
-	struct device_node *np = dev->of_node;
+	struct device_node *np;
 	int i, irq, rv;
+
+	if (dev == NULL || dev->of_node == NULL)
+		return -EINVAL;
+	np = dev->of_node;
+
+	np = dev->of_node;
+	if (np == NULL)
+		return -EINVAL;
 
 	for (i = 0; i < ARRAY_SIZE(irqts); i++) {
 		irq = of_irq_get_byname(np, irqts[i].name);
@@ -372,7 +380,7 @@ static int mt6362_reconfigure_voltage_step(struct mt6362_regulator_data *data,
 	const unsigned int buck_fbd2_regs[] = {
 		0x29b, 0x2a3, 0x2ab, 0x2b3, 0x2d1, 0x2d9
 	};
-	unsigned int val;
+	unsigned int val = 0;
 	int rv;
 
 	if (desc->id >= MT6362_IDX_BUCK1 && desc->id <= MT6362_IDX_BUCK6) {

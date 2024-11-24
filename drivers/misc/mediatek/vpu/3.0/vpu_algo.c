@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/slab.h>
@@ -79,9 +72,8 @@ int vpu_init_algo(struct vpu_device *vpu_device)
 	return 0;
 }
 
-int vpu_add_algo_to_pool(int core_s, struct vpu_algo *algo)
+int vpu_add_algo_to_pool(int core, struct vpu_algo *algo)
 {
-	unsigned int core = core_s;
 	LOG_DBG("[vpu] %s +\n", __func__);
 	list_add_tail(vlist_link(algo, struct vpu_algo), &vpu_algo_pool[core]);
 	return 0;
@@ -97,9 +89,9 @@ int vpu_add_algo_to_user_pool(struct vpu_algo *algo, struct vpu_user *user)
 
 int vpu_free_algo_from_user_pool(int core_s, vpu_id_t id, struct vpu_user *user)
 {
-	unsigned int core = core_s;
 	struct list_head *head, *temp;
 	struct vpu_algo *algo_tmp;
+	unsigned int core = (unsigned int)core_s;
 
 	LOG_DBG("[vpu] %s +\n", __func__);
 	list_for_each_safe(head, temp, &user->algo_list) {
@@ -117,9 +109,9 @@ int vpu_free_algo_from_user_pool(int core_s, vpu_id_t id, struct vpu_user *user)
 int vpu_find_algo_by_id_from_user(int core_s, vpu_id_t id,
 	struct vpu_algo **ralgo, struct vpu_user *user)
 {
-	unsigned int core = core_s;
 	struct vpu_algo *algo;
 	struct list_head *head;
+	unsigned int core = (unsigned int)core_s;
 
 	list_for_each(head, &user->algo_list)
 	{
@@ -137,9 +129,9 @@ int vpu_find_algo_by_id_from_user(int core_s, vpu_id_t id,
 int vpu_find_algo_by_name_from_user(int core_s, char *name,
 	struct vpu_algo **ralgo, struct vpu_user *user)
 {
-	unsigned int core = core_s;
 	struct vpu_algo *algo;
 	struct list_head *head;
+	unsigned int core = (unsigned int)core_s;
 
 	list_for_each(head, &user->algo_list)
 	{
@@ -157,10 +149,10 @@ int vpu_find_algo_by_name_from_user(int core_s, char *name,
 int vpu_find_algo_by_id(int core_s, vpu_id_t id,
 	struct vpu_algo **ralgo, struct vpu_user *user)
 {
-	unsigned int core = core_s;
 	struct vpu_algo *algo;
 	struct list_head *head;
 	char *name;
+	unsigned int core = (unsigned int)core_s;
 
 	if (id < 1)
 		goto err;
@@ -196,9 +188,9 @@ err:
 int vpu_find_algo_by_name(int core_s, char *name,
 	struct vpu_algo **ralgo, bool needload, struct vpu_user *user)
 {
-	unsigned int core = core_s;
 	struct vpu_algo *algo;
 	struct list_head *head;
+	unsigned int core = (unsigned int)core_s;
 
 	LOG_DBG("[vpu] %s +\n", __func__);
 
@@ -234,7 +226,7 @@ int vpu_get_algo_id_by_name(int core_s, char *name, struct vpu_user *user)
 	struct vpu_algo *algo = NULL;
 	int algo_id = -1;
 	int ret = 0;
-	unsigned int core = core_s;
+	unsigned int core = (unsigned int)core_s;
 
 	if (name == NULL)
 		goto out;
@@ -300,9 +292,9 @@ static int vpu_calc_prop_offset(struct vpu_prop_desc *descs,
 int vpu_create_algo(int core_s, char *name,
 	struct vpu_algo **ralgo, bool needload)
 {
-	unsigned int core = core_s;
 	int ret, id, length;
 	unsigned int mva;
+	unsigned int core = (unsigned int)core_s;
 	struct vpu_algo *algo = NULL;
 
 	LOG_DBG("[vpu] %s + (%d)\n", __func__, needload);
@@ -408,7 +400,7 @@ out:
 int vpu_free_algo_from_user(struct vpu_user *user,
 	struct vpu_create_algo *create_algo)
 {
-	uint32_t core = (uint32_t)create_algo->core;
+	unsigned int core = create_algo->core;
 	struct vpu_algo *ralgo;
 	vpu_id_t id;
 
@@ -483,6 +475,7 @@ int vpu_dump_algo(struct seq_file *s)
 	char line_buffer[24 + 1] = {0};
 	unsigned char *info_data;
 	int debug_core = 0;
+	int ret = 0;
 
 	if (vpu_get_name_of_algo(debug_core, debug_algo_id,
 						&debug_algo_name)) {
@@ -541,15 +534,19 @@ int vpu_dump_algo(struct seq_file *s)
 							prop_desc->offset);
 			memset(line_buffer, ' ', 24);
 			for (j = 0; j < data_length; j++, info_data++) {
-				int pos = j % 8;
+				unsigned int pos = j % 8;
 
 				if (j && pos == 0) {
 					vpu_print_seq(s,
 					  "  |%-5s|%-15s|%-7s|%-7s|%04XH ",
 					  "", "", "", "", j);
 				}
-				sprintf(line_buffer + pos * 3, "%02X",
+				ret = sprintf(line_buffer + pos * 3, "%02X",
 						*info_data);
+				if (ret < 0) {
+					pr_info("%s: vsnprintf: %d\n", __func__, ret);
+					continue;
+				}
 
 				line_buffer[pos * 3 + 2] = ' ';
 				if (pos == 7 || j + 1 == data_length)

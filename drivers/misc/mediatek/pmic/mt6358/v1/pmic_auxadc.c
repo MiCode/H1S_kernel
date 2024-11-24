@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 #include <linux/kernel.h>
 #include <linux/kthread.h>
@@ -41,7 +34,7 @@
 #define CONFIG_MTK_GAUGE_VERSION 0
 #endif
 #if (CONFIG_MTK_GAUGE_VERSION == 30)
-#include <mt-plat/mtk_battery.h>
+#include <mt-plat/v1/mtk_battery.h>
 #include <mtk_battery_internal.h>
 #endif
 
@@ -225,9 +218,13 @@ int wk_vbat_cali(int vbat_out, int precision_factor)
 	return vbat_out;
 }
 
-static void auxadc_cali_init(void)
+static void auxadc_cali_init(struct device_node *np)
 {
 	unsigned int efuse = 0;
+	unsigned int efuse_offset;
+
+	if (of_property_read_u32(np, "cali-efuse-offset", &efuse_offset))
+		efuse_offset = 0;
 
 	if (pmic_get_register_value(PMIC_AUXADC_EFUSE_ADC_CALI_EN) == 1) {
 		g_DEGC = pmic_get_register_value(PMIC_AUXADC_EFUSE_DEGC_CALI);
@@ -242,7 +239,7 @@ static void auxadc_cali_init(void)
 		g_O_VTS = 1600;
 	}
 
-	efuse = pmic_Read_Efuse_HPOffset(39);
+	efuse = pmic_Read_Efuse_HPOffset(39 + efuse_offset);
 	g_CALI_FROM_EFUSE_EN = (efuse >> 2) & 0x1;
 	if (g_CALI_FROM_EFUSE_EN == 1) {
 		g_SIGN_AUX = (efuse >> 3) & 0x1;
@@ -257,12 +254,12 @@ static void auxadc_cali_init(void)
 	g_SIGN_BGRH = (efuse >> 5) & 0x1;
 	g_BGRCALI_EN = (efuse >> 7) & 0x1;
 
-	efuse = pmic_Read_Efuse_HPOffset(40);
+	efuse = pmic_Read_Efuse_HPOffset(40 + efuse_offset);
 	g_GAIN_BGRL = (efuse >> 9) & 0x7F;
-	efuse = pmic_Read_Efuse_HPOffset(41);
+	efuse = pmic_Read_Efuse_HPOffset(41 + efuse_offset);
 	g_GAIN_BGRH = (efuse >> 9) & 0x7F;
 
-	efuse = pmic_Read_Efuse_HPOffset(42);
+	efuse = pmic_Read_Efuse_HPOffset(42 + efuse_offset);
 	g_TEMP_L_CALI = (efuse >> 10) & 0x7;
 	g_TEMP_H_CALI = (efuse >> 13) & 0x7;
 
@@ -401,7 +398,7 @@ static void wk_auxadc_dbg_init(void)
  *********************************/
 /* global variable */
 static unsigned int mdrt_adc;
-static struct wakeup_source mdrt_wakelock;
+static struct wakeup_source* mdrt_wakelock;
 static struct mutex mdrt_mutex;
 static struct task_struct *mdrt_thread_handle;
 
@@ -410,7 +407,7 @@ void wake_up_mdrt_thread(void)
 {
 	HKLOG("[%s]\n", __func__);
 	if (mdrt_thread_handle != NULL) {
-		__pm_stay_awake(&mdrt_wakelock);
+		__pm_stay_awake(mdrt_wakelock);
 		wake_up_process(mdrt_thread_handle);
 	} else
 		pr_notice(PMICTAG "[%s] mdrt_thread_handle not ready\n",
@@ -551,7 +548,7 @@ static int mdrt_kthread(void *x)
 			polling_cnt++;
 		}
 		mutex_unlock(&mdrt_mutex);
-		__pm_relax(&mdrt_wakelock);
+		__pm_relax(mdrt_wakelock);
 
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule();
@@ -564,10 +561,11 @@ static int mdrt_kthread(void *x)
 
 static void mdrt_monitor_init(void)
 {
-	wakeup_source_init(&mdrt_wakelock, "MDRT Monitor wakelock");
+	//wakeup_source_init(&mdrt_wakelock, "MDRT Monitor wakelock");
+	mdrt_wakelock = wakeup_source_register(NULL, "MDRT Monitor wakelock");
 	mutex_init(&mdrt_mutex);
 	mdrt_adc = pmic_get_register_value(PMIC_AUXADC_ADC_OUT_MDRT);
-	mdrt_thread_handle = kthread_create(mdrt_kthread, NULL, "mdrt_thread");
+	mdrt_thread_handle = kthread_run(mdrt_kthread, NULL, "mdrt_thread");
 	if (IS_ERR(mdrt_thread_handle)) {
 		mdrt_thread_handle = NULL;
 		pr_notice(PMICTAG "[%s] creation fails\n", __func__);
@@ -761,7 +759,7 @@ int pmic_auxadc_chip_init(struct device *dev)
 #if 1 /*TBD*/
 	legacy_auxadc_init(dev);
 #endif
-	auxadc_cali_init();
+	auxadc_cali_init(dev->of_node);
 
 	wk_auxadc_dbg_init();
 

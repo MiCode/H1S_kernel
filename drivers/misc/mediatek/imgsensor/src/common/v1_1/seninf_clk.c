@@ -1,22 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 
 #include <linux/clk.h>
 
 #include "seninf_clk.h"
 
 #ifdef IMGSENSOR_DFS_CTRL_ENABLE
-struct pm_qos_request imgsensor_qos;
+struct mtk_pm_qos_request imgsensor_qos;
 
 int imgsensor_dfs_ctrl(enum DFS_OPTION option, void *pbuff)
 {
@@ -26,24 +19,24 @@ int imgsensor_dfs_ctrl(enum DFS_OPTION option, void *pbuff)
 
 	switch (option) {
 	case DFS_CTRL_ENABLE:
-		pm_qos_add_request(&imgsensor_qos, PM_QOS_CAM_FREQ, 0);
+		mtk_pm_qos_add_request(&imgsensor_qos, PM_QOS_CAM_FREQ, 0);
 		pr_debug("seninf PMQoS turn on\n");
 		break;
 	case DFS_CTRL_DISABLE:
-		pm_qos_remove_request(&imgsensor_qos);
+		mtk_pm_qos_remove_request(&imgsensor_qos);
 		pr_debug("seninf PMQoS turn off\n");
 		break;
 	case DFS_UPDATE:
 		pr_debug(
 			"seninf Set isp clock level:%d\n",
 			*(unsigned int *)pbuff);
-		pm_qos_update_request(&imgsensor_qos, *(unsigned int *)pbuff);
+		mtk_pm_qos_update_request(&imgsensor_qos, *(unsigned int *)pbuff);
 
 		break;
 	case DFS_RELEASE:
 		pr_debug(
 			"seninf release and set isp clk request to 0\n");
-		pm_qos_update_request(&imgsensor_qos, 0);
+		mtk_pm_qos_update_request(&imgsensor_qos, 0);
 		break;
 	case DFS_SUPPORTED_ISP_CLOCKS:
 	{
@@ -132,12 +125,25 @@ enum SENINF_RETURN seninf_clk_init(struct SENINF_CLK *pclk)
 		}
 	}
 #ifdef CONFIG_PM_SLEEP
-	wakeup_source_init(&pclk->seninf_wake_lock, "seninf_lock_wakelock");
+	pclk->seninf_wake_lock = wakeup_source_register(
+			NULL, "seninf_lock_wakelock");
+	if (!pclk->seninf_wake_lock) {
+		pr_info("failed to get seninf_wake_lock\n");
+		return SENINF_RETURN_ERROR;
+	}
 #endif
 	atomic_set(&pclk->wakelock_cnt, 0);
 
 	return SENINF_RETURN_SUCCESS;
 }
+#ifdef HAVE_SENINF_CLK_EXIT
+void seninf_clk_exit(struct SENINF_CLK *pclk)
+{
+#ifdef CONFIG_PM_SLEEP
+	wakeup_source_unregister(pclk->seninf_wake_lock);
+#endif
+}
+#endif
 
 int seninf_clk_set(struct SENINF_CLK *pclk,
 					struct ACDK_SENSOR_MCLK_STRUCT *pmclk)
@@ -223,7 +229,7 @@ void seninf_clk_open(struct SENINF_CLK *pclk)
 
 	if (atomic_inc_return(&pclk->wakelock_cnt) == 1) {
 #ifdef CONFIG_PM_SLEEP
-		__pm_stay_awake(&pclk->seninf_wake_lock);
+		__pm_stay_awake(pclk->seninf_wake_lock);
 #endif
 	}
 
@@ -253,7 +259,7 @@ void seninf_clk_release(struct SENINF_CLK *pclk)
 
 	if (atomic_dec_and_test(&pclk->wakelock_cnt)) {
 #ifdef CONFIG_PM_SLEEP
-		__pm_relax(&pclk->seninf_wake_lock);
+		__pm_relax(pclk->seninf_wake_lock);
 #endif
 	}
 }

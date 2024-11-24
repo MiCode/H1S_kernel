@@ -368,13 +368,16 @@ fscrypt_is_key_prepared(struct fscrypt_prepared_key *prep_key,
 			const struct fscrypt_info *ci)
 {
 	/*
-	 * The READ_ONCE() here pairs with the smp_store_release() in
-	 * fscrypt_prepare_key().  (This only matters for the per-mode keys,
-	 * which are shared by multiple inodes.)
+	 * The two smp_load_acquire()'s here pair with the smp_store_release()'s
+	 * in fscrypt_prepare_inline_crypt_key() and fscrypt_prepare_key().
+	 * I.e., in some cases (namely, if this prep_key is a per-mode
+	 * encryption key) another task can publish blk_key or tfm concurrently,
+	 * executing a RELEASE barrier.  We need to use smp_load_acquire() here
+	 * to safely ACQUIRE the memory the other task published.
 	 */
 	if (fscrypt_using_inline_encryption(ci))
-		return READ_ONCE(prep_key->blk_key) != NULL;
-	return READ_ONCE(prep_key->tfm) != NULL;
+		return smp_load_acquire(&prep_key->blk_key) != NULL;
+	return smp_load_acquire(&prep_key->tfm) != NULL;
 }
 
 #else /* CONFIG_FS_ENCRYPTION_INLINE_CRYPT */
@@ -421,7 +424,7 @@ static inline bool
 fscrypt_is_key_prepared(struct fscrypt_prepared_key *prep_key,
 			const struct fscrypt_info *ci)
 {
-	return READ_ONCE(prep_key->tfm) != NULL;
+	return smp_load_acquire(&prep_key->tfm) != NULL;
 }
 #endif /* !CONFIG_FS_ENCRYPTION_INLINE_CRYPT */
 
@@ -625,6 +628,6 @@ bool fscrypt_supported_policy(const union fscrypt_policy *policy_u,
 int fscrypt_policy_from_context(union fscrypt_policy *policy_u,
 				const union fscrypt_context *ctx_u,
 				int ctx_size);
-extern unsigned int get_boot_type(void);
+extern int is_emmc_type(void);
 
 #endif /* _FSCRYPT_PRIVATE_H */

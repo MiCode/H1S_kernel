@@ -1,20 +1,7 @@
-/* drivers/input/touchscreen/mediatek/gt9xx_mtk/gtp_extents.c
- *
- * Copyright  (C)  2010 - 2016 Goodix., Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be a reference
- * to you, when you are integrating the GOODiX's CTP IC into your system,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * Version: V2.6
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include "include/tpd_gt9xx_common.h"
 #include <asm/ioctl.h>

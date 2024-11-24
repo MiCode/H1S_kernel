@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/miscdevice.h>
@@ -37,16 +29,20 @@
 #include <linux/mutex.h>
 #include <linux/hardirq.h>
 #include <linux/sched.h>
+#include <linux/sched/clock.h>
 #include <linux/debugfs.h>
 
 #include <linux/ftrace.h>
 #include <linux/trace_events.h>
 #include <linux/bug.h>
-#include <linux/sched/clock.h>
+#ifdef CONFIG_MTK_AEE_FEATURE
 #include "mt-plat/aee.h"
+#endif
 
 #define MMPROFILE_INTERNAL
-#include <mmprofile_internal.h>
+#include "mmprofile_internal.h"
+#include "mmprofile_function.h"
+#include "mmprofile_static_event.h"
 
 #ifdef CONFIG_MTK_USE_RESERVED_EXT_MEM
 #include <linux/exm_driver.h>
@@ -79,6 +75,13 @@ static unsigned int mmprofile_meta_datacookie = 1;
 static bool mmp_log_on;
 static bool mmp_trace_log_on;
 
+#ifndef CONFIG_MTK_AEE_FEATURE
+# undef aee_kernel_warning_api
+# define aee_kernel_warning_api(...)
+# undef aee_kernel_exception
+# define aee_kernel_exception(...)
+#endif
+
 #define MMP_LOG(prio, fmt, arg...) \
 	do { \
 		if (mmp_log_on) \
@@ -89,16 +92,12 @@ static bool mmp_trace_log_on;
 
 #define mmp_aee(string, args...) do {	\
 	char disp_name[100];						\
-	int r;	\
-	r = snprintf(disp_name, 100, "[MMP]"string, ##args); \
-	if (r < 0 || r >= sizeof(disp_name)) {	\
-		pr_debug("snprintf error\n");	\
-	}	\
-		aee_kernel_warning_api(__FILE__, __LINE__, \
+	snprintf(disp_name, 100, "[MMP]"string, ##args); \
+	aee_kernel_warning_api(__FILE__, __LINE__, \
 		DB_OPT_DEFAULT | DB_OPT_MMPROFILE_BUFFER | \
 		DB_OPT_DISPLAY_HANG_DUMP | DB_OPT_DUMP_DISPLAY, \
 		disp_name, "[MMP] error"string, ##args);		\
-		pr_info("MMP error: "string, ##args);				\
+	pr_info("MMP error: "string, ##args);				\
 } while (0)
 struct mmprofile_regtable_t {
 	struct mmprofile_eventinfo_t event_info;
@@ -117,7 +116,9 @@ struct mmprofile_meta_datablock_t {
 static int bmmprofile_init_buffer;
 static DEFINE_MUTEX(mmprofile_buffer_init_mutex);
 static DEFINE_MUTEX(mmprofile_regtable_mutex);
+#ifdef CONFIG_MTK_ENG_BUILD
 static DEFINE_MUTEX(mmprofile_meta_buffer_mutex);
+#endif
 static struct mmprofile_event_t *p_mmprofile_ring_buffer;
 #ifdef CONFIG_MTK_ENG_BUILD
 static unsigned char *p_mmprofile_meta_buffer;
@@ -339,8 +340,8 @@ static void mmprofile_init_buffer(void)
 			mmprofile_globals.new_meta_buffer_size)) {
 		mutex_unlock(&mmprofile_buffer_init_mutex);
 		return;
-	} else
-		bmmprofile_init_buffer = 0;
+	}
+	bmmprofile_init_buffer = 0;
 
 	/* Initialize */
 	/* Allocate memory. */
@@ -401,8 +402,8 @@ static void mmprofile_init_buffer(void)
 	    vmalloc(mmprofile_globals.meta_buffer_size);
 #endif
 	}
-	MMP_LOG(ANDROID_LOG_DEBUG,
-		"p_mmprofile_meta_buffer=0x%08lx",
+
+	MMP_LOG(ANDROID_LOG_DEBUG, "p_mmprofile_meta_buffer=0x%08lx",
 		(unsigned long)p_mmprofile_meta_buffer);
 
 	if ((!p_mmprofile_ring_buffer) || (!p_mmprofile_meta_buffer)) {
@@ -505,6 +506,7 @@ void mmprofile_start(int start)
 	mmprofile_force_start(start);
 #endif
 }
+EXPORT_SYMBOL(mmprofile_start);
 
 void mmprofile_enable(int enable)
 {
@@ -515,6 +517,7 @@ void mmprofile_enable(int enable)
 	if (enable == 0)
 		mmprofile_force_start(0);
 }
+EXPORT_SYMBOL(mmprofile_enable);
 
 /* if using remote tool (PC side) or adb shell command, can always start mmp */
 static void mmprofile_remote_start(int start)
@@ -814,7 +817,7 @@ static void mmprofile_log_int(mmp_event event, enum mmp_log_type type,
 	 */
 	if (unlikely(event < 2))
 		return;
-	index = (atomic_inc_return((atomic_t *)
+	index = ((unsigned int)atomic_inc_return((atomic_t *)
 			&(mmprofile_globals.write_pointer)) - 1)
 	    % (mmprofile_globals.buffer_size_record);
 	/*check vmalloc address is valid or not*/
@@ -827,7 +830,7 @@ static void mmprofile_log_int(mmp_event event, enum mmp_log_type type,
 			mmprofile_globals.new_buffer_size_record);
 		return;
 	}
-	lock = atomic_inc_return((atomic_t *)
+	lock = (unsigned int)atomic_inc_return((atomic_t *)
 		&(p_mmprofile_ring_buffer[index].lock));
 	/*atomic_t is INT, write_pointer is UINT, avoid convert error*/
 	if (mmprofile_globals.write_pointer ==
@@ -839,7 +842,7 @@ static void mmprofile_log_int(mmp_event event, enum mmp_log_type type,
 		 */
 		while (1) {
 			index =
-				(atomic_inc_return((atomic_t *)
+				((unsigned int)atomic_inc_return((atomic_t *)
 				&(mmprofile_globals.write_pointer)) - 1) %
 				(mmprofile_globals.buffer_size_record);
 			if (!pfn_valid(vmalloc_to_pfn
@@ -854,7 +857,7 @@ static void mmprofile_log_int(mmp_event event, enum mmp_log_type type,
 				return;
 			}
 			lock =
-			    atomic_inc_return((atomic_t *) &
+			    (unsigned int)atomic_inc_return((atomic_t *) &
 					(p_mmprofile_ring_buffer[index].lock));
 			/*avoid convert error*/
 			if (mmprofile_globals.write_pointer ==
@@ -1459,10 +1462,9 @@ static ssize_t mmprofile_dbgfs_start_read(struct file *file, char __user *buf,
 
 	MMP_LOG(ANDROID_LOG_DEBUG, "start=%d", mmprofile_globals.start);
 	r = sprintf(str, "start = %d\n", mmprofile_globals.start);
-	if (r < 0) {
-		/* Handle sprintf() error */
+	if (r < 0)
 		pr_debug("sprintf error\n");
-	}
+
 	return simple_read_from_buffer(buf, size, ppos, str, r);
 }
 
@@ -1491,10 +1493,9 @@ static ssize_t mmprofile_dbgfs_enable_read(struct file *file, char __user *buf,
 
 	MMP_LOG(ANDROID_LOG_DEBUG, "enable=%d", mmprofile_globals.enable);
 	r = sprintf(str, "enable = %d\n", mmprofile_globals.enable);
-	if (r < 0) {
-		/* Handle sprintf() error */
+	if (r < 0)
 		pr_debug("sprintf error\n");
-	}
+
 	return simple_read_from_buffer(buf, size, ppos, str, r);
 }
 
@@ -1563,15 +1564,6 @@ static ssize_t mmprofile_dbgfs_global_read(struct file *file, char __user *buf,
 		MMPROFILE_GLOBALS_SIZE);
 }
 
-#if 0
-static ssize_t mmprofile_dbgfs_global_write(struct file *file,
-	const char __user *buf, size_t size, loff_t *ppos)
-{
-	return simple_write_to_buffer(&mmprofile_globals,
-		MMPROFILE_GLOBALS_SIZE, ppos, buf, size);
-}
-#endif
-
 static const struct file_operations mmprofile_dbgfs_enable_fops = {
 	.read = mmprofile_dbgfs_enable_read,
 	.write = mmprofile_dbgfs_enable_write,
@@ -1596,12 +1588,8 @@ static const struct file_operations mmprofile_dbgfs_buffer_fops = {
 
 static const struct file_operations mmprofile_dbgfs_global_fops = {
 	.read = mmprofile_dbgfs_global_read,
-#if 0
-	.write = mmprofile_dbgfs_global_write,
-#endif
 	.llseek = generic_file_llseek,
 };
-
 
 /* Debug FS end */
 
@@ -1633,11 +1621,6 @@ static void process_dbg_cmd(char *cmd)
 }
 
 /* Driver specific begin */
-#if 0
-static dev_t mmprofile_devno;
-static struct cdev *mmprofile_cdev;
-static struct class *mmprofile_class;
-#endif
 static int mmprofile_release(struct inode *inode, struct file *file)
 {
 	return 0;
@@ -2256,8 +2239,8 @@ static long mmprofile_ioctl_compat(struct file *file, unsigned int cmd,
 
 static int mmprofile_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	unsigned int pos = 0;
-	unsigned int i = 0;
+	unsigned long pos = 0;
+	unsigned long i = 0;
 
 	if (mmprofile_globals.selected_buffer == MMPROFILE_GLOBALS_BUFFER) {
 
@@ -2280,12 +2263,12 @@ static int mmprofile_mmap(struct file *file, struct vm_area_struct *vma)
 	} else if (mmprofile_globals.selected_buffer ==
 		MMPROFILE_PRIMARY_BUFFER) {
 
+		mmprofile_init_buffer();
+
 		/* check user space buffer length */
 		if ((vma->vm_end - vma->vm_start) !=
 			mmprofile_globals.buffer_size_bytes)
 			return -EINVAL;
-
-		mmprofile_init_buffer();
 
 		if (!bmmprofile_init_buffer)
 			return -EAGAIN;
@@ -2385,44 +2368,14 @@ static int mmprofile_remove(void)
 	return 0;
 }
 
-#if 0
-static struct platform_driver mmprofile_driver = {
-	.probe = mmprofile_probe,
-	.remove = mmprofile_remove,
-	.driver = {.name = MMP_DEVNAME}
-};
-
-static struct platform_device mmprofile_device = {
-	.name = MMP_DEVNAME,
-	.id = 0,
-};
-#endif
 static int __init mmprofile_init(void)
 {
-#if 0
-	if (platform_device_register(&mmprofile_device))
-		return -ENODEV;
-
-	if (platform_driver_register(&mmprofile_driver)) {
-		platform_device_unregister(&mmprofile_device);
-		return -ENODEV;
-	}
-#endif
 	mmprofile_probe();
 	return 0;
 }
 
 static void __exit mmprofile_exit(void)
 {
-#if 0
-	device_destroy(mmprofile_class, mmprofile_devno);
-	class_destroy(mmprofile_class);
-	cdev_del(mmprofile_cdev);
-	unregister_chrdev_region(mmprofile_devno, 1);
-
-	platform_driver_unregister(&mmprofile_driver);
-	platform_device_unregister(&mmprofile_device);
-#endif
 	mmprofile_remove();
 }
 

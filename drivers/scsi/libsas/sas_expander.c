@@ -41,9 +41,10 @@ static int sas_disable_routing(struct domain_device *dev,  u8 *sas_addr);
 
 /* ---------- SMP task management ---------- */
 
-static void smp_task_timedout(unsigned long _task)
+static void smp_task_timedout(struct timer_list *t)
 {
-	struct sas_task *task = (void *) _task;
+	struct sas_task_slow *slow = from_timer(slow, t, timer);
+	struct sas_task *task = slow->task;
 	unsigned long flags;
 
 	spin_lock_irqsave(&task->task_state_lock, flags);
@@ -90,7 +91,6 @@ static int smp_execute_task_sg(struct domain_device *dev,
 
 		task->task_done = smp_task_done;
 
-		task->slow_task->timer.data = (unsigned long) task;
 		task->slow_task->timer.function = smp_task_timedout;
 		task->slow_task->timer.expires = jiffies + SMP_TIMEOUT*HZ;
 		add_timer(&task->slow_task->timer);
@@ -269,8 +269,7 @@ static void sas_set_ex_phy(struct domain_device *dev, int phy_id, void *rsp)
 	/* help some expanders that fail to zero sas_address in the 'no
 	 * device' case
 	 */
-	if (phy->attached_dev_type == SAS_PHY_UNUSED ||
-	    phy->linkrate < SAS_LINK_RATE_1_5_GBPS)
+	if (phy->attached_dev_type == SAS_PHY_UNUSED)
 		memset(phy->attached_sas_addr, 0, SAS_ADDR_SIZE);
 	else
 		memcpy(phy->attached_sas_addr, dr->attached_sas_addr, SAS_ADDR_SIZE);
@@ -442,7 +441,7 @@ static int sas_expander_discover(struct domain_device *dev)
 	struct expander_device *ex = &dev->ex_dev;
 	int res = -ENOMEM;
 
-	ex->ex_phy = kzalloc(sizeof(*ex->ex_phy)*ex->num_phys, GFP_KERNEL);
+	ex->ex_phy = kcalloc(ex->num_phys, sizeof(*ex->ex_phy), GFP_KERNEL);
 	if (!ex->ex_phy)
 		return -ENOMEM;
 
@@ -1200,9 +1199,9 @@ static int sas_check_level_subtractive_boundary(struct domain_device *dev)
 	return 0;
 }
 /**
- * sas_ex_discover_devices -- discover devices attached to this expander
- * dev: pointer to the expander domain device
- * single: if you want to do a single phy, else set to -1;
+ * sas_ex_discover_devices - discover devices attached to this expander
+ * @dev: pointer to the expander domain device
+ * @single: if you want to do a single phy, else set to -1;
  *
  * Configure this expander for use with its devices and register the
  * devices of this expander.
@@ -1558,10 +1557,11 @@ static int sas_configure_phy(struct domain_device *dev, int phy_id,
 }
 
 /**
- * sas_configure_parent -- configure routing table of parent
- * parent: parent expander
- * child: child expander
- * sas_addr: SAS port identifier of device directly attached to child
+ * sas_configure_parent - configure routing table of parent
+ * @parent: parent expander
+ * @child: child expander
+ * @sas_addr: SAS port identifier of device directly attached to child
+ * @include: whether or not to include @child in the expander routing table
  */
 static int sas_configure_parent(struct domain_device *parent,
 				struct domain_device *child,
@@ -1600,9 +1600,9 @@ static int sas_configure_parent(struct domain_device *parent,
 }
 
 /**
- * sas_configure_routing -- configure routing
- * dev: expander device
- * sas_addr: port identifier of device directly attached to the expander device
+ * sas_configure_routing - configure routing
+ * @dev: expander device
+ * @sas_addr: port identifier of device directly attached to the expander device
  */
 static int sas_configure_routing(struct domain_device *dev, u8 *sas_addr)
 {
@@ -1619,8 +1619,8 @@ static int sas_disable_routing(struct domain_device *dev,  u8 *sas_addr)
 }
 
 /**
- * sas_discover_expander -- expander discovery
- * @ex: pointer to expander domain device
+ * sas_discover_expander - expander discovery
+ * @dev: pointer to expander domain device
  *
  * See comment in sas_discover_sata().
  */
@@ -1946,7 +1946,8 @@ static void sas_unregister_devs_sas_addr(struct domain_device *parent,
 		sas_port_delete_phy(phy->port, phy->phy);
 		sas_device_set_phy(found, phy->port);
 		if (phy->port->num_phys == 0)
-			sas_port_delete(phy->port);
+			list_add_tail(&phy->port->del_list,
+				&parent->port->sas_port_del_list);
 		phy->port = NULL;
 	}
 }
@@ -2142,8 +2143,8 @@ static int sas_rediscover(struct domain_device *dev, const int phy_id)
 }
 
 /**
- * sas_revalidate_domain -- revalidate the domain
- * @port: port to the domain of interest
+ * sas_ex_revalidate_domain - revalidate the domain
+ * @port_dev: port domain device.
  *
  * NOTE: this process _must_ quit (return) as soon as any connection
  * errors are encountered.  Connection recovery is done elsewhere.
@@ -2156,7 +2157,7 @@ int sas_ex_revalidate_domain(struct domain_device *port_dev)
 	struct domain_device *dev = NULL;
 
 	res = sas_find_bcast_dev(port_dev, &dev);
-	while (res == 0 && dev) {
+	if (res == 0 && dev) {
 		struct expander_device *ex = &dev->ex_dev;
 		int i = 0, phy_id;
 
@@ -2168,9 +2169,6 @@ int sas_ex_revalidate_domain(struct domain_device *port_dev)
 			res = sas_rediscover(dev, phy_id);
 			i = phy_id + 1;
 		} while (i < ex->num_phys);
-
-		dev = NULL;
-		res = sas_find_bcast_dev(port_dev, &dev);
 	}
 	return res;
 }

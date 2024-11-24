@@ -14,8 +14,9 @@
  */
 #define _PAGE_BIT_SWAP_TYPE	0
 
+#define _PAGE_NA		0
 #define _PAGE_RO		0
-#define _PAGE_SHARED		0
+#define _PAGE_USER		0
 
 #define _PAGE_EXEC		0x00001 /* execute permission */
 #define _PAGE_WRITE		0x00002 /* write access allowed */
@@ -39,9 +40,20 @@
 #define _RPAGE_RSV2		0x0800000000000000UL
 #define _RPAGE_RSV3		0x0400000000000000UL
 #define _RPAGE_RSV4		0x0200000000000000UL
+#define _RPAGE_RSV5		0x00040UL
 
 #define _PAGE_PTE		0x4000000000000000UL	/* distinguishes PTEs from pointers */
 #define _PAGE_PRESENT		0x8000000000000000UL	/* pte contains a translation */
+/*
+ * We need to mark a pmd pte invalid while splitting. We can do that by clearing
+ * the _PAGE_PRESENT bit. But then that will be taken as a swap pte. In order to
+ * differentiate between two use a SW field when invalidating.
+ *
+ * We do that temporary invalidate for regular pte entry in ptep_set_access_flags
+ *
+ * This is used only when _PAGE_PRESENT is cleared.
+ */
+#define _PAGE_INVALID		_RPAGE_SW0
 
 /*
  * Top and bottom bits of RPN which can be used by hash
@@ -121,13 +133,16 @@
 #define _PAGE_CHG_MASK	(PTE_RPN_MASK | _PAGE_HPTEFLAGS | _PAGE_DIRTY | \
 			 _PAGE_ACCESSED | _PAGE_SPECIAL | _PAGE_PTE |	\
 			 _PAGE_SOFT_DIRTY | _PAGE_DEVMAP)
+
+#define H_PTE_PKEY  (H_PTE_PKEY_BIT0 | H_PTE_PKEY_BIT1 | H_PTE_PKEY_BIT2 | \
+		     H_PTE_PKEY_BIT3 | H_PTE_PKEY_BIT4)
 /*
  * Mask of bits returned by pte_pgprot()
  */
 #define PAGE_PROT_BITS  (_PAGE_SAO | _PAGE_NON_IDEMPOTENT | _PAGE_TOLERANT | \
 			 H_PAGE_4K_PFN | _PAGE_PRIVILEGED | _PAGE_ACCESSED | \
 			 _PAGE_READ | _PAGE_WRITE |  _PAGE_DIRTY | _PAGE_EXEC | \
-			 _PAGE_SOFT_DIRTY)
+			 _PAGE_SOFT_DIRTY | H_PTE_PKEY)
 /*
  * We define 2 sets of base prot bits, one for basic pages (ie,
  * cacheable kernel and user pages) and one for non cacheable
@@ -207,12 +222,14 @@ extern unsigned long __pte_index_size;
 extern unsigned long __pmd_index_size;
 extern unsigned long __pud_index_size;
 extern unsigned long __pgd_index_size;
-extern unsigned long __pmd_cache_index;
+extern unsigned long __pud_cache_index;
 #define PTE_INDEX_SIZE  __pte_index_size
 #define PMD_INDEX_SIZE  __pmd_index_size
 #define PUD_INDEX_SIZE  __pud_index_size
 #define PGD_INDEX_SIZE  __pgd_index_size
-#define PMD_CACHE_INDEX __pmd_cache_index
+/* pmd table use page table fragments */
+#define PMD_CACHE_INDEX  0
+#define PUD_CACHE_INDEX __pud_cache_index
 /*
  * Because of use of pte fragments and THP, size of page table
  * are not always derived out of index size above.
@@ -238,6 +255,12 @@ extern unsigned long __pte_frag_nr;
 extern unsigned long __pte_frag_size_shift;
 #define PTE_FRAG_SIZE_SHIFT __pte_frag_size_shift
 #define PTE_FRAG_SIZE (1UL << PTE_FRAG_SIZE_SHIFT)
+
+extern unsigned long __pmd_frag_nr;
+#define PMD_FRAG_NR __pmd_frag_nr
+extern unsigned long __pmd_frag_size_shift;
+#define PMD_FRAG_SIZE_SHIFT __pmd_frag_size_shift
+#define PMD_FRAG_SIZE (1UL << PMD_FRAG_SIZE_SHIFT)
 
 #define PTRS_PER_PTE	(1 << PTE_INDEX_SIZE)
 #define PTRS_PER_PMD	(1 << PMD_INDEX_SIZE)
@@ -265,6 +288,21 @@ extern unsigned long __pte_frag_size_shift;
 #define PUD_MASKED_BITS		0xc0000000000000ffUL
 /* Bits to mask out from a PGD to get to the PUD page */
 #define PGD_MASKED_BITS		0xc0000000000000ffUL
+
+/*
+ * Used as an indicator for rcu callback functions
+ */
+enum pgtable_index {
+	PTE_INDEX = 0,
+	PMD_INDEX,
+	PUD_INDEX,
+	PGD_INDEX,
+	/*
+	 * Below are used with 4k page size and hugetlb
+	 */
+	HTLB_16M_INDEX,
+	HTLB_16G_INDEX,
+};
 
 extern unsigned long __vmalloc_start;
 extern unsigned long __vmalloc_end;
@@ -312,9 +350,6 @@ extern unsigned long pci_io_base;
 /* Advertise special mapping type for AGP */
 #define HAVE_PAGE_AGP
 
-/* Advertise support for _PAGE_SPECIAL */
-#define __HAVE_ARCH_PTE_SPECIAL
-
 #ifndef __ASSEMBLY__
 
 /*
@@ -324,7 +359,7 @@ extern unsigned long pci_io_base;
  */
 #ifndef __real_pte
 
-#define __real_pte(e,p)		((real_pte_t){(e)})
+#define __real_pte(e, p, o)		((real_pte_t){(e)})
 #define __rpte_to_pte(r)	((r).pte)
 #define __rpte_to_hidx(r,index)	(pte_val(__rpte_to_pte(r)) >> H_PAGE_F_GIX_SHIFT)
 
@@ -454,9 +489,8 @@ static inline pte_t ptep_get_and_clear_full(struct mm_struct *mm,
 {
 	if (full && radix_enabled()) {
 		/*
-		 * Let's skip the DD1 style pte update here. We know that
-		 * this is a full mm pte clear and hence can be sure there is
-		 * no parallel set_pte.
+		 * We know that this is a full mm pte clear and
+		 * hence can be sure there is no parallel set_pte.
 		 */
 		return radix__ptep_get_and_clear_full(mm, addr, ptep, full);
 	}
@@ -544,8 +578,48 @@ static inline pte_t pte_clear_savedwrite(pte_t pte)
 
 static inline int pte_present(pte_t pte)
 {
-	return !!(pte_raw(pte) & cpu_to_be64(_PAGE_PRESENT));
+	/*
+	 * A pte is considerent present if _PAGE_PRESENT is set.
+	 * We also need to consider the pte present which is marked
+	 * invalid during ptep_set_access_flags. Hence we look for _PAGE_INVALID
+	 * if we find _PAGE_PRESENT cleared.
+	 */
+	return !!(pte_raw(pte) & cpu_to_be64(_PAGE_PRESENT | _PAGE_INVALID));
 }
+
+#ifdef CONFIG_PPC_MEM_KEYS
+extern bool arch_pte_access_permitted(u64 pte, bool write, bool execute);
+#else
+static inline bool arch_pte_access_permitted(u64 pte, bool write, bool execute)
+{
+	return true;
+}
+#endif /* CONFIG_PPC_MEM_KEYS */
+
+#define pte_access_permitted pte_access_permitted
+static inline bool pte_access_permitted(pte_t pte, bool write)
+{
+	unsigned long pteval = pte_val(pte);
+	/* Also check for pte_user */
+	unsigned long clear_pte_bits = _PAGE_PRIVILEGED;
+	/*
+	 * _PAGE_READ is needed for any access and will be
+	 * cleared for PROT_NONE
+	 */
+	unsigned long need_pte_bits = _PAGE_PRESENT | _PAGE_READ;
+
+	if (write)
+		need_pte_bits |= _PAGE_WRITE;
+
+	if ((pteval & need_pte_bits) != need_pte_bits)
+		return false;
+
+	if ((pteval & clear_pte_bits) == clear_pte_bits)
+		return false;
+
+	return arch_pte_access_permitted(pte_val(pte), write, 0);
+}
+
 /*
  * Conversion functions: convert a page and protection to a page entry,
  * and a page entry and page directory to the page they refer to.
@@ -710,12 +784,14 @@ static inline bool check_pte_access(unsigned long access, unsigned long ptev)
  * Generic functions with hash/radix callbacks
  */
 
-static inline void __ptep_set_access_flags(struct mm_struct *mm,
+static inline void __ptep_set_access_flags(struct vm_area_struct *vma,
 					   pte_t *ptep, pte_t entry,
-					   unsigned long address)
+					   unsigned long address,
+					   int psize)
 {
 	if (radix_enabled())
-		return radix__ptep_set_access_flags(mm, ptep, entry, address);
+		return radix__ptep_set_access_flags(vma, ptep, entry,
+						    address, psize);
 	return hash__ptep_set_access_flags(ptep, entry);
 }
 
@@ -850,6 +926,11 @@ static inline int pud_bad(pud_t pud)
 	return hash__pud_bad(pud);
 }
 
+#define pud_access_permitted pud_access_permitted
+static inline bool pud_access_permitted(pud_t pud, bool write)
+{
+	return pte_access_permitted(pud_pte(pud), write);
+}
 
 #define pgd_write(pgd)		pte_write(pgd_pte(pgd))
 static inline void pgd_set(pgd_t *pgdp, unsigned long val)
@@ -887,6 +968,12 @@ static inline int pgd_bad(pgd_t pgd)
 	if (radix_enabled())
 		return radix__pgd_bad(pgd);
 	return hash__pgd_bad(pgd);
+}
+
+#define pgd_access_permitted pgd_access_permitted
+static inline bool pgd_access_permitted(pgd_t pgd, bool write)
+{
+	return pte_access_permitted(pgd_pte(pgd), write);
 }
 
 extern struct page *pgd_page(pgd_t pgd);
@@ -979,7 +1066,6 @@ static inline void vmemmap_remove_mapping(unsigned long start,
 	return hash__vmemmap_remove_mapping(start, page_size);
 }
 #endif
-struct page *realmode_pfn_to_page(unsigned long pfn);
 
 static inline pte_t pmd_pte(pmd_t pmd)
 {
@@ -1020,10 +1106,15 @@ static inline int pmd_protnone(pmd_t pmd)
 }
 #endif /* CONFIG_NUMA_BALANCING */
 
-#define __HAVE_ARCH_PMD_WRITE
 #define pmd_write(pmd)		pte_write(pmd_pte(pmd))
 #define __pmd_write(pmd)	__pte_write(pmd_pte(pmd))
 #define pmd_savedwrite(pmd)	pte_savedwrite(pmd_pte(pmd))
+
+#define pmd_access_permitted pmd_access_permitted
+static inline bool pmd_access_permitted(pmd_t pmd, bool write)
+{
+	return pte_access_permitted(pmd_pte(pmd), write);
+}
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 extern pmd_t pfn_pmd(unsigned long pfn, pgprot_t pgprot);
@@ -1153,35 +1244,18 @@ static inline pgtable_t pgtable_trans_huge_withdraw(struct mm_struct *mm,
 }
 
 #define __HAVE_ARCH_PMDP_INVALIDATE
-extern void pmdp_invalidate(struct vm_area_struct *vma, unsigned long address,
-			    pmd_t *pmdp);
-
-#define __HAVE_ARCH_PMDP_HUGE_SPLIT_PREPARE
-static inline void pmdp_huge_split_prepare(struct vm_area_struct *vma,
-					   unsigned long address, pmd_t *pmdp)
-{
-	if (radix_enabled())
-		return radix__pmdp_huge_split_prepare(vma, address, pmdp);
-	return hash__pmdp_huge_split_prepare(vma, address, pmdp);
-}
+extern pmd_t pmdp_invalidate(struct vm_area_struct *vma, unsigned long address,
+			     pmd_t *pmdp);
 
 #define pmd_move_must_withdraw pmd_move_must_withdraw
 struct spinlock;
-static inline int pmd_move_must_withdraw(struct spinlock *new_pmd_ptl,
-					 struct spinlock *old_pmd_ptl,
-					 struct vm_area_struct *vma)
-{
-	if (radix_enabled())
-		return false;
-	/*
-	 * Archs like ppc64 use pgtable to store per pmd
-	 * specific information. So when we switch the pmd,
-	 * we should also withdraw and deposit the pgtable
-	 */
-	return true;
-}
-
-
+extern int pmd_move_must_withdraw(struct spinlock *new_pmd_ptl,
+				  struct spinlock *old_pmd_ptl,
+				  struct vm_area_struct *vma);
+/*
+ * Hash translation mode use the deposited table to store hash pte
+ * slot information.
+ */
 #define arch_needs_pgtable_deposit arch_needs_pgtable_deposit
 static inline bool arch_needs_pgtable_deposit(void)
 {

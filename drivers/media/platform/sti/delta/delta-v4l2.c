@@ -1,9 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) STMicroelectronics SA 2015
  * Authors: Hugues Fruchet <hugues.fruchet@st.com>
  *          Jean-Christophe Trotin <jean-christophe.trotin@st.com>
  *          for STMicroelectronics.
- * License terms:  GNU General Public License (GPL), version 2
  */
 
 #include <linux/clk.h>
@@ -337,22 +337,6 @@ static void register_decoders(struct delta_dev *delta)
 		dev_info(delta->dev, "%s %s decoder registered\n",
 			 DELTA_PREFIX, delta_decoders[i]->name);
 	}
-}
-
-static void delta_lock(void *priv)
-{
-	struct delta_ctx *ctx = priv;
-	struct delta_dev *delta = ctx->dev;
-
-	mutex_lock(&delta->lock);
-}
-
-static void delta_unlock(void *priv)
-{
-	struct delta_ctx *ctx = priv;
-	struct delta_dev *delta = ctx->dev;
-
-	mutex_unlock(&delta->lock);
 }
 
 static int delta_open_decoder(struct delta_ctx *ctx, u32 streamformat,
@@ -970,8 +954,10 @@ static void delta_run_work(struct work_struct *work)
 	/* enable the hardware */
 	if (!dec->pm) {
 		ret = delta_get_sync(ctx);
-		if (ret)
+		if (ret) {
+			delta_put_autosuspend(ctx);
 			goto err;
+		}
 	}
 
 	/* decode this access unit */
@@ -1099,8 +1085,6 @@ static const struct v4l2_m2m_ops delta_m2m_ops = {
 	.device_run     = delta_device_run,
 	.job_ready	= delta_job_ready,
 	.job_abort      = delta_job_abort,
-	.lock		= delta_lock,
-	.unlock		= delta_unlock,
 };
 
 /*
@@ -1878,7 +1862,7 @@ static int delta_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(delta->dev, "%s failed to initialize firmware ipc channel\n",
 			DELTA_PREFIX);
-		goto err;
+		goto err_pm_disable;
 	}
 
 	/* register all available decoders */
@@ -1892,7 +1876,7 @@ static int delta_probe(struct platform_device *pdev)
 	if (ret) {
 		dev_err(delta->dev, "%s failed to register V4L2 device\n",
 			DELTA_PREFIX);
-		goto err;
+		goto err_pm_disable;
 	}
 
 	delta->work_queue = create_workqueue(DELTA_NAME);
@@ -1917,6 +1901,8 @@ err_work_queue:
 	destroy_workqueue(delta->work_queue);
 err_v4l2:
 	v4l2_device_unregister(&delta->v4l2_dev);
+err_pm_disable:
+	pm_runtime_disable(dev);
 err:
 	return ret;
 }

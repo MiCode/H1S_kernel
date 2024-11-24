@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/errno.h>
@@ -82,6 +75,20 @@ int trusted_mem_api_alloc_zero(enum TRUSTED_MEM_REQ_TYPE mem_type,
 				     refcount, sec_handle, owner, id, 1);
 }
 EXPORT_SYMBOL(trusted_mem_api_alloc_zero);
+
+int trusted_mem_api_query_pa(enum TRUSTED_MEM_REQ_TYPE mem_type, u32 alignment,
+			      u32 size, u32 *refcount, u32 *handle,
+			      u8 *owner, u32 id, u32 clean, uint64_t *phy_addr)
+{
+#if defined(CONFIG_MTK_SVP_ON_MTEE_SUPPORT) && defined(CONFIG_MTK_GZ_KREE)
+	return tmem_query_gz_handle_to_pa(get_mem_type(mem_type), alignment, size,
+				refcount, handle, owner, id, 0, phy_addr);
+#else
+	return tmem_query_sec_handle_to_pa(get_mem_type(mem_type), alignment, size,
+				refcount, handle, owner, id, 0, phy_addr);
+#endif
+}
+EXPORT_SYMBOL(trusted_mem_api_query_pa);
 
 int trusted_mem_api_unref(enum TRUSTED_MEM_REQ_TYPE mem_type, u32 sec_handle,
 			  uint8_t *owner, uint32_t id)

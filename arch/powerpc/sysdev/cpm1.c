@@ -38,7 +38,6 @@
 #include <asm/8xx_immap.h>
 #include <asm/cpm1.h>
 #include <asm/io.h>
-#include <asm/tlbflush.h>
 #include <asm/rheap.h>
 #include <asm/prom.h>
 #include <asm/cpm.h>
@@ -291,6 +290,7 @@ cpm_setbrg(uint brg, uint rate)
 		out_be32(bp, (((BRG_UART_CLK_DIV16 / rate) - 1) << 1) |
 			      CPM_BRG_EN | CPM_BRG_DIV16);
 }
+EXPORT_SYMBOL(cpm_setbrg);
 
 struct cpm_ioport16 {
 	__be16 dir, par, odr_sor, dat, intr;
@@ -629,8 +629,9 @@ static int cpm1_gpio16_dir_in(struct gpio_chip *gc, unsigned int gpio)
 	return 0;
 }
 
-int cpm1_gpiochip_add16(struct device_node *np)
+int cpm1_gpiochip_add16(struct device *dev)
 {
+	struct device_node *np = dev->of_node;
 	struct cpm1_gpio16_chip *cpm1_gc;
 	struct of_mm_gpio_chip *mm_gc;
 	struct gpio_chip *gc;
@@ -660,6 +661,8 @@ int cpm1_gpiochip_add16(struct device_node *np)
 	gc->get = cpm1_gpio16_get;
 	gc->set = cpm1_gpio16_set;
 	gc->to_irq = cpm1_gpio16_to_irq;
+	gc->parent = dev;
+	gc->owner = THIS_MODULE;
 
 	return of_mm_gpiochip_add_data(np, mm_gc, cpm1_gc);
 }
@@ -755,8 +758,9 @@ static int cpm1_gpio32_dir_in(struct gpio_chip *gc, unsigned int gpio)
 	return 0;
 }
 
-int cpm1_gpiochip_add32(struct device_node *np)
+int cpm1_gpiochip_add32(struct device *dev)
 {
+	struct device_node *np = dev->of_node;
 	struct cpm1_gpio32_chip *cpm1_gc;
 	struct of_mm_gpio_chip *mm_gc;
 	struct gpio_chip *gc;
@@ -776,31 +780,10 @@ int cpm1_gpiochip_add32(struct device_node *np)
 	gc->direction_output = cpm1_gpio32_dir_out;
 	gc->get = cpm1_gpio32_get;
 	gc->set = cpm1_gpio32_set;
+	gc->parent = dev;
+	gc->owner = THIS_MODULE;
 
 	return of_mm_gpiochip_add_data(np, mm_gc, cpm1_gc);
 }
-
-static int cpm_init_par_io(void)
-{
-	struct device_node *np;
-
-	for_each_compatible_node(np, NULL, "fsl,cpm1-pario-bank-a")
-		cpm1_gpiochip_add16(np);
-
-	for_each_compatible_node(np, NULL, "fsl,cpm1-pario-bank-b")
-		cpm1_gpiochip_add32(np);
-
-	for_each_compatible_node(np, NULL, "fsl,cpm1-pario-bank-c")
-		cpm1_gpiochip_add16(np);
-
-	for_each_compatible_node(np, NULL, "fsl,cpm1-pario-bank-d")
-		cpm1_gpiochip_add16(np);
-
-	/* Port E uses CPM2 layout */
-	for_each_compatible_node(np, NULL, "fsl,cpm1-pario-bank-e")
-		cpm2_gpiochip_add32(np);
-	return 0;
-}
-arch_initcall(cpm_init_par_io);
 
 #endif /* CONFIG_8xx_GPIO */

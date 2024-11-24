@@ -76,8 +76,8 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/video/include/		\
              -I$(srctree)/drivers/devfreq/ \
 	     -I$(srctree)/drivers/iommu/
 
-subdir-ccflags-y += -I$(srctree)/drivers/staging/android/ion \
-		    -I$(srctree)/drivers/staging/android/ion/mtk
+subdir-ccflags-y += -I$(srctree)/drivers/staging/android/mtk_ion \
+		    -I$(srctree)/drivers/staging/android/mtk_ion/mtk
 
 subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/m4u/$(MTK_PLATFORM) \
 		    -I$(srctree)/drivers/misc/mediatek/m4u/2.0

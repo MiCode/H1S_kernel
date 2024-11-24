@@ -367,6 +367,11 @@ tid_t txBegin(struct super_block *sb, int flag)
 	jfs_info("txBegin: flag = 0x%x", flag);
 	log = JFS_SBI(sb)->log;
 
+	if (!log) {
+		jfs_error(sb, "read-only filesystem\n");
+		return 0;
+	}
+
 	TXN_LOCK();
 
 	INCREMENT(TxStat.txBegin);
@@ -2997,7 +3002,7 @@ int jfs_sync(void *arg)
 }
 
 #if defined(CONFIG_PROC_FS) && defined(CONFIG_JFS_DEBUG)
-static int jfs_txanchor_proc_show(struct seq_file *m, void *v)
+int jfs_txanchor_proc_show(struct seq_file *m, void *v)
 {
 	char *freewait;
 	char *freelockwait;
@@ -3031,22 +3036,10 @@ static int jfs_txanchor_proc_show(struct seq_file *m, void *v)
 		       list_empty(&TxAnchor.unlock_queue) ? "" : "not ");
 	return 0;
 }
-
-static int jfs_txanchor_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, jfs_txanchor_proc_show, NULL);
-}
-
-const struct file_operations jfs_txanchor_proc_fops = {
-	.open		= jfs_txanchor_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 #endif
 
 #if defined(CONFIG_PROC_FS) && defined(CONFIG_JFS_STATISTICS)
-static int jfs_txstats_proc_show(struct seq_file *m, void *v)
+int jfs_txstats_proc_show(struct seq_file *m, void *v)
 {
 	seq_printf(m,
 		       "JFS TxStats\n"
@@ -3071,16 +3064,4 @@ static int jfs_txstats_proc_show(struct seq_file *m, void *v)
 		       TxStat.txLockAlloc_freelock);
 	return 0;
 }
-
-static int jfs_txstats_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, jfs_txstats_proc_show, NULL);
-}
-
-const struct file_operations jfs_txstats_proc_fops = {
-	.open		= jfs_txstats_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
 #endif

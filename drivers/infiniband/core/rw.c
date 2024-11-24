@@ -325,7 +325,7 @@ out_unmap_sg:
 EXPORT_SYMBOL(rdma_rw_ctx_init);
 
 /**
- * rdma_rw_ctx_signature init - initialize a RW context with signature offload
+ * rdma_rw_ctx_signature_init - initialize a RW context with signature offload
  * @ctx:	context to initialize
  * @qp:		queue pair to operate on
  * @port_num:	port num to which the connection is bound
@@ -384,21 +384,17 @@ int rdma_rw_ctx_signature_init(struct rdma_rw_ctx *ctx, struct ib_qp *qp,
 	count += ret;
 	prev_wr = &ctx->sig->data.reg_wr.wr;
 
-	if (prot_sg_cnt) {
-		ret = rdma_rw_init_one_mr(qp, port_num, &ctx->sig->prot,
-				prot_sg, prot_sg_cnt, 0);
-		if (ret < 0)
-			goto out_destroy_data_mr;
-		count += ret;
+	ret = rdma_rw_init_one_mr(qp, port_num, &ctx->sig->prot,
+				  prot_sg, prot_sg_cnt, 0);
+	if (ret < 0)
+		goto out_destroy_data_mr;
+	count += ret;
 
-		if (ctx->sig->prot.inv_wr.next)
-			prev_wr->next = &ctx->sig->prot.inv_wr;
-		else
-			prev_wr->next = &ctx->sig->prot.reg_wr.wr;
-		prev_wr = &ctx->sig->prot.reg_wr.wr;
-	} else {
-		ctx->sig->prot.mr = NULL;
-	}
+	if (ctx->sig->prot.inv_wr.next)
+		prev_wr->next = &ctx->sig->prot.inv_wr;
+	else
+		prev_wr->next = &ctx->sig->prot.reg_wr.wr;
+	prev_wr = &ctx->sig->prot.reg_wr.wr;
 
 	ctx->sig->sig_mr = ib_mr_pool_get(qp, &qp->sig_mrs);
 	if (!ctx->sig->sig_mr) {
@@ -568,10 +564,10 @@ EXPORT_SYMBOL(rdma_rw_ctx_wrs);
 int rdma_rw_ctx_post(struct rdma_rw_ctx *ctx, struct ib_qp *qp, u8 port_num,
 		struct ib_cqe *cqe, struct ib_send_wr *chain_wr)
 {
-	struct ib_send_wr *first_wr, *bad_wr;
+	struct ib_send_wr *first_wr;
 
 	first_wr = rdma_rw_ctx_wrs(ctx, qp, port_num, cqe, chain_wr);
-	return ib_post_send(qp, first_wr, &bad_wr);
+	return ib_post_send(qp, first_wr, NULL);
 }
 EXPORT_SYMBOL(rdma_rw_ctx_post);
 

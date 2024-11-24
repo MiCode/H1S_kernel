@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
 
 #include <linux/dma-buf.h>
@@ -226,7 +218,7 @@ struct vb2_dc_attachment {
 	enum dma_data_direction dma_dir;
 };
 
-static int vb2_dc_dmabuf_ops_attach(struct dma_buf *dbuf, struct device *dev,
+static int vb2_dc_dmabuf_ops_attach(struct dma_buf *dbuf,
 	struct dma_buf_attachment *dbuf_attach)
 {
 	struct vb2_dc_attachment *attach;
@@ -241,9 +233,9 @@ static int vb2_dc_dmabuf_ops_attach(struct dma_buf *dbuf, struct device *dev,
 		return -ENOMEM;
 
 	sgt = &attach->sgt;
-	/* Copy the buf->base_sgt scatter list to the attachment, as we can't
-	 * map the same scatter list to multiple attachments at the same time.
-	 */
+	// Copy the buf->base_sgt scatter list to the attachment, as we can't
+	// map the same scatter list to multiple attachments at the same time.
+
 	ret = sg_alloc_table(sgt, buf->sgt_base->orig_nents, GFP_KERNEL);
 	if (ret) {
 		kfree(attach);
@@ -363,7 +355,7 @@ static const struct dma_buf_ops vb2_dc_dmabuf_ops = {
 	.map_dma_buf = vb2_dc_dmabuf_ops_map,
 	.unmap_dma_buf = vb2_dc_dmabuf_ops_unmap,
 	.map = vb2_dc_dmabuf_ops_kmap,
-	.map_atomic = vb2_dc_dmabuf_ops_kmap,
+	//!.map_atomic = vb2_dc_dmabuf_ops_kmap,
 	.vmap = vb2_dc_dmabuf_ops_vmap,
 	.mmap = vb2_dc_dmabuf_ops_mmap,
 	.release = vb2_dc_dmabuf_ops_release,

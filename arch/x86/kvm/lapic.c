@@ -378,32 +378,41 @@ static u8 count_vectors(void *bitmap)
 	return count;
 }
 
-int __kvm_apic_update_irr(u32 *pir, void *regs)
+bool __kvm_apic_update_irr(u32 *pir, void *regs, int *max_irr)
 {
 	u32 i, vec;
-	u32 pir_val, irr_val;
-	int max_irr = -1;
+	u32 pir_val, irr_val, prev_irr_val;
+	int max_updated_irr;
+
+	max_updated_irr = -1;
+	*max_irr = -1;
 
 	for (i = vec = 0; i <= 7; i++, vec += 32) {
 		pir_val = READ_ONCE(pir[i]);
 		irr_val = *((u32 *)(regs + APIC_IRR + i * 0x10));
 		if (pir_val) {
+			prev_irr_val = irr_val;
 			irr_val |= xchg(&pir[i], 0);
 			*((u32 *)(regs + APIC_IRR + i * 0x10)) = irr_val;
+			if (prev_irr_val != irr_val) {
+				max_updated_irr =
+					__fls(irr_val ^ prev_irr_val) + vec;
+			}
 		}
 		if (irr_val)
-			max_irr = __fls(irr_val) + vec;
+			*max_irr = __fls(irr_val) + vec;
 	}
 
-	return max_irr;
+	return ((max_updated_irr != -1) &&
+		(max_updated_irr == *max_irr));
 }
 EXPORT_SYMBOL_GPL(__kvm_apic_update_irr);
 
-int kvm_apic_update_irr(struct kvm_vcpu *vcpu, u32 *pir)
+bool kvm_apic_update_irr(struct kvm_vcpu *vcpu, u32 *pir, int *max_irr)
 {
 	struct kvm_lapic *apic = vcpu->arch.apic;
 
-	return __kvm_apic_update_irr(pir, apic->regs);
+	return __kvm_apic_update_irr(pir, apic->regs, max_irr);
 }
 EXPORT_SYMBOL_GPL(kvm_apic_update_irr);
 
@@ -544,6 +553,64 @@ int kvm_apic_set_irq(struct kvm_vcpu *vcpu, struct kvm_lapic_irq *irq,
 			irq->level, irq->trig_mode, dest_map);
 }
 
+int kvm_pv_send_ipi(struct kvm *kvm, unsigned long ipi_bitmap_low,
+		    unsigned long ipi_bitmap_high, u32 min,
+		    unsigned long icr, int op_64_bit)
+{
+	int i;
+	struct kvm_apic_map *map;
+	struct kvm_vcpu *vcpu;
+	struct kvm_lapic_irq irq = {0};
+	int cluster_size = op_64_bit ? 64 : 32;
+	int count = 0;
+
+	irq.vector = icr & APIC_VECTOR_MASK;
+	irq.delivery_mode = icr & APIC_MODE_MASK;
+	irq.level = (icr & APIC_INT_ASSERT) != 0;
+	irq.trig_mode = icr & APIC_INT_LEVELTRIG;
+
+	if (icr & APIC_DEST_MASK)
+		return -KVM_EINVAL;
+	if (icr & APIC_SHORT_MASK)
+		return -KVM_EINVAL;
+
+	rcu_read_lock();
+	map = rcu_dereference(kvm->arch.apic_map);
+
+	if (unlikely(!map)) {
+		count = -EOPNOTSUPP;
+		goto out;
+	}
+
+	if (min > map->max_apic_id)
+		goto out;
+	/* Bits above cluster_size are masked in the caller.  */
+	for_each_set_bit(i, &ipi_bitmap_low,
+		min((u32)BITS_PER_LONG, (map->max_apic_id - min + 1))) {
+		if (map->phys_map[min + i]) {
+			vcpu = map->phys_map[min + i]->vcpu;
+			count += kvm_apic_set_irq(vcpu, &irq, NULL);
+		}
+	}
+
+	min += cluster_size;
+
+	if (min > map->max_apic_id)
+		goto out;
+
+	for_each_set_bit(i, &ipi_bitmap_high,
+		min((u32)BITS_PER_LONG, (map->max_apic_id - min + 1))) {
+		if (map->phys_map[min + i]) {
+			vcpu = map->phys_map[min + i]->vcpu;
+			count += kvm_apic_set_irq(vcpu, &irq, NULL);
+		}
+	}
+
+out:
+	rcu_read_unlock();
+	return count;
+}
+
 static int pv_eoi_put_user(struct kvm_vcpu *vcpu, u8 val)
 {
 
@@ -597,7 +664,7 @@ static void pv_eoi_clr_pending(struct kvm_vcpu *vcpu)
 static int apic_has_interrupt_for_ppr(struct kvm_lapic *apic, u32 ppr)
 {
 	int highest_irr;
-	if (kvm_x86_ops->sync_pir_to_irr && apic->vcpu->arch.apicv_active)
+	if (apic->vcpu->arch.apicv_active)
 		highest_irr = kvm_x86_ops->sync_pir_to_irr(apic->vcpu);
 	else
 		highest_irr = apic_find_highest_irr(apic);
@@ -894,6 +961,10 @@ bool kvm_irq_delivery_to_apic_fast(struct kvm *kvm, struct kvm_lapic *src,
 	*r = -1;
 
 	if (irq->shorthand == APIC_DEST_SELF) {
+		if (KVM_BUG_ON(!src, kvm)) {
+			*r = 0;
+			return true;
+		}
 		*r = kvm_apic_set_irq(src->vcpu, irq, dest_map);
 		return true;
 	}
@@ -1328,14 +1399,42 @@ static void update_divide_count(struct kvm_lapic *apic)
 				   apic->divide_count);
 }
 
+static void limit_periodic_timer_frequency(struct kvm_lapic *apic)
+{
+	/*
+	 * Do not allow the guest to program periodic timers with small
+	 * interval, since the hrtimers are not throttled by the host
+	 * scheduler.
+	 */
+	if (apic_lvtt_period(apic) && apic->lapic_timer.period) {
+		s64 min_period = min_timer_period_us * 1000LL;
+
+		if (apic->lapic_timer.period < min_period) {
+			pr_info_ratelimited(
+			    "kvm: vcpu %i: requested %lld ns "
+			    "lapic timer period limited to %lld ns\n",
+			    apic->vcpu->vcpu_id,
+			    apic->lapic_timer.period, min_period);
+			apic->lapic_timer.period = min_period;
+		}
+	}
+}
+
 static void apic_update_lvtt(struct kvm_lapic *apic)
 {
 	u32 timer_mode = kvm_lapic_get_reg(apic, APIC_LVTT) &
 			apic->lapic_timer.timer_mode_mask;
 
 	if (apic->lapic_timer.timer_mode != timer_mode) {
+		if (apic_lvtt_tscdeadline(apic) != (timer_mode ==
+				APIC_LVT_TIMER_TSCDEADLINE)) {
+			hrtimer_cancel(&apic->lapic_timer.timer);
+			kvm_lapic_set_reg(apic, APIC_TMICT, 0);
+			apic->lapic_timer.period = 0;
+			apic->lapic_timer.tscdeadline = 0;
+		}
 		apic->lapic_timer.timer_mode = timer_mode;
-		hrtimer_cancel(&apic->lapic_timer.timer);
+		limit_periodic_timer_frequency(apic);
 	}
 }
 
@@ -1356,9 +1455,9 @@ static void apic_timer_expired(struct kvm_lapic *apic)
 	 * using swait_active() is safe.
 	 */
 	if (swait_active(q))
-		swake_up(q);
+		swake_up_one(q);
 
-	if (apic_lvtt_tscdeadline(apic))
+	if (apic_lvtt_tscdeadline(apic) || ktimer->hv_timer_in_use)
 		ktimer->expired_tscdeadline = ktimer->tscdeadline;
 }
 
@@ -1440,6 +1539,30 @@ static void start_sw_tscdeadline(struct kvm_lapic *apic)
 	local_irq_restore(flags);
 }
 
+static void update_target_expiration(struct kvm_lapic *apic, uint32_t old_divisor)
+{
+	ktime_t now, remaining;
+	u64 ns_remaining_old, ns_remaining_new;
+
+	apic->lapic_timer.period = (u64)kvm_lapic_get_reg(apic, APIC_TMICT)
+		* APIC_BUS_CYCLE_NS * apic->divide_count;
+	limit_periodic_timer_frequency(apic);
+
+	now = ktime_get();
+	remaining = ktime_sub(apic->lapic_timer.target_expiration, now);
+	if (ktime_to_ns(remaining) < 0)
+		remaining = 0;
+
+	ns_remaining_old = ktime_to_ns(remaining);
+	ns_remaining_new = mul_u64_u32_div(ns_remaining_old,
+	                                   apic->divide_count, old_divisor);
+
+	apic->lapic_timer.tscdeadline +=
+		nsec_to_cycles(apic->vcpu, ns_remaining_new) -
+		nsec_to_cycles(apic->vcpu, ns_remaining_old);
+	apic->lapic_timer.target_expiration = ktime_add_ns(now, ns_remaining_new);
+}
+
 static bool set_target_expiration(struct kvm_lapic *apic)
 {
 	ktime_t now;
@@ -1449,26 +1572,12 @@ static bool set_target_expiration(struct kvm_lapic *apic)
 	apic->lapic_timer.period = (u64)kvm_lapic_get_reg(apic, APIC_TMICT)
 		* APIC_BUS_CYCLE_NS * apic->divide_count;
 
-	if (!apic->lapic_timer.period)
+	if (!apic->lapic_timer.period) {
+		apic->lapic_timer.tscdeadline = 0;
 		return false;
-
-	/*
-	 * Do not allow the guest to program periodic timers with small
-	 * interval, since the hrtimers are not throttled by the host
-	 * scheduler.
-	 */
-	if (apic_lvtt_period(apic)) {
-		s64 min_period = min_timer_period_us * 1000LL;
-
-		if (apic->lapic_timer.period < min_period) {
-			pr_info_ratelimited(
-			    "kvm: vcpu %i: requested %lld ns "
-			    "lapic timer period limited to %lld ns\n",
-			    apic->vcpu->vcpu_id,
-			    apic->lapic_timer.period, min_period);
-			apic->lapic_timer.period = min_period;
-		}
 	}
+
+	limit_periodic_timer_frequency(apic);
 
 	apic_debug("%s: bus cycle is %" PRId64 "ns, now 0x%016"
 		   PRIx64 ", "
@@ -1555,6 +1664,9 @@ static bool start_hv_timer(struct kvm_lapic *apic)
 		return false;
 
 	if (!apic_lvtt_period(apic) && atomic_read(&ktimer->pending))
+		return false;
+
+	if (!ktimer->tscdeadline)
 		return false;
 
 	r = kvm_x86_ops->set_hv_timer(apic->vcpu, ktimer->tscdeadline);
@@ -1785,13 +1897,21 @@ int kvm_lapic_reg_write(struct kvm_lapic *apic, u32 reg, u32 val)
 		start_apic_timer(apic);
 		break;
 
-	case APIC_TDCR:
+	case APIC_TDCR: {
+		uint32_t old_divisor = apic->divide_count;
+
 		if (val & 4)
 			apic_debug("KVM_WRITE:TDCR %x\n", val);
 		kvm_lapic_set_reg(apic, APIC_TDCR, val);
 		update_divide_count(apic);
+		if (apic->divide_count != old_divisor &&
+				apic->lapic_timer.period) {
+			hrtimer_cancel(&apic->lapic_timer.timer);
+			update_target_expiration(apic, old_divisor);
+			restart_apic_timer(apic);
+		}
 		break;
-
+	}
 	case APIC_ESR:
 		if (apic_x2apic_mode(apic) && val != 0) {
 			apic_debug("KVM_WRITE:ESR not zero %x\n", val);
@@ -1918,7 +2038,7 @@ void kvm_set_lapic_tscdeadline_msr(struct kvm_vcpu *vcpu, u64 data)
 {
 	struct kvm_lapic *apic = vcpu->arch.apic;
 
-	if (!lapic_in_kernel(vcpu) || apic_lvtt_oneshot(apic) ||
+	if (!kvm_apic_present(vcpu) || apic_lvtt_oneshot(apic) ||
 			apic_lvtt_period(apic))
 		return;
 
@@ -1929,10 +2049,7 @@ void kvm_set_lapic_tscdeadline_msr(struct kvm_vcpu *vcpu, u64 data)
 
 void kvm_lapic_set_tpr(struct kvm_vcpu *vcpu, unsigned long cr8)
 {
-	struct kvm_lapic *apic = vcpu->arch.apic;
-
-	apic_set_tpr(apic, ((cr8 & 0x0f) << 4)
-		     | (kvm_lapic_get_reg(apic, APIC_TASKPRI) & 4));
+	apic_set_tpr(vcpu->arch.apic, (cr8 & 0x0f) << 4);
 }
 
 u64 kvm_lapic_get_cr8(struct kvm_vcpu *vcpu)
@@ -2084,13 +2201,17 @@ int kvm_apic_local_deliver(struct kvm_lapic *apic, int lvt_type)
 {
 	u32 reg = kvm_lapic_get_reg(apic, lvt_type);
 	int vector, mode, trig_mode;
+	int r;
 
 	if (kvm_apic_hw_enabled(apic) && !(reg & APIC_LVT_MASKED)) {
 		vector = reg & APIC_VECTOR_MASK;
 		mode = reg & APIC_MODE_MASK;
 		trig_mode = reg & APIC_LVT_LEVEL_TRIGGER;
-		return __apic_accept_irq(apic, mode, vector, 1, trig_mode,
-					NULL);
+
+		r = __apic_accept_irq(apic, mode, vector, 1, trig_mode, NULL);
+		if (r && lvt_type == APIC_LVTPC)
+			kvm_lapic_set_reg(apic, APIC_LVTPC, reg | APIC_LVT_MASKED);
+		return r;
 	}
 	return 0;
 }
@@ -2168,7 +2289,7 @@ int kvm_apic_has_interrupt(struct kvm_vcpu *vcpu)
 	struct kvm_lapic *apic = vcpu->arch.apic;
 	u32 ppr;
 
-	if (!kvm_apic_hw_enabled(apic))
+	if (!kvm_apic_present(vcpu))
 		return -1;
 
 	__apic_update_ppr(apic, &ppr);
@@ -2521,17 +2642,25 @@ int kvm_hv_vapic_msr_read(struct kvm_vcpu *vcpu, u32 reg, u64 *data)
 	return 0;
 }
 
-int kvm_lapic_enable_pv_eoi(struct kvm_vcpu *vcpu, u64 data)
+int kvm_lapic_enable_pv_eoi(struct kvm_vcpu *vcpu, u64 data, unsigned long len)
 {
 	u64 addr = data & ~KVM_MSR_ENABLED;
+	struct gfn_to_hva_cache *ghc = &vcpu->arch.pv_eoi.data;
+	unsigned long new_len;
+
 	if (!IS_ALIGNED(addr, 4))
 		return 1;
 
 	vcpu->arch.pv_eoi.msr_val = data;
 	if (!pv_eoi_enabled(vcpu))
 		return 0;
-	return kvm_gfn_to_hva_cache_init(vcpu->kvm, &vcpu->arch.pv_eoi.data,
-					 addr, sizeof(u8));
+
+	if (addr == ghc->gpa && len <= ghc->len)
+		new_len = ghc->len;
+	else
+		new_len = len;
+
+	return kvm_gfn_to_hva_cache_init(vcpu->kvm, ghc, addr, new_len);
 }
 
 void kvm_apic_accept_events(struct kvm_vcpu *vcpu)

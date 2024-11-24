@@ -23,7 +23,7 @@
 #include <linux/i2c.h>
 #include <linux/slab.h>
 
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 
 #include "max2165.h"
 #include "max2165_priv.h"
@@ -377,10 +377,10 @@ static void max2165_release(struct dvb_frontend *fe)
 
 static const struct dvb_tuner_ops max2165_tuner_ops = {
 	.info = {
-		.name           = "Maxim MAX2165",
-		.frequency_min  = 470000000,
-		.frequency_max  = 862000000,
-		.frequency_step =     50000,
+		.name              = "Maxim MAX2165",
+		.frequency_min_hz  = 470 * MHz,
+		.frequency_max_hz  = 862 * MHz,
+		.frequency_step_hz =  50 * kHz,
 	},
 
 	.release	   = max2165_release,
@@ -420,7 +420,7 @@ struct dvb_frontend *max2165_attach(struct dvb_frontend *fe,
 
 	return fe;
 }
-EXPORT_SYMBOL(max2165_attach);
+EXPORT_SYMBOL_GPL(max2165_attach);
 
 MODULE_AUTHOR("David T. L. Wong <davidtlwong@gmail.com>");
 MODULE_DESCRIPTION("Maxim MAX2165 silicon tuner driver");

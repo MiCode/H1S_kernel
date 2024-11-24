@@ -111,10 +111,6 @@ int ib_umem_odp_map_dma_pages(struct ib_umem *umem, u64 start_offset, u64 bcnt,
 void ib_umem_odp_unmap_dma_pages(struct ib_umem *umem, u64 start_offset,
 				 u64 bound);
 
-void rbt_ib_umem_insert(struct umem_odp_node *node,
-			struct rb_root_cached *root);
-void rbt_ib_umem_remove(struct umem_odp_node *node,
-			struct rb_root_cached *root);
 typedef int (*umem_call_back)(struct ib_umem *item, u64 start, u64 end,
 			      void *cookie);
 /*
@@ -123,7 +119,8 @@ typedef int (*umem_call_back)(struct ib_umem *item, u64 start, u64 end,
  */
 int rbt_ib_umem_for_each_in_range(struct rb_root_cached *root,
 				  u64 start, u64 end,
-				  umem_call_back cb, void *cookie);
+				  umem_call_back cb,
+				  bool blockable, void *cookie);
 
 /*
  * Find first region intersecting with address range.

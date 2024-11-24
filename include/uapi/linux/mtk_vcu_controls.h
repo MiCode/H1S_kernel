@@ -1,23 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * MediaTek Controls Header
- *
- * Copyright (c) 2017 MediaTek Inc.
+ * Copyright (c) 2019 MediaTek Inc.
  * Author: Yunfei Dong <yunfei.dong@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #ifndef __UAPI_MTK_VCU_CONTROLS_H__
 #define __UAPI_MTK_VCU_CONTROLS_H__
 
-#define SHARE_BUF_SIZE 72
+#define SHARE_BUF_SIZE 80
 #define LOG_INFO_SIZE 1024
 #define VCODEC_CMDQ_CMD_MAX           (2048)
 
@@ -196,7 +186,7 @@ enum gce_event_id {
 #define VCU_GCE_WAIT_CALLBACK _IOW('v', 9, struct gce_obj)
 #define VCU_GET_OBJECT		_IOWR('v', 10, struct share_obj)
 #define VCU_GET_LOG_OBJECT	_IOW('v', 11, struct log_test_nofuse)
-#define VCU_SET_LOG_OBJECT	_IOW('v', 12, struct log_test)
+#define VCU_SET_LOG_OBJECT	_IOW('v', 12, struct log_test_nofuse)
 #define VCU_SET_MMAP_TYPE	_IOW('v', 13, struct map_obj)
 
 #define COMPAT_VCU_SET_OBJECT		_IOW('v', 0, struct share_obj)
@@ -233,6 +223,7 @@ struct share_obj {
 };
 
 struct log_test_nofuse {
+	int type; // 0: set log from ks to us; 1: get log from us to ks;
 	char log_info[LOG_INFO_SIZE];
 };
 

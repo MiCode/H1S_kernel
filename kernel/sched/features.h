@@ -90,26 +90,17 @@ SCHED_FEAT(WA_BIAS, true)
  * UtilEstimation. Use estimated CPU utilization.
  */
 SCHED_FEAT(UTIL_EST, true)
+SCHED_FEAT(UTIL_EST_FASTUP, true)
 
 /*
- * HMP scheduling. Use dynamic threshold depends on system load and
- * CPU capacity to make schedule decisions.
+ * Utilization clamping lazy update.
  */
-#ifdef CONFIG_SCHED_HMP
-SCHED_FEAT(SCHED_HMP, true)
-#else
-SCHED_FEAT(SCHED_HMP, false)
-#endif
+SCHED_FEAT(UCLAMP_LAZY_UPDATE, false)
 
 /*
- * Energy aware scheduling. Use platform energy model to guide scheduling
- * decisions optimizing for energy efficiency.
+ * Fast pre-selection of CPU candidates for EAS.
  */
-#ifdef CONFIG_DEFAULT_USE_ENERGY_AWARE
-SCHED_FEAT(ENERGY_AWARE, true)
-#else
-SCHED_FEAT(ENERGY_AWARE, false)
-#endif
+SCHED_FEAT(FIND_BEST_TARGET, false)
 
 /*
  * Energy aware scheduling algorithm choices:
@@ -117,19 +108,18 @@ SCHED_FEAT(ENERGY_AWARE, false)
  *   Direct tasks in a schedtune.prefer_idle=1 group through
  *   the EAS path for wakeup task placement. Otherwise, put
  *   those tasks through the mainline slow path.
- * FIND_BEST_TARGET
- *   Limit the number of placement options for which we calculate
- *   energy by using heuristics to select 'best idle' and
- *   'best active' cpu options.
- * FBT_STRICT_ORDER
- *   ON: If the target CPU saves any energy, use that.
- *   OFF: Use whichever of target or backup saves most.
  */
 SCHED_FEAT(EAS_PREFER_IDLE, true)
-SCHED_FEAT(FIND_BEST_TARGET, true)
-SCHED_FEAT(FBT_STRICT_ORDER, false)
-
+#ifdef CONFIG_MTK_SCHED_LB_ENHANCEMENT
 SCHED_FEAT(SCHED_MTK_EAS, true)
+#else
+SCHED_FEAT(SCHED_MTK_EAS, false)
+#endif
+
+/*
+ * Request max frequency from schedutil whenever a RT task is running.
+ */
+SCHED_FEAT(SUGOV_RT_MAX_FREQ, false)
 
 /*
  * Apply schedtune boost hold to tasks of all sched classes.
@@ -141,8 +131,3 @@ SCHED_FEAT(SCHED_MTK_EAS, true)
  * RT class.
  */
 SCHED_FEAT(SCHEDTUNE_BOOST_HOLD_ALL, false)
-
-/*
- * Utilization clamping lazy update.
- */
-SCHED_FEAT(UCLAMP_LAZY_UPDATE, false)

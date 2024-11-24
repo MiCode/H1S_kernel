@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2020 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTK_DP_HDCP1X_H__
 #define __MTK_DP_HDCP1X_H__
@@ -31,7 +23,7 @@
 #define HDCP1X_REP_RDY_WDT                      5000
 
 #define HDCP1X_REP_MAXDEVS            128
-#define HDCP1X_REAUNTH_COUNT          1
+#define HDCP1X_REAUNTH_COUNT          3
 
 enum DPTX_DRV_HDCP1X_MainStates {
 	HDCP1X_MainState_H2 = 0,

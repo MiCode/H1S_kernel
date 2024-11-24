@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright IBM Corp. 2012
  *
@@ -272,7 +273,7 @@ resource_size_t pcibios_align_resource(void *data, const struct resource *res,
 /* combine single writes by using store-block insn */
 void __iowrite64_copy(void __iomem *to, const void *from, size_t count)
 {
-       zpci_memcpy_toio(to, from, count);
+	zpci_memcpy_toio(to, from, count * 8);
 }
 
 /* Create a virtual mapping cookie for a PCI BAR */
@@ -419,7 +420,6 @@ int arch_setup_msi_irqs(struct pci_dev *pdev, int nvec, int type)
 	/* Request MSI interrupts */
 	hwirq = 0;
 	for_each_pci_msi_entry(msi, pdev) {
-		rc = -EIO;
 		if (hwirq >= msi_vecs)
 			break;
 		irq = irq_alloc_desc(0);	/* Alloc irq on node 0 */

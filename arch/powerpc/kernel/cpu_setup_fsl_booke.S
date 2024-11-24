@@ -17,7 +17,7 @@
 #include <asm/processor.h>
 #include <asm/cputable.h>
 #include <asm/ppc_asm.h>
-#include <asm/mmu-book3e.h>
+#include <asm/nohash/mmu-book3e.h>
 #include <asm/asm-offsets.h>
 #include <asm/mpc85xx.h>
 
@@ -162,7 +162,7 @@ _GLOBAL(__setup_cpu_e5500)
 	 * the feature on the primary core, avoid doing it on the
 	 * secondary core.
 	 */
-	andis.	r6, r3, CPU_FTR_EMB_HV@h
+	andi.	r6, r3, CPU_FTR_EMB_HV
 	beq	2f
 	rlwinm	r3, r3, 0, ~CPU_FTR_EMB_HV
 	stw	r3, CPU_SPEC_FEATURES(r4)

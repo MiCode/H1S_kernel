@@ -173,9 +173,6 @@ static int xlr_i2c_tx(struct xlr_i2c_private *priv,  u16 len,
 	u8 offset;
 	u32 xfer;
 
-	if (!len)
-		return -EOPNOTSUPP;
-
 	offset = buf[0];
 	xlr_i2c_wreg(priv->iobase, XLR_I2C_ADDR, offset);
 	xlr_i2c_wreg(priv->iobase, XLR_I2C_DEVADDR, addr);
@@ -240,9 +237,6 @@ static int xlr_i2c_rx(struct xlr_i2c_private *priv, u16 len, u8 *buf, u16 addr)
 	u32 i2c_status;
 	unsigned long timeout, stoptime, checktime;
 	int nbytes, timedout;
-
-	if (!len)
-		return -EOPNOTSUPP;
 
 	xlr_i2c_wreg(priv->iobase, XLR_I2C_CFG,
 			XLR_I2C_CFG_NOADDR | priv->cfg->cfg_extra);
@@ -340,6 +334,10 @@ static const struct i2c_algorithm xlr_i2c_algo = {
 	.functionality	= xlr_func,
 };
 
+static const struct i2c_adapter_quirks xlr_i2c_quirks = {
+	.flags = I2C_AQ_NO_ZERO_LEN,
+};
+
 static const struct xlr_i2c_config xlr_i2c_config_default = {
 	.status_busy	= XLR_I2C_BUS_BUSY,
 	.cfg_extra	= 0,
@@ -427,6 +425,7 @@ static int xlr_i2c_probe(struct platform_device *pdev)
 	priv->adap.owner	= THIS_MODULE;
 	priv->adap.algo_data	= priv;
 	priv->adap.algo		= &xlr_i2c_algo;
+	priv->adap.quirks	= &xlr_i2c_quirks;
 	priv->adap.nr		= pdev->id;
 	priv->adap.class	= I2C_CLASS_HWMON;
 	snprintf(priv->adap.name, sizeof(priv->adap.name), "xlr-i2c");
@@ -434,11 +433,15 @@ static int xlr_i2c_probe(struct platform_device *pdev)
 	i2c_set_adapdata(&priv->adap, priv);
 	ret = i2c_add_numbered_adapter(&priv->adap);
 	if (ret < 0)
-		return ret;
+		goto err_unprepare_clk;
 
 	platform_set_drvdata(pdev, priv);
 	dev_info(&priv->adap.dev, "Added I2C Bus.\n");
 	return 0;
+
+err_unprepare_clk:
+	clk_unprepare(clk);
+	return ret;
 }
 
 static int xlr_i2c_remove(struct platform_device *pdev)

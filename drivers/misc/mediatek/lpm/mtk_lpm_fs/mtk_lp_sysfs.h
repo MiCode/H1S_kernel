@@ -5,7 +5,6 @@
 
 #ifndef __MTK_LP_SYSFS__
 #define __MTK_LP_SYSFS__
-#include <linux/list.h>
 
 #define MTK_LP_SYSFS_HAS_ENTRY		(1)
 
@@ -90,9 +89,9 @@ struct mtk_lp_sysfs_group {
 
 #define IS_MTK_LP_SYS_HANDLE_VALID(x)\
 	({ struct mtk_lp_sysfs_handle *Po = x;\
-	if ((!Po) || (!Po->_current))\
+	if ((Po == NULL) || (Po->_current == NULL))\
 		Po = NULL;\
-	(Po); })
+	(Po != NULL); })
 
 int mtk_lp_sysfs_entry_func_create(const char *name, int mode,
 			struct mtk_lp_sysfs_handle *parent,

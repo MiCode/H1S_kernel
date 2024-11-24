@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
-
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 
 #include <generated/autoconf.h>
@@ -70,6 +63,9 @@ irqreturn_t key_int_handler(int irq, void *data)
 			pmic_get_register_value(PMIC_HOMEKEY_DEB));
 		kpd_pmic_rstkey_handler(0x0);
 		break;
+	default:
+		IRQLOG("Unsupported key irq %d\n", hwirq);
+		break;
 	}
 #endif
 	return IRQ_HANDLED;
@@ -88,9 +84,9 @@ irqreturn_t legacy_pmic_int_handler(int irq, void *data)
  */
 void pmic_enable_interrupt(enum PMIC_IRQ_ENUM intNo, unsigned int en, char *str)
 {
-	int ret;
-	unsigned int irq;
-	const char *name;
+	int ret = 0;
+	unsigned int irq = 0;
+	const char *name = NULL;
 	struct legacy_pmic_callback *pmic_cb = &pmic_cbs[intNo];
 	struct irq_desc *desc;
 
@@ -107,6 +103,7 @@ void pmic_enable_interrupt(enum PMIC_IRQ_ENUM intNo, unsigned int en, char *str)
 		pr_notice(PMICTAG "[%s] fail intNo=%d\n", __func__, intNo);
 		return;
 	}
+
 	name = mt6358_irq_get_name(pmic_dev->parent, intNo);
 	if (name == NULL) {
 		pr_notice(PMICTAG "[%s] no irq name at intNo=%d\n",
@@ -128,7 +125,7 @@ void pmic_enable_interrupt(enum PMIC_IRQ_ENUM intNo, unsigned int en, char *str)
 	} else if (en == 0 && pmic_cb->has_requested)
 		disable_irq_nosync(irq);
 	desc = irq_to_desc(irq);
-	pr_info("[%s] intNo=%d, en=%d, depth=%d\n",
+	IRQLOG("[%s] intNo=%d, en=%d, depth=%d\n",
 		__func__, intNo, en, desc ? desc->depth : -1);
 }
 

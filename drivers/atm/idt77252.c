@@ -1117,8 +1117,8 @@ dequeue_rx(struct idt77252_dev *card, struct rsq_entry *rsqe)
 	rpp->len += skb->len;
 
 	if (stat & SAR_RSQE_EPDU) {
+		unsigned int len, truesize;
 		unsigned char *l1l2;
-		unsigned int len;
 
 		l1l2 = (unsigned char *) ((unsigned long) skb->data + skb->len - 6);
 
@@ -1188,14 +1188,15 @@ dequeue_rx(struct idt77252_dev *card, struct rsq_entry *rsqe)
 		ATM_SKB(skb)->vcc = vcc;
 		__net_timestamp(skb);
 
+		truesize = skb->truesize;
 		vcc->push(vcc, skb);
 		atomic_inc(&vcc->stats->rx);
 
-		if (skb->truesize > SAR_FB_SIZE_3)
+		if (truesize > SAR_FB_SIZE_3)
 			add_rx_skb(card, 3, SAR_FB_SIZE_3, 1);
-		else if (skb->truesize > SAR_FB_SIZE_2)
+		else if (truesize > SAR_FB_SIZE_2)
 			add_rx_skb(card, 2, SAR_FB_SIZE_2, 1);
-		else if (skb->truesize > SAR_FB_SIZE_1)
+		else if (truesize > SAR_FB_SIZE_1)
 			add_rx_skb(card, 1, SAR_FB_SIZE_1, 1);
 		else
 			add_rx_skb(card, 0, SAR_FB_SIZE_0, 1);
@@ -1528,9 +1529,9 @@ idt77252_tx(struct idt77252_dev *card)
 
 
 static void
-tst_timer(unsigned long data)
+tst_timer(struct timer_list *t)
 {
-	struct idt77252_dev *card = (struct idt77252_dev *)data;
+	struct idt77252_dev *card = from_timer(card, t, tst_timer);
 	unsigned long base, idle, jump;
 	unsigned long flags;
 	u32 pc;
@@ -2073,21 +2074,19 @@ idt77252_rate_logindex(struct idt77252_dev *card, int pcr)
 }
 
 static void
-idt77252_est_timer(unsigned long data)
+idt77252_est_timer(struct timer_list *t)
 {
-	struct vc_map *vc = (struct vc_map *)data;
+	struct rate_estimator *est = from_timer(est, t, timer);
+	struct vc_map *vc = est->vc;
 	struct idt77252_dev *card = vc->card;
-	struct rate_estimator *est;
 	unsigned long flags;
 	u32 rate, cps;
 	u64 ncells;
 	u8 lacr;
 
 	spin_lock_irqsave(&vc->lock, flags);
-	est = vc->estimator;
-	if (!est)
+	if (!vc->estimator)
 		goto out;
-
 	ncells = est->cells;
 
 	rate = ((u32)(ncells - est->last_cells)) << (7 - est->interval);
@@ -2126,10 +2125,11 @@ idt77252_init_est(struct vc_map *vc, int pcr)
 	est->maxcps = pcr < 0 ? -pcr : pcr;
 	est->cps = est->maxcps;
 	est->avcps = est->cps << 5;
+	est->vc = vc;
 
 	est->interval = 2;		/* XXX: make this configurable */
 	est->ewma_log = 2;		/* XXX: make this configurable */
-	setup_timer(&est->timer, idt77252_est_timer, (unsigned long)vc);
+	timer_setup(&est->timer, idt77252_est_timer, 0);
 	mod_timer(&est->timer, jiffies + ((HZ / 4) << est->interval));
 
 	return est;
@@ -2209,16 +2209,20 @@ static int
 idt77252_init_ubr(struct idt77252_dev *card, struct vc_map *vc,
 		  struct atm_vcc *vcc, struct atm_qos *qos)
 {
+	struct rate_estimator *est = NULL;
 	unsigned long flags;
 	int tcr;
 
 	spin_lock_irqsave(&vc->lock, flags);
 	if (vc->estimator) {
-		del_timer(&vc->estimator->timer);
-		kfree(vc->estimator);
+		est = vc->estimator;
 		vc->estimator = NULL;
 	}
 	spin_unlock_irqrestore(&vc->lock, flags);
+	if (est) {
+		del_timer_sync(&est->timer);
+		kfree(est);
+	}
 
 	tcr = atm_pcr_goal(&qos->txtp);
 	if (tcr == 0)
@@ -2912,6 +2916,7 @@ close_card_oam(struct idt77252_dev *card)
 
 				recycle_rx_pool_skb(card, &vc->rcv.rx_pool);
 			}
+			kfree(vc);
 		}
 	}
 }
@@ -2932,6 +2937,8 @@ open_card_ubr0(struct idt77252_dev *card)
 	vc->scq = alloc_scq(card, vc->class);
 	if (!vc->scq) {
 		printk("%s: can't get SCQ.\n", card->name);
+		kfree(card->vcs[0]);
+		card->vcs[0] = NULL;
 		return -ENOMEM;
 	}
 
@@ -2953,6 +2960,15 @@ open_card_ubr0(struct idt77252_dev *card)
 	clear_bit(VCF_IDLE, &vc->flags);
 	writel(TCMDQ_START | 0, SAR_REG_TCMDQ);
 	return 0;
+}
+
+static void
+close_card_ubr0(struct idt77252_dev *card)
+{
+	struct vc_map *vc = card->vcs[0];
+
+	free_scq(card, vc->scq);
+	kfree(vc);
 }
 
 static int
@@ -3004,6 +3020,7 @@ static void idt77252_dev_close(struct atm_dev *dev)
 	struct idt77252_dev *card = dev->dev_data;
 	u32 conf;
 
+	close_card_ubr0(card);
 	close_card_oam(card);
 
 	conf = SAR_CFG_RXPTH |	/* enable receive path           */
@@ -3170,14 +3187,10 @@ static void init_sram(struct idt77252_dev *card)
 				    (u32) 0xffffffff);
 	}
 
-	writel((SAR_FBQ0_LOW << 28) | 0x00000000 | 0x00000000 |
-	       (SAR_FB_SIZE_0 / 48), SAR_REG_FBQS0);
-	writel((SAR_FBQ1_LOW << 28) | 0x00000000 | 0x00000000 |
-	       (SAR_FB_SIZE_1 / 48), SAR_REG_FBQS1);
-	writel((SAR_FBQ2_LOW << 28) | 0x00000000 | 0x00000000 |
-	       (SAR_FB_SIZE_2 / 48), SAR_REG_FBQS2);
-	writel((SAR_FBQ3_LOW << 28) | 0x00000000 | 0x00000000 |
-	       (SAR_FB_SIZE_3 / 48), SAR_REG_FBQS3);
+	writel((SAR_FBQ0_LOW << 28) | (SAR_FB_SIZE_0 / 48), SAR_REG_FBQS0);
+	writel((SAR_FBQ1_LOW << 28) | (SAR_FB_SIZE_1 / 48), SAR_REG_FBQS1);
+	writel((SAR_FBQ2_LOW << 28) | (SAR_FB_SIZE_2 / 48), SAR_REG_FBQS2);
+	writel((SAR_FBQ3_LOW << 28) | (SAR_FB_SIZE_3 / 48), SAR_REG_FBQS3);
 
 	/* Initialize rate table  */
 	for (i = 0; i < 256; i++) {
@@ -3608,7 +3621,7 @@ static int idt77252_init_one(struct pci_dev *pcidev,
 
 	if ((err = dma_set_mask_and_coherent(&pcidev->dev, DMA_BIT_MASK(32)))) {
 		printk("idt77252: can't enable DMA for PCI device at %s\n", pci_name(pcidev));
-		return err;
+		goto err_out_disable_pdev;
 	}
 
 	card = kzalloc(sizeof(struct idt77252_dev), GFP_KERNEL);
@@ -3631,7 +3644,7 @@ static int idt77252_init_one(struct pci_dev *pcidev,
 	spin_lock_init(&card->cmd_lock);
 	spin_lock_init(&card->tst_lock);
 
-	setup_timer(&card->tst_timer, tst_timer, (unsigned long)card);
+	timer_setup(&card->tst_timer, tst_timer, 0);
 
 	/* Do the I/O remapping... */
 	card->membase = ioremap(membase, 1024);
@@ -3768,6 +3781,7 @@ static void __exit idt77252_exit(void)
 		card = idt77252_chain;
 		dev = card->atmdev;
 		idt77252_chain = card->next;
+		del_timer_sync(&card->tst_timer);
 
 		if (dev->phy->stop)
 			dev->phy->stop(dev);

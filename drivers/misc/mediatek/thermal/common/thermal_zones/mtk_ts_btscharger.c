@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -26,12 +18,25 @@
 #include "mach/mtk_thermal.h"
 #include <linux/uidgid.h>
 #include <linux/slab.h>
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-#include <mt-plat/mtk_charger.h>
-#else
-#include <charging.h>
-#endif
 #include <tmp_btscharger.h>
+#if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
+#include <linux/iio/consumer.h>
+#endif
+
+int __attribute__ ((weak))
+IMM_IsAdcInitReady(void)
+{
+	pr_notice("E_WF: thermal_charger: %s doesn't exist\n", __func__);
+	return 0;
+}
+int __attribute__ ((weak))
+IMM_GetOneChannelValue(int dwChannel, int data[4], int *rawdata)
+{
+	pr_notice("E_WF: thermal_charger: %s doesn't exist\n", __func__);
+	return -1;
+}
+
+
 #define mtktscharger_TEMP_CRIT (150000) /* 150.000 degree Celsius */
 
 #define mtktscharger_dprintk(fmt, args...) \
@@ -41,10 +46,14 @@ do { \
 } while (0)
 
 #define mtktscharger_dprintk_always(fmt, args...) \
-	pr_debug("[Thermal/tzcharger]" fmt, ##args)
+	pr_notice("[Thermal/tzcharger]" fmt, ##args)
 
 #define mtktscharger_pr_notice(fmt, args...) \
 	pr_notice("[Thermal/tzcharger]" fmt, ##args)
+
+#if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
+struct iio_channel *thermistor_ch2;
+#endif
 
 static kuid_t uid = KUIDT_INIT(0);
 static kgid_t gid = KGIDT_INIT(1000);
@@ -90,10 +99,6 @@ static int polling_trip_temp1 = 40000;
 static int polling_trip_temp2 = 20000;
 static int polling_factor1 = 5000;
 static int polling_factor2 = 10000;
-
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-static struct charger_consumer *pthermal_consumer;
-#endif
 
 struct BTSCHARGER_TEMPERATURE {
 	__s32 BTSCHARGER_Temp;
@@ -462,9 +467,11 @@ static __s16 mtkts_btscharger_thermistor_conver_temp(__s32 Res)
 			if (Res >=
 				BTSCHARGER_Temperature_Table[i].TemperatureR) {
 				RES2 =
-				BTSCHARGER_Temperature_Table[i].TemperatureR;
+				 BTSCHARGER_Temperature_Table[i].TemperatureR;
+
 				TMP2 =
 				BTSCHARGER_Temperature_Table[i].BTSCHARGER_Temp;
+
 				/* mtktscharger_dprintk("%d :i=%d, RES2 = %d,
 				 * TMP2 = %d\n",__LINE__,i,RES2,TMP2);
 				 */
@@ -528,17 +535,33 @@ static __s16 mtk_ts_btscharger_volt_to_temp(__u32 dwVolt)
 
 static int mtktscharger_get_hw_temp(void)
 {
-
+#if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
+	int val = 0;
+	int ret = 0, output;
+#else
 	int ret = 0, data[4], i, ret_value = 0, ret_temp = 0, output;
 	int times = 1, Channel = g_RAP_ADC_channel; /* 6752=0(AUX_IN2_NTC) */
 	static int valid_temp;
-#if defined(APPLY_AUXADC_CALI_DATA)
-	int auxadc_cali_temp;
+	#if defined(APPLY_AUXADC_CALI_DATA)
+		int auxadc_cali_temp;
+	#endif
 #endif
 
+#if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
+	ret = iio_read_channel_processed(thermistor_ch2, &val);
+	if (ret < 0) {
+		mtktscharger_dprintk_always(
+			"Busy/Timeout, IIO ch read failed %d\n", ret);
+		return ret;
+	}
+
+	/* NOT need to do the conversion "val * 1500 / 4096" */
+	/* iio_read_channel_processed can get mV immediately */
+	ret = val;
+#else
 	if (IMM_IsAdcInitReady() == 0) {
-		mtktscharger_dprintk(
-			"[thermal_auxadc_get_data]: AUXADC is not ready\n");
+		mtktscharger_dprintk_always(
+				"[thermal_auxadc_get_data]: AUXADC is not ready\n");
 		return 0;
 	}
 
@@ -596,9 +619,12 @@ static int mtktscharger_get_hw_temp(void)
 	ret = ret * 1500 / 4096;
 #endif
 	/* ret = ret*1800/4096;//82's ADC power */
-	mtktscharger_dprintk("APtery output mV = %d\n", ret);
+
+#endif
+
 	output = mtk_ts_btscharger_volt_to_temp(ret);
-	mtktscharger_dprintk("BTSCHARGER output temperature = %d\n", output);
+	mtktscharger_dprintk_always("BTSCHARGER ret = %d, temperature = %d\n",
+								ret, output);
 	return output;
 }
 
@@ -1034,6 +1060,163 @@ static int mtktscharger_open(struct inode *inode, struct file *file)
 	return single_open(file, mtktscharger_read, NULL);
 }
 
+static ssize_t mtkts_btscharger_param_write(
+struct file *file, const char __user *buffer, size_t count, loff_t *data)
+{
+	int len = 0;
+	struct mtktsbtscharger_param_data {
+		char desc[512];
+		char pull_R[10], pull_V[10];
+		char overcrilow[16];
+		char NTC_TABLE[10];
+		unsigned int valR, valV, over_cri_low, ntc_table;
+		unsigned int adc_channel;
+	};
+
+	struct mtktsbtscharger_param_data *ptr_mtktsbtscharger_parm_data;
+
+	ptr_mtktsbtscharger_parm_data = kmalloc(
+				sizeof(*ptr_mtktsbtscharger_parm_data),
+					GFP_KERNEL);
+
+	if (ptr_mtktsbtscharger_parm_data == NULL)
+		return -ENOMEM;
+
+	/* external pin: 0/1/12/13/14/15, can't use pin:2/3/4/5/6/7/8/9/10/11,
+	 *choose "adc_channel=11" to check if there is any param input
+	 */
+	ptr_mtktsbtscharger_parm_data->adc_channel = 11;
+
+	len = (count < (sizeof(ptr_mtktsbtscharger_parm_data->desc) - 1)) ?
+			count :
+			(sizeof(ptr_mtktsbtscharger_parm_data->desc) - 1);
+
+	if (copy_from_user(ptr_mtktsbtscharger_parm_data->desc, buffer, len)) {
+		kfree(ptr_mtktsbtscharger_parm_data);
+		return 0;
+	}
+
+	ptr_mtktsbtscharger_parm_data->desc[len] = '\0';
+
+	mtktscharger_dprintk("[%s]\n", __func__);
+
+	if (sscanf
+	    (ptr_mtktsbtscharger_parm_data->desc,
+		"%9s %d %9s %d %15s %d %9s %d %d",
+		ptr_mtktsbtscharger_parm_data->pull_R,
+		&ptr_mtktsbtscharger_parm_data->valR,
+		ptr_mtktsbtscharger_parm_data->pull_V,
+		&ptr_mtktsbtscharger_parm_data->valV,
+		ptr_mtktsbtscharger_parm_data->overcrilow,
+		&ptr_mtktsbtscharger_parm_data->over_cri_low,
+		ptr_mtktsbtscharger_parm_data->NTC_TABLE,
+		&ptr_mtktsbtscharger_parm_data->ntc_table,
+		&ptr_mtktsbtscharger_parm_data->adc_channel) >= 8) {
+
+		if (!strcmp(ptr_mtktsbtscharger_parm_data->pull_R, "PUP_R")) {
+			g_RAP_pull_up_R = ptr_mtktsbtscharger_parm_data->valR;
+			mtktscharger_dprintk("g_RAP_pull_up_R=%d\n",
+							g_RAP_pull_up_R);
+		} else {
+			mtktscharger_dprintk(
+				"[%s] bad PUP_R argument\n", __func__);
+			kfree(ptr_mtktsbtscharger_parm_data);
+			return -EINVAL;
+		}
+
+		if (!strcmp(ptr_mtktsbtscharger_parm_data->pull_V,
+			"PUP_VOLT")) {
+			g_RAP_pull_up_voltage =
+				ptr_mtktsbtscharger_parm_data->valV;
+			mtktscharger_dprintk("g_Rat_pull_up_voltage=%d\n",
+							g_RAP_pull_up_voltage);
+		} else {
+			mtktscharger_dprintk(
+				"[%s] bad PUP_VOLT argument\n", __func__);
+			kfree(ptr_mtktsbtscharger_parm_data);
+			return -EINVAL;
+		}
+
+		if (!strcmp(ptr_mtktsbtscharger_parm_data->overcrilow,
+			"OVER_CRITICAL_L")) {
+			g_TAP_over_critical_low =
+				ptr_mtktsbtscharger_parm_data->over_cri_low;
+			mtktscharger_dprintk("g_TAP_over_critical_low=%d\n",
+						g_TAP_over_critical_low);
+		} else {
+			mtktscharger_dprintk(
+				"[%s] bad OVERCRIT_L argument\n", __func__);
+			kfree(ptr_mtktsbtscharger_parm_data);
+			return -EINVAL;
+		}
+
+		if (!strcmp(ptr_mtktsbtscharger_parm_data->NTC_TABLE,
+			"NTC_TABLE")) {
+			g_RAP_ntc_table =
+				ptr_mtktsbtscharger_parm_data->ntc_table;
+			mtktscharger_dprintk("g_RAP_ntc_table=%d\n",
+							g_RAP_ntc_table);
+		} else {
+			mtktscharger_dprintk(
+				"[%s] bad NTC_TABLE argument\n", __func__);
+			kfree(ptr_mtktsbtscharger_parm_data);
+			return -EINVAL;
+		}
+
+		/* external pin: 0/1/12/13/14/15,
+		 * can't use pin:2/3/4/5/6/7/8/9/10/11,
+		 * choose "adc_channel=11" to check if there is any param input
+		 */
+		if ((ptr_mtktsbtscharger_parm_data->adc_channel >= 2)
+		&& (ptr_mtktsbtscharger_parm_data->adc_channel <= 11))
+			/* check unsupport pin value, if unsupport,
+			 * set channel = 1 as default setting.
+			 */
+			g_RAP_ADC_channel = AUX_IN2_NTC;
+		else {
+			/* check if there is any param input,
+			 * if not using default g_RAP_ADC_channel:1
+			 */
+			if (ptr_mtktsbtscharger_parm_data->adc_channel != 11)
+				g_RAP_ADC_channel =
+				ptr_mtktsbtscharger_parm_data->adc_channel;
+			else
+				g_RAP_ADC_channel = AUX_IN2_NTC;
+		}
+		mtktscharger_dprintk("adc_channel=%d\n",
+				ptr_mtktsbtscharger_parm_data->adc_channel);
+		mtktscharger_dprintk("g_RAP_ADC_channel=%d\n",
+						g_RAP_ADC_channel);
+
+		mtkts_btscharger_prepare_table(g_RAP_ntc_table);
+
+		kfree(ptr_mtktsbtscharger_parm_data);
+		return count;
+	}
+
+	mtktscharger_dprintk("[%s] bad argument\n", __func__);
+	kfree(ptr_mtktsbtscharger_parm_data);
+	return -EINVAL;
+}
+
+
+static int mtkts_btscharger_param_read(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%d\n", g_RAP_pull_up_R);
+	seq_printf(m, "%d\n", g_RAP_pull_up_voltage);
+	seq_printf(m, "%d\n", g_TAP_over_critical_low);
+	seq_printf(m, "%d\n", g_RAP_ntc_table);
+	seq_printf(m, "%d\n", g_RAP_ADC_channel);
+
+	return 0;
+}
+
+static int mtkts_btscharger_param_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, mtkts_btscharger_param_read, NULL);
+}
+
+
 static const struct file_operations mtktscharger_fops = {
 	.owner = THIS_MODULE,
 	.open = mtktscharger_open,
@@ -1043,20 +1226,45 @@ static const struct file_operations mtktscharger_fops = {
 	.release = single_release,
 };
 
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
+static const struct file_operations mtkts_btscharger_param_fops = {
+	.owner = THIS_MODULE,
+	.open = mtkts_btscharger_param_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.write = mtkts_btscharger_param_write,
+	.release = single_release,
+};
+
+
+#if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
 static int mtktscharger_pdrv_probe(struct platform_device *pdev)
 {
 	int err = 0;
+	int ret = 0;
 	struct proc_dir_entry *entry = NULL;
 	struct proc_dir_entry *mtktscharger_dir = NULL;
 
 	mtktscharger_dprintk_always("%s\n", __func__);
 
-	pthermal_consumer = charger_manager_get_by_name(&pdev->dev, "charger");
+	if (!pdev->dev.of_node) {
+		mtktscharger_dprintk_always("[%s] Only DT based supported\n",
+			__func__);
+		return -ENODEV;
+	}
 
-	if (!pthermal_consumer) {
-		mtktscharger_pr_notice("%s get get_by_name fails.\n", __func__);
-		return -EPERM;
+	thermistor_ch2 = devm_kzalloc(&pdev->dev, sizeof(*thermistor_ch2),
+		GFP_KERNEL);
+	if (!thermistor_ch2)
+		return -ENOMEM;
+
+
+	thermistor_ch2 = iio_channel_get(&pdev->dev, "thermistor-ch2");
+	ret = IS_ERR(thermistor_ch2);
+	if (ret) {
+		mtktscharger_dprintk_always(
+			"[%s] fail to get auxadc iio ch2: %d\n",
+			__func__, ret);
+		return ret;
 	}
 
 	err = mtktscharger_register_thermal();
@@ -1070,6 +1278,11 @@ static int mtktscharger_pdrv_probe(struct platform_device *pdev)
 	} else {
 		entry = proc_create("tzcharger", 0664, mtktscharger_dir,
 							&mtktscharger_fops);
+		if (entry)
+			proc_set_user(entry, uid, gid);
+
+		entry = proc_create("tzcharger_param", 0664, mtktscharger_dir,
+					&mtkts_btscharger_param_fops);
 		if (entry)
 			proc_set_user(entry, uid, gid);
 	}
@@ -1087,25 +1300,32 @@ static int mtktscharger_pdrv_remove(struct platform_device *pdev)
 	return 0;
 }
 
-struct platform_device mtktscharger_device = {
-	.name = "mtktscharger",
-	.id = -1,
-};
 
+#ifdef CONFIG_OF
+const struct of_device_id mt_thermistor_of_match3[2] = {
+	{.compatible = "mediatek,mtboard-thermistor3",},
+	{},
+};
+#endif
+
+#define THERMAL_THERMISTOR_NAME    "mtboard-thermistor3"
 static struct platform_driver mtktscharger_driver = {
 	.probe = mtktscharger_pdrv_probe,
 	.remove = mtktscharger_pdrv_remove,
 	.driver = {
-		   .name = "mtktscharger",
-		   .owner  = THIS_MODULE,
-		   },
-};
+		.name = THERMAL_THERMISTOR_NAME,
+#ifdef CONFIG_OF
+		.of_match_table = mt_thermistor_of_match3,
 #endif
+	},
+};
+
+#endif /*CONFIG_MEDIATEK_MT6577_AUXADC*/
 
 static int __init mtktscharger_init(void)
 {
 	int err = 0;
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
+#if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
 	/* Move this segment to probe function
 	 * in case mtktscharger reads temperature
 	 * before mtk_charger allows it.
@@ -1114,16 +1334,18 @@ static int __init mtktscharger_init(void)
 	struct proc_dir_entry *entry = NULL;
 	struct proc_dir_entry *mtktscharger_dir = NULL;
 #endif
+
 	mtkts_btscharger_prepare_table(g_RAP_ntc_table);
 	err = mtktscharger_register_cooler();
 	if (err)
 		return err;
 
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-	/* Move this segment to probe function
-	 * in case mtktscharger reads temperature
-	 * before mtk_charger allows it.
-	 */
+#if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
+	err = platform_driver_register(&mtktscharger_driver);
+	if (err) {
+		mtktscharger_dprintk("%s fail to reg driver\n", __func__);
+		goto err_unreg;
+	}
 #else
 	err = mtktscharger_register_thermal();
 	if (err)
@@ -1138,34 +1360,15 @@ static int __init mtktscharger_init(void)
 							&mtktscharger_fops);
 		if (entry)
 			proc_set_user(entry, uid, gid);
-	}
-#endif
 
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-	/* TODO: consider not to register a charger thermal zone
-	 * if not PEP30 or dual charger.
-	 */
-	/* register platform device/driver
-	 */
-	err = platform_device_register(&mtktscharger_device);
-	if (err) {
-		mtktscharger_dprintk("%s fail to reg device\n", __func__);
-		goto err_unreg;
-	}
-
-	err = platform_driver_register(&mtktscharger_driver);
-	if (err) {
-		mtktscharger_dprintk("%s fail to reg driver\n", __func__);
-		goto reg_platform_driver_fail;
+		entry = proc_create("tzcharger_param", 0664, mtktscharger_dir,
+					&mtkts_btscharger_param_fops);
+		if (entry)
+			proc_set_user(entry, uid, gid);
 	}
 #endif
 
 	return 0;
-
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-reg_platform_driver_fail:
-	platform_device_unregister(&mtktscharger_device);
-#endif
 
 err_unreg:
 
@@ -1173,6 +1376,7 @@ err_unreg:
 
 	return err;
 }
+
 
 static void __exit mtktscharger_exit(void)
 {

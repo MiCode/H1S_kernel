@@ -11,4 +11,4 @@
 # GNU General Public License for more details.
 #
 
-obj-$(CONFIG_THERMAL) += src/
+obj-$(CONFIG_MTK_LEGACY_THERMAL) += src/

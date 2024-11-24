@@ -1,20 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright(C)2014 MediaTek Inc.
- * Modification based on code covered by the below mentioned copyright
- * and/or permission notice(S).
- */
-
-/* ITG1010 motion sensor driver
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include "ITG1010.h"
@@ -34,6 +20,10 @@
 #define ITG1010_AXES_NUM 3
 #define ITG1010_DATA_LEN 6
 #define ITG1010_DEV_NAME "ITG-1010A"
+
+#define DRIVER_ATTR(_name, _mode, _show, _store) \
+        struct driver_attribute driver_attr_##_name = \
+        __ATTR(_name, _mode, _show, _store)
 
 int packet_thresh = 75; /* 600 ms / 8ms/sample */
 /*----------------------------------------------------------------------------*/
@@ -575,7 +565,7 @@ static int ITG1010_ReadChipInfo(struct i2c_client *client, char *buf,
 				int bufsize)
 {
 	u8 databuf[10];
-
+	int ret;
 	memset(databuf, 0, sizeof(u8) * 10);
 
 	if ((buf == NULL) || (bufsize <= 30))
@@ -586,7 +576,9 @@ static int ITG1010_ReadChipInfo(struct i2c_client *client, char *buf,
 		return -2;
 	}
 
-	sprintf(buf, "ITG1010 Chip");
+	ret = sprintf(buf, "ITG1010 Chip");
+	if (ret < 0)
+		pr_debug("%s:sprintf buf failed:%d\n", __func__, ret);
 	return 0;
 }
 /*----------------------------------------------------------------------------*/
@@ -730,6 +722,8 @@ static ssize_t show_power_status(struct device_driver *ddri, char *buf)
 	ITG1010_i2c_read_block(obj->client, ITG1010_REG_PWR_CTL, &uData, 1);
 
 	res = snprintf(buf, PAGE_SIZE, "0x%04X\n", uData);
+	if (res < 0)
+		pr_debug("%s:PAGE_SIZE snprintf fail:%d\n", __func__, res);
 	return res;
 }
 
@@ -1082,6 +1076,8 @@ static int ITG1010_get_data(int *x, int *y, int *z, int *status)
 	ITG1010_ReadGyroData(obj_i2c_data->client, buff, ITG1010_BUFSIZE);
 
 	ret = sscanf(buff, "%x %x %x", x, y, z);
+	if (ret < 0)
+		pr_info("%s:ITG1010_ReadGyroData sscanf err:%d\n", __func__, ret);
 	*status = SENSOR_STATUS_ACCURACY_MEDIUM;
 
 	return 0;

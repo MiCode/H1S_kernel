@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _DDP_RDMA_EX_H_
@@ -53,8 +45,41 @@ struct rdma_color_post {
 	UINT32 ADD2;
 };
 
-extern int polling_rdma_output_line_enable;
+//90hz
 
+/* golden setting */
+enum GS_RDMA_FLD {
+	GS_RDMA_PRE_ULTRA_TH_LOW = 0,
+	GS_RDMA_PRE_ULTRA_TH_HIGH,
+	GS_RDMA_VALID_TH_FORCE_PRE_ULTRA,
+	GS_RDMA_VDE_FORCE_PRE_ULTRA,
+	GS_RDMA_ULTRA_TH_LOW,
+	GS_RDMA_ULTRA_TH_HIGH,
+	GS_RDMA_VALID_TH_BLOCK_ULTRA,
+	GS_RDMA_VDE_BLOCK_ULTRA,
+	GS_RDMA_ISSUE_REQ_TH,
+	GS_RDMA_OUTPUT_VALID_FIFO_TH,
+	GS_RDMA_FIFO_SIZE,
+	GS_RDMA_FIFO_UNDERFLOW_EN,
+	GS_RDMA_TH_LOW_FOR_SODI,
+	GS_RDMA_TH_HIGH_FOR_SODI,
+	GS_RDMA_TH_LOW_FOR_DVFS,
+	GS_RDMA_TH_HIGH_FOR_DVFS,
+	GS_RDMA_SRAM_SEL,
+	GS_RDMA_DVFS_PRE_ULTRA_TH_LOW,
+	GS_RDMA_DVFS_PRE_ULTRA_TH_HIGH,
+	GS_RDMA_DVFS_ULTRA_TH_LOW,
+	GS_RDMA_DVFS_ULTRA_TH_HIGH,
+	GS_RDMA_IS_DRS_STATUS_TH_LOW,
+	GS_RDMA_IS_DRS_STATUS_TH_HIGH,
+	GS_RDMA_NOT_DRS_STATUS_TH_LOW,
+	GS_RDMA_NOT_DRS_STATUS_TH_HIGH,
+	GS_RDMA_URGENT_TH_LOW,
+	GS_RDMA_URGENT_TH_HIGH,
+	GS_RDMA_SELF_FIFO_SIZE,
+	GS_RDMA_RSZ_FIFO_SIZE,
+	GS_RDMA_FLD_NUM,
+};
 int rdma_clock_on(enum DISP_MODULE_ENUM module, void *handle);
 int rdma_clock_off(enum DISP_MODULE_ENUM module, void *handle);
 
@@ -66,6 +91,5 @@ void rdma_set_color_matrix(enum DISP_MODULE_ENUM module,
 	struct rdma_color_matrix *matrix, struct rdma_color_pre *pre,
 	struct rdma_color_post *post);
 int rdma_reset_by_cmdq(enum DISP_MODULE_ENUM module, void *handle);
-void polling_rdma_output_line_is_not_zero(void);
 
 #endif

@@ -1,18 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- *  drivers/misc/mediatek/pmic/mt6360/mt6360_pmu_adc.c
- *  Driver for MT6360 PMU ADC part
- *
- *  Copyright (C) 2018 Mediatek Technology Inc.
- *  cy_huang <cy_huang@richtek.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- *  See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/init.h>
@@ -182,7 +170,6 @@ err_adc_init:
 
 static const struct iio_info mt6360_adc_iio_info = {
 	.read_raw = mt6360_adc_read_raw,
-	.driver_module = THIS_MODULE,
 };
 
 #define MT6360_ADC_CHAN(idx, _type) {				\
@@ -319,13 +306,8 @@ static int mt6360_adc_scan_task_threadfn(void *data)
 		}
 		if (kthread_should_stop())
 			break;
-#if 1 /* (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 8, 0)) */
 		iio_push_to_buffers_with_timestamp(indio_dev, channel_vals,
 						   iio_get_time_ns(indio_dev));
-#else
-		iio_push_to_buffers_with_timestamp(indio_dev, channel_vals,
-						   iio_get_time_ns());
-#endif
 	}
 	dev_dbg(mpai->dev, "%s --\n", __func__);
 	return 0;
@@ -333,15 +315,11 @@ static int mt6360_adc_scan_task_threadfn(void *data)
 
 static int mt6360_adc_iio_post_enable(struct iio_dev *iio_dev)
 {
-	char *p;
 	struct mt6360_pmu_adc_info *mpai = iio_priv(iio_dev);
 
 	dev_dbg(&iio_dev->dev, "%s ++\n", __func__);
-	p = devm_kasprintf(mpai->dev, GFP_KERNEL,
-				"scan_thread.%s", dev_name(mpai->dev));
-	if (IS_ERR_OR_NULL(p))
-		return -EINVAL;
-	mpai->scan_task = kthread_run(mt6360_adc_scan_task_threadfn, mpai, p);
+	mpai->scan_task = kthread_run(mt6360_adc_scan_task_threadfn, mpai,
+				     "scan_thread.%s", dev_name(&iio_dev->dev));
 	dev_dbg(&iio_dev->dev, "%s --\n", __func__);
 	return PTR_ERR_OR_ZERO(mpai->scan_task);
 }

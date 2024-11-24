@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2019 MediaTek Inc.
  */
+
 #ifndef __TSCPU_SETTINGS_H__
 #define __TSCPU_SETTINGS_H__
 
@@ -20,6 +13,7 @@
 
 #include "tzcpu_initcfg.h"
 #include "clatm_initcfg.h"
+#include <linux/platform_device.h>
 
 /*=============================================================
  * Genernal
@@ -111,10 +105,6 @@
 /* 1: thermal driver update temp to MET directly, use hrtimer; 0: turn off */
 #define THERMAL_DRV_UPDATE_TEMP_DIRECT_TO_MET	(1)
 
-/* Define this in tscpu_settings.h enables this feature.
- * It polls CPU TS in hrtimer and run ATM in RT 98 kthread.
- * This is for mt6797 only.
- */
 #define FAST_RESPONSE_ATM						(1)
 #define THERMAL_INIT_VALUE						(0xDA1)
 
@@ -179,7 +169,6 @@
 
 /* ADC value to mcu */
 /*chip dependent*/
-#if 1
 #define TEMPADC_MCU1	\
 	((TSCON0_bit_29_28_MASK&TSCON0_bit_29_28_00)|(0x07&TSCON1_bit_0_2_000))
 #define TEMPADC_MCU2	\
@@ -193,14 +182,7 @@
 
 #define TEMPADC_ABB	\
 	((TSCON0_bit_29_28_MASK&TSCON0_bit_29_28_01)|(0x07&TSCON1_bit_0_2_000))
-#else
-#define TEMPADC_MCU1    ((0x30&TSCON1_bit_4_5_00)|(0x07&TSCON1_bit_0_2_000))
-#define TEMPADC_MCU2    ((0x30&TSCON1_bit_4_5_00)|(0x07&TSCON1_bit_0_2_001))
-#define TEMPADC_MCU3    ((0x30&TSCON1_bit_4_5_00)|(0x07&TSCON1_bit_0_2_010))
-#define TEMPADC_MCU4    ((0x30&TSCON1_bit_4_5_00)|(0x07&TSCON1_bit_0_2_011))
-#define TEMPADC_MCU5    ((0x30&TSCON1_bit_4_5_00)|(0x07&TSCON1_bit_0_2_100))
-#define TEMPADC_ABB     ((0x30&TSCON1_bit_4_5_01)|(0x07&TSCON1_bit_0_2_000))
-#endif
+
 #define TS_FILL(n) {#n, n}
 /*#define TS_LEN_ARRAY(name) (sizeof(name)/sizeof(name[0]))*/
 #define MAX_TS_NAME 20
@@ -208,7 +190,7 @@
 #define CPU_COOLER_NUM 34
 #define MTK_TS_CPU_RT                       (0)
 
-#ifdef CONFIG_MTK_RAM_CONSOLE
+#ifdef CONFIG_MTK_AEE_IPANIC
 #define CONFIG_THERMAL_AEE_RR_REC (1)
 #else
 #define CONFIG_THERMAL_AEE_RR_REC (0)
@@ -229,7 +211,7 @@
 #define MTKTSCPU_TEMP_CRIT 120000 /* 120.000 degree Celsius */
 
 #define y_curr_repeat_times 1
-#define THERMAL_NAME    "mtk-thermal"
+#define THERMAL_NAME    "mtk-thermal-legacy"
 
 #define TS_MS_TO_NS(x) (x * 1000 * 1000)
 
@@ -332,6 +314,7 @@ extern int fast_polling_factor;
 extern int tscpu_cur_fp_factor;
 extern int tscpu_next_fp_factor;
 #endif
+extern struct platform_device *tscpu_pdev;
 
 /*In common/thermal_zones/mtk_ts_cpu.c*/
 extern long long thermal_get_current_time_us(void);
@@ -446,13 +429,24 @@ extern bool mtk_get_gpu_loading(unsigned int *pLoading);
  *It's not our api, ask them to provide header file
  */
 extern int IMM_IsAdcInitReady(void);
+/*aee related*/
+#if (CONFIG_THERMAL_AEE_RR_REC == 1)
+extern int aee_rr_init_thermal_temp(int num);
+extern int aee_rr_rec_thermal_temp(int index, s8 val);
+extern void aee_rr_rec_thermal_status(u8 val);
+extern void aee_rr_rec_thermal_ATM_status(u8 val);
+extern void aee_rr_rec_thermal_ktime(u64 val);
 
+extern s8 aee_rr_curr_thermal_temp(int index);
+extern u8 aee_rr_curr_thermal_status(void);
+extern u8 aee_rr_curr_thermal_ATM_status(void);
+extern u64 aee_rr_curr_thermal_ktime(void);
+#endif
 /*=============================================================
  * Register macro for internal use
  *=============================================================
  */
 
-#if 1
 extern void __iomem *thermal_base;
 extern void __iomem *auxadc_base;
 extern void __iomem *infracfg_ao_base;
@@ -463,13 +457,6 @@ extern void __iomem *INFRACFG_AO_base;
 #define AUXADC_BASE_2        auxadc_ts_base
 #define INFRACFG_AO_BASE_2   infracfg_ao_base
 #define APMIXED_BASE_2       th_apmixed_base
-#else
-#include <mach/mt_reg_base.h>
-#define AUXADC_BASE_2     AUXADC_BASE
-#define THERM_CTRL_BASE_2 THERM_CTRL_BASE
-#define PERICFG_BASE_2    PERICFG_BASE
-#define APMIXED_BASE_2    APMIXED_BASE
-#endif
 
 /*******************************************************************************
  * AUXADC Register Definition

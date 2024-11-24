@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -73,7 +62,7 @@ static void StartAudioI2S2ADC2Hardware(struct snd_pcm_substream *substream);
 static void StopAudioI2S2adc2Hardware(struct snd_pcm_substream *substream);
 static int mtk_i2s2_adc2_probe(struct platform_device *pdev);
 static int mtk_i2s2_adc2_pcm_close(struct snd_pcm_substream *substream);
-static int mtk_i2s2_adc2_data_probe(struct snd_soc_platform *platform);
+static int mtk_i2s2_adc2_data_component_probe(struct snd_soc_component *component);
 
 static struct snd_pcm_hardware mtk_I2S2_adc2_hardware = {
 	.info = (SNDRV_PCM_INFO_INTERLEAVED),
@@ -92,6 +81,8 @@ static struct snd_pcm_hardware mtk_I2S2_adc2_hardware = {
 
 static void StopAudioI2S2adc2Hardware(struct snd_pcm_substream *substream)
 {
+	pr_debug("StopAudioI2S2adc2Hardware\n");
+
 	SetMemoryPathEnable(Soc_Aud_Digital_Block_MEM_VUL_DATA2, false);
 
 	irq_remove_user(
@@ -101,6 +92,8 @@ static void StopAudioI2S2adc2Hardware(struct snd_pcm_substream *substream)
 
 static void StartAudioI2S2ADC2Hardware(struct snd_pcm_substream *substream)
 {
+	pr_debug("+StartAudioI2S2ADC2Hardware\n");
+
 	if (substream->runtime->format == SNDRV_PCM_FORMAT_S32_LE ||
 	    substream->runtime->format == SNDRV_PCM_FORMAT_U32_LE) {
 		SetConnectionFormat(OUTPUT_DATA_FORMAT_24BIT,
@@ -128,7 +121,7 @@ static void StartAudioI2S2ADC2Hardware(struct snd_pcm_substream *substream)
 
 static int mtk_i2s2_adc2_alsa_stop(struct snd_pcm_substream *substream)
 {
-	pr_debug("i2s2_adc2_alsa_stop\n");
+	pr_debug("mtk_i2s2_adc2_alsa_stop\n");
 	StopAudioI2S2adc2Hardware(substream);
 	RemoveMemifSubStream(Soc_Aud_Digital_Block_MEM_VUL_DATA2, substream);
 	return 0;
@@ -159,7 +152,7 @@ static int mtk_i2s2_adc2_pcm_hw_params(struct snd_pcm_substream *substream,
 		mPlaybackDramState = true;
 		AudDrv_Emi_Clk_On();
 	}
-	pr_debug("i2s2_adc2_pcm_hw_params dma_bytes = %zu dma_area = %p dma_addr = 0x%lx\n",
+	pr_debug("mtk_i2s2_adc2_pcm_hw_params dma_bytes = %zu dma_area = %p dma_addr = 0x%lx\n",
 		runtime->dma_bytes, runtime->dma_area, (long)runtime->dma_addr);
 
 	set_mem_block(substream, hw_params, I2S2_ADC2_Control_context,
@@ -170,7 +163,7 @@ static int mtk_i2s2_adc2_pcm_hw_params(struct snd_pcm_substream *substream,
 static int
 mtk_i2s2_adc2_capture_pcm_hw_free(struct snd_pcm_substream *substream)
 {
-	pr_debug("i2s2_adc2_capture_pcm_hw_free\n");
+	pr_debug("mtk_i2s2_adc2_capture_pcm_hw_free\n");
 	if (mPlaybackDramState == true) {
 		AudDrv_Emi_Clk_Off();
 		mPlaybackDramState = false;
@@ -186,7 +179,7 @@ static int mtk_i2s2_adc2_pcm_open(struct snd_pcm_substream *substream)
 
 	mPlaybackDramState = false;
 
-	pr_debug("i2s2_adc2_pcm_open\n");
+	pr_debug("mtk_i2s2_adc2_pcm_open\n");
 	I2S2_ADC2_Control_context =
 		Get_Mem_ControlT(Soc_Aud_Digital_Block_MEM_VUL_DATA2);
 	runtime->hw = mtk_I2S2_adc2_hardware;
@@ -204,12 +197,12 @@ static int mtk_i2s2_adc2_pcm_open(struct snd_pcm_substream *substream)
 	runtime->hw.info |= SNDRV_PCM_INFO_MMAP_VALID;
 
 	if (ret < 0) {
-		pr_err("i2s2_adc2_pcm_close\n");
+		pr_err("mtk_i2s2_adc2_pcm_close\n");
 		mtk_i2s2_adc2_pcm_close(substream);
 		return ret;
 	}
 	AudDrv_Clk_On();
-	pr_debug("i2s2_adc2_pcm_open return\n");
+	pr_debug("mtk_i2s2_adc2_pcm_open return\n");
 	return 0;
 }
 
@@ -221,7 +214,7 @@ static int mtk_i2s2_adc2_pcm_close(struct snd_pcm_substream *substream)
 
 static int mtk_i2s2_adc2_alsa_start(struct snd_pcm_substream *substream)
 {
-	pr_debug("i2s2_adc2_alsa_start\n");
+	pr_debug("mtk_i2s2_adc2_alsa_start\n");
 	SetMemifSubStream(Soc_Aud_Digital_Block_MEM_VUL_DATA2, substream);
 	StartAudioI2S2ADC2Hardware(substream);
 	return 0;
@@ -230,7 +223,7 @@ static int mtk_i2s2_adc2_alsa_start(struct snd_pcm_substream *substream)
 static int mtk_i2s2_adc2_pcm_trigger(struct snd_pcm_substream *substream,
 				     int cmd)
 {
-	pr_debug("i2s2_adc2_pcm_trigger cmd = %d\n", cmd);
+	pr_debug("mtk_i2s2_adc2_pcm_trigger cmd = %d\n", cmd);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -244,12 +237,22 @@ static int mtk_i2s2_adc2_pcm_trigger(struct snd_pcm_substream *substream,
 }
 
 static int mtk_i2s2_adc2_pcm_copy(struct snd_pcm_substream *substream,
-				  int channel, unsigned long pos,
-				  void __user *dst, unsigned long count)
+				  int channel,
+				  unsigned long pos,
+				  void __user *buf,
+				  unsigned long bytes)
 {
-	return mtk_memblk_copy(substream, channel, pos, dst, count,
+	return mtk_memblk_copy(substream, channel, pos, buf, bytes,
 			       I2S2_ADC2_Control_context,
 			       Soc_Aud_Digital_Block_MEM_VUL_DATA2);
+}
+
+static int mtk_i2s_adc2_pcm_silence(struct snd_pcm_substream *substream,
+				    int channel,
+				    unsigned long pos,
+				    unsigned long bytes)
+{
+	return 0; /* do nothing */
 }
 
 static void *dummy_page[2];
@@ -269,33 +272,40 @@ static struct snd_pcm_ops mtk_i2s2_adc2_ops = {
 	.trigger = mtk_i2s2_adc2_pcm_trigger,
 	.pointer = mtk_i2s2_adc2_pcm_pointer,
 	.copy_user = mtk_i2s2_adc2_pcm_copy,
+	.fill_silence = mtk_i2s_adc2_pcm_silence,
 	.page = mtk_i2s2_adc2_pcm_page,
 };
 
-static struct snd_soc_platform_driver mtk_soc_platform = {
-	.ops = &mtk_i2s2_adc2_ops, .probe = mtk_i2s2_adc2_data_probe,
+static struct snd_soc_component_driver mtk_soc_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_i2s2_adc2_ops,
+	.probe = mtk_i2s2_adc2_data_component_probe,
 };
 
 static int mtk_i2s2_adc2_probe(struct platform_device *pdev)
 {
-	pr_debug("i2s2_adc2_probe\n");
+	pr_debug("%s\n", __func__);
 
-	if (pdev->dev.of_node) {
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_I2S2_ADC2_PCM);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
 	mDev = &pdev->dev;
-	return snd_soc_register_platform(&pdev->dev, &mtk_soc_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_soc_component,
+					  NULL,
+					  0);
 }
 
-static int mtk_i2s2_adc2_data_probe(struct snd_soc_platform *platform)
+static int mtk_i2s2_adc2_data_component_probe(struct snd_soc_component *component)
 {
-	pr_debug("i2s2_adc2_data_probe\n");
-	AudDrv_Allocate_mem_Buffer(platform->dev,
+	pr_debug("%s\n", __func__);
+	AudDrv_Allocate_mem_Buffer(component->dev,
 				   Soc_Aud_Digital_Block_MEM_VUL_DATA2,
 				   UL2_MAX_BUFFER_SIZE);
 	Adc2_Capture_dma_buf =
@@ -306,7 +316,7 @@ static int mtk_i2s2_adc2_data_probe(struct snd_soc_platform *platform)
 static int mtk_i2s2_adc2_remove(struct platform_device *pdev)
 {
 	pr_debug("%s\n", __func__);
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

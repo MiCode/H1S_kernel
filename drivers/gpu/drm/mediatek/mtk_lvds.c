@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2016 MediaTek Inc.
- * Author: Jitao Shi <jitao.shi@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 #include <drm/drmP.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_crtc_helper.h>
@@ -195,7 +186,7 @@ static int mtk_lvds_bridge_attach(struct drm_bridge *bridge)
 	}
 	drm_connector_helper_add(&lvds->connector,
 				 &mtk_lvds_connector_helper_funcs);
-	drm_mode_connector_attach_encoder(&lvds->connector, bridge->encoder);
+	drm_connector_attach_encoder(&lvds->connector, bridge->encoder);
 
 	if (lvds->panel)
 		drm_panel_attach(lvds->panel, &lvds->connector);

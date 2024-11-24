@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __APUSYS_MDW_MEM_H__
@@ -51,5 +43,8 @@ void mdw_mem_get_vlm(unsigned int *start, unsigned int *size);
 
 void mdw_mem_u2k(struct apusys_mem *umem, struct apusys_kmem *kmem);
 void mdw_mem_k2u(struct apusys_kmem *kmem, struct apusys_mem *umem);
+int mdw_mem_create_idr(uint64_t handle, int *id);
+int mdw_mem_u2k_handle(struct apusys_kmem *kmem, struct apusys_mem *umem);
+int mdw_mem_delete_idr(int id);
 
 #endif

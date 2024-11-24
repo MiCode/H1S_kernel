@@ -76,8 +76,8 @@ static void desc_dbg(IADEV *iadev);
 static IADEV *ia_dev[8];
 static struct atm_dev *_ia_dev[8];
 static int iadev_count;
-static void ia_led_timer(unsigned long arg);
-static DEFINE_TIMER(ia_timer, ia_led_timer, 0, 0);
+static void ia_led_timer(struct timer_list *unused);
+static DEFINE_TIMER(ia_timer, ia_led_timer);
 static int IA_TX_BUF = DFL_TX_BUFFERS, IA_TX_BUF_SZ = DFL_TX_BUF_SZ;
 static int IA_RX_BUF = DFL_RX_BUFFERS, IA_RX_BUF_SZ = DFL_RX_BUF_SZ;
 static uint IADebugFlag = /* IF_IADBG_ERR | IF_IADBG_CBR| IF_IADBG_INIT_ADAPTER
@@ -672,7 +672,7 @@ static void ia_tx_poll (IADEV *iadev) {
           if ((vcc->pop) && (skb1->len != 0))
           {
              vcc->pop(vcc, skb1);
-             IF_EVENT(printk("Tansmit Done - skb 0x%lx return\n",
+             IF_EVENT(printk("Transmit Done - skb 0x%lx return\n",
                                                           (long)skb1);)
           }
           else 
@@ -881,7 +881,7 @@ static void ia_phy_write(struct iadev_priv *iadev,
 
 static void ia_suni_pm7345_init_ds3(struct iadev_priv *iadev)
 {
-	static const struct ia_reg suni_ds3_init [] = {
+	static const struct ia_reg suni_ds3_init[] = {
 		{ SUNI_DS3_FRM_INTR_ENBL,	0x17 },
 		{ SUNI_DS3_FRM_CFG,		0x01 },
 		{ SUNI_DS3_TRAN_CFG,		0x01 },
@@ -899,7 +899,7 @@ static void ia_suni_pm7345_init_ds3(struct iadev_priv *iadev)
 
 static void ia_suni_pm7345_init_e3(struct iadev_priv *iadev)
 {
-	static const struct ia_reg suni_e3_init [] = {
+	static const struct ia_reg suni_e3_init[] = {
 		{ SUNI_E3_FRM_FRAM_OPTIONS,		0x04 },
 		{ SUNI_E3_FRM_MAINT_OPTIONS,		0x20 },
 		{ SUNI_E3_FRM_FRAM_INTR_ENBL,		0x1d },
@@ -919,7 +919,7 @@ static void ia_suni_pm7345_init_e3(struct iadev_priv *iadev)
 
 static void ia_suni_pm7345_init(struct iadev_priv *iadev)
 {
-	static const struct ia_reg suni_init [] = {
+	static const struct ia_reg suni_init[] = {
 		/* Enable RSOP loss of signal interrupt. */
 		{ SUNI_INTR_ENBL,		0x28 },
 		/* Clear error counters. */
@@ -1619,7 +1619,7 @@ static int rx_init(struct atm_dev *dev)
 	skb_queue_head_init(&iadev->rx_dma_q);  
 	iadev->rx_free_desc_qhead = NULL;   
 
-	iadev->rx_open = kzalloc(4 * iadev->num_vc, GFP_KERNEL);
+	iadev->rx_open = kcalloc(iadev->num_vc, sizeof(void *), GFP_KERNEL);
 	if (!iadev->rx_open) {
 		printk(KERN_ERR DEV_LABEL "itf %d couldn't get free page\n",
 		dev->number);  
@@ -1666,7 +1666,7 @@ static void tx_intr(struct atm_dev *dev)
 	status = readl(iadev->seg_reg+SEG_INTR_STATUS_REG);  
         if (status & TRANSMIT_DONE){
 
-           IF_EVENT(printk("Tansmit Done Intr logic run\n");)
+           IF_EVENT(printk("Transmit Done Intr logic run\n");)
            spin_lock_irqsave(&iadev->tx_lock, flags);
            ia_tx_poll(iadev);
            spin_unlock_irqrestore(&iadev->tx_lock, flags);
@@ -2290,19 +2290,21 @@ static int get_esi(struct atm_dev *dev)
 static int reset_sar(struct atm_dev *dev)  
 {  
 	IADEV *iadev;  
-	int i, error = 1;  
+	int i, error;
 	unsigned int pci[64];  
 	  
 	iadev = INPH_IA_DEV(dev);  
-	for(i=0; i<64; i++)  
-	  if ((error = pci_read_config_dword(iadev->pci,  
-				i*4, &pci[i])) != PCIBIOS_SUCCESSFUL)  
-  	      return error;  
+	for (i = 0; i < 64; i++) {
+		error = pci_read_config_dword(iadev->pci, i * 4, &pci[i]);
+		if (error != PCIBIOS_SUCCESSFUL)
+			return error;
+	}
 	writel(0, iadev->reg+IPHASE5575_EXT_RESET);  
-	for(i=0; i<64; i++)  
-	  if ((error = pci_write_config_dword(iadev->pci,  
-					i*4, pci[i])) != PCIBIOS_SUCCESSFUL)  
-	    return error;  
+	for (i = 0; i < 64; i++) {
+		error = pci_write_config_dword(iadev->pci, i * 4, pci[i]);
+		if (error != PCIBIOS_SUCCESSFUL)
+			return error;
+	}
 	udelay(5);  
 	return 0;  
 }  
@@ -2433,7 +2435,7 @@ static void ia_update_stats(IADEV *iadev) {
     return;
 }
   
-static void ia_led_timer(unsigned long arg) {
+static void ia_led_timer(struct timer_list *unused) {
  	unsigned long flags;
   	static u_char blinking[8] = {0, 0, 0, 0, 0, 0, 0, 0};
         u_char i;
@@ -3151,7 +3153,7 @@ static int ia_proc_read(struct atm_dev *dev,loff_t *pos,char *page)
                            "  Size of Tx Buffer  :  %u\n"
                            "  Number of Rx Buffer:  %u\n"
                            "  Size of Rx Buffer  :  %u\n"
-                           "  Packets Receiverd  :  %u\n"
+                           "  Packets Received   :  %u\n"
                            "  Packets Transmitted:  %u\n"
                            "  Cells Received     :  %u\n"
                            "  Cells Transmitted  :  %u\n"
@@ -3301,7 +3303,7 @@ static void __exit ia_module_exit(void)
 {
 	pci_unregister_driver(&ia_driver);
 
-        del_timer(&ia_timer);
+	del_timer_sync(&ia_timer);
 }
 
 module_init(ia_module_init);

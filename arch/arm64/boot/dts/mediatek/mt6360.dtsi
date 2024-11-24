@@ -1,76 +1,80 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * Copyright (c) 2017 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
-
-/ {
-	mt6360_pmu: mt6360_pmu_dts {
-		status = "ok";
+&i2c5 {
+	subpmic_mtk:subpmic@34 {
+		compatible = "mediatek,subpmic";
+		reg = <0x34>;
 		mt6360,intr_gpio_num = <3>; /* direct defined GPIO num */
 		mt6360,intr_gpio = <&pio 3 0x0>; /* GPIO */
 		interrupt-controller;
 		#interrupt-cells = <2>;
-		adc: adc {
+		mt6360_adc: adc {
 			compatible = "mediatek,mt6360_pmu_adc";
-			interrupt-parent = <&mt6360_pmu>;
 			interrupts = <41 0>, <43 0>, <44 0>;
 			interrupt-names = "bat_ovp_adc_evt",
 					  "adc_wakeup_evt",
 					  "adc_donei";
 			#io-channel-cells = <1>;
 		};
-		chg {
+		mt6360_chg: chg {
 			compatible = "mediatek,mt6360_pmu_chg";
-			interrupt-parent = <&mt6360_pmu>;
 			interrupts = <4 0>, <6 0>, <7 0>, <9 0>,
 				     <12 0>, <13 0>, <14 0>, <15 0>,
-				     <27 0>, <29 0>, <32 0>, <35 0>,
-				     <40 0>, <48 0>, <60 0>;
+				     <27 0>, <29 0>, <30 0>, <32 0>,
+				     <35 0>, <40 0>, <48 0>, <60 0>;
 			interrupt-names = "chg_treg_evt", "chg_mivr_evt",
 					  "pwr_rdy_evt", "chg_batsysuv_evt",
 					  "chg_vsysuv_evt", "chg_vsysov_evt",
 					  "chg_vbatov_evt", "chg_vbusov_evt",
 					  "chg_tmri", "chg_adpbadi",
-					  "chg_aiccmeasl", "wdtmri",
-					  "pumpx_donei", "attachi",
-					  "chrdet_ext_evt";
-			io-channels = <&adc 0>, <&adc 1>, <&adc 3>, <&adc 4>,
-				      <&adc 5>, <&adc 6>, <&adc 8>, <&adc 10>;
+					  "chg_rvpi",  "chg_aiccmeasl",
+					  "wdtmri", "pumpx_donei",
+					  "attachi", "chrdet_ext_evt";
+			io-channels = <&mt6360_adc 0>, <&mt6360_adc 1>,
+				      <&mt6360_adc 3>, <&mt6360_adc 4>,
+				      <&mt6360_adc 5>, <&mt6360_adc 6>,
+				      <&mt6360_adc 8>, <&mt6360_adc 10>;
 			io-channel-names = "USBID", "VBUSDIV5", "VSYS", "VBAT",
 					   "IBUS", "IBAT", "TEMP_JC", "TS";
+			bootmode = <&chosen>;
 			chg_name = "primary_chg";
 			ichg = <2000000>;		/* uA */
 			aicr = <500000>;		/* uA */
 			mivr = <4400000>;		/* uV */
-			cv = <4450000>;			/* uA */
-			ieoc = <200000>;		/* uA */
-			vrechg = <150000>;		 /* uA */
+			cv = <4350000>;			/* uA */
+			ieoc = <150000>;		/* uA */
 			safety_timer = <12>;		/* hour */
 			ircmp_resistor = <25000>;	/* uohm */
 			ircmp_vclamp = <32000>;		/* uV */
 			en_te = <1>;
 			en_wdt = <1>;
+			en_otg_wdt = <1>;
 			aicc_once = <1>;
 			post_aicc = <1>;
 			batoc_notify = <0>;
+			charger = <&mt6360_chg>;
+			bc12_sel = <0>;
+#if !defined (CONFIG_MACH_MT6833)
+			phys = <&u2port0 PHY_TYPE_USB2>;
+			phy-names = "usb2-phy";
+			usb = <&ssusb>;
+#endif
+			otg_vbus: usb-otg-vbus {
+				regulator-compatible = "usb-otg-vbus";
+				regulator-name = "usb-otg-vbus";
+				regulator-min-microvolt = <4425000>;
+				regulator-max-microvolt = <5825000>;
+				regulator-min-microamp = <500000>;
+				regulator-max-microamp = <3000000>;
+			};
 		};
 		fled {
 			compatible = "mediatek,mt6360_pmu_fled";
-			interrupt-parent = <&mt6360_pmu>;
-			interrupts = <11 0>, <74 0>, <75 0>, <78 0>,
-				     <79 0>;
-			interrupt-names = "fled_chg_vinovp_evt", "fled_tx_evt",
-					  "fled_lvf_evt", "fled2_short_evt",
-					  "fled1_short_evt";
+			interrupts = <74 0>, <75 0>, <78 0>, <79 0>;
+			interrupt-names = "fled_tx_evt", "fled_lvf_evt",
+					  "fled2_short_evt", "fled1_short_evt";
 			/* 0: fixed mode, 1: tracking mode */
 			fled_vmid_track = <0>;
 			/* 64~2432ms, 32ms/step */
@@ -100,7 +104,6 @@
 		};
 		core {
 			compatible = "mediatek,mt6360_pmu_core";
-			interrupt-parent = <&mt6360_pmu>;
 			interrupts = <65 0>, <66 0>, <67 0>,
 				     <68 0>, <69 0>, <70 0>,
 				     <71 0>;
@@ -119,9 +122,10 @@
 		};
 	};
 
-	mt6360_pmic: mt6360_pmic_dts {
-		status = "ok";
-		interrupt-parent = <&mt6360_pmu>;
+	subpmic_pmic_mtk:subpmic_pmic@1a {
+		compatible = "mediatek,subpmic_pmic";
+		reg = <0x1a>;
+		interrupt-parent = <&subpmic_mtk>;
 		interrupts = <96 0>, <100 0>, <101 0>, <102 0>,
 			     <104 0>, <108 0>, <109 0>, <110 0>,
 			     <118 0>, <119 0>, <126 0>, <127 0>;
@@ -162,9 +166,10 @@
 		};
 	};
 
-	mt6360_ldo: mt6360_ldo_dts {
-		status = "ok";
-		interrupt-parent = <&mt6360_pmu>;
+	subpmic_ldo_mtk:subpmic_ldo@64 {
+		compatible = "mediatek,subpmic_ldo";
+		reg = <0x64>;
+		interrupt-parent = <&subpmic_mtk>;
 		interrupts = <113 0>, <114 0>, <115 0>, <117 0>,
 			     <121 0>, <122 0>, <123 0>, <125 0>;
 		interrupt-names = "ldo1_oc_evt", "ldo2_oc_evt",
@@ -176,7 +181,6 @@
 			regulator-name = "VFP";
 			regulator-min-microvolt = <1200000>;
 			regulator-max-microvolt = <3600000>;
-			regulator-always-on;
 		};
 		mt_pmic_vtp_ldo_reg: ldo2 {
 			regulator-compatible = "LDO2";
@@ -198,4 +202,3 @@
 		};
 	};
 };
-

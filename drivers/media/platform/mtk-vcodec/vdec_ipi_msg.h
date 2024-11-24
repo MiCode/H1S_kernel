@@ -1,16 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2016 MediaTek Inc.
- * Author: PC Chen <pc.chen@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _VDEC_IPI_MSG_H_
@@ -39,6 +29,7 @@ enum vdec_src_chg_type {
 	VDEC_NEED_SEQ_HEADER        = (1 << 3),
 	VDEC_NEED_MORE_OUTPUT_BUF   = (1 << 4),
 	VDEC_CROP_CHANGED           = (1 << 5),
+	VDEC_OUTPUT_NOT_GENERATED     = (1 << 6),
 };
 
 enum vdec_ipi_msg_status {
@@ -113,7 +104,8 @@ enum vdec_get_param_type {
 	GET_PARAM_PLATFORM_SUPPORTED_FIX_BUFFERS_SVP,
 	GET_PARAM_INTERLACING,
 	GET_PARAM_CODEC_TYPE,
-	GET_PARAM_INPUT_DRIVEN
+	GET_PARAM_INPUT_DRIVEN,
+	GET_PARAM_DEC_LOG
 };
 
 /*
@@ -127,6 +119,7 @@ enum vdec_get_param_type {
  * SET_PARAM_CRC_PATH: set CRC path used for UT
  * SET_PARAM_GOLDEN_PATH: set Golden YUV path used for UT
  * SET_PARAM_FB_NUM_PLANES                      : frame buffer plane count
+ * SET_PARAM_DEC_LOG: set decoder log
  */
 enum vdec_set_param_type {
 	SET_PARAM_DECODE_MODE,
@@ -139,7 +132,8 @@ enum vdec_set_param_type {
 	SET_PARAM_WAIT_KEY_FRAME,
 	SET_PARAM_NAL_SIZE_LENGTH,
 	SET_PARAM_OPERATING_RATE,
-	SET_PARAM_TOTAL_FRAME_BUFQ_COUNT
+	SET_PARAM_TOTAL_FRAME_BUFQ_COUNT,
+	SET_PARAM_DEC_LOG,
 };
 
 /**

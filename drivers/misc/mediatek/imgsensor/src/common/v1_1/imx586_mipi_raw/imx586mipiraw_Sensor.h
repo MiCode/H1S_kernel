@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /*****************************************************************************
@@ -31,7 +23,6 @@
 
 
 enum IMGSENSOR_MODE {
-	IMGSENSOR_MODE_INIT,
 	IMGSENSOR_MODE_PREVIEW,
 	IMGSENSOR_MODE_CAPTURE,
 	IMGSENSOR_MODE_VIDEO,
@@ -41,6 +32,18 @@ enum IMGSENSOR_MODE {
 	IMGSENSOR_MODE_CUSTOM2,
 	IMGSENSOR_MODE_CUSTOM3,
 	IMGSENSOR_MODE_CUSTOM4,
+	IMGSENSOR_MODE_CUSTOM5,
+	IMGSENSOR_MODE_CUSTOM6,
+	IMGSENSOR_MODE_CUSTOM7,
+	IMGSENSOR_MODE_CUSTOM8,
+	IMGSENSOR_MODE_CUSTOM9,
+	IMGSENSOR_MODE_CUSTOM10,
+	IMGSENSOR_MODE_CUSTOM11,
+	IMGSENSOR_MODE_CUSTOM12,
+	IMGSENSOR_MODE_CUSTOM13,
+	IMGSENSOR_MODE_CUSTOM14,
+	IMGSENSOR_MODE_CUSTOM15,
+	IMGSENSOR_MODE_INIT = 0xff,
 };
 
 enum {
@@ -88,7 +91,7 @@ struct imgsensor_struct {
 
 	kal_uint16 current_fps; /* current max fps */
 	kal_bool autoflicker_en; /* record autoflicker enable or disable */
-	kal_bool test_pattern; /* record test pattern mode or not */
+	kal_uint32 test_pattern; /* record test pattern mode or not */
 	enum MSDK_SCENARIO_ID_ENUM current_scenario_id;
 	kal_bool ihdr_en; /* ihdr enable or disable */
 	kal_uint8 ihdr_mode; /* ihdr enable or disable */
@@ -109,6 +112,17 @@ struct imgsensor_info_struct {
 	struct imgsensor_mode_struct custom2;
 	struct imgsensor_mode_struct custom3;
 	struct imgsensor_mode_struct custom4;
+	struct imgsensor_mode_struct custom5;
+	struct imgsensor_mode_struct custom6;
+	struct imgsensor_mode_struct custom7;
+	struct imgsensor_mode_struct custom8;
+	struct imgsensor_mode_struct custom9;
+	struct imgsensor_mode_struct custom10;
+	struct imgsensor_mode_struct custom11;
+	struct imgsensor_mode_struct custom12;
+	struct imgsensor_mode_struct custom13;
+	struct imgsensor_mode_struct custom14;
+	struct imgsensor_mode_struct custom15;
 
 	kal_uint8 ae_shut_delay_frame; /* shutter delay frame for AE cycle */
 	kal_uint8 ae_sensor_gain_delay_frame;
@@ -127,6 +141,18 @@ struct imgsensor_info_struct {
 	kal_uint8 custom2_delay_frame; /* enter custom2 delay frame num */
 	kal_uint8 custom3_delay_frame; /* enter custom3 delay frame num */
 	kal_uint8 custom4_delay_frame; /* enter custom4 delay frame num */
+	kal_uint8 custom5_delay_frame; /* enter custom5 delay frame num */
+	kal_uint8 custom6_delay_frame; /* enter custom6 delay frame num */
+	kal_uint8 custom7_delay_frame; /* enter custom7 delay frame num */
+	kal_uint8 custom8_delay_frame; /* enter custom8 delay frame num */
+	kal_uint8 custom9_delay_frame; /* enter custom9 delay frame num */
+	kal_uint8 custom10_delay_frame; /* enter custom10 delay frame num */
+	kal_uint8 custom11_delay_frame; /* enter custom11 delay frame num */
+	kal_uint8 custom12_delay_frame; /* enter custom12 delay frame num */
+	kal_uint8 custom13_delay_frame; /* enter custom13 delay frame num */
+	kal_uint8 custom14_delay_frame; /* enter custom14 delay frame num */
+	kal_uint8 custom15_delay_frame; /* enter custom15 delay frame num */
+
 	kal_uint8  frame_time_delay_frame;
 	kal_uint8 margin; /* sensor framelength & shutter margin */
 	kal_uint32 min_shutter; /* min shutter */
@@ -153,6 +179,12 @@ struct imgsensor_info_struct {
 	kal_uint32 i2c_speed; /* i2c speed */
 	kal_uint8 mipi_lane_num; /* mipi lane num */
 	kal_uint8 i2c_addr_table[5];
+};
+
+struct SEAMLESS_SYS_DELAY {
+	uint32_t source_scenario;
+	uint32_t target_scenario;
+	uint32_t sys_delay;
 };
 
 /* SENSOR READ/WRITE ID */

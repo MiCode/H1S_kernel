@@ -127,7 +127,7 @@ int mt6768_fe_trigger(struct snd_pcm_substream *substream, int cmd,
 	unsigned int counter = runtime->period_size;
 	unsigned int rate = runtime->rate;
 	int fs;
-	int ret;
+	int ret = 0;
 
 	dev_info(afe->dev, "%s(), %s cmd %d, irq_id %d\n",
 		 __func__, memif->data->name, cmd, irq_id);
@@ -285,7 +285,9 @@ static int mt6768_memif_fs(struct snd_pcm_substream *substream,
 			   unsigned int rate)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct mtk_base_afe *afe = snd_soc_platform_get_drvdata(rtd->platform);
+	struct snd_soc_component *component =
+		snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
 	int id = rtd->cpu_dai->id;
 
 	return mt6768_rate_transform(afe->dev, rate, id);
@@ -300,8 +302,9 @@ static int mt6768_get_dai_fs(struct mtk_base_afe *afe,
 static int mt6768_irq_fs(struct snd_pcm_substream *substream, unsigned int rate)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct mtk_base_afe *afe = snd_soc_platform_get_drvdata(rtd->platform);
-
+	struct snd_soc_component *component =
+		snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
 	return mt6768_general_rate_transform(afe->dev, rate);
 }
 
@@ -2231,14 +2234,15 @@ static const struct mtk_audio_sram_ops mt6768_sram_ops = {
 	.set_sram_mode = mt6768_set_sram_mode,
 };
 
-static int mt6768_afe_pcm_platform_probe(struct snd_soc_platform *platform)
+static int mt6768_afe_pcm_platform_probe(struct snd_soc_component *platform)
 {
 	mtk_afe_add_sub_dai_control(platform);
 	mt6768_add_misc_control(platform);
 	return 0;
 }
 
-const struct snd_soc_platform_driver mt6768_afe_pcm_platform = {
+const struct snd_soc_component_driver mt6768_afe_component = {
+	.name = AFE_PCM_NAME,
 	.ops = &mtk_afe_pcm_ops,
 	.pcm_new = mtk_afe_pcm_new,
 	.pcm_free = mtk_afe_pcm_free,
@@ -3431,11 +3435,11 @@ static int mt6768_afe_pcm_dev_probe(struct platform_device *pdev)
 					   afe, &mt6768_debugfs_ops);
 #endif
 	/* register platform */
-	ret = devm_snd_soc_register_platform(&pdev->dev,
-					     &mt6768_afe_pcm_platform);
+	ret = devm_snd_soc_register_component(&pdev->dev,
+					     &mt6768_afe_component, NULL, 0);
 	if (ret) {
 		dev_warn(dev, "err_platform\n");
-		goto err_platform;
+		goto err_pm_disable;
 	}
 
 	ret = devm_snd_soc_register_component(&pdev->dev,
@@ -3458,8 +3462,6 @@ static int mt6768_afe_pcm_dev_probe(struct platform_device *pdev)
 err_dai_component:
 	snd_soc_unregister_component(&pdev->dev);
 
-err_platform:
-	snd_soc_unregister_platform(&pdev->dev);
 
 err_pm_disable:
 	pm_runtime_disable(&pdev->dev);

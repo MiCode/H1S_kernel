@@ -189,7 +189,7 @@ int mtk_lp_kernfs_create_file(struct kernfs_node *parent,
 	kn = __kernfs_create_file(
 			parent,
 			name,
-			mode & 0755,
+			mode & 0755,GLOBAL_ROOT_UID,GLOBAL_ROOT_GID,
 			4096,
 			ops,
 			attr,

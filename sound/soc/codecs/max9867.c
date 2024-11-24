@@ -179,8 +179,8 @@ static inline int get_ni_value(int mclk, int rate)
 static int max9867_dai_hw_params(struct snd_pcm_substream *substream,
 		struct snd_pcm_hw_params *params, struct snd_soc_dai *dai)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct max9867_priv *max9867 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct max9867_priv *max9867 = snd_soc_component_get_drvdata(component);
 	unsigned int ni_h, ni_l;
 	int value;
 
@@ -227,7 +227,7 @@ static int max9867_dai_hw_params(struct snd_pcm_substream *substream,
 				bclk_value = MAX9867_IFC1B_PCLK_16;
 				break;
 			default:
-				dev_err(codec->dev,
+				dev_err(component->dev,
 					"unsupported sampling rate\n");
 				return -EINVAL;
 			}
@@ -239,7 +239,7 @@ static int max9867_dai_hw_params(struct snd_pcm_substream *substream,
 			bclk_value = MAX9867_IFC1B_32BIT;
 			break;
 		default:
-			dev_err(codec->dev, "unsupported sampling rate\n");
+			dev_err(component->dev, "unsupported sampling rate\n");
 			return -EINVAL;
 		}
 		regmap_update_bits(max9867->regmap, MAX9867_IFC1B,
@@ -248,21 +248,10 @@ static int max9867_dai_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static int max9867_prepare(struct snd_pcm_substream *substream,
-			 struct snd_soc_dai *dai)
-{
-	struct snd_soc_codec *codec = dai->codec;
-	struct max9867_priv *max9867 = snd_soc_codec_get_drvdata(codec);
-
-	regmap_update_bits(max9867->regmap, MAX9867_PWRMAN,
-		MAX9867_SHTDOWN_MASK, MAX9867_SHTDOWN_MASK);
-	return 0;
-}
-
 static int max9867_mute(struct snd_soc_dai *dai, int mute)
 {
-	struct snd_soc_codec *codec = dai->codec;
-	struct max9867_priv *max9867 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = dai->component;
+	struct max9867_priv *max9867 = snd_soc_component_get_drvdata(component);
 
 	if (mute)
 		regmap_update_bits(max9867->regmap, MAX9867_DACLEVEL,
@@ -276,8 +265,8 @@ static int max9867_mute(struct snd_soc_dai *dai, int mute)
 static int max9867_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 		int clk_id, unsigned int freq, int dir)
 {
-	struct snd_soc_codec *codec = codec_dai->codec;
-	struct max9867_priv *max9867 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = codec_dai->component;
+	struct max9867_priv *max9867 = snd_soc_component_get_drvdata(component);
 	int value = 0;
 
 	/* Set the prescaler based on the master clock frequency*/
@@ -291,7 +280,9 @@ static int max9867_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 		value |= MAX9867_PSCLK_40_60;
 		max9867->pclk =  freq/4;
 	} else {
-		pr_err("bad clock frequency %d", freq);
+		dev_err(component->dev,
+			"Invalid clock frequency %uHz (required 10-60MHz)\n",
+			freq);
 		return -EINVAL;
 	}
 	value = value << MAX9867_PSCLK_SHIFT;
@@ -306,8 +297,8 @@ static int max9867_set_dai_sysclk(struct snd_soc_dai *codec_dai,
 static int max9867_dai_set_fmt(struct snd_soc_dai *codec_dai,
 		unsigned int fmt)
 {
-	struct snd_soc_codec *codec = codec_dai->codec;
-	struct max9867_priv *max9867 = snd_soc_codec_get_drvdata(codec);
+	struct snd_soc_component *component = codec_dai->component;
+	struct max9867_priv *max9867 = snd_soc_component_get_drvdata(component);
 	u8 iface1A = 0, iface1B = 0;
 
 	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
@@ -323,10 +314,16 @@ static int max9867_dai_set_fmt(struct snd_soc_dai *codec_dai,
 		return -EINVAL;
 	}
 
-	/* for i2s compatible mode */
-	iface1A |= MAX9867_I2S_DLY;
-	/* SDOUT goes to hiz state after all data is transferred */
-	iface1A |= MAX9867_SDOUT_HIZ;
+	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
+	case SND_SOC_DAIFMT_I2S:
+		iface1A |= MAX9867_I2S_DLY;
+		break;
+	case SND_SOC_DAIFMT_DSP_A:
+		iface1A |= MAX9867_TDM_MODE | MAX9867_SDOUT_HIZ;
+		break;
+	default:
+		return -EINVAL;
+	}
 
 	/* Clock inversion bits, BCI and WCI */
 	switch (fmt & SND_SOC_DAIFMT_INV_MASK) {
@@ -353,7 +350,6 @@ static int max9867_dai_set_fmt(struct snd_soc_dai *codec_dai,
 static const struct snd_soc_dai_ops max9867_dai_ops = {
 	.set_fmt = max9867_dai_set_fmt,
 	.set_sysclk	= max9867_set_dai_sysclk,
-	.prepare	= max9867_prepare,
 	.digital_mute	= max9867_mute,
 	.hw_params = max9867_dai_hw_params,
 };
@@ -367,62 +363,90 @@ static struct snd_soc_dai_driver max9867_dai[] = {
 	.name = "max9867-aif1",
 	.playback = {
 		.stream_name = "HiFi Playback",
-		.channels_min = 1,
+		.channels_min = 2,
 		.channels_max = 2,
 		.rates = MAX9867_RATES,
 		.formats = MAX9867_FORMATS,
 	},
 	.capture = {
 		.stream_name = "HiFi Capture",
-		.channels_min = 1,
+		.channels_min = 2,
 		.channels_max = 2,
 		.rates = MAX9867_RATES,
 		.formats = MAX9867_FORMATS,
 	},
 	.ops = &max9867_dai_ops,
+	.symmetric_rates = 1,
 	}
 };
 
-#ifdef CONFIG_PM_SLEEP
-static int max9867_suspend(struct device *dev)
+#ifdef CONFIG_PM
+static int max9867_suspend(struct snd_soc_component *component)
 {
-	struct max9867_priv *max9867 = dev_get_drvdata(dev);
+	snd_soc_component_force_bias_level(component, SND_SOC_BIAS_OFF);
 
-	/* Drop down to power saving mode when system is suspended */
-	regmap_update_bits(max9867->regmap, MAX9867_PWRMAN,
-		MAX9867_SHTDOWN_MASK, ~MAX9867_SHTDOWN_MASK);
 	return 0;
 }
 
-static int max9867_resume(struct device *dev)
+static int max9867_resume(struct snd_soc_component *component)
 {
-	struct max9867_priv *max9867 = dev_get_drvdata(dev);
+	snd_soc_component_force_bias_level(component, SND_SOC_BIAS_STANDBY);
 
-	regmap_update_bits(max9867->regmap, MAX9867_PWRMAN,
-		MAX9867_SHTDOWN_MASK, MAX9867_SHTDOWN_MASK);
 	return 0;
 }
+#else
+#define max9867_suspend	NULL
+#define max9867_resume	NULL
 #endif
 
-static int max9867_probe(struct snd_soc_codec *codec)
+static int max9867_set_bias_level(struct snd_soc_component *component,
+				  enum snd_soc_bias_level level)
 {
-	struct max9867_priv *max9867 = snd_soc_codec_get_drvdata(codec);
+	int err;
+	struct max9867_priv *max9867 = snd_soc_component_get_drvdata(component);
 
-	dev_dbg(codec->dev, "max98090_probe\n");
-	max9867->codec = codec;
+	switch (level) {
+	case SND_SOC_BIAS_STANDBY:
+		if (snd_soc_component_get_bias_level(component) == SND_SOC_BIAS_OFF) {
+			err = regcache_sync(max9867->regmap);
+			if (err)
+				return err;
+
+			err = regmap_update_bits(max9867->regmap, MAX9867_PWRMAN,
+						 MAX9867_SHTDOWN, MAX9867_SHTDOWN);
+			if (err)
+				return err;
+		}
+		break;
+	case SND_SOC_BIAS_OFF:
+		err = regmap_update_bits(max9867->regmap, MAX9867_PWRMAN,
+					 MAX9867_SHTDOWN, 0);
+		if (err)
+			return err;
+
+		regcache_mark_dirty(max9867->regmap);
+		break;
+	default:
+		break;
+	}
+
 	return 0;
 }
 
-static const struct snd_soc_codec_driver max9867_codec = {
-	.probe = max9867_probe,
-	.component_driver = {
-		.controls		= max9867_snd_controls,
-		.num_controls		= ARRAY_SIZE(max9867_snd_controls),
-		.dapm_routes		= max9867_audio_map,
-		.num_dapm_routes	= ARRAY_SIZE(max9867_audio_map),
-		.dapm_widgets		= max9867_dapm_widgets,
-		.num_dapm_widgets	= ARRAY_SIZE(max9867_dapm_widgets),
-	},
+static const struct snd_soc_component_driver max9867_component = {
+	.controls		= max9867_snd_controls,
+	.num_controls		= ARRAY_SIZE(max9867_snd_controls),
+	.dapm_routes		= max9867_audio_map,
+	.num_dapm_routes	= ARRAY_SIZE(max9867_audio_map),
+	.dapm_widgets		= max9867_dapm_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(max9867_dapm_widgets),
+	.suspend		= max9867_suspend,
+	.resume			= max9867_resume,
+	.set_bias_level		= max9867_set_bias_level,
+	.idle_bias_on		= 1,
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
+	.non_legacy_dai_naming	= 1,
 };
 
 static bool max9867_volatile_register(struct device *dev, unsigned int reg)
@@ -486,8 +510,7 @@ static int max9867_i2c_probe(struct i2c_client *i2c,
 	max9867->regmap = devm_regmap_init_i2c(i2c, &max9867_regmap);
 	if (IS_ERR(max9867->regmap)) {
 		ret = PTR_ERR(max9867->regmap);
-		dev_err(&i2c->dev,
-				"Failed to allocate regmap: %d\n", ret);
+		dev_err(&i2c->dev, "Failed to allocate regmap: %d\n", ret);
 		return ret;
 	}
 	ret = regmap_read(max9867->regmap,
@@ -497,19 +520,13 @@ static int max9867_i2c_probe(struct i2c_client *i2c,
 		return ret;
 	}
 	dev_info(&i2c->dev, "device revision: %x\n", reg);
-	ret = snd_soc_register_codec(&i2c->dev, &max9867_codec,
+	ret = devm_snd_soc_register_component(&i2c->dev, &max9867_component,
 			max9867_dai, ARRAY_SIZE(max9867_dai));
 	if (ret < 0) {
-		dev_err(&i2c->dev, "Failed to register codec: %d\n", ret);
+		dev_err(&i2c->dev, "Failed to register component: %d\n", ret);
 		return ret;
 	}
 	return ret;
-}
-
-static int max9867_i2c_remove(struct i2c_client *client)
-{
-	snd_soc_unregister_codec(&client->dev);
-	return 0;
 }
 
 static const struct i2c_device_id max9867_i2c_id[] = {
@@ -524,18 +541,12 @@ static const struct of_device_id max9867_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, max9867_of_match);
 
-static const struct dev_pm_ops max9867_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(max9867_suspend, max9867_resume)
-};
-
 static struct i2c_driver max9867_i2c_driver = {
 	.driver = {
 		.name = "max9867",
 		.of_match_table = of_match_ptr(max9867_of_match),
-		.pm = &max9867_pm_ops,
 	},
 	.probe  = max9867_i2c_probe,
-	.remove = max9867_i2c_remove,
 	.id_table = max9867_i2c_id,
 };
 

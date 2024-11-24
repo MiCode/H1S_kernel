@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __M4U_HW_H__
 #define __M4U_HW_H__
@@ -118,7 +110,7 @@ extern struct m4u_port_t gM4uPort[];
 
 static inline char *m4u_get_port_name(unsigned int portID)
 {
-	if ((portID < M4U_PORT_NR) &&  (portID >= M4U_PORT_MIN))
+	if (portID < M4U_PORT_NR)
 		return gM4uPort[portID].name;
 
 	return "m4u_port_unknown";
@@ -144,7 +136,7 @@ static inline unsigned int m4u_get_port_by_tf_id(unsigned int m4u_id, int tf_id)
 
 static inline unsigned int m4u_port_2_larb_port(unsigned int port)
 {
-	if (unlikely(port < M4U_PORT_MIN || port >= M4U_PORT_NR)) {
+	if (unlikely(port >= M4U_PORT_NR)) {
 		M4UMSG("%s, %d, invalid port%d\n", __func__, __LINE__, port);
 		return M4U_MAX_LARB_PORT;
 	}
@@ -153,7 +145,7 @@ static inline unsigned int m4u_port_2_larb_port(unsigned int port)
 
 static inline unsigned int m4u_port_2_larb_id(unsigned int port)
 {
-	if (unlikely(port < M4U_PORT_MIN || port >= M4U_PORT_NR)) {
+	if (unlikely(port >= M4U_PORT_NR)) {
 		M4UMSG("%s, %d, invalid port%d\n", __func__, __LINE__, port);
 		return SMI_LARB_NR;
 	}
@@ -173,7 +165,7 @@ static inline unsigned int larb_2_m4u_slave_id(int larb)
 
 static inline unsigned int m4u_port_2_m4u_id(unsigned int port)
 {
-	if (unlikely(port < M4U_PORT_MIN || port >= M4U_PORT_NR)) {
+	if (unlikely(port >= M4U_PORT_NR)) {
 		M4UMSG("%s, %d, invalid port%d\n", __func__, __LINE__, port);
 		return TOTAL_M4U_NUM;
 	}
@@ -182,7 +174,7 @@ static inline unsigned int m4u_port_2_m4u_id(unsigned int port)
 
 static inline unsigned int m4u_port_2_m4u_slave_id(unsigned int port)
 {
-	if (unlikely(port < M4U_PORT_MIN || port >= M4U_PORT_NR)) {
+	if (unlikely(port >= M4U_PORT_NR)) {
 		M4UMSG("%s, %d, invalid port%d\n", __func__, __LINE__, port);
 		return M4U_MAX_SLAVE;
 	}
@@ -205,7 +197,7 @@ static inline unsigned int larb_port_2_m4u_port(int larb, int larb_port)
 }
 
 void m4u_print_perf_counter(int m4u_index, int m4u_slave_id, const char *msg);
-int m4u_dump_reg(int m4u_index, unsigned int start);
+int m4u_dump_reg(int m4u_index, unsigned int start, unsigned int end);
 
 extern struct m4u_device *gM4uDev;
 

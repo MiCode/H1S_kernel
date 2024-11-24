@@ -138,7 +138,7 @@ static int post_crypt(struct skcipher_request *req)
 	if (rctx->dst != sg) {
 		rctx->dst[0] = *sg;
 		sg_unmark_end(rctx->dst);
-		scatterwalk_crypto_chain(rctx->dst, sg_next(sg), 0, 2);
+		scatterwalk_crypto_chain(rctx->dst, sg_next(sg), 2);
 	}
 	rctx->dst[0].length -= offset - sg->offset;
 	rctx->dst[0].offset = offset;
@@ -204,7 +204,7 @@ static int pre_crypt(struct skcipher_request *req)
 	if (rctx->src != sg) {
 		rctx->src[0] = *sg;
 		sg_unmark_end(rctx->src);
-		scatterwalk_crypto_chain(rctx->src, sg_next(sg), 0, 2);
+		scatterwalk_crypto_chain(rctx->src, sg_next(sg), 2);
 	}
 	rctx->src[0].length -= offset - sg->offset;
 	rctx->src[0].offset = offset;
@@ -269,9 +269,7 @@ static int do_encrypt(struct skcipher_request *req, int err)
 		      crypto_skcipher_encrypt(subreq) ?:
 		      post_crypt(req);
 
-		if (err == -EINPROGRESS ||
-		    (err == -EBUSY &&
-		     req->base.flags & CRYPTO_TFM_REQ_MAY_BACKLOG))
+		if (err == -EINPROGRESS || err == -EBUSY)
 			return err;
 	}
 
@@ -321,9 +319,7 @@ static int do_decrypt(struct skcipher_request *req, int err)
 		      crypto_skcipher_decrypt(subreq) ?:
 		      post_crypt(req);
 
-		if (err == -EINPROGRESS ||
-		    (err == -EBUSY &&
-		     req->base.flags & CRYPTO_TFM_REQ_MAY_BACKLOG))
+		if (err == -EINPROGRESS || err == -EBUSY)
 			return err;
 	}
 
@@ -360,78 +356,6 @@ static int decrypt(struct skcipher_request *req)
 {
 	return do_decrypt(req, init_crypt(req, decrypt_done));
 }
-
-int xts_crypt(struct blkcipher_desc *desc, struct scatterlist *sdst,
-	      struct scatterlist *ssrc, unsigned int nbytes,
-	      struct xts_crypt_req *req)
-{
-	const unsigned int bsize = XTS_BLOCK_SIZE;
-	const unsigned int max_blks = req->tbuflen / bsize;
-	struct blkcipher_walk walk;
-	unsigned int nblocks;
-	le128 *src, *dst, *t;
-	le128 *t_buf = req->tbuf;
-	int err, i;
-
-	BUG_ON(max_blks < 1);
-
-	blkcipher_walk_init(&walk, sdst, ssrc, nbytes);
-
-	err = blkcipher_walk_virt(desc, &walk);
-	nbytes = walk.nbytes;
-	if (!nbytes)
-		return err;
-
-	nblocks = min(nbytes / bsize, max_blks);
-	src = (le128 *)walk.src.virt.addr;
-	dst = (le128 *)walk.dst.virt.addr;
-
-	/* calculate first value of T */
-	req->tweak_fn(req->tweak_ctx, (u8 *)&t_buf[0], walk.iv);
-
-	i = 0;
-	goto first;
-
-	for (;;) {
-		do {
-			for (i = 0; i < nblocks; i++) {
-				gf128mul_x_ble(&t_buf[i], t);
-first:
-				t = &t_buf[i];
-
-				/* PP <- T xor P */
-				le128_xor(dst + i, t, src + i);
-			}
-
-			/* CC <- E(Key2,PP) */
-			req->crypt_fn(req->crypt_ctx, (u8 *)dst,
-				      nblocks * bsize);
-
-			/* C <- T xor CC */
-			for (i = 0; i < nblocks; i++)
-				le128_xor(dst + i, dst + i, &t_buf[i]);
-
-			src += nblocks;
-			dst += nblocks;
-			nbytes -= nblocks * bsize;
-			nblocks = min(nbytes / bsize, max_blks);
-		} while (nblocks > 0);
-
-		*(le128 *)walk.iv = *t;
-
-		err = blkcipher_walk_done(desc, &walk, nbytes);
-		nbytes = walk.nbytes;
-		if (!nbytes)
-			break;
-
-		nblocks = min(nbytes / bsize, max_blks);
-		src = (le128 *)walk.src.virt.addr;
-		dst = (le128 *)walk.dst.virt.addr;
-	}
-
-	return err;
-}
-EXPORT_SYMBOL_GPL(xts_crypt);
 
 static int init_tfm(struct crypto_skcipher *tfm)
 {

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2021 MediaTek Inc.
+*/
 
 #include <linux/interrupt.h>
 #include <linux/list.h>
@@ -25,7 +17,7 @@
 #include <linux/workqueue.h>
 
 #include <mt-plat/upmu_common.h>
-#include "pmic_lbat_service.h"
+#include <include/pmic_lbat_service.h>
 
 #define VOLT_TO_RAW(volt)	(((volt) << 12) / 5400)
 #define RAW_TO_VOLT(thd)	(((thd) * 5400) >> 12)
@@ -191,11 +183,13 @@ static void lbat_deb_handler(struct work_struct *work)
 	mutex_unlock(&lbat_mutex);
 }
 
-static void lbat_timer_func(unsigned long data)
+
+//static void lbat_timer_func(unsigned long data)
+static void lbat_timer_func(struct timer_list *t)
 {
 	unsigned int deb_prd = 0;
 	unsigned int deb_times = 0;
-	struct lbat_user *user = (struct lbat_user *)data;
+	struct lbat_user *user =  from_timer(user, t, deb_timer);
 
 	if (user->deb_thd_ptr == user->hv_thd) {
 		/* LBAT user HV de-bounce */
@@ -242,10 +236,12 @@ static void lbat_user_init_timer(struct lbat_user *user)
 	user->hv_deb_times = 0;
 	user->lv_deb_prd = 0;
 	user->lv_deb_times = 0;
-	init_timer(&user->deb_timer);
-	user->deb_timer.data = (unsigned long)user;
-	user->deb_timer.expires = 0;
-	user->deb_timer.function = lbat_timer_func;
+	/*workaround for mt6768*/
+	//init_timer(&user->deb_timer);
+	//user->deb_timer.data = (unsigned long)user;
+	//user->deb_timer.expires = 0;
+	//user->deb_timer.function = lbat_timer_func;
+	timer_setup(&user->deb_timer, lbat_timer_func, 0);
 }
 
 static int lbat_user_update(struct lbat_user *user)
@@ -278,17 +274,19 @@ static struct lbat_thd_t *lbat_thd_init(unsigned int thd_volt,
 	return thd;
 }
 
-int lbat_user_register(struct lbat_user *user, const char *name,
+struct lbat_user *lbat_user_register(const char *name,
 	unsigned int hv_thd_volt,
 	unsigned int lv1_thd_volt, unsigned int lv2_thd_volt,
-	void (*callback)(unsigned int))
+	void (*callback)(unsigned int thd_volt))
 {
 	int ret = 0;
+	struct lbat_user *user = NULL;
 
 	mutex_lock(&lbat_mutex);
-	if (IS_ERR(user)) {
-		ret = PTR_ERR(user);
-		goto out;
+	user = kzalloc(sizeof(*user), GFP_KERNEL);
+	if (user == NULL) {
+                ret = -10;
+                goto out;
 	}
 	strncpy(user->name, name, strlen(user->name));
 	if (hv_thd_volt >= 5400 || lv1_thd_volt <= 2650) {
@@ -311,11 +309,11 @@ int lbat_user_register(struct lbat_user *user, const char *name,
 	pr_info("[%s] hv=%d, lv1=%d, lv2=%d\n",
 		__func__, hv_thd_volt, lv1_thd_volt, lv2_thd_volt);
 	ret = lbat_user_update(user);
-	if (ret)
-		pr_notice("[%s] error ret=%d\n", __func__, ret);
 out:
+	if (ret)
+                pr_notice("[%s] error ret=%d\n", __func__, ret);
 	mutex_unlock(&lbat_mutex);
-	return ret;
+	return user;
 }
 EXPORT_SYMBOL(lbat_user_register);
 

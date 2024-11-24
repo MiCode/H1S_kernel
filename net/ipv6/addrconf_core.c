@@ -88,7 +88,7 @@ int __ipv6_addr_type(const struct in6_addr *addr)
 EXPORT_SYMBOL(__ipv6_addr_type);
 
 static ATOMIC_NOTIFIER_HEAD(inet6addr_chain);
-static ATOMIC_NOTIFIER_HEAD(inet6addr_validator_chain);
+static BLOCKING_NOTIFIER_HEAD(inet6addr_validator_chain);
 
 int register_inet6addr_notifier(struct notifier_block *nb)
 {
@@ -110,19 +110,20 @@ EXPORT_SYMBOL(inet6addr_notifier_call_chain);
 
 int register_inet6addr_validator_notifier(struct notifier_block *nb)
 {
-	return atomic_notifier_chain_register(&inet6addr_validator_chain, nb);
+	return blocking_notifier_chain_register(&inet6addr_validator_chain, nb);
 }
 EXPORT_SYMBOL(register_inet6addr_validator_notifier);
 
 int unregister_inet6addr_validator_notifier(struct notifier_block *nb)
 {
-	return atomic_notifier_chain_unregister(&inet6addr_validator_chain, nb);
+	return blocking_notifier_chain_unregister(&inet6addr_validator_chain,
+						  nb);
 }
 EXPORT_SYMBOL(unregister_inet6addr_validator_notifier);
 
 int inet6addr_validator_notifier_call_chain(unsigned long val, void *v)
 {
-	return atomic_notifier_call_chain(&inet6addr_validator_chain, val, v);
+	return blocking_notifier_call_chain(&inet6addr_validator_chain, val, v);
 }
 EXPORT_SYMBOL(inet6addr_validator_notifier_call_chain);
 
@@ -134,25 +135,71 @@ static struct dst_entry *eafnosupport_ipv6_dst_lookup_flow(struct net *net,
 	return ERR_PTR(-EAFNOSUPPORT);
 }
 
+static struct fib6_table *eafnosupport_fib6_get_table(struct net *net, u32 id)
+{
+	return NULL;
+}
+
+static struct fib6_info *
+eafnosupport_fib6_table_lookup(struct net *net, struct fib6_table *table,
+			       int oif, struct flowi6 *fl6, int flags)
+{
+	return NULL;
+}
+
+static struct fib6_info *
+eafnosupport_fib6_lookup(struct net *net, int oif, struct flowi6 *fl6,
+			 int flags)
+{
+	return NULL;
+}
+
+static struct fib6_info *
+eafnosupport_fib6_multipath_select(const struct net *net, struct fib6_info *f6i,
+				   struct flowi6 *fl6, int oif,
+				   const struct sk_buff *skb, int strict)
+{
+	return f6i;
+}
+
+static u32
+eafnosupport_ip6_mtu_from_fib6(struct fib6_info *f6i, struct in6_addr *daddr,
+			       struct in6_addr *saddr)
+{
+	return 0;
+}
+
 const struct ipv6_stub *ipv6_stub __read_mostly = &(struct ipv6_stub) {
 	.ipv6_dst_lookup_flow = eafnosupport_ipv6_dst_lookup_flow,
+	.fib6_get_table    = eafnosupport_fib6_get_table,
+	.fib6_table_lookup = eafnosupport_fib6_table_lookup,
+	.fib6_lookup       = eafnosupport_fib6_lookup,
+	.fib6_multipath_select = eafnosupport_fib6_multipath_select,
+	.ip6_mtu_from_fib6 = eafnosupport_ip6_mtu_from_fib6,
 };
 EXPORT_SYMBOL_GPL(ipv6_stub);
 
 /* IPv6 Wildcard Address and Loopback Address defined by RFC2553 */
-const struct in6_addr in6addr_loopback = IN6ADDR_LOOPBACK_INIT;
+const struct in6_addr in6addr_loopback __aligned(BITS_PER_LONG/8)
+	= IN6ADDR_LOOPBACK_INIT;
 EXPORT_SYMBOL(in6addr_loopback);
-const struct in6_addr in6addr_any = IN6ADDR_ANY_INIT;
+const struct in6_addr in6addr_any __aligned(BITS_PER_LONG/8)
+	= IN6ADDR_ANY_INIT;
 EXPORT_SYMBOL(in6addr_any);
-const struct in6_addr in6addr_linklocal_allnodes = IN6ADDR_LINKLOCAL_ALLNODES_INIT;
+const struct in6_addr in6addr_linklocal_allnodes __aligned(BITS_PER_LONG/8)
+	= IN6ADDR_LINKLOCAL_ALLNODES_INIT;
 EXPORT_SYMBOL(in6addr_linklocal_allnodes);
-const struct in6_addr in6addr_linklocal_allrouters = IN6ADDR_LINKLOCAL_ALLROUTERS_INIT;
+const struct in6_addr in6addr_linklocal_allrouters __aligned(BITS_PER_LONG/8)
+	= IN6ADDR_LINKLOCAL_ALLROUTERS_INIT;
 EXPORT_SYMBOL(in6addr_linklocal_allrouters);
-const struct in6_addr in6addr_interfacelocal_allnodes = IN6ADDR_INTERFACELOCAL_ALLNODES_INIT;
+const struct in6_addr in6addr_interfacelocal_allnodes __aligned(BITS_PER_LONG/8)
+	= IN6ADDR_INTERFACELOCAL_ALLNODES_INIT;
 EXPORT_SYMBOL(in6addr_interfacelocal_allnodes);
-const struct in6_addr in6addr_interfacelocal_allrouters = IN6ADDR_INTERFACELOCAL_ALLROUTERS_INIT;
+const struct in6_addr in6addr_interfacelocal_allrouters __aligned(BITS_PER_LONG/8)
+	= IN6ADDR_INTERFACELOCAL_ALLROUTERS_INIT;
 EXPORT_SYMBOL(in6addr_interfacelocal_allrouters);
-const struct in6_addr in6addr_sitelocal_allrouters = IN6ADDR_SITELOCAL_ALLROUTERS_INIT;
+const struct in6_addr in6addr_sitelocal_allrouters __aligned(BITS_PER_LONG/8)
+	= IN6ADDR_SITELOCAL_ALLROUTERS_INIT;
 EXPORT_SYMBOL(in6addr_sitelocal_allrouters);
 
 static void snmp6_free_dev(struct inet6_dev *idev)

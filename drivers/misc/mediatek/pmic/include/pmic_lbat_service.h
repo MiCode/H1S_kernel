@@ -1,19 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __PMIC_LBAT_SERVICE_H__
 #define __PMIC_LBAT_SERVICE_H__
 
+#include <linux/list.h>
 #include <linux/platform_device.h>
 #include <linux/timer.h>
 #include <linux/workqueue.h>
@@ -34,13 +27,18 @@ struct lbat_user {
 	unsigned int lv_deb_times;
 	struct timer_list deb_timer;
 	struct work_struct deb_work;
+	struct list_head thd_list;
 };
 
 /* extern function */
 extern int lbat_service_init(struct platform_device *pdev);
-extern int lbat_user_register(struct lbat_user *user, const char *name,
-	unsigned int hv_thd_volt, unsigned int lv1_thd_volt,
-	unsigned int lv2_thd_volt, void (*callback)(unsigned int thd_volt));
+extern struct lbat_user *lbat_user_register_ext(const char *name,
+	unsigned int *thd_volt_arr, unsigned int thd_volt_size,
+	void (*callback)(unsigned int thd_volt));
+extern struct lbat_user *lbat_user_register(const char *name, unsigned int hv_thd_volt,
+	unsigned int lv1_thd_volt,
+	unsigned int lv2_thd_volt,
+	void (*callback)(unsigned int thd_volt));
 extern int lbat_user_set_debounce(struct lbat_user *user,
 	unsigned int hv_deb_prd, unsigned int hv_deb_cnt,
 	unsigned int lv_deb_prd, unsigned int lv_deb_cnt);

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2016 MediaTek Inc.
  */
 
  /*
@@ -65,7 +57,7 @@ extern "C" {
 #define NR_UPOWER_CSTATES 2 /* only use c0, c1 */
 #define UPOWER_C1_VOLT 60000 /* 0.6v */
 #define UPOWER_C1_IDX 1 /* idx of c1 in idle_states[][idx] */
-#define NR_UPOWER_TBL_LIST 6 /* num of all tables */
+#define NR_UPOWER_TBL_LIST 11 /* num of all tables */
 /* upower banks */
 enum upower_bank {
 	UPOWER_BANK_L,
@@ -90,6 +82,8 @@ enum upower_dtype {
 
 	NR_UPOWER_DTYPE,
 };
+
+extern int cpu_cluster_mapping(unsigned int cpu);
 
 #ifdef __cplusplus
 }

@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Sagy Shih <sagy.shih@mediatek.com>
  */
 
 #include <linux/kernel.h>
@@ -34,11 +27,13 @@
 #include <linux/uaccess.h>
 #include <linux/highmem.h>
 #include <asm/setup.h>
-#include <mt-plat/mtk_io.h>
 #include <mt-plat/sync_write.h>
-#include <mt-plat/mtk_meminfo.h>
 #include <mt-plat/mtk_chip.h>
+#ifdef CONFIG_MTK_AEE_FEATURE
 #include <mt-plat/aee.h>
+#endif
+
+#include <dramc_io.h>
 #include "mtk_dramc.h"
 #include "dramc.h"
 
@@ -387,9 +382,6 @@ static ssize_t read_dram_addr_write(struct file *file,
 		sz = simple_write_to_buffer(buf, sizeof(buf), offset,
 			user_buf, len);
 
-		if (sz < 0)
-			return sz;
-
 		if (sz != len)
 			return -EIO;
 
@@ -459,7 +451,9 @@ static ssize_t test_result_read(struct file *file,
 		if (test_fail_region[FAIL_REGION_VIRT])
 			sz2 += snprintf(buf + sz2, sizeof(buf) - sz2,
 					"virtual\n");
+#ifdef CONFIG_MTK_AEE_FEATURE
 		aee_kernel_warning("DRAM_MEMTEST", buf);
+#endif
 	}
 
 	return simple_read_from_buffer(user_buf, len, offset, buf, sz);
@@ -474,9 +468,6 @@ static ssize_t test_result_write(struct file *file,
 	int ret, sz, region;
 
 	sz =  simple_write_to_buffer(buf, sizeof(buf), offset, user_buf, len);
-
-	if (sz < 0)
-		return sz;
 
 	if (sz != len)
 		return -EIO;

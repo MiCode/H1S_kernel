@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __VPU_ALGO_H__
@@ -39,11 +31,6 @@ void vpu_alg_free(struct __vpu_algo *alg);
 int vpu_init_dev_algo(struct platform_device *pdev, struct vpu_device *vd);
 void vpu_exit_dev_algo(struct platform_device *pdev, struct vpu_device *vd);
 int vpu_hw_alg_init(struct vpu_algo_list *al, struct __vpu_algo *alg);
-
-/* vpu_algo.c
- * handleing dynamic load/unload algo
- */
-int vpu_firmware(struct vpu_device *vd, struct apusys_firmware_hnd *fw);
 
 struct __vpu_algo {
 	struct vpu_algo a;

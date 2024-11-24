@@ -39,16 +39,17 @@
 #ifndef NFP_MAIN_H
 #define NFP_MAIN_H
 
+#include <linux/ethtool.h>
 #include <linux/list.h>
 #include <linux/types.h>
 #include <linux/msi.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
 #include <linux/workqueue.h>
+#include <net/devlink.h>
 
 struct dentry;
 struct device;
-struct devlink_ops;
 struct pci_dev;
 
 struct nfp_cpp;
@@ -59,7 +60,20 @@ struct nfp_mip;
 struct nfp_net;
 struct nfp_nsp_identify;
 struct nfp_port;
+struct nfp_rtsym;
 struct nfp_rtsym_table;
+struct nfp_shared_buf;
+
+/**
+ * struct nfp_dumpspec - NFP FW dump specification structure
+ * @size:	Size of the data
+ * @data:	Sequence of TLVs, each being an instruction to dump some data
+ *		from FW
+ */
+struct nfp_dumpspec {
+	u32 size;
+	u8 data[0];
+};
 
 /**
  * struct nfp_pf - NFP PF-specific device structure
@@ -75,6 +89,7 @@ struct nfp_rtsym_table;
  * @vf_cfg_mem:		Pointer to mapped VF configuration area
  * @vfcfg_tbl2_area:	Pointer to the CPP area for the VF config table
  * @vfcfg_tbl2:		Pointer to mapped VF config table
+ * @mbox:		RTSym of per-PCI PF mailbox (under devlink lock)
  * @irq_entries:	Array of MSI-X entries for all vNICs
  * @limit_vfs:		Number of VFs supported by firmware (~0 for PCI limit)
  * @num_vfs:		Number of SR-IOV VFs enabled
@@ -83,6 +98,9 @@ struct nfp_rtsym_table;
  * @mip:		MIP handle
  * @rtbl:		RTsym table
  * @hwinfo:		HWInfo table
+ * @dumpspec:		Debug dump specification
+ * @dump_flag:		Store dump flag between set_dump and get_dump_flag
+ * @dump_len:		Store dump length between set_dump and get_dump_flag
  * @eth_tbl:		NSP ETH table
  * @nspi:		NSP identification info
  * @hwmon_dev:		pointer to hwmon device
@@ -93,6 +111,8 @@ struct nfp_rtsym_table;
  * @ports:		Linked list of port structures (struct nfp_port)
  * @wq:			Workqueue for running works which need to grab @lock
  * @port_refresh_work:	Work entry for taking netdevs out
+ * @shared_bufs:	Array of shared buffer structures if FW has any SBs
+ * @num_shared_bufs:	Number of elements in @shared_bufs
  * @lock:		Protects all fields which may change after probe
  */
 struct nfp_pf {
@@ -112,6 +132,8 @@ struct nfp_pf {
 	struct nfp_cpp_area *vfcfg_tbl2_area;
 	u8 __iomem *vfcfg_tbl2;
 
+	const struct nfp_rtsym *mbox;
+
 	struct msix_entry *irq_entries;
 
 	unsigned int limit_vfs;
@@ -124,6 +146,9 @@ struct nfp_pf {
 	const struct nfp_mip *mip;
 	struct nfp_rtsym_table *rtbl;
 	struct nfp_hwinfo *hwinfo;
+	struct nfp_dumpspec *dumpspec;
+	u32 dump_flag;
+	u32 dump_len;
 	struct nfp_eth_table *eth_tbl;
 	struct nfp_nsp_identify *nspi;
 
@@ -140,6 +165,9 @@ struct nfp_pf {
 	struct workqueue_struct *wq;
 	struct work_struct port_refresh_work;
 
+	struct nfp_shared_buf *shared_bufs;
+	unsigned int num_shared_bufs;
+
 	struct mutex lock;
 };
 
@@ -153,8 +181,36 @@ void nfp_net_pci_remove(struct nfp_pf *pf);
 int nfp_hwmon_register(struct nfp_pf *pf);
 void nfp_hwmon_unregister(struct nfp_pf *pf);
 
-void nfp_net_get_mac_addr(struct nfp_pf *pf, struct nfp_port *port);
+void
+nfp_net_get_mac_addr(struct nfp_pf *pf, struct net_device *netdev,
+		     struct nfp_port *port);
 
 bool nfp_ctrl_tx(struct nfp_net *nn, struct sk_buff *skb);
 
+int nfp_pf_rtsym_read_optional(struct nfp_pf *pf, const char *format,
+			       unsigned int default_val);
+u8 __iomem *
+nfp_pf_map_rtsym(struct nfp_pf *pf, const char *name, const char *sym_fmt,
+		 unsigned int min_size, struct nfp_cpp_area **area);
+int nfp_mbox_cmd(struct nfp_pf *pf, u32 cmd, void *in_data, u64 in_length,
+		 void *out_data, u64 out_length);
+
+enum nfp_dump_diag {
+	NFP_DUMP_NSP_DIAG = 0,
+};
+
+struct nfp_dumpspec *
+nfp_net_dump_load_dumpspec(struct nfp_cpp *cpp, struct nfp_rtsym_table *rtbl);
+s64 nfp_net_dump_calculate_size(struct nfp_pf *pf, struct nfp_dumpspec *spec,
+				u32 flag);
+int nfp_net_dump_populate_buffer(struct nfp_pf *pf, struct nfp_dumpspec *spec,
+				 struct ethtool_dump *dump_param, void *dest);
+
+int nfp_shared_buf_register(struct nfp_pf *pf);
+void nfp_shared_buf_unregister(struct nfp_pf *pf);
+int nfp_shared_buf_pool_get(struct nfp_pf *pf, unsigned int sb, u16 pool_index,
+			    struct devlink_sb_pool_info *pool_info);
+int nfp_shared_buf_pool_set(struct nfp_pf *pf, unsigned int sb,
+			    u16 pool_index, u32 size,
+			    enum devlink_sb_threshold_type threshold_type);
 #endif /* NFP_MAIN_H */

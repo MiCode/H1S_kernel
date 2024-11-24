@@ -18,6 +18,7 @@
 #include <linux/bitops.h>
 #include <linux/clk-provider.h>
 #include <linux/regmap.h>
+#include <linux/platform_device.h>
 
 struct clk;
 
@@ -164,7 +165,7 @@ struct mtk_composite {
 		.divider_shift = -1,					\
 		.parent_names = _parents,				\
 		.num_parents = ARRAY_SIZE(_parents),			\
-		.flags = _flags,					\
+		.flags = _flags,				\
 	}
 
 #define DIV_GATE(_id, _name, _parent, _gate_reg, _gate_shift, _div_reg,	\
@@ -242,9 +243,15 @@ void mtk_clk_register_fixup_dividers(const struct mtk_clk_divider *mcds,
 
 struct clk_onecell_data *mtk_alloc_clk_data(unsigned int clk_num);
 
-#define HAVE_RST_BAR		BIT(0)
-#define PLL_AO			BIT(1)
+struct clk_onecell_data *mtk_devm_alloc_clk_data(struct device *dev,
+			unsigned int clk_num);
+
+void mtk_devm_free_clk_data(struct device *dev, struct clk_onecell_data *clk_data);
+
+#define HAVE_RST_BAR	BIT(0)
+#define PLL_AO		BIT(1)
 #define HAVE_RST_BAR_4_TIMES	(BIT(2) | BIT(0))
+#define EN_BIT_CTRL		(BIT(3))
 
 struct mtk_pll_div_table {
 	u32 div;
@@ -269,15 +276,17 @@ struct mtk_pll_data {
 	const struct clk_ops *ops;
 	uint32_t rst_bar_reg;
 	u32 rst_bar_mask;
-	unsigned long fmax;
 	unsigned long fmin;
-	uint32_t pcwchgreg;
+	unsigned long fmax;
 	int pcwbits;
 	int pcwibits;
 	uint32_t pcw_reg;
 	int pcw_shift;
+	uint32_t pcw_chg_reg;
 	const struct mtk_pll_div_table *div_table;
 	const char *parent_name;
+	struct pwr_status *pwr_stat;
+	uint8_t pll_en_bit;
 };
 
 void mtk_clk_register_plls(struct device_node *node,
@@ -297,7 +306,14 @@ static inline void mtk_register_reset_controller(struct device_node *np,
 }
 #endif
 
+struct mtk_clk_desc {
+	const struct mtk_gate *clks;
+	size_t num_clks;
+};
+
+extern bool (*mtk_fh_set_rate)(int pll_id, unsigned long dds, int postdiv);
+
+int mtk_clk_simple_probe(struct platform_device *pdev);
 int mtk_is_pll_enable(void);
 int mtk_is_cg_enable(void);
-
 #endif /* __DRV_CLK_MTK_H */

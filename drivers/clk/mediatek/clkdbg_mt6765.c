@@ -1,18 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
+ * Author: Owen Chen <owen.chen@mediatek.com>
  */
 
 #include <linux/clk-provider.h>
 #include <linux/io.h>
+#include <linux/module.h>
 
 #include "clkdbg.h"
 #include "mt6765_clkmgr.h"
@@ -325,49 +319,6 @@ static const struct fmeter_clk fclks[] = {
 #define RG_FQMTR_RST    1
 
 #define RG_FRMTR_WINDOW     519
-
-#if 0 /*use other function*/
-static u32 fmeter_freq(enum FMETER_TYPE type, int k1, int clk)
-{
-	u32 cnt = 0;
-
-	/* reset & reset deassert */
-	clk_writel(FREQ_MTR_CTRL_REG, RG_FQMTR_MONCLK_RST_SET(RG_FQMTR_RST));
-	clk_writel(FREQ_MTR_CTRL_REG, RG_FQMTR_MONCLK_RST_SET(!RG_FQMTR_RST));
-
-	/* set window and target */
-	clk_writel(FREQ_MTR_CTRL_REG,
-		RG_FQMTR_MONCLK_WINDOW_SET(RG_FRMTR_WINDOW) |
-		RG_FQMTR_MONCLK_SEL_SET(clk) |
-		RG_FQMTR_FIXCLK_SEL_SET(RG_FQMTR_FIXCLK_26MHZ) |
-		RG_FQMTR_MONCLK_EN_SET(RG_FQMTR_EN));
-
-	udelay(30);
-
-	cnt = clk_readl(FREQ_MTR_CTRL_RDATA);
-	/* reset & reset deassert */
-	clk_writel(FREQ_MTR_CTRL_REG, RG_FQMTR_MONCLK_RST_SET(RG_FQMTR_RST));
-	clk_writel(FREQ_MTR_CTRL_REG, RG_FQMTR_MONCLK_RST_SET(!RG_FQMTR_RST));
-
-	return ((cnt * 26000) / (RG_FRMTR_WINDOW + 1));
-}
-
-
-static u32 measure_stable_fmeter_freq(enum FMETER_TYPE type, int k1, int clk)
-{
-	u32 last_freq = 0;
-	u32 freq = fmeter_freq(type, k1, clk);
-	u32 maxfreq = max(freq, last_freq);
-
-	while (maxfreq > 0 && ABS_DIFF(freq, last_freq) * 100 / maxfreq > 10) {
-		last_freq = freq;
-		freq = fmeter_freq(type, k1, clk);
-		maxfreq = max(freq, last_freq);
-	}
-
-	return freq;
-}
-#endif
 
 static const struct fmeter_clk *get_all_fmeter_clks(void)
 {
@@ -789,13 +740,7 @@ static int clkdbg_chip_ver(struct seq_file *s, void *v)
 		"CHIP_SW_VER_04",
 	};
 
-	#if 0 /*no support*/
-	enum chip_sw_ver ver = mt_get_chip_sw_ver();
-
-	seq_printf(s, "mt_get_chip_sw_ver(): %d (%s)\n", ver, sw_ver_name[ver]);
-	#else
 	seq_printf(s, "mt_get_chip_sw_ver(): %d (%s)\n", 0, sw_ver_name[0]);
-	#endif
 
 	return 0;
 }
@@ -848,4 +793,12 @@ static int __init clkdbg_mt6765_init(void)
 
 	return 0;
 }
-device_initcall(clkdbg_mt6765_init);
+
+static void __exit clkdbg_mt6765_exit(void)
+{
+}
+
+subsys_initcall(clkdbg_mt6765_init);
+module_exit(clkdbg_mt6765_exit);
+
+MODULE_LICENSE("GPL");

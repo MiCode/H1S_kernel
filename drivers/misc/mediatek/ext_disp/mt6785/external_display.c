@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/delay.h>
 #include <linux/sched.h>
@@ -1463,7 +1455,7 @@ int ext_disp_is_sleepd(void)
 
 	/* EXT_DISP_FUNC(); */
 	_ext_disp_path_lock();
-	temp = !pgc->state;
+	temp = (pgc->state == 0) ? 1 : 0;
 	_ext_disp_path_unlock();
 
 	return temp;

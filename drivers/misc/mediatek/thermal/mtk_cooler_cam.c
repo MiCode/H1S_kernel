@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifdef pr_fmt
@@ -295,7 +287,6 @@ static const struct file_operations _cl_apu_status_fops = {
 	.release = single_release,
 };
 #endif
-
 
 /* bind fan callbacks to fan device */
 static struct thermal_cooling_device_ops mtk_cl_cam_ops = {

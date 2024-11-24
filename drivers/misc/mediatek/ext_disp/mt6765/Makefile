@@ -14,6 +14,18 @@
 #
 # Makefile for external display driver.
 #
+CMDQ_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+ifeq ($(CONFIG_MTK_PLATFORM), "mt6761")
+	MTK_PLATFORM := mt6765
+else
+	MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+endif
+
+# remove this after k79 config CONFIG_MACH_MT6779 & CONFIG_MTK_PLATFORM in defconfig
+ifeq ($(CONFIG_MTK_DISP_PLATFORM), "mt6779")
+	CONFIG_MACH_MT6779 := y
+	MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_DISP_PLATFORM))
+endif
 
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/ \
              -I$(srctree)/drivers/misc/mediatek/ext_disp/  \
@@ -33,13 +45,16 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/ \
              -I$(srctree)/drivers/staging/android/ion/mtk \
              -I$(srctree)/drivers/misc/mediatek/lcm/inc
 
-ifeq ($(CONFIG_MACH_MT6761),y)
-    ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/mt6765/
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/$(CMDQ_PLATFORM)/
+
+ifeq ($(CONFIG_MTK_PLATFORM), "mt6761")
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/m4u/mt6761 \
+                    -I$(srctree)/drivers/misc/mediatek/m4u/2.0
 else
-    ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/$(MTK_PLATFORM)/
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/m4u/$(MTK_PLATFORM) \
+                    -I$(srctree)/drivers/misc/mediatek/m4u/2.0
 endif
 
-subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/m4u/$(MTK_PLATFORM)
 subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/mmp/
 
 ifeq ($(CONFIG_CUSTOM_KERNEL_HDMI), "MT8193")

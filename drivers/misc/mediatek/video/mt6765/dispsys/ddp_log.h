@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _H_DDP_LOG_
@@ -30,7 +22,7 @@
 	do {								\
 		dprec_logger_pr(DPREC_LOGGER_DEBUG, fmt, ##args);	\
 		if (g_mobilelog)					\
-			pr_info("[DDP/"LOG_TAG"]"fmt, ##args);		\
+			pr_debug("[DDP/"LOG_TAG"]"fmt, ##args);		\
 	} while (0)
 
 #define DISP_LOG_V(fmt, args...)					\
@@ -50,7 +42,7 @@
 #define DISP_LOG_W(fmt, args...)					\
 	do {								\
 		dprec_logger_pr(DPREC_LOGGER_DEBUG, fmt, ##args);	\
-		pr_info("[DDP/"LOG_TAG"]warn:"fmt, ##args);		\
+		pr_debug("[DDP/"LOG_TAG"]warn:"fmt, ##args);		\
 	} while (0)
 
 #define DISP_LOG_E(fmt, args...)					\
@@ -101,8 +93,11 @@
 #ifdef CONFIG_MTK_AEE_FEATURE
 #define DDPAEE(string, args...)						\
 	do {								\
-		char str[200] = { 0 };    \
-		snprintf(str, 199, "DDP:"string, ##args);		\
+		char str[200];						\
+		int n;							\
+		n = snprintf(str, 199, "DDP:"string, ##args);		\
+		if (n < 0 || n >= 199)					\
+			pr_info("DDP copy str error\n");		\
 		aee_kernel_warning_api(__FILE__, __LINE__,		\
 			DB_OPT_DEFAULT | DB_OPT_MMPROFILE_BUFFER, str, \
 			string, ##args);	\
@@ -111,9 +106,9 @@
 #else
 #define DDPAEE(string, args...)						\
 	do {								\
-		char str[200] = { 0 };			\
-		snprintf(str, 199, "DDP:"string, ##args);\
-		pr_info("[DDP Error]"string, ##args);	\
+		char str[200];						\
+		snprintf(str, 199, "DDP:"string, ##args);		\
+		pr_info("[DDP Error]"string, ##args);			\
 	} while (0)
 #endif
 

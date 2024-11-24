@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
-
 #ifndef MT_SD_H
 #define MT_SD_H
 
@@ -79,7 +70,7 @@
 #define MTK_MSDC_USE_CMD23
 #if !defined(CONFIG_PWR_LOSS_MTK_TEST) && defined(MTK_MSDC_USE_CMD23) \
 	|| defined(CONFIG_MTK_EMMC_HW_CQ)
-#define MTK_MSDC_USE_CACHE
+//#define MTK_MSDC_USE_CACHE
 #endif
 
 #ifdef MTK_MSDC_USE_CMD23
@@ -410,7 +401,7 @@ struct msdc_host {
 	int                     tune_smpl_times;
 	u32                     tune_latch_ck_cnt;
 	struct msdc_saved_para  saved_para;
-	struct wakeup_source    trans_lock;
+	struct wakeup_source    *trans_lock;
 	bool                    block_bad_card;
 	struct delayed_work     remove_card;    /* remove bad card */
 	u32                     data_timeout_ms;  /* timeout ms for worker */
@@ -419,7 +410,7 @@ struct msdc_host {
 	int                     sdio_error;     /* sdio error can't recovery */
 #endif
 	void    (*power_control)(struct msdc_host *host, u32 on);
-	void    (*power_switch)(struct msdc_host *host, u32 on);
+	int    (*power_switch)(struct msdc_host *host, u32 on);
 	u32                     power_io;
 	u32                     power_flash;
 
@@ -427,13 +418,7 @@ struct msdc_host {
 
 	struct clk              *clk_ctl;
 	struct clk              *aes_clk_ctl;
-	/* src hclk for clk source of MSDC register */
-	struct clk              *src_hclk_ctl;
 	struct clk              *hclk_ctl;
-	/* pclk for msdc register access */
-	struct clk              *pclk_ctl;
-	struct clk              *axi_clk_ctl; /* axi bus clk */
-	struct clk              *ahb2axi_brg_clk_ctl; /* ahb2axi bridge clk */
 	struct delayed_work	work_init; /* for init mmc_host */
 	struct delayed_work	work_sdio; /* for DVFS kickoff */
 	struct platform_device  *pdev;
@@ -452,7 +437,6 @@ struct msdc_host {
 	u64                     stop_dma_time;
 	/* flag to record if eMMC will enter hs400 mode */
 	bool                    hs400_mode;
-	atomic_t                dma_status;
 #ifdef CONFIG_MTK_EMMC_HW_CQ
 	struct cmdq_host *cq_host;
 #endif
@@ -726,8 +710,8 @@ void msdc_sdio_restore_after_resume(struct msdc_host *host);
 void msdc_restore_timing_setting(struct msdc_host *host);
 void msdc_save_timing_setting(struct msdc_host *host);
 void msdc_set_bad_card_and_remove(struct msdc_host *host);
-void msdc_ops_set_bad_card_and_remove(struct mmc_host *mmc);
 void msdc_remove_card(struct work_struct *work);
+void msdc_ops_set_bad_card_and_remove(struct mmc_host *mmc);
 
 /* Function provided by mmc/core/sd.c */
 /* FIX ME: maybe removed in kernel 4.4 */

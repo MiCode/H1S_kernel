@@ -17,10 +17,6 @@
 #include <linux/if_ether.h>
 #include <uapi/linux/netfilter_bridge/ebtables.h>
 
-/* return values for match() functions */
-#define EBT_MATCH 0
-#define EBT_NOMATCH 1
-
 struct ebt_match {
 	struct list_head list;
 	const char name[EBT_FUNCTION_MAXNAMELEN];
@@ -98,10 +94,6 @@ struct ebt_table {
 	struct ebt_replace_kernel *table;
 	unsigned int valid_hooks;
 	rwlock_t lock;
-	/* e.g. could be the table explicitly only allows certain
-	 * matches, targets, ... 0 == let it in */
-	int (*check)(const struct ebt_table_info *info,
-	   unsigned int valid_hooks);
 	/* the data used by the kernel */
 	struct ebt_table_info *private;
 	struct module *me;

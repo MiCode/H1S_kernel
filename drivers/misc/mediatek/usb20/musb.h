@@ -1,27 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
-
-/*
- * This is used to for host and peripheral modes of the driver for
- * Inventra (Multidrop) Highspeed Dual-Role Controllers:  (M)HDRC.
- *
- * Board initialization should put one of these into dev->platform_data,
- * probably on some platform_device named "musb-hdrc".  It encapsulates
- * key configuration differences between boards.
  */
 
 #ifndef __LINUX_USB_MUSB_H
 #define __LINUX_USB_MUSB_H
+
+#include <linux/extcon.h>
+#include <linux/usb/otg.h>
+#include <linux/usb/role.h>
 
 /* The USB role is defined by the connector used on the board, so long as
  * standards are being followed.  (Developer boards sometimes won't.)
@@ -33,25 +20,16 @@ enum musb_mode {
 	MUSB_OTG		/* Mini-AB connector */
 };
 
-/* add MUSB_ prefix to avoid
- * confilicts with musbfsh.h, gang
- */
-
 enum musb_fifo_style {
-	MUSB_FIFO_RXTX,
-	MUSB_FIFO_TX,
-	MUSB_FIFO_RX
-} __packed;
-
-/* add MUSB_ prefix to
- * avoid confilicts
- * with musbfsh.h, gang
- */
+	FIFO_RXTX,
+	FIFO_TX,
+	FIFO_RX
+} __attribute__ ((packed));
 
 enum musb_buf_mode {
-	MUSB_BUF_SINGLE,
-	MUSB_BUF_DOUBLE
-} __packed;
+	BUF_SINGLE,
+	BUF_DOUBLE
+} __attribute__ ((packed));
 
 enum musb_ep_mode {
 	EP_CONT,
@@ -119,7 +97,7 @@ struct musb_hdrc_config {
 
 struct musb_hdrc_platform_data {
 	/* MUSB_HOST, MUSB_PERIPHERAL, or MUSB_OTG */
-	u8 mode;
+	u8 dr_mode;
 
 	/* for clk_get() */
 	const char *clock;
@@ -150,5 +128,65 @@ struct musb_hdrc_platform_data {
 
 	/* Platform specific struct musb_ops pointer */
 	const void *platform_ops;
+};
+
+/**
+ * MUSB_DR_FORCE_NONE: automatically switch host and periperal mode
+ *		by IDPIN signal.
+ * MUSB_DR_FORCE_HOST: force to enter host mode and override OTG
+ *		IDPIN signal.
+ * MUSB_DR_FORCE_DEVICE: force to enter peripheral mode.
+ */
+enum mt_usb_dr_force_mode {
+	MUSB_DR_FORCE_NONE = 0,
+	MUSB_DR_FORCE_HOST,
+	MUSB_DR_FORCE_DEVICE,
+};
+
+/**
+ * MUSB_DR_OPERATION_NONE: force to tun off usb
+ * MUSB_DR_OPERATION_NORMAL: automatically switch host and
+ *   periperal mode by usb role switch.
+ * MUSB_DR_OPERATION_HOST: force to enter host mode.
+ * MUSB_DR_OPERATION_DEVICE: force to enter peripheral mode.
+ */
+enum mt_usb_dr_operation_mode {
+	MUSB_DR_OPERATION_NONE = 0,
+	MUSB_DR_OPERATION_NORMAL,
+	MUSB_DR_OPERATION_HOST,
+	MUSB_DR_OPERATION_DEVICE,
+};
+
+/**
+ * @vbus: vbus 5V used by host mode
+ * @edev: external connector used to detect vbus and iddig changes
+ * @vbus_nb: notifier for vbus detection
+ * @vbus_work : work of vbus detection notifier, used to avoid sleep in
+ *		notifier callback which is atomic context
+ * @vbus_event : event of vbus detecion notifier
+ * @id_nb : notifier for iddig(idpin) detection
+ * @id_work : work of iddig detection notifier
+ * @id_event : event of iddig detecion notifier
+ * @role_sw : use USB Role Switch to support dual-role switch, can't use
+ *		extcon at the same time, and extcon is deprecated.
+ * @role_sw_used : true when the USB Role Switch is used.
+ * @manual_drd_enabled: it's true when supports dual-role device by debugfs
+ *		to switch host/device modes depending on user input.
+ */
+struct otg_switch_mtk {
+	struct regulator *vbus;
+	struct extcon_dev *edev;
+	struct notifier_block vbus_nb;
+	struct work_struct vbus_work;
+	unsigned long vbus_event;
+	struct notifier_block id_nb;
+	struct work_struct id_work;
+	unsigned long id_event;
+	struct usb_role_switch *role_sw;
+	bool role_sw_used;
+	bool manual_drd_enabled;
+	u32 sw_state;
+	enum usb_role latest_role;
+	enum mt_usb_dr_operation_mode op_mode;
 };
 #endif				/* __LINUX_USB_MUSB_H */

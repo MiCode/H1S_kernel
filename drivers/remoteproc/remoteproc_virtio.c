@@ -96,7 +96,7 @@ static struct virtqueue *rp_find_vq(struct virtio_device *vdev,
 	size = vring_size(len, rvring->align);
 	memset(addr, 0, size);
 
-	dev_dbg(dev, "vring%d: va %p qsz %d notifyid %d\n",
+	dev_dbg(dev, "vring%d: va %pK qsz %d notifyid %d\n",
 		id, addr, len, rvring->notifyid);
 
 	/*
@@ -327,7 +327,7 @@ int rproc_add_virtio_dev(struct rproc_vdev *rvdev, int id)
 
 	ret = register_virtio_device(vdev);
 	if (ret) {
-		put_device(&rproc->dev);
+		put_device(&vdev->dev);
 		dev_err(dev, "failed to register vdev: %d\n", ret);
 		goto out;
 	}

@@ -69,9 +69,9 @@ static struct dm_block_validator index_validator = {
  */
 #define BITMAP_CSUM_XOR 240779
 
-static void bitmap_prepare_for_write(struct dm_block_validator *v,
-				     struct dm_block *b,
-				     size_t block_size)
+static void dm_bitmap_prepare_for_write(struct dm_block_validator *v,
+					struct dm_block *b,
+					size_t block_size)
 {
 	struct disk_bitmap_header *disk_header = dm_block_data(b);
 
@@ -81,9 +81,9 @@ static void bitmap_prepare_for_write(struct dm_block_validator *v,
 						       BITMAP_CSUM_XOR));
 }
 
-static int bitmap_check(struct dm_block_validator *v,
-			struct dm_block *b,
-			size_t block_size)
+static int dm_bitmap_check(struct dm_block_validator *v,
+			   struct dm_block *b,
+			   size_t block_size)
 {
 	struct disk_bitmap_header *disk_header = dm_block_data(b);
 	__le32 csum_disk;
@@ -108,8 +108,8 @@ static int bitmap_check(struct dm_block_validator *v,
 
 static struct dm_block_validator dm_sm_bitmap_validator = {
 	.name = "sm_bitmap",
-	.prepare_for_write = bitmap_prepare_for_write,
-	.check = bitmap_check
+	.prepare_for_write = dm_bitmap_prepare_for_write,
+	.check = dm_bitmap_check,
 };
 
 /*----------------------------------------------------------------*/
@@ -124,7 +124,7 @@ static void *dm_bitmap_data(struct dm_block *b)
 
 #define WORD_MASK_HIGH 0xAAAAAAAAAAAAAAAAULL
 
-static unsigned bitmap_word_used(void *addr, unsigned b)
+static unsigned dm_bitmap_word_used(void *addr, unsigned b)
 {
 	__le64 *words_le = addr;
 	__le64 *w_le = words_le + (b >> ENTRIES_SHIFT);
@@ -170,7 +170,7 @@ static int sm_find_free(void *addr, unsigned begin, unsigned end,
 {
 	while (begin < end) {
 		if (!(begin & (ENTRIES_PER_WORD - 1)) &&
-		    bitmap_word_used(addr, begin)) {
+		    dm_bitmap_word_used(addr, begin)) {
 			begin += ENTRIES_PER_WORD;
 			continue;
 		}
@@ -279,6 +279,11 @@ int sm_ll_lookup_bitmap(struct ll_disk *ll, dm_block_t b, uint32_t *result)
 	struct disk_index_entry ie_disk;
 	struct dm_block *blk;
 
+	if (b >= ll->nr_blocks) {
+		DMERR_LIMIT("metadata block out of bounds");
+		return -EINVAL;
+	}
+
 	b = do_div(index, ll->entries_per_block);
 	r = ll->load_ie(ll, index, &ie_disk);
 	if (r < 0)
@@ -337,6 +342,8 @@ int sm_ll_find_free_block(struct ll_disk *ll, dm_block_t begin,
 	 */
 	begin = do_div(index_begin, ll->entries_per_block);
 	end = do_div(end, ll->entries_per_block);
+	if (end == 0)
+		end = ll->entries_per_block;
 
 	for (i = index_begin; i < index_end; i++, begin = 0) {
 		struct dm_block *blk;

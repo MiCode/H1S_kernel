@@ -1,15 +1,7 @@
-/************************************************************************
- * Copyright (C) 2012-2019, Focaltech Systems (R)£¬All Rights Reserved.
- *
- * File Name: focaltech_test.h
- *
- * Author: Focaltech Driver Team
- *
- * Created: 2016-08-01
- *
- * Abstract: test entry for all IC
- *
- ************************************************************************/
+/* SPDX-License-Identifier: GPL-2.0 */	
+/*	
+ * Copyright (c) 2019 MediaTek Inc.	
+*/
 #ifndef _TEST_LIB_H
 #define _TEST_LIB_H
 

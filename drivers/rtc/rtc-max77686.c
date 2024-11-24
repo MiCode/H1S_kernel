@@ -1,16 +1,10 @@
-/*
- * RTC driver for Maxim MAX77686 and MAX77802
- *
- * Copyright (C) 2012 Samsung Electronics Co.Ltd
- *
- *  based on rtc-max8997.c
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
- *
- */
+// SPDX-License-Identifier: GPL-2.0+
+//
+// RTC driver for Maxim MAX77686 and MAX77802
+//
+// Copyright (C) 2012 Samsung Electronics Co.Ltd
+//
+//  based on rtc-max8997.c
 
 #include <linux/i2c.h>
 #include <linux/slab.h>
@@ -364,8 +358,6 @@ static int max77686_rtc_read_time(struct device *dev, struct rtc_time *tm)
 
 	max77686_rtc_data_to_tm(data, tm, info);
 
-	ret = rtc_valid_tm(tm);
-
 out:
 	mutex_unlock(&info->lock);
 	return ret;
@@ -718,8 +710,8 @@ static int max77686_init_rtc_regmap(struct max77686_rtc_info *info)
 
 add_rtc_irq:
 	ret = regmap_add_irq_chip(info->rtc_regmap, info->rtc_irq,
-				  IRQF_TRIGGER_FALLING | IRQF_ONESHOT |
-				  IRQF_SHARED, 0, info->drv_data->rtc_irq_chip,
+				  IRQF_ONESHOT | IRQF_SHARED,
+				  0, info->drv_data->rtc_irq_chip,
 				  &info->rtc_irq_data);
 	if (ret < 0) {
 		dev_err(info->dev, "Failed to add RTC irq chip: %d\n", ret);

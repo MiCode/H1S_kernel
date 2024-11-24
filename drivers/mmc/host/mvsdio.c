@@ -143,6 +143,7 @@ static void mvsd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	struct mmc_command *cmd = mrq->cmd;
 	u32 cmdreg = 0, xfer = 0, intr = 0;
 	unsigned long flags;
+	unsigned int timeout;
 
 	BUG_ON(host->mrq != NULL);
 	host->mrq = mrq;
@@ -234,7 +235,8 @@ static void mvsd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	mvsd_write(MVSD_NOR_INTR_EN, host->intr_en);
 	mvsd_write(MVSD_ERR_INTR_EN, 0xffff);
 
-	mod_timer(&host->timer, jiffies + 5 * HZ);
+	timeout = cmd->busy_timeout ? cmd->busy_timeout : 5000;
+	mod_timer(&host->timer, jiffies + msecs_to_jiffies(timeout));
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
@@ -508,9 +510,9 @@ static irqreturn_t mvsd_irq(int irq, void *dev)
 	return IRQ_NONE;
 }
 
-static void mvsd_timeout_timer(unsigned long data)
+static void mvsd_timeout_timer(struct timer_list *t)
 {
-	struct mvsd_host *host = (struct mvsd_host *)data;
+	struct mvsd_host *host = from_timer(host, t, timer);
 	void __iomem *iobase = host->base;
 	struct mmc_request *mrq;
 	unsigned long flags;
@@ -697,17 +699,15 @@ static int mvsd_probe(struct platform_device *pdev)
 	struct mmc_host *mmc = NULL;
 	struct mvsd_host *host = NULL;
 	const struct mbus_dram_target_info *dram;
-	struct resource *r;
 	int ret, irq;
 
 	if (!np) {
 		dev_err(&pdev->dev, "no DT node\n");
 		return -ENODEV;
 	}
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	irq = platform_get_irq(pdev, 0);
-	if (!r || irq < 0)
-		return -ENXIO;
+	if (irq < 0)
+		return irq;
 
 	mmc = mmc_alloc_host(sizeof(struct mvsd_host), &pdev->dev);
 	if (!mmc) {
@@ -755,9 +755,11 @@ static int mvsd_probe(struct platform_device *pdev)
 	if (maxfreq)
 		mmc->f_max = maxfreq;
 
+	mmc->caps |= MMC_CAP_ERASE;
+
 	spin_lock_init(&host->lock);
 
-	host->base = devm_ioremap_resource(&pdev->dev, r);
+	host->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(host->base)) {
 		ret = PTR_ERR(host->base);
 		goto out;
@@ -776,7 +778,7 @@ static int mvsd_probe(struct platform_device *pdev)
 		goto out;
 	}
 
-	setup_timer(&host->timer, mvsd_timeout_timer, (unsigned long)host);
+	timer_setup(&host->timer, mvsd_timeout_timer, 0);
 	platform_set_drvdata(pdev, mmc);
 	ret = mmc_add_host(mmc);
 	if (ret)

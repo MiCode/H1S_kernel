@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -151,7 +143,7 @@ static void mtktspmic_read_efuse(void)
 	mtktspmic_info("[pmic_debug]  end\n");
 }
 
-void mtktspmic_cali_prepare(void)
+void mtktspmic_cali_prepare(struct regmap *pmic_map)
 {
 	mtktspmic_read_efuse();
 

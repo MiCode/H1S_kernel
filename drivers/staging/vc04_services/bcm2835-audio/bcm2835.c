@@ -1,16 +1,5 @@
-/*****************************************************************************
- * Copyright 2011 Broadcom Corporation.  All rights reserved.
- *
- * Unless you and Broadcom execute a separate written software license
- * agreement governing use of this software, this software is licensed to you
- * under the terms of the GNU General Public License version 2, available at
- * http://www.broadcom.com/licenses/GPLv2.php (the "GPL").
- *
- * Notwithstanding the above, under no circumstances may you combine this
- * software in any way with any other Broadcom software provided under a
- * license other than the GPL, without Broadcom's express prior written
- * consent.
- *****************************************************************************/
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright 2011 Broadcom Corporation.  All rights reserved. */
 
 #include <linux/platform_device.h>
 
@@ -65,6 +54,36 @@ static int snd_devm_add_child(struct device *dev, struct device *child)
 	return 0;
 }
 
+static void bcm2835_devm_free_vchi_ctx(struct device *dev, void *res)
+{
+	struct bcm2835_vchi_ctx *vchi_ctx = res;
+
+	bcm2835_free_vchi_ctx(vchi_ctx);
+}
+
+static int bcm2835_devm_add_vchi_ctx(struct device *dev)
+{
+	struct bcm2835_vchi_ctx *vchi_ctx;
+	int ret;
+
+	vchi_ctx = devres_alloc(bcm2835_devm_free_vchi_ctx, sizeof(*vchi_ctx),
+				GFP_KERNEL);
+	if (!vchi_ctx)
+		return -ENOMEM;
+
+	memset(vchi_ctx, 0, sizeof(*vchi_ctx));
+
+	ret = bcm2835_new_vchi_ctx(vchi_ctx);
+	if (ret) {
+		devres_free(vchi_ctx);
+		return ret;
+	}
+
+	devres_add(dev, vchi_ctx);
+
+	return 0;
+}
+
 static void snd_bcm2835_release(struct device *dev)
 {
 	struct bcm2835_chip *chip = dev_get_drvdata(dev);
@@ -106,8 +125,6 @@ static int snd_bcm2835_dev_free(struct snd_device *device)
 	struct bcm2835_chip *chip = device->device_data;
 	struct snd_card *card = chip->card;
 
-	/* TODO: free pcm, ctl */
-
 	snd_device_free(card, chip);
 
 	return 0;
@@ -132,6 +149,13 @@ static int snd_bcm2835_create(struct snd_card *card,
 		return -ENOMEM;
 
 	chip->card = card;
+
+	chip->vchi_ctx = devres_find(card->dev->parent,
+				     bcm2835_devm_free_vchi_ctx, NULL, NULL);
+	if (!chip->vchi_ctx) {
+		kfree(chip);
+		return -ENODEV;
+	}
 
 	err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, chip, &ops);
 	if (err) {
@@ -403,6 +427,10 @@ static int snd_bcm2835_alsa_probe_dt(struct platform_device *pdev)
 			 numchans);
 	}
 
+	err = bcm2835_devm_add_vchi_ctx(dev);
+	if (err)
+		return err;
+
 	err = snd_add_child_devices(dev, numchans);
 	if (err)
 		return err;
@@ -439,7 +467,6 @@ static struct platform_driver bcm2835_alsa0_driver = {
 #endif
 	.driver = {
 		.name = "bcm2835_audio",
-		.owner = THIS_MODULE,
 		.of_match_table = snd_bcm2835_of_match_table,
 	},
 };

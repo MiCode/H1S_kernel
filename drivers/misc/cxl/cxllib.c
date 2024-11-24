@@ -99,13 +99,9 @@ int cxllib_get_xsl_config(struct pci_dev *dev, struct cxllib_xsl_config *cfg)
 	if (rc)
 		return rc;
 
-	rc = cxl_get_xsl9_dsnctl(capp_unit_id, &cfg->dsnctl);
+	rc = cxl_get_xsl9_dsnctl(dev, capp_unit_id, &cfg->dsnctl);
 	if (rc)
 		return rc;
-	if (cpu_has_feature(CPU_FTR_POWER9_DD1)) {
-		/* workaround for DD1 - nbwind = capiind */
-		cfg->dsnctl |= ((u64)0x02 << (63-47));
-	}
 
 	cfg->version  = CXL_XSL_CONFIG_CURRENT_VERSION;
 	cfg->log_bar_size = CXL_CAPI_WINDOW_LOG_SIZE;
@@ -199,10 +195,11 @@ int cxllib_get_PE_attributes(struct task_struct *task,
 		 */
 		attr->pid = mm->context.id;
 		mmput(mm);
+		attr->tid = task->thread.tidr;
 	} else {
 		attr->pid = 0;
+		attr->tid = 0;
 	}
-	attr->tid = 0;
 	return 0;
 }
 EXPORT_SYMBOL_GPL(cxllib_get_PE_attributes);

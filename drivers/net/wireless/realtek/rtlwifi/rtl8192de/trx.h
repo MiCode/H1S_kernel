@@ -735,7 +735,8 @@ bool rtl92de_rx_query_desc(struct ieee80211_hw *hw,
 			   u8 *pdesc, struct sk_buff *skb);
 void rtl92de_set_desc(struct ieee80211_hw *hw, u8 *pdesc, bool istx,
 		      u8 desc_name, u8 *val);
-u32 rtl92de_get_desc(u8 *pdesc, bool istx, u8 desc_name);
+u64 rtl92de_get_desc(struct ieee80211_hw *hw,
+		     u8 *p_desc, bool istx, u8 desc_name);
 bool rtl92de_is_tx_desc_closed(struct ieee80211_hw *hw,
 			       u8 hw_queue, u16 index);
 void rtl92de_tx_polling(struct ieee80211_hw *hw, u8 hw_queue);

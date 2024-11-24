@@ -1,30 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * MUSB OTG driver - support for Mentor's DMA controller
- *
- * Copyright 2005 Mentor Graphics Corporation
- * Copyright (C) 2005-2007 by Texas Instruments
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN
- * NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
- * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
- * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * Copyright (C) 2018 MediaTek Inc.
  */
+
 #include <linux/device.h>
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
@@ -43,7 +21,11 @@
 #define USB_DMACNT_COUNT_MASK (0xffffff)
 #define USB_DMACNT_HADDR_OFFSET (24)
 #define USB_DMACNT_HADDR_MASK (0xf)
-static u32 extract_cnt(u32 cnt) { return (cnt & USB_DMACNT_COUNT_MASK); }
+static u32 dma_extract_count(u32 count)
+{
+	return (count & USB_DMACNT_COUNT_MASK);
+}
+
 static dma_addr_t dma_append_high_addr(
 		dma_addr_t addr,
 		void __iomem *mbase,
@@ -243,7 +225,7 @@ static int dma_channel_program(struct dma_channel *channel,
 		if (ret)
 			return ret;
 	}
-#if 0
+#ifdef NEVER
 	/*
 	 * The DMA engine in RTL1.8 and above cannot handle
 	 * DMA addresses that are not aligned to a 4 byte boundary.
@@ -423,7 +405,7 @@ irqreturn_t dma_controller_irq(int irq, void *private_data)
 			if (channel->status == MUSB_DMA_STATUS_BUSY) {
 				count = musb_read_hsdma_count(mbase, bchannel);
 #ifdef CONFIG_MTK_MUSB_DRV_36BIT
-				count = extract_cnt(count);
+				count = dma_extract_count(count);
 #endif
 
 				if (count == 0)
@@ -462,7 +444,7 @@ irqreturn_t dma_controller_irq(int irq, void *private_data)
 #endif
 				channel->actual_len = addr
 					- musb_channel->start_addr;
-#if 0
+#ifdef NEVER
 				channel->actual_len =
 				musb_readl(mbase, USB_DMA_REALCOUNT(bchannel));
 #endif

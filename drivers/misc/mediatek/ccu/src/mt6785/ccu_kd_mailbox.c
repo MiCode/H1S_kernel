@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/io.h>
 #include "ccu_cmn.h"
@@ -33,11 +25,6 @@ enum mb_result mailbox_init(struct ccu_mailbox_t *apmcu_mb_addr,
 
 		LOG_DBG("ccu_mailbox addr: %p\n", _ccu_mailbox);
 		LOG_DBG("apmcu_mailbox addr: %p\n", _apmcu_mailbox);
-		LOG_DBG("memclr _ccu_mailbox: %d\n",
-			ccu_memclr(_ccu_mailbox, sizeof(struct ccu_mailbox_t)));
-		LOG_DBG("memclr _apmcu_mailbox: %d\n",
-		ccu_memclr(_apmcu_mailbox, sizeof(struct ccu_mailbox_t)));
-
 		/* memory barrier to check mailbox value wrote into DRAM*/
 		/* instead of keep in CPU write buffer*/
 		mb();

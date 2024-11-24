@@ -27,7 +27,12 @@
 #include <linux/via-core.h>
 #include <linux/via-gpio.h>
 #include <linux/via_i2c.h>
+
+#ifdef CONFIG_X86
 #include <asm/olpc.h>
+#else
+#define machine_is_olpc(x) 0
+#endif
 
 #include "via-camera.h"
 
@@ -178,7 +183,7 @@ static int via_sensor_power_setup(struct via_camera *cam)
 
 	cam->power_gpio = viafb_gpio_lookup("VGPIO3");
 	cam->reset_gpio = viafb_gpio_lookup("VGPIO2");
-	if (cam->power_gpio < 0 || cam->reset_gpio < 0) {
+	if (!gpio_is_valid(cam->power_gpio) || !gpio_is_valid(cam->reset_gpio)) {
 		dev_err(&cam->platdev->dev, "Unable to find GPIO lines\n");
 		return -EINVAL;
 	}
@@ -764,7 +769,7 @@ out_unlock:
 }
 
 
-static unsigned int viacam_poll(struct file *filp, struct poll_table_struct *pt)
+static __poll_t viacam_poll(struct file *filp, struct poll_table_struct *pt)
 {
 	struct via_camera *cam = video_drvdata(filp);
 
@@ -1112,7 +1117,7 @@ static int viacam_g_parm(struct file *filp, void *priv,
 	int ret;
 
 	mutex_lock(&cam->lock);
-	ret = sensor_call(cam, video, g_parm, parm);
+	ret = v4l2_g_parm_cap(video_devdata(filp), cam->sensor, parm);
 	mutex_unlock(&cam->lock);
 	parm->parm.capture.readbuffers = cam->n_cap_bufs;
 	return ret;
@@ -1125,7 +1130,7 @@ static int viacam_s_parm(struct file *filp, void *priv,
 	int ret;
 
 	mutex_lock(&cam->lock);
-	ret = sensor_call(cam, video, s_parm, parm);
+	ret = v4l2_s_parm_cap(video_devdata(filp), cam->sensor, parm);
 	mutex_unlock(&cam->lock);
 	parm->parm.capture.readbuffers = cam->n_cap_bufs;
 	return ret;

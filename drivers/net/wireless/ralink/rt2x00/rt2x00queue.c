@@ -717,6 +717,14 @@ int rt2x00queue_write_tx_frame(struct data_queue *queue, struct sk_buff *skb,
 	rt2x00queue_kick_tx_queue(queue, &txdesc);
 
 out:
+	/*
+	 * Pausing queue has to be serialized with rt2x00lib_txdone(), so we
+	 * do this under queue->tx_lock. Bottom halve was already disabled
+	 * before ieee80211_xmit() call.
+	 */
+	if (rt2x00queue_threshold(queue))
+		rt2x00queue_pause_queue(queue);
+
 	spin_unlock(&queue->tx_lock);
 	return ret;
 }
@@ -994,6 +1002,8 @@ void rt2x00queue_flush_queue(struct data_queue *queue, bool drop)
 		(queue->qid == QID_AC_BE) ||
 		(queue->qid == QID_AC_BK);
 
+	if (rt2x00queue_empty(queue))
+		return;
 
 	/*
 	 * If we are not supposed to drop any pending
@@ -1246,10 +1256,8 @@ int rt2x00queue_allocate(struct rt2x00_dev *rt2x00dev)
 	rt2x00dev->data_queues = 2 + rt2x00dev->ops->tx_queues + req_atim;
 
 	queue = kcalloc(rt2x00dev->data_queues, sizeof(*queue), GFP_KERNEL);
-	if (!queue) {
-		rt2x00_err(rt2x00dev, "Queue allocation failed\n");
+	if (!queue)
 		return -ENOMEM;
-	}
 
 	/*
 	 * Initialize pointers

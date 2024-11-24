@@ -308,7 +308,7 @@ static int vop_virtio_add_device(struct vop_vdev *vdev,
 
 		num = le16_to_cpu(vqconfig[i].num);
 		mutex_init(&vvr->vr_mutex);
-		vr_size = PAGE_ALIGN(vring_size(num, MIC_VIRTIO_RING_ALIGN) +
+		vr_size = PAGE_ALIGN(round_up(vring_size(num, MIC_VIRTIO_RING_ALIGN), 4) +
 			sizeof(struct _mic_vring_info));
 		vr->va = (void *)
 			__get_free_pages(GFP_KERNEL | __GFP_ZERO,
@@ -320,7 +320,7 @@ static int vop_virtio_add_device(struct vop_vdev *vdev,
 			goto err;
 		}
 		vr->len = vr_size;
-		vr->info = vr->va + vring_size(num, MIC_VIRTIO_RING_ALIGN);
+		vr->info = vr->va + round_up(vring_size(num, MIC_VIRTIO_RING_ALIGN), 4);
 		vr->info->magic = cpu_to_le32(MIC_MAGIC + vdev->virtio_id + i);
 		vr_addr = dma_map_single(&vpdev->dev, vr->va, vr_size,
 					 DMA_BIDIRECTIONAL);
@@ -611,6 +611,7 @@ static int vop_virtio_copy_from_user(struct vop_vdev *vdev, void __user *ubuf,
 	size_t partlen;
 	bool dma = VOP_USE_DMA;
 	int err = 0;
+	size_t offset = 0;
 
 	if (daddr & (dma_alignment - 1)) {
 		vdev->tx_dst_unaligned += len;
@@ -659,13 +660,20 @@ memcpy:
 	 * We are copying to IO below and should ideally use something
 	 * like copy_from_user_toio(..) if it existed.
 	 */
-	if (copy_from_user((void __force *)dbuf, ubuf, len)) {
-		err = -EFAULT;
-		dev_err(vop_dev(vdev), "%s %d err %d\n",
-			__func__, __LINE__, err);
-		goto err;
+	while (len) {
+		partlen = min_t(size_t, len, VOP_INT_DMA_BUF_SIZE);
+
+		if (copy_from_user(vvr->buf, ubuf + offset, partlen)) {
+			err = -EFAULT;
+			dev_err(vop_dev(vdev), "%s %d err %d\n",
+				__func__, __LINE__, err);
+			goto err;
+		}
+		memcpy_toio(dbuf + offset, vvr->buf, partlen);
+		offset += partlen;
+		vdev->out_bytes += partlen;
+		len -= partlen;
 	}
-	vdev->out_bytes += len;
 	err = 0;
 err:
 	vpdev->hw_ops->iounmap(vpdev, dbuf);
@@ -937,13 +945,10 @@ static long vop_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		    dd.num_vq > MIC_MAX_VRINGS)
 			return -EINVAL;
 
-		dd_config = kzalloc(mic_desc_size(&dd), GFP_KERNEL);
-		if (!dd_config)
-			return -ENOMEM;
-		if (copy_from_user(dd_config, argp, mic_desc_size(&dd))) {
-			ret = -EFAULT;
-			goto free_ret;
-		}
+		dd_config = memdup_user(argp, mic_desc_size(&dd));
+		if (IS_ERR(dd_config))
+			return PTR_ERR(dd_config);
+
 		/* Ensure desc has not changed between the two reads */
 		if (memcmp(&dd, dd_config, sizeof(dd))) {
 			ret = -EINVAL;
@@ -995,17 +1000,12 @@ _unlock_ret:
 		ret = vop_vdev_inited(vdev);
 		if (ret)
 			goto __unlock_ret;
-		buf = kzalloc(vdev->dd->config_len, GFP_KERNEL);
-		if (!buf) {
-			ret = -ENOMEM;
+		buf = memdup_user(argp, vdev->dd->config_len);
+		if (IS_ERR(buf)) {
+			ret = PTR_ERR(buf);
 			goto __unlock_ret;
 		}
-		if (copy_from_user(buf, argp, vdev->dd->config_len)) {
-			ret = -EFAULT;
-			goto done;
-		}
 		ret = vop_virtio_config_change(vdev, buf);
-done:
 		kfree(buf);
 __unlock_ret:
 		mutex_unlock(&vdev->vdev_mutex);
@@ -1018,27 +1018,27 @@ __unlock_ret:
 }
 
 /*
- * We return POLLIN | POLLOUT from poll when new buffers are enqueued, and
+ * We return EPOLLIN | EPOLLOUT from poll when new buffers are enqueued, and
  * not when previously enqueued buffers may be available. This means that
  * in the card->host (TX) path, when userspace is unblocked by poll it
  * must drain all available descriptors or it can stall.
  */
-static unsigned int vop_poll(struct file *f, poll_table *wait)
+static __poll_t vop_poll(struct file *f, poll_table *wait)
 {
 	struct vop_vdev *vdev = f->private_data;
-	int mask = 0;
+	__poll_t mask = 0;
 
 	mutex_lock(&vdev->vdev_mutex);
 	if (vop_vdev_inited(vdev)) {
-		mask = POLLERR;
+		mask = EPOLLERR;
 		goto done;
 	}
 	poll_wait(f, &vdev->waitq, wait);
 	if (vop_vdev_inited(vdev)) {
-		mask = POLLERR;
+		mask = EPOLLERR;
 	} else if (vdev->poll_wake) {
 		vdev->poll_wake = 0;
-		mask = POLLIN | POLLOUT;
+		mask = EPOLLIN | EPOLLOUT;
 	}
 done:
 	mutex_unlock(&vdev->vdev_mutex);

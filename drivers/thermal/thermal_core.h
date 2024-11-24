@@ -1,24 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  *  thermal_core.h
  *
  *  Copyright (C) 2012  Intel Corp
  *  Author: Durgadoss R <durgadoss.r@intel.com>
- *
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful, but
- *  WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
- *
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
 
 #ifndef __THERMAL_CORE_H__
@@ -73,16 +58,23 @@ int thermal_build_list_of_policies(char *buf);
 int thermal_zone_create_device_groups(struct thermal_zone_device *, int);
 void thermal_zone_destroy_device_groups(struct thermal_zone_device *);
 void thermal_cooling_device_setup_sysfs(struct thermal_cooling_device *);
+void thermal_cooling_device_destroy_sysfs(struct thermal_cooling_device *cdev);
 /* used only at binding time */
-ssize_t
-thermal_cooling_device_trip_point_show(struct device *,
-				       struct device_attribute *, char *);
-ssize_t thermal_cooling_device_weight_show(struct device *,
-					   struct device_attribute *, char *);
+ssize_t trip_point_show(struct device *, struct device_attribute *, char *);
+ssize_t trip_point_store(struct device *, struct device_attribute *,
+			 const char *, size_t);
+ssize_t weight_show(struct device *, struct device_attribute *, char *);
+ssize_t weight_store(struct device *, struct device_attribute *, const char *,
+		     size_t);
 
-ssize_t thermal_cooling_device_weight_store(struct device *,
-					    struct device_attribute *,
-					    const char *, size_t);
+#ifdef CONFIG_THERMAL_STATISTICS
+void thermal_cooling_device_stats_update(struct thermal_cooling_device *cdev,
+					 unsigned long new_state);
+#else
+static inline void
+thermal_cooling_device_stats_update(struct thermal_cooling_device *cdev,
+				    unsigned long new_state) {}
+#endif /* CONFIG_THERMAL_STATISTICS */
 
 #ifdef CONFIG_THERMAL_GOV_STEP_WISE
 int thermal_gov_step_wise_register(void);
@@ -124,6 +116,14 @@ static inline int thermal_gov_power_allocator_register(void) { return 0; }
 static inline void thermal_gov_power_allocator_unregister(void) {}
 #endif /* CONFIG_THERMAL_GOV_POWER_ALLOCATOR */
 
+#ifdef CONFIG_THERMAL_GOV_BACKWARD_COMPATIBLE
+int thermal_gov_backward_compatible_register(void);
+void thermal_gov_backward_compatible_unregister(void);
+#else
+static inline int thermal_gov_backward_compatible_register(void) { return 0; }
+static inline void thermal_gov_backward_compatible_unregister(void) {}
+#endif /* CONFIG_THERMAL_GOV_BACKWARD_COMPATIBLE */
+
 /* device tree support */
 #ifdef CONFIG_THERMAL_OF
 int of_parse_thermal_zones(void);
@@ -132,6 +132,9 @@ int of_thermal_get_ntrips(struct thermal_zone_device *);
 bool of_thermal_is_trip_valid(struct thermal_zone_device *, int);
 const struct thermal_trip *
 of_thermal_get_trip_points(struct thermal_zone_device *);
+void of_thermal_handle_trip(struct thermal_zone_device *tz);
+void of_thermal_handle_trip_temp(struct thermal_zone_device *tz,
+					int trip_temp);
 #else
 static inline int of_parse_thermal_zones(void) { return 0; }
 static inline void of_thermal_destroy_zones(void) { }
@@ -149,6 +152,13 @@ of_thermal_get_trip_points(struct thermal_zone_device *tz)
 {
 	return NULL;
 }
+static inline
+void of_thermal_handle_trip(struct thermal_zone_device *tz)
+{ }
+static inline
+void of_thermal_handle_trip_temp(struct thermal_zone_device *tz,
+					int trip_temp)
+{ }
 #endif
 
 #endif /* __THERMAL_CORE_H__ */

@@ -37,19 +37,23 @@ int __ilog2_u64(u64 n)
 }
 #endif
 
-/*
- *  Determine whether some value is a power of two, where zero is
+/**
+ * is_power_of_2() - check if a value is a power of two
+ * @n: the value to check
+ *
+ * Determine whether some value is a power of two, where zero is
  * *not* considered a power of two.
+ * Return: true if @n is a power of 2, otherwise false.
  */
-
 static inline __attribute__((const))
 bool is_power_of_2(unsigned long n)
 {
 	return (n != 0 && ((n & (n - 1)) == 0));
 }
 
-/*
- * round up to nearest power of two
+/**
+ * __roundup_pow_of_two() - round up to nearest power of two
+ * @n: value to round up
  */
 static inline __attribute__((const))
 unsigned long __roundup_pow_of_two(unsigned long n)
@@ -57,8 +61,9 @@ unsigned long __roundup_pow_of_two(unsigned long n)
 	return 1UL << fls_long(n - 1);
 }
 
-/*
- * round down to nearest power of two
+/**
+ * __rounddown_pow_of_two() - round down to nearest power of two
+ * @n: value to round down
  */
 static inline __attribute__((const))
 unsigned long __rounddown_pow_of_two(unsigned long n)
@@ -163,7 +168,7 @@ unsigned long __rounddown_pow_of_two(unsigned long n)
 
 /**
  * roundup_pow_of_two - round the given value up to nearest power of two
- * @n - parameter
+ * @n: parameter
  *
  * round the given value up to the nearest power of two
  * - the result is undefined when n == 0
@@ -172,7 +177,7 @@ unsigned long __rounddown_pow_of_two(unsigned long n)
 #define roundup_pow_of_two(n)			\
 (						\
 	__builtin_constant_p(n) ? (		\
-		(n == 1) ? 1 :			\
+		((n) == 1) ? 1 :		\
 		(1UL << (ilog2((n) - 1) + 1))	\
 				   ) :		\
 	__roundup_pow_of_two(n)			\
@@ -180,7 +185,7 @@ unsigned long __rounddown_pow_of_two(unsigned long n)
 
 /**
  * rounddown_pow_of_two - round the given value down to nearest power of two
- * @n - parameter
+ * @n: parameter
  *
  * round the given value down to the nearest power of two
  * - the result is undefined when n == 0
@@ -192,6 +197,12 @@ unsigned long __rounddown_pow_of_two(unsigned long n)
 		(1UL << ilog2(n))) :		\
 	__rounddown_pow_of_two(n)		\
  )
+
+static inline __attribute_const__
+int __order_base_2(unsigned long n)
+{
+	return n > 1 ? ilog2(n - 1) + 1 : 0;
+}
 
 /**
  * order_base_2 - calculate the (rounded up) base 2 order of the argument
@@ -206,18 +217,45 @@ unsigned long __rounddown_pow_of_two(unsigned long n)
  *  ob2(5) = 3
  *  ... and so on.
  */
-
-static inline __attribute_const__
-int __order_base_2(unsigned long n)
-{
-	return n > 1 ? ilog2(n - 1) + 1 : 0;
-}
-
 #define order_base_2(n)				\
 (						\
 	__builtin_constant_p(n) ? (		\
 		((n) == 0 || (n) == 1) ? 0 :	\
 		ilog2((n) - 1) + 1) :		\
 	__order_base_2(n)			\
+)
+
+static inline __attribute__((const))
+int __bits_per(unsigned long n)
+{
+	if (n < 2)
+		return 1;
+	if (is_power_of_2(n))
+		return order_base_2(n) + 1;
+	return order_base_2(n);
+}
+
+/**
+ * bits_per - calculate the number of bits required for the argument
+ * @n: parameter
+ *
+ * This is constant-capable and can be used for compile time
+ * initializations, e.g bitfields.
+ *
+ * The first few values calculated by this routine:
+ * bf(0) = 1
+ * bf(1) = 1
+ * bf(2) = 2
+ * bf(3) = 2
+ * bf(4) = 3
+ * ... and so on.
+ */
+#define bits_per(n)				\
+(						\
+	__builtin_constant_p(n) ? (		\
+		((n) == 0 || (n) == 1)		\
+			? 1 : ilog2(n) + 1	\
+	) :					\
+	__bits_per(n)				\
 )
 #endif /* _LINUX_LOG2_H */

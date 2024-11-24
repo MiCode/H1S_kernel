@@ -1,22 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
 
 #include <linux/module.h>
 #include "mtk_upower.h"
 
+
 /* PTP will update volt in init2 isr handler */
 void upower_update_volt_by_eem(enum upower_bank bank,
-		unsigned int *volt, unsigned int opp_num)
+	unsigned int *volt, unsigned int opp_num)
 {
 	int i, j;
 	int index = opp_num;
@@ -30,15 +23,18 @@ void upower_update_volt_by_eem(enum upower_bank bank,
 	for (i = 0; i < NR_UPOWER_BANK; i++) {
 		if (upower_recognize_by_eem[i] == bank) {
 			for (j = 0; j < opp_num; j++) {
-				/* reorder idex of volt */
+				/* reorder idx of volt */
 				index = opp_num - j - 1;
 				upower_tbl_ref[i].row[index].volt = volt[j];
 			}
-			upower_debug("(upower bk %d)volt = %u, (eem bk %d)volt = %u\n",
+			upower_tbl_ref[i].lkg_idx = 0; /* default as 85 */
+			upower_debug("(bk %d)volt = %u, (eem bk %d)volt = %u\n",
 				i, upower_tbl_ref[i].row[0].volt,
 				bank, volt[0]);
 		}
 	}
+	//upower_update_dyn_pwr();
+	//upower_update_lkg_pwr();
 }
 EXPORT_SYMBOL(upower_update_volt_by_eem);
 
@@ -77,27 +73,6 @@ EXPORT_SYMBOL(upower_update_degree_by_eem);
 /* for EAS to get pointer of tbl */
 struct upower_tbl_info **upower_get_tbl(void)
 {
-#if 0
-	struct upower_tbl_info *ptr;
-	#ifdef UPOWER_PROFILE_API_TIME
-	upower_get_start_time_us(GET_TBL_PTR);
-	#endif
-
-	#ifdef UPOWER_RCU_LOCK
-	upower_read_lock();
-	ptr = rcu_dereference(p_upower_tbl_infos);
-	upower_read_unlock();
-	#else
-	ptr = p_upower_tbl_infos;
-	#endif
-
-	#ifdef UPOWER_PROFILE_API_TIME
-	upower_get_diff_time_us(GET_TBL_PTR);
-	print_diff_results(GET_TBL_PTR);
-	#endif
-
-	return ptr;
-#endif
 	return &p_upower_tbl_infos;
 
 }
@@ -118,21 +93,6 @@ int upower_get_turn_point(void)
 
 }
 EXPORT_SYMBOL(upower_get_turn_point);
-
-__weak int cpu_cluster_mapping(unsigned int cpu)
-{
-	enum upower_bank bank = UPOWER_BANK_LL;
-
-	if (cpu < 4) /* cpu 0-3 */
-		bank = UPOWER_BANK_LL;
-	else if (cpu < 8) /* cpu 4-7 */
-		bank = UPOWER_BANK_LL + 1;
-	else if (cpu < 10) /* cpu 8-9 */
-		bank = UPOWER_BANK_LL + 2;
-
-	return bank;
-}
-
 
 /* for EAS to get pointer of core's tbl */
 struct upower_tbl *upower_get_core_tbl(unsigned int cpu)
@@ -201,3 +161,4 @@ upower_dtype type)
 	return ret;
 }
 EXPORT_SYMBOL(upower_get_power);
+

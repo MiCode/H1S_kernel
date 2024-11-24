@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2020 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include "mtk_dp_hal.h"
 #include <linux/io.h>
@@ -83,9 +75,10 @@ unsigned long mtk_dp_atf_call(unsigned int cmd, unsigned int para)
 {
 #ifndef CONFIG_FPGA_EARLY_PORTING
 	struct arm_smccc_res res;
+	u32 x3 = (cmd << 16) | para;
 
 	arm_smccc_smc(MTK_SIP_DP_CONTROL, cmd, para,
-		0, 0, 0, 0, 0, &res);
+		x3, 0xFEFD, 0, 0, 0, &res);
 
 	DPTXDBG("%s cmd 0x%x, p1 0x%x, ret 0x%x-0x%x",
 		__func__, cmd, para, res.a0, res.a1);

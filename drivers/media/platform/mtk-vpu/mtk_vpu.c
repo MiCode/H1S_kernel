@@ -181,6 +181,7 @@ struct share_obj {
  * @extmem:		VPU extended memory information
  * @reg:		VPU TCM and configuration registers
  * @run:		VPU initialization status
+ * @wdt:		VPU watchdog workqueue
  * @ipi_desc:		VPU IPI descriptor
  * @recv_buf:		VPU DTCM share buffer for receiving. The
  *			receive buffer is only accessed in interrupt context.
@@ -194,7 +195,7 @@ struct share_obj {
  *			suppose a client is using VPU to decode VP8.
  *			If the other client wants to encode VP8,
  *			it has to wait until VP8 decode completes.
- * @wdt_refcnt		WDT reference count to make sure the watchdog can be
+ * @wdt_refcnt:		WDT reference count to make sure the watchdog can be
  *			disabled if no other client is using VPU service
  * @ack_wq:		The wait queue for each codec and mdp. When sleeping
  *			processes wake up, they will check the condition
@@ -536,15 +537,17 @@ static int load_requested_vpu(struct mtk_vpu *vpu,
 int vpu_load_firmware(struct platform_device *pdev)
 {
 	struct mtk_vpu *vpu;
-	struct device *dev = &pdev->dev;
+	struct device *dev;
 	struct vpu_run *run;
 	const struct firmware *vpu_fw = NULL;
 	int ret;
 
 	if (!pdev) {
-		dev_err(dev, "VPU platform device is invalid\n");
+		pr_err("VPU platform device is invalid\n");
 		return -EINVAL;
 	}
+
+	dev = &pdev->dev;
 
 	vpu = platform_get_drvdata(pdev);
 	run = &vpu->run;
@@ -817,7 +820,8 @@ static int mtk_vpu_probe(struct platform_device *pdev)
 	vpu->wdt.wq = create_singlethread_workqueue("vpu_wdt");
 	if (!vpu->wdt.wq) {
 		dev_err(dev, "initialize wdt workqueue failed\n");
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto clk_unprepare;
 	}
 	INIT_WORK(&vpu->wdt.ws, vpu_wdt_reset_func);
 	mutex_init(&vpu->vpu_mutex);
@@ -916,6 +920,8 @@ disable_vpu_clk:
 	vpu_clock_disable(vpu);
 workqueue_destroy:
 	destroy_workqueue(vpu->wdt.wq);
+clk_unprepare:
+	clk_unprepare(vpu->clk);
 
 	return ret;
 }
@@ -959,4 +965,4 @@ static struct platform_driver mtk_vpu_driver = {
 module_platform_driver(mtk_vpu_driver);
 
 MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION("Mediatek Video Prosessor Unit driver");
+MODULE_DESCRIPTION("Mediatek Video Processor Unit driver");

@@ -128,10 +128,6 @@ static inline void power_pmu_bhrb_disable(struct perf_event *event) {}
 static void power_pmu_sched_task(struct perf_event_context *ctx, bool sched_in) {}
 static inline void power_pmu_bhrb_read(struct perf_event *event, struct cpu_hw_events *cpuhw) {}
 static void pmao_restore_workaround(bool ebb) { }
-static bool use_ic(u64 event)
-{
-	return false;
-}
 #endif /* CONFIG_PPC32 */
 
 static bool regs_use_siar(struct pt_regs *regs)
@@ -198,6 +194,9 @@ static inline void perf_get_data_addr(struct perf_event *event, struct pt_regs *
 
 	if (!(mmcra & MMCRA_SAMPLE_ENABLE) || sdar_valid)
 		*addrp = mfspr(SPRN_SDAR);
+
+	if (is_kernel_addr(mfspr(SPRN_SDAR)) && perf_allow_kernel(&event->attr) != 0)
+		*addrp = 0;
 }
 
 static bool regs_sihv(struct pt_regs *regs)
@@ -322,7 +321,7 @@ static inline void perf_read_regs(struct pt_regs *regs)
  */
 static inline int perf_intr_is_nmi(struct pt_regs *regs)
 {
-	return !regs->softe;
+	return (regs->softe & IRQS_DISABLED);
 }
 
 /*
@@ -709,14 +708,6 @@ static void pmao_restore_workaround(bool ebb)
 	mtspr(SPRN_PMC6, pmcs[5]);
 }
 
-static bool use_ic(u64 event)
-{
-	if (cpu_has_feature(CPU_FTR_POWER9_DD1) &&
-			(event == 0x200f2 || event == 0x300f2))
-		return true;
-
-	return false;
-}
 #endif /* CONFIG_PPC64 */
 
 static void perf_event_interrupt(struct pt_regs *regs);
@@ -1041,7 +1032,6 @@ static u64 check_and_compute_delta(u64 prev, u64 val)
 static void power_pmu_read(struct perf_event *event)
 {
 	s64 val, delta, prev;
-	struct cpu_hw_events *cpuhw = this_cpu_ptr(&cpu_hw_events);
 
 	if (event->hw.state & PERF_HES_STOPPED)
 		return;
@@ -1051,13 +1041,6 @@ static void power_pmu_read(struct perf_event *event)
 
 	if (is_ebb_event(event)) {
 		val = read_pmc(event->hw.idx);
-		if (use_ic(event->attr.config)) {
-			val = mfspr(SPRN_IC);
-			if (val > cpuhw->ic_init)
-				val = val - cpuhw->ic_init;
-			else
-				val = val + (0 - cpuhw->ic_init);
-		}
 		local64_set(&event->hw.prev_count, val);
 		return;
 	}
@@ -1071,13 +1054,6 @@ static void power_pmu_read(struct perf_event *event)
 		prev = local64_read(&event->hw.prev_count);
 		barrier();
 		val = read_pmc(event->hw.idx);
-		if (use_ic(event->attr.config)) {
-			val = mfspr(SPRN_IC);
-			if (val > cpuhw->ic_init)
-				val = val - cpuhw->ic_init;
-			else
-				val = val + (0 - cpuhw->ic_init);
-		}
 		delta = check_and_compute_delta(prev, val);
 		if (!delta)
 			return;
@@ -1450,7 +1426,7 @@ static int collect_events(struct perf_event *group, int max_count,
 		flags[n] = group->hw.event_base;
 		events[n++] = group->hw.config;
 	}
-	list_for_each_entry(event, &group->sibling_list, group_entry) {
+	for_each_sibling_event(event, group) {
 		if (event->pmu->task_ctx_nr == perf_hw_context &&
 		    event->state != PERF_EVENT_STATE_OFF) {
 			if (n >= max_count)
@@ -1464,7 +1440,7 @@ static int collect_events(struct perf_event *group, int max_count,
 }
 
 /*
- * Add a event to the PMU.
+ * Add an event to the PMU.
  * If all events are not already frozen, then we disable and
  * re-enable the PMU in order to get hw_perf_enable to do the
  * actual work of reconfiguring the PMU.
@@ -1530,20 +1506,13 @@ nocheck:
 					event->attr.branch_sample_type);
 	}
 
-	/*
-	 * Workaround for POWER9 DD1 to use the Instruction Counter
-	 * register value for instruction counting
-	 */
-	if (use_ic(event->attr.config))
-		cpuhw->ic_init = mfspr(SPRN_IC);
-
 	perf_pmu_enable(event->pmu);
 	local_irq_restore(flags);
 	return ret;
 }
 
 /*
- * Remove a event from the PMU.
+ * Remove an event from the PMU.
  */
 static void power_pmu_del(struct perf_event *event, int ef_flags)
 {
@@ -1737,7 +1706,7 @@ static int power_pmu_commit_txn(struct pmu *pmu)
 /*
  * Return 1 if we might be able to put event on a limited PMC,
  * or 0 if not.
- * A event can only go on a limited PMC if it counts something
+ * An event can only go on a limited PMC if it counts something
  * that a limited PMC can count, doesn't require interrupts, and
  * doesn't exclude any processor mode.
  */
@@ -1834,6 +1803,18 @@ static int hw_perf_cache_event(u64 config, u64 *eventp)
 	return 0;
 }
 
+static bool is_event_blacklisted(u64 ev)
+{
+	int i;
+
+	for (i=0; i < ppmu->n_blacklist_ev; i++) {
+		if (ppmu->blacklist_ev[i] == ev)
+			return true;
+	}
+
+	return false;
+}
+
 static int power_pmu_event_init(struct perf_event *event)
 {
 	u64 ev;
@@ -1860,15 +1841,24 @@ static int power_pmu_event_init(struct perf_event *event)
 		ev = event->attr.config;
 		if (ev >= ppmu->n_generic || ppmu->generic_events[ev] == 0)
 			return -EOPNOTSUPP;
+
+		if (ppmu->blacklist_ev && is_event_blacklisted(ev))
+			return -EINVAL;
 		ev = ppmu->generic_events[ev];
 		break;
 	case PERF_TYPE_HW_CACHE:
 		err = hw_perf_cache_event(event->attr.config, &ev);
 		if (err)
 			return err;
+
+		if (ppmu->blacklist_ev && is_event_blacklisted(ev))
+			return -EINVAL;
 		break;
 	case PERF_TYPE_RAW:
 		ev = event->attr.config;
+
+		if (ppmu->blacklist_ev && is_event_blacklisted(ev))
+			return -EINVAL;
 		break;
 	default:
 		return -ENOENT;
@@ -2054,7 +2044,17 @@ static void record_and_restart(struct perf_event *event, unsigned long val,
 			left += period;
 			if (left <= 0)
 				left = period;
-			record = siar_valid(regs);
+
+			/*
+			 * If address is not requested in the sample via
+			 * PERF_SAMPLE_IP, just record that sample irrespective
+			 * of SIAR valid check.
+			 */
+			if (event->attr.sample_type & PERF_SAMPLE_IP)
+				record = siar_valid(regs);
+			else
+				record = 1;
+
 			event->hw.last_period = event->hw.sample_period;
 		}
 		if (left < 0x80000000LL)
@@ -2065,6 +2065,17 @@ static void record_and_restart(struct perf_event *event, unsigned long val,
 	local64_set(&event->hw.prev_count, val);
 	local64_set(&event->hw.period_left, left);
 	perf_event_update_userpage(event);
+
+	/*
+	 * Due to hardware limitation, sometimes SIAR could sample a kernel
+	 * address even when freeze on supervisor state (kernel) is set in
+	 * MMCR2. Check attr.exclude_kernel and address to drop the sample in
+	 * these cases.
+	 */
+	if (event->attr.exclude_kernel &&
+	    (event->attr.sample_type & PERF_SAMPLE_IP) &&
+	    is_kernel_addr(mfspr(SPRN_SIAR)))
+		record = 0;
 
 	/*
 	 * Finally record data if requested.
@@ -2094,6 +2105,10 @@ static void record_and_restart(struct perf_event *event, unsigned long val,
 			ppmu->get_mem_weight(&data.weight);
 
 		if (perf_event_overflow(event, &data, regs))
+			power_pmu_stop(event, 0);
+	} else if (period) {
+		/* Account for interrupt in case of invalid SIAR */
+		if (perf_event_account_interrupt(event))
 			power_pmu_stop(event, 0);
 	}
 }

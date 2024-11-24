@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTK_CPUFREQ_API_H__
 #define __MTK_CPUFREQ_API_H__
@@ -46,6 +38,7 @@ extern int mt_cpufreq_get_sched_enable(void);
 /* PTP-OD */
 extern unsigned int mt_cpufreq_get_freq_by_idx(unsigned int cluster_id,
 	int idx);
+extern unsigned int mt_cpufreq_get_cpu_freq(int cpu, int idx);
 extern unsigned int mt_cpufreq_get_volt_by_idx(unsigned int cluster_id,
 	int idx);
 extern unsigned int mt_cpufreq_get_cur_volt(unsigned int cluster_id);

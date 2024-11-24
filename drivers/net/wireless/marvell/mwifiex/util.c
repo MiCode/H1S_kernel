@@ -197,9 +197,11 @@ int mwifiex_get_debug_info(struct mwifiex_private *priv,
 		info->is_deep_sleep = adapter->is_deep_sleep;
 		info->pm_wakeup_card_req = adapter->pm_wakeup_card_req;
 		info->pm_wakeup_fw_try = adapter->pm_wakeup_fw_try;
-		info->is_hs_configured = adapter->is_hs_configured;
+		info->is_hs_configured = test_bit(MWIFIEX_IS_HS_CONFIGURED,
+						  &adapter->work_flags);
 		info->hs_activated = adapter->hs_activated;
-		info->is_cmd_timedout = adapter->is_cmd_timedout;
+		info->is_cmd_timedout = test_bit(MWIFIEX_IS_CMD_TIMEDOUT,
+						 &adapter->work_flags);
 		info->num_cmd_host_to_card_failure
 				= adapter->dbg.num_cmd_host_to_card_failure;
 		info->num_cmd_sleep_cfm_host_to_card_failure
@@ -403,11 +405,15 @@ mwifiex_process_mgmt_packet(struct mwifiex_private *priv,
 	}
 
 	rx_pd = (struct rxpd *)skb->data;
+	pkt_len = le16_to_cpu(rx_pd->rx_pkt_length);
+	if (pkt_len < sizeof(struct ieee80211_hdr) + sizeof(pkt_len)) {
+		mwifiex_dbg(priv->adapter, ERROR, "invalid rx_pkt_length");
+		return -1;
+	}
 
 	skb_pull(skb, le16_to_cpu(rx_pd->rx_pkt_offset));
 	skb_pull(skb, sizeof(pkt_len));
-
-	pkt_len = le16_to_cpu(rx_pd->rx_pkt_length);
+	pkt_len -= sizeof(pkt_len);
 
 	ieee_hdr = (void *)skb->data;
 	if (ieee80211_is_mgmt(ieee_hdr->frame_control)) {
@@ -420,7 +426,7 @@ mwifiex_process_mgmt_packet(struct mwifiex_private *priv,
 		skb->data + sizeof(struct ieee80211_hdr),
 		pkt_len - sizeof(struct ieee80211_hdr));
 
-	pkt_len -= ETH_ALEN + sizeof(pkt_len);
+	pkt_len -= ETH_ALEN;
 	rx_pd->rx_pkt_length = cpu_to_le16(pkt_len);
 
 	cfg80211_rx_mgmt(&priv->wdev, priv->roc_cfg.chan.center_freq,
@@ -757,3 +763,10 @@ void *mwifiex_alloc_dma_align_buf(int rx_len, gfp_t flags)
 	return skb;
 }
 EXPORT_SYMBOL_GPL(mwifiex_alloc_dma_align_buf);
+
+void mwifiex_fw_dump_event(struct mwifiex_private *priv)
+{
+	mwifiex_send_cmd(priv, HostCmd_CMD_FW_DUMP_EVENT, HostCmd_ACT_GEN_SET,
+			 0, NULL, true);
+}
+EXPORT_SYMBOL_GPL(mwifiex_fw_dump_event);

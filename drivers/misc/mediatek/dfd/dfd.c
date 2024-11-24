@@ -1,31 +1,19 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include <linux/module.h>
 #include <linux/of_fdt.h>
 #include <linux/of.h>
+#include <linux/io.h>
 #include <linux/slab.h>
 #include <linux/of_address.h>
+#include <linux/arm-smccc.h>
 
-#include <mt-plat/mtk_secure_api.h>
-#include <mt-plat/mtk_wd_api.h>
-#include <mt-plat/sync_write.h>
+#include <linux/soc/mediatek/mtk_sip_svc.h> /* for SMC ID table */
 #include <mt-plat/mtk_platform_debug.h>
 #include "dfd.h"
-
-#ifdef CONFIG_MTK_DBGTOP
-extern int mtk_dbgtop_dfd_timeout(int value_abnormal, int value_normal);
-#endif
 
 static struct dfd_drv *drv;
 
@@ -34,50 +22,40 @@ int dfd_setup(int version)
 {
 	int ret;
 	int dfd_doe;
-	struct wd_api *wd_api = NULL;
+	struct arm_smccc_res res;
 
 	if (drv && (drv->enabled == 1) && (drv->base_addr > 0)) {
 		/* check support or not first */
-		if (check_dfd_support() == 0)
-			return -1;
+		if (!drv->check_dfd_support)
+			return -EINVAL;
 
-		/* get watchdog api */
-		ret = get_wd_api(&wd_api);
-		if (ret < 0)
-			return ret;
+		pr_info("dfd setup\n");
 
-#ifdef CONFIG_MTK_DBGTOP
-		mtk_dbgtop_dfd_timeout(drv->rg_dfd_timeout, 0);
-#else
-		wd_api->wd_dfd_count_en(1);
-		wd_api->wd_dfd_thermal1_dis(1);
-		wd_api->wd_dfd_thermal2_dis(0);
-		wd_api->wd_dfd_timeout(drv->rg_dfd_timeout);
-#endif
-
+		ret = mtk_dbgtop_dfd_count_en(1);
+		ret = mtk_dbgtop_dfd_therm1_dis(1);
+		ret = mtk_dbgtop_dfd_therm2_dis(0);
+		ret = mtk_dbgtop_dfd_timeout(drv->rg_dfd_timeout);
 		if (drv->mem_reserve && drv->cachedump_en) {
 			dfd_doe = DFD_CACHE_DUMP_ENABLE;
 			if (drv->l2c_trigger)
 				dfd_doe |= DFD_PARITY_ERR_TRIGGER;
-
 			if (version == DFD_EXTENDED_DUMP)
-				ret = mt_secure_call(MTK_SIP_KERNEL_DFD,
+				arm_smccc_smc(MTK_SIP_KERNEL_DFD,
 					DFD_SMC_MAGIC_SETUP,
 					(u64) drv->base_addr,
-					drv->chain_length, dfd_doe);
+					drv->chain_length,
+					dfd_doe, 0, 0, 0, &res);
 			else
-				ret = mt_secure_call(MTK_SIP_KERNEL_DFD,
+				arm_smccc_smc(MTK_SIP_KERNEL_DFD,
 					DFD_SMC_MAGIC_SETUP,
 					(u64) drv->base_addr,
-					drv->chain_length, 0);
+					drv->chain_length,
+					0, 0, 0, 0, &res);
 		} else {
-			ret = mt_secure_call(MTK_SIP_KERNEL_DFD,
-				DFD_SMC_MAGIC_SETUP,
-				(u64) drv->base_addr, drv->chain_length, 0);
+			arm_smccc_smc(MTK_SIP_KERNEL_DFD, DFD_SMC_MAGIC_SETUP,
+				(u64) drv->base_addr, drv->chain_length,
+				0, 0, 0, 0, &res);
 		}
-
-		if (ret < 0)
-			return ret;
 
 		if (set_sram_flag_dfd_valid() < 0)
 			return -1;
@@ -100,18 +78,35 @@ static int __init fdt_get_chosen(unsigned long node, const char *uname,
 
 static int __init dfd_init(void)
 {
-	struct device_node *dev_node, *infra_node;
+	struct device_node *dev_node, *infra_node, *rgu_node;
 	unsigned long node;
 	const void *prop;
 	unsigned int val;
+	void __iomem *toprgu_base;
 
 	drv = kzalloc(sizeof(struct dfd_drv), GFP_KERNEL);
 	if (!drv)
 		return -ENOMEM;
 
+	pr_info("In dfd init\n");
+
 	/* get dfd settings */
 	dev_node = of_find_compatible_node(NULL, NULL, "mediatek,dfd");
 	if (dev_node) {
+		if (of_property_read_u32(dev_node, "mediatek,dfd_latch_offset", &val)) {
+			pr_info("%s: Latch offset not found.\n", __func__);
+			return -EINVAL;
+		}
+		pr_info("%s: Latch offset is 0x%x\n", __func__, val);
+		rgu_node = of_find_compatible_node(NULL, NULL, "mediatek,toprgu");
+		toprgu_base = of_iomap(rgu_node, 0);
+
+		if (!toprgu_base)
+			pr_info("%s: RGU base not found.\n", __func__);
+		else
+			pr_info("%s: get topdbg base success\n", __func__);
+		get_dfd_base(toprgu_base, val);
+
 		if (of_property_read_u32(dev_node, "mediatek,enabled", &val))
 			drv->enabled = 0;
 		else
@@ -128,6 +123,24 @@ static int __init dfd_init(void)
 			drv->rg_dfd_timeout = 0;
 		else
 			drv->rg_dfd_timeout = val;
+
+		if (of_property_read_u32(dev_node,
+					"mediatek,check_dfd_support", &val))
+			drv->check_dfd_support = 0;
+		else
+			drv->check_dfd_support = val;
+
+		if (of_property_read_u32(dev_node,
+					"mediatek,dfd_infra_base", &val))
+			drv->dfd_infra_base = 0;
+		else
+			drv->dfd_infra_base = val;
+
+		if (of_property_read_u32(dev_node,
+					"mediatek,dfd_ap_addr_offset", &val))
+			drv->dfd_ap_addr_offset = 0;
+		else
+			drv->dfd_ap_addr_offset = val;
 	} else
 		return -ENODEV;
 
@@ -171,14 +184,15 @@ static int __init dfd_init(void)
 	}
 
 	infra_node = of_find_compatible_node(NULL, NULL,
-			"mediatek,infracfg_ao");
+			"mediatek,common-infracfg_ao");
 	if (infra_node) {
 		void __iomem *infra = of_iomap(infra_node, 0);
 
 		if (infra && drv->base_addr_msb) {
-			infra += dfd_infra_base();
+			infra += drv->dfd_infra_base;
 			writel(readl(infra)
-				| (drv->base_addr_msb >> dfd_ap_addr_offset()),
+				| (drv->base_addr_msb >>
+					drv->dfd_ap_addr_offset),
 				infra);
 		}
 	}

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __HAL_PUB_H_
@@ -25,7 +17,6 @@
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/sched/rt.h>
-#include <mtk_io.h>
 
 #ifdef CONFIG_OF
 #include <linux/of_irq.h>
@@ -41,7 +32,6 @@
 #include <linux/clk.h>
 #include <linux/platform_device.h>
 #endif /* defined(CONFIG_MTK_CLKMGR) */
-#include <sync_write.h>
 
 extern int mtk_btif_hal_get_log_lvl(void);
 
@@ -63,7 +53,7 @@ static int hal_log_print(const char *str, ...)
 	va_end(args);
 
 	if (ret > 0)
-		pr_debug("%s", temp_sring);
+		pr_info("%s", temp_sring);
 
 	return ret;
 }
@@ -277,11 +267,26 @@ struct _MTK_BTIF_INFO_STR_ {
 /***********register operation***********/
 #ifdef __KERNEL__
 /*byte write  <1 byte> */
-#define btif_reg_sync_writeb(v, a)    mt_reg_sync_writeb(v, a)
+#define btif_reg_sync_writeb(v, a) \
+do { \
+	writeb(v, (void __iomem *)a); \
+	/* call mb () */ \
+	mb(); \
+} while (0)
 /*word write  <2 byte> */
-#define btif_reg_sync_writew(v, a)    mt_reg_sync_writew(v, a)
+#define btif_reg_sync_writew(v, a) \
+do { \
+	writew(v, (void __iomem *)a); \
+	/* call mb () */ \
+	mb(); \
+} while (0)
 /*long write   <4 byte> */
-#define btif_reg_sync_writel(v, a)    mt_reg_sync_writel(v, a)
+#define btif_reg_sync_writel(v, a) \
+do { \
+	writel(v, (void __iomem *)a); \
+	/* call mb () */ \
+	mb(); \
+} while (0)
 #else
 /*byte write  <1 byte> */
 #define btif_reg_sync_writeb(v, a)    mt65xx_reg_sync_writeb(v, a)

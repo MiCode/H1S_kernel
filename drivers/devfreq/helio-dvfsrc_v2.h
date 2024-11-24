@@ -1,18 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
-#ifndef __HELIO_DVFSRC_H
-#define __HELIO_DVFSRC_H
+#ifndef __HELIO_DVFSRC_V2_H
+#define __HELIO_DVFSRC_V2_H
 
 #include <linux/delay.h>
 #include <linux/devfreq.h>
@@ -34,7 +26,6 @@ struct reg_config {
 };
 
 struct helio_dvfsrc {
-	struct devfreq		*devfreq;
 	int irq;
 	struct device *dev;
 	bool qos_enabled;
@@ -44,19 +35,19 @@ struct helio_dvfsrc {
 	void __iomem		*regs;
 	void __iomem		*sram_regs;
 
-	struct notifier_block	pm_qos_memory_bw_nb;
-	struct notifier_block	pm_qos_cpu_memory_bw_nb;
-	struct notifier_block	pm_qos_gpu_memory_bw_nb;
-	struct notifier_block	pm_qos_mm_memory_bw_nb;
-	struct notifier_block	pm_qos_other_memory_bw_nb;
-	struct notifier_block	pm_qos_ddr_opp_nb;
-	struct notifier_block	pm_qos_vcore_opp_nb;
-	struct notifier_block	pm_qos_scp_vcore_request_nb;
-	struct notifier_block	pm_qos_power_model_ddr_request_nb;
-	struct notifier_block	pm_qos_power_model_vcore_request_nb;
-	struct notifier_block	pm_qos_vcore_dvfs_force_opp_nb;
-	struct notifier_block	pm_qos_isp_hrt_bw_nb;
-	struct notifier_block	pm_qos_apu_memory_bw_nb;
+	struct notifier_block	mtk_pm_qos_memory_bw_nb;
+	struct notifier_block	mtk_pm_qos_cpu_memory_bw_nb;
+	struct notifier_block	mtk_pm_qos_gpu_memory_bw_nb;
+	struct notifier_block	mtk_pm_qos_mm_memory_bw_nb;
+	struct notifier_block	mtk_pm_qos_other_memory_bw_nb;
+	struct notifier_block	mtk_pm_qos_ddr_opp_nb;
+	struct notifier_block	mtk_pm_qos_vcore_opp_nb;
+	struct notifier_block	mtk_pm_qos_scp_vcore_request_nb;
+	struct notifier_block	mtk_pm_qos_power_model_ddr_request_nb;
+	struct notifier_block	mtk_pm_qos_power_model_vcore_request_nb;
+	struct notifier_block	mtk_pm_qos_vcore_dvfs_force_opp_nb;
+	struct notifier_block	mtk_pm_qos_isp_hrt_bw_nb;
+	struct notifier_block	mtk_pm_qos_apu_memory_bw_nb;
 
 	struct reg_config	*init_config;
 

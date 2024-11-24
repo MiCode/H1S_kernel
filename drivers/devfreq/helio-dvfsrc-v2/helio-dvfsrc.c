@@ -1,36 +1,26 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
-#include <linux/devfreq.h>
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
-#include <linux/pm_qos.h>
+#include <linux/soc/mediatek/mtk-pm-qos.h>
 #include <linux/sched.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <linux/of.h>
 #include <linux/sched/clock.h>
-#include "governor.h"
 
 #include <mt-plat/aee.h>
 #include <spm/mtk_spm.h>
 #include <mtk_dramc.h>
 
-#include "helio-dvfsrc_v2.h"
-#include "mtk_dvfsrc_reg.h"
+#include "../helio-dvfsrc_v2.h"
+#include "../mtk_dvfsrc_reg.h"
 #include <linux/regulator/consumer.h>
 
 #ifdef CONFIG_MTK_TINYSYS_SSPM_SUPPORT
@@ -144,19 +134,19 @@ static void dvfsrc_release_force(void)
 static void dvfsrc_set_sw_bw(int type, int data)
 {
 	switch (type) {
-	case PM_QOS_MEMORY_BANDWIDTH:
+	case MTK_PM_QOS_MEMORY_BANDWIDTH_TEST:
 		dvfsrc_write(DVFSRC_SW_BW_0, data / 100);
 		break;
-	case PM_QOS_CPU_MEMORY_BANDWIDTH:
+	case MTK_PM_QOS_CPU_MEMORY_BANDWIDTH:
 		dvfsrc_write(DVFSRC_SW_BW_1, data / 100);
 		break;
-	case PM_QOS_GPU_MEMORY_BANDWIDTH:
+	case MTK_PM_QOS_GPU_MEMORY_BANDWIDTH:
 		dvfsrc_write(DVFSRC_SW_BW_2, data / 100);
 		break;
-	case PM_QOS_MM_MEMORY_BANDWIDTH:
+	case MTK_PM_QOS_MM_MEMORY_BANDWIDTH:
 		dvfsrc_write(DVFSRC_SW_BW_3, data / 100);
 		break;
-	case PM_QOS_OTHER_MEMORY_BANDWIDTH:
+	case MTK_PM_QOS_OTHER_MEMORY_BANDWIDTH:
 		dvfsrc_write(DVFSRC_SW_BW_4, data / 100);
 		break;
 	default:
@@ -243,16 +233,16 @@ static int commit_data(int type, int data, int check_spmfw)
 		mtk_spmfw_init(1, 0);
 
 	switch (type) {
-	case PM_QOS_MEMORY_BANDWIDTH:
-	case PM_QOS_CPU_MEMORY_BANDWIDTH:
-	case PM_QOS_GPU_MEMORY_BANDWIDTH:
-	case PM_QOS_MM_MEMORY_BANDWIDTH:
-	case PM_QOS_OTHER_MEMORY_BANDWIDTH:
+	case MTK_PM_QOS_MEMORY_BANDWIDTH_TEST:
+	case MTK_PM_QOS_CPU_MEMORY_BANDWIDTH:
+	case MTK_PM_QOS_GPU_MEMORY_BANDWIDTH:
+	case MTK_PM_QOS_MM_MEMORY_BANDWIDTH:
+	case MTK_PM_QOS_OTHER_MEMORY_BANDWIDTH:
 		if (data < 0)
 			data = 0;
 		dvfsrc_set_sw_bw(type, data);
 		break;
-	case PM_QOS_DDR_OPP:
+	case MTK_PM_QOS_DDR_OPP:
 		mutex_lock(&sw_req1_mutex);
 		if (data >= DDR_OPP_NUM || data < 0)
 			data = DDR_OPP_NUM - 1;
@@ -271,7 +261,7 @@ static int commit_data(int type, int data, int check_spmfw)
 
 		mutex_unlock(&sw_req1_mutex);
 		break;
-	case PM_QOS_VCORE_OPP:
+	case MTK_PM_QOS_VCORE_OPP:
 		mutex_lock(&sw_req1_mutex);
 		if (data >= VCORE_OPP_NUM || data < 0)
 			data = VCORE_OPP_NUM - 1;
@@ -308,7 +298,7 @@ static int commit_data(int type, int data, int check_spmfw)
 #endif
 		mutex_unlock(&sw_req1_mutex);
 		break;
-	case PM_QOS_SCP_VCORE_REQUEST:
+	case MTK_PM_QOS_SCP_VCORE_REQUEST:
 		if (data >= VCORE_OPP_NUM || data < 0)
 			data = 0;
 
@@ -326,7 +316,7 @@ static int commit_data(int type, int data, int check_spmfw)
 		}
 
 		break;
-	case PM_QOS_POWER_MODEL_DDR_REQUEST:
+	case MTK_PM_QOS_POWER_MODEL_DDR_REQUEST:
 		if (data >= DDR_OPP_NUM || data < 0)
 			data = 0;
 
@@ -336,7 +326,7 @@ static int commit_data(int type, int data, int check_spmfw)
 		dvfsrc_set_sw_req2(level,
 				EMI_SW_AP2_MASK, EMI_SW_AP2_SHIFT);
 		break;
-	case PM_QOS_POWER_MODEL_VCORE_REQUEST:
+	case MTK_PM_QOS_POWER_MODEL_VCORE_REQUEST:
 		if (data >= VCORE_OPP_NUM || data < 0)
 			data = 0;
 
@@ -346,7 +336,7 @@ static int commit_data(int type, int data, int check_spmfw)
 		dvfsrc_set_sw_req2(level,
 				VCORE_SW_AP2_MASK, VCORE_SW_AP2_SHIFT);
 		break;
-	case PM_QOS_VCORE_DVFS_FORCE_OPP:
+	case MTK_PM_QOS_VCORE_DVFS_FORCE_OPP:
 		spin_lock_irqsave(&force_req_lock, flags);
 		if (data >= VCORE_DVFS_OPP_NUM || data < 0)
 			data = VCORE_DVFS_OPP_NUM;
@@ -388,8 +378,8 @@ static void dvfsrc_restore(void)
 {
 	int i;
 
-	for (i = PM_QOS_CPU_MEMORY_BANDWIDTH; i < PM_QOS_NUM_CLASSES; i++)
-		commit_data(i, pm_qos_request(i), 0);
+	for (i = MTK_PM_QOS_MEMORY_BANDWIDTH; i < MTK_PM_QOS_NUM_CLASSES; i++)
+		commit_data(i, mtk_pm_qos_request(i), 0);
 }
 
 void helio_dvfsrc_enable(int dvfsrc_en)
@@ -512,44 +502,44 @@ int is_opp_forced(void)
 	return 0;
 }
 
-static void get_pm_qos_info(char *p)
+static void get_mtk_pm_qos_info(char *p)
 {
 	char timestamp[20];
 
 	dvfsrc_get_timestamp(timestamp);
 	p += sprintf(p, "%-24s: %d\n",
-			"PM_QOS_MEMORY_BW",
-			pm_qos_request(PM_QOS_MEMORY_BANDWIDTH));
+			"MTK_PM_QOS_MEMORY_BW",
+			mtk_pm_qos_request(MTK_PM_QOS_MEMORY_BANDWIDTH_TEST));
 	p += sprintf(p, "%-24s: %d\n",
-			"PM_QOS_CPU_MEMORY_BW",
-			pm_qos_request(PM_QOS_CPU_MEMORY_BANDWIDTH));
+			"MTK_PM_QOS_CPU_MEMORY_BW",
+			mtk_pm_qos_request(MTK_PM_QOS_CPU_MEMORY_BANDWIDTH));
 	p += sprintf(p, "%-24s: %d\n",
-			"PM_QOS_GPU_MEMORY_BW",
-			pm_qos_request(PM_QOS_GPU_MEMORY_BANDWIDTH));
+			"MTK_PM_QOS_GPU_MEMORY_BW",
+			mtk_pm_qos_request(MTK_PM_QOS_GPU_MEMORY_BANDWIDTH));
 	p += sprintf(p, "%-24s: %d\n",
-			"PM_QOS_MM_MEMORY_BW",
-			pm_qos_request(PM_QOS_MM_MEMORY_BANDWIDTH));
+			"MTK_PM_QOS_MM_MEMORY_BW",
+			mtk_pm_qos_request(MTK_PM_QOS_MM_MEMORY_BANDWIDTH));
 	p += sprintf(p, "%-24s: %d\n",
-			"PM_QOS_OTHER_MEMORY_BW",
-			pm_qos_request(PM_QOS_OTHER_MEMORY_BANDWIDTH));
+			"MTK_PM_QOS_OTHER_MEMORY_BW",
+			mtk_pm_qos_request(MTK_PM_QOS_OTHER_MEMORY_BANDWIDTH));
 	p += sprintf(p, "%-24s: 0x%x\n",
-			"PM_QOS_DDR_OPP",
-			pm_qos_request(PM_QOS_DDR_OPP));
+			"MTK_PM_QOS_DDR_OPP",
+			mtk_pm_qos_request(MTK_PM_QOS_DDR_OPP));
 	p += sprintf(p, "%-24s: 0x%x\n",
-			"PM_QOS_VCORE_OPP",
-			pm_qos_request(PM_QOS_VCORE_OPP));
+			"MTK_PM_QOS_VCORE_OPP",
+			mtk_pm_qos_request(MTK_PM_QOS_VCORE_OPP));
 	p += sprintf(p, "%-24s: 0x%x\n",
-			"PM_QOS_SCP_VCORE_REQ",
-			pm_qos_request(PM_QOS_SCP_VCORE_REQUEST));
+			"MTK_PM_QOS_SCP_VCORE_REQ",
+			mtk_pm_qos_request(MTK_PM_QOS_SCP_VCORE_REQUEST));
 	p += sprintf(p, "%-24s: 0x%x\n",
-			"PM_QOS_PM_DDR_REQ",
-			pm_qos_request(PM_QOS_POWER_MODEL_DDR_REQUEST));
+			"MTK_PM_QOS_PM_DDR_REQ",
+			mtk_pm_qos_request(MTK_PM_QOS_POWER_MODEL_DDR_REQUEST));
 	p += sprintf(p, "%-24s: 0x%x\n",
-			"PM_QOS_PM_VCORE_REQ",
-			pm_qos_request(PM_QOS_POWER_MODEL_VCORE_REQUEST));
+			"MTK_PM_QOS_PM_VCORE_REQ",
+			mtk_pm_qos_request(MTK_PM_QOS_POWER_MODEL_VCORE_REQUEST));
 	p += sprintf(p, "%-24s: 0x%x\n",
-			"PM_QOS_FORCE_OPP",
-			pm_qos_request(PM_QOS_VCORE_DVFS_FORCE_OPP));
+			"MTK_PM_QOS_FORCE_OPP",
+			mtk_pm_qos_request(MTK_PM_QOS_VCORE_DVFS_FORCE_OPP));
 	p += sprintf(p, "%-24s: %d\n",
 			"EMI_BW_TOTAL_AVE",
 			dvfsrc_get_emi_bw(QOS_EMI_BW_TOTAL_AVE));
@@ -612,7 +602,7 @@ u32 dvfsrc_dump_reg(char *ptr, u32 count)
 		pr_info("%s\n", buf);
 
 	memset(buf, '\0', sizeof(buf));
-	get_pm_qos_info(buf);
+	get_mtk_pm_qos_info(buf);
 	if (ptr) {
 		index += scnprintf(&ptr[index], (count - index - 1),
 		"%s\n", buf);
@@ -621,10 +611,6 @@ u32 dvfsrc_dump_reg(char *ptr, u32 count)
 
 	return index;
 }
-
-static struct devfreq_dev_profile helio_devfreq_profile = {
-	.polling_ms	= 0,
-};
 
 void helio_dvfsrc_reg_config(struct reg_config *config)
 {
@@ -646,165 +632,144 @@ void helio_dvfsrc_sram_reg_init(void)
 
 void dvfsrc_set_power_model_ddr_request(unsigned int level)
 {
-	commit_data(PM_QOS_POWER_MODEL_DDR_REQUEST, level, 1);
+	commit_data(MTK_PM_QOS_POWER_MODEL_DDR_REQUEST, level, 1);
 }
 
-static int helio_governor_event_handler(struct devfreq *devfreq,
-					unsigned int event, void *data)
-{
-	switch (event) {
-	case DEVFREQ_GOV_SUSPEND:
-		break;
-
-	case DEVFREQ_GOV_RESUME:
-		break;
-
-	default:
-		break;
-	}
-	return 0;
-}
-
-static struct devfreq_governor helio_dvfsrc_governor = {
-	.name = "helio_dvfsrc",
-	.event_handler = helio_governor_event_handler,
-};
-
-static int pm_qos_memory_bw_notify(struct notifier_block *b,
+static int mtk_pm_qos_memory_bw_notify(struct notifier_block *b,
 		unsigned long l, void *v)
 {
-	commit_data(PM_QOS_MEMORY_BANDWIDTH, l, 1);
+	commit_data(MTK_PM_QOS_MEMORY_BANDWIDTH_TEST, l, 1);
 
 	return NOTIFY_OK;
 }
 
-static int pm_qos_cpu_memory_bw_notify(struct notifier_block *b,
+static int mtk_pm_qos_cpu_memory_bw_notify(struct notifier_block *b,
 		unsigned long l, void *v)
 {
-	commit_data(PM_QOS_CPU_MEMORY_BANDWIDTH, l, 1);
+	commit_data(MTK_PM_QOS_CPU_MEMORY_BANDWIDTH, l, 1);
 
 	return NOTIFY_OK;
 }
 
-static int pm_qos_gpu_memory_bw_notify(struct notifier_block *b,
+static int mtk_pm_qos_gpu_memory_bw_notify(struct notifier_block *b,
 		unsigned long l, void *v)
 {
-	commit_data(PM_QOS_GPU_MEMORY_BANDWIDTH, l, 1);
+	commit_data(MTK_PM_QOS_GPU_MEMORY_BANDWIDTH, l, 1);
 
 	return NOTIFY_OK;
 }
 
-static int pm_qos_mm_memory_bw_notify(struct notifier_block *b,
+static int mtk_pm_qos_mm_memory_bw_notify(struct notifier_block *b,
 		unsigned long l, void *v)
 {
-	commit_data(PM_QOS_MM_MEMORY_BANDWIDTH, l, 1);
+	commit_data(MTK_PM_QOS_MM_MEMORY_BANDWIDTH, l, 1);
 
 	return NOTIFY_OK;
 }
 
-static int pm_qos_other_memory_bw_notify(struct notifier_block *b,
+static int mtk_pm_qos_other_memory_bw_notify(struct notifier_block *b,
 		unsigned long l, void *v)
 {
-	commit_data(PM_QOS_OTHER_MEMORY_BANDWIDTH, l, 1);
+	commit_data(MTK_PM_QOS_OTHER_MEMORY_BANDWIDTH, l, 1);
 
 	return NOTIFY_OK;
 }
 
-static int pm_qos_ddr_opp_notify(struct notifier_block *b,
+static int mtk_pm_qos_ddr_opp_notify(struct notifier_block *b,
 		unsigned long l, void *v)
 {
-	commit_data(PM_QOS_DDR_OPP, l, 1);
+	commit_data(MTK_PM_QOS_DDR_OPP, l, 1);
 
 	return NOTIFY_OK;
 }
 
-static int pm_qos_vcore_opp_notify(struct notifier_block *b,
+static int mtk_pm_qos_vcore_opp_notify(struct notifier_block *b,
 		unsigned long l, void *v)
 {
-	commit_data(PM_QOS_VCORE_OPP, l, 1);
+	commit_data(MTK_PM_QOS_VCORE_OPP, l, 1);
 
 	return NOTIFY_OK;
 }
 
-static int pm_qos_scp_vcore_request_notify(struct notifier_block *b,
+static int mtk_pm_qos_scp_vcore_request_notify(struct notifier_block *b,
 		unsigned long l, void *v)
 {
-	commit_data(PM_QOS_SCP_VCORE_REQUEST, l, 1);
+	commit_data(MTK_PM_QOS_SCP_VCORE_REQUEST, l, 1);
 
 	return NOTIFY_OK;
 }
 
-static int pm_qos_power_model_ddr_request_notify(struct notifier_block *b,
+static int mtk_pm_qos_power_model_ddr_request_notify(struct notifier_block *b,
 		unsigned long l, void *v)
 {
-	commit_data(PM_QOS_POWER_MODEL_DDR_REQUEST, l, 1);
+	commit_data(MTK_PM_QOS_POWER_MODEL_DDR_REQUEST, l, 1);
 
 	return NOTIFY_OK;
 }
 
-static int pm_qos_power_model_vcore_request_notify(struct notifier_block *b,
+static int mtk_pm_qos_power_model_vcore_request_notify(struct notifier_block *b,
 		unsigned long l, void *v)
 {
-	commit_data(PM_QOS_POWER_MODEL_VCORE_REQUEST, l, 1);
+	commit_data(MTK_PM_QOS_POWER_MODEL_VCORE_REQUEST, l, 1);
 
 	return NOTIFY_OK;
 }
 
-static int pm_qos_vcore_dvfs_force_opp_notify(struct notifier_block *b,
+static int mtk_pm_qos_vcore_dvfs_force_opp_notify(struct notifier_block *b,
 		unsigned long l, void *v)
 {
-	commit_data(PM_QOS_VCORE_DVFS_FORCE_OPP, l, 1);
+	commit_data(MTK_PM_QOS_VCORE_DVFS_FORCE_OPP, l, 1);
 
 	return NOTIFY_OK;
 }
 
-static void pm_qos_notifier_register(void)
+static void mtk_pm_qos_notifier_register(void)
 {
-	dvfsrc->pm_qos_memory_bw_nb.notifier_call =
-		pm_qos_memory_bw_notify;
-	dvfsrc->pm_qos_cpu_memory_bw_nb.notifier_call =
-		pm_qos_cpu_memory_bw_notify;
-	dvfsrc->pm_qos_gpu_memory_bw_nb.notifier_call =
-		pm_qos_gpu_memory_bw_notify;
-	dvfsrc->pm_qos_mm_memory_bw_nb.notifier_call =
-		pm_qos_mm_memory_bw_notify;
-	dvfsrc->pm_qos_other_memory_bw_nb.notifier_call =
-		pm_qos_other_memory_bw_notify;
-	dvfsrc->pm_qos_ddr_opp_nb.notifier_call =
-		pm_qos_ddr_opp_notify;
-	dvfsrc->pm_qos_vcore_opp_nb.notifier_call =
-		pm_qos_vcore_opp_notify;
-	dvfsrc->pm_qos_scp_vcore_request_nb.notifier_call =
-		pm_qos_scp_vcore_request_notify;
-	dvfsrc->pm_qos_power_model_ddr_request_nb.notifier_call =
-		pm_qos_power_model_ddr_request_notify;
-	dvfsrc->pm_qos_power_model_vcore_request_nb.notifier_call =
-		pm_qos_power_model_vcore_request_notify;
-	dvfsrc->pm_qos_vcore_dvfs_force_opp_nb.notifier_call =
-		pm_qos_vcore_dvfs_force_opp_notify;
+	dvfsrc->mtk_pm_qos_memory_bw_nb.notifier_call =
+		mtk_pm_qos_memory_bw_notify;
+	dvfsrc->mtk_pm_qos_cpu_memory_bw_nb.notifier_call =
+		mtk_pm_qos_cpu_memory_bw_notify;
+	dvfsrc->mtk_pm_qos_gpu_memory_bw_nb.notifier_call =
+		mtk_pm_qos_gpu_memory_bw_notify;
+	dvfsrc->mtk_pm_qos_mm_memory_bw_nb.notifier_call =
+		mtk_pm_qos_mm_memory_bw_notify;
+	dvfsrc->mtk_pm_qos_other_memory_bw_nb.notifier_call =
+		mtk_pm_qos_other_memory_bw_notify;
+	dvfsrc->mtk_pm_qos_ddr_opp_nb.notifier_call =
+		mtk_pm_qos_ddr_opp_notify;
+	dvfsrc->mtk_pm_qos_vcore_opp_nb.notifier_call =
+		mtk_pm_qos_vcore_opp_notify;
+	dvfsrc->mtk_pm_qos_scp_vcore_request_nb.notifier_call =
+		mtk_pm_qos_scp_vcore_request_notify;
+	dvfsrc->mtk_pm_qos_power_model_ddr_request_nb.notifier_call =
+		mtk_pm_qos_power_model_ddr_request_notify;
+	dvfsrc->mtk_pm_qos_power_model_vcore_request_nb.notifier_call =
+		mtk_pm_qos_power_model_vcore_request_notify;
+	dvfsrc->mtk_pm_qos_vcore_dvfs_force_opp_nb.notifier_call =
+		mtk_pm_qos_vcore_dvfs_force_opp_notify;
 
-	pm_qos_add_notifier(PM_QOS_MEMORY_BANDWIDTH,
-			&dvfsrc->pm_qos_memory_bw_nb);
-	pm_qos_add_notifier(PM_QOS_CPU_MEMORY_BANDWIDTH,
-			&dvfsrc->pm_qos_cpu_memory_bw_nb);
-	pm_qos_add_notifier(PM_QOS_GPU_MEMORY_BANDWIDTH,
-			&dvfsrc->pm_qos_gpu_memory_bw_nb);
-	pm_qos_add_notifier(PM_QOS_MM_MEMORY_BANDWIDTH,
-			&dvfsrc->pm_qos_mm_memory_bw_nb);
-	pm_qos_add_notifier(PM_QOS_OTHER_MEMORY_BANDWIDTH,
-			&dvfsrc->pm_qos_other_memory_bw_nb);
-	pm_qos_add_notifier(PM_QOS_DDR_OPP,
-			&dvfsrc->pm_qos_ddr_opp_nb);
-	pm_qos_add_notifier(PM_QOS_VCORE_OPP,
-			&dvfsrc->pm_qos_vcore_opp_nb);
-	pm_qos_add_notifier(PM_QOS_SCP_VCORE_REQUEST,
-			&dvfsrc->pm_qos_scp_vcore_request_nb);
-	pm_qos_add_notifier(PM_QOS_POWER_MODEL_DDR_REQUEST,
-			&dvfsrc->pm_qos_power_model_ddr_request_nb);
-	pm_qos_add_notifier(PM_QOS_POWER_MODEL_VCORE_REQUEST,
-			&dvfsrc->pm_qos_power_model_vcore_request_nb);
-	pm_qos_add_notifier(PM_QOS_VCORE_DVFS_FORCE_OPP,
-			&dvfsrc->pm_qos_vcore_dvfs_force_opp_nb);
+	mtk_pm_qos_add_notifier(MTK_PM_QOS_MEMORY_BANDWIDTH_TEST,
+			&dvfsrc->mtk_pm_qos_memory_bw_nb);
+	mtk_pm_qos_add_notifier(MTK_PM_QOS_CPU_MEMORY_BANDWIDTH,
+			&dvfsrc->mtk_pm_qos_cpu_memory_bw_nb);
+	mtk_pm_qos_add_notifier(MTK_PM_QOS_GPU_MEMORY_BANDWIDTH,
+			&dvfsrc->mtk_pm_qos_gpu_memory_bw_nb);
+	mtk_pm_qos_add_notifier(MTK_PM_QOS_MM_MEMORY_BANDWIDTH,
+			&dvfsrc->mtk_pm_qos_mm_memory_bw_nb);
+	mtk_pm_qos_add_notifier(MTK_PM_QOS_OTHER_MEMORY_BANDWIDTH,
+			&dvfsrc->mtk_pm_qos_other_memory_bw_nb);
+	mtk_pm_qos_add_notifier(MTK_PM_QOS_DDR_OPP,
+			&dvfsrc->mtk_pm_qos_ddr_opp_nb);
+	mtk_pm_qos_add_notifier(MTK_PM_QOS_VCORE_OPP,
+			&dvfsrc->mtk_pm_qos_vcore_opp_nb);
+	mtk_pm_qos_add_notifier(MTK_PM_QOS_SCP_VCORE_REQUEST,
+			&dvfsrc->mtk_pm_qos_scp_vcore_request_nb);
+	mtk_pm_qos_add_notifier(MTK_PM_QOS_POWER_MODEL_DDR_REQUEST,
+			&dvfsrc->mtk_pm_qos_power_model_ddr_request_nb);
+	mtk_pm_qos_add_notifier(MTK_PM_QOS_POWER_MODEL_VCORE_REQUEST,
+			&dvfsrc->mtk_pm_qos_power_model_vcore_request_nb);
+	mtk_pm_qos_add_notifier(MTK_PM_QOS_VCORE_DVFS_FORCE_OPP,
+			&dvfsrc->mtk_pm_qos_vcore_dvfs_force_opp_nb);
 }
 
 static int helio_dvfsrc_probe(struct platform_device *pdev)
@@ -831,16 +796,11 @@ static int helio_dvfsrc_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, dvfsrc);
 
-	dvfsrc->devfreq = devm_devfreq_add_device(&pdev->dev,
-						 &helio_devfreq_profile,
-						 "helio_dvfsrc",
-						 NULL);
-
 	ret = helio_dvfsrc_add_interface(&pdev->dev);
 	if (ret)
 		return ret;
 
-	pm_qos_notifier_register();
+	mtk_pm_qos_notifier_register();
 
 	helio_dvfsrc_common_init();
 	vcore_reg_id = regulator_get(&pdev->dev, "vcore");
@@ -877,10 +837,12 @@ static __maybe_unused int helio_dvfsrc_suspend(struct device *dev)
 {
 	int ret = 0;
 
-	ret = devfreq_suspend_device(dvfsrc->devfreq);
-	if (ret < 0) {
-		pr_info("failed to suspend the devfreq devices\n");
-		return ret;
+	if (dvfsrc->suspend) {
+		ret = dvfsrc->suspend(dvfsrc);
+		if (ret) {
+			pr_err("%s suspend failed\n", __func__);
+			return ret;
+		}
 	}
 
 	return 0;
@@ -890,11 +852,14 @@ static __maybe_unused int helio_dvfsrc_resume(struct device *dev)
 {
 	int ret = 0;
 
-	ret = devfreq_resume_device(dvfsrc->devfreq);
-	if (ret < 0) {
-		pr_info("failed to resume the devfreq devices\n");
-		return ret;
+	if (dvfsrc->resume) {
+		ret = dvfsrc->resume(dvfsrc);
+		if (ret) {
+			pr_err("%s suspend failed\n", __func__);
+			return ret;
+		}
 	}
+
 	return ret;
 }
 
@@ -915,15 +880,7 @@ static int __init helio_dvfsrc_init(void)
 {
 	int ret = 0;
 
-	ret = devfreq_add_governor(&helio_dvfsrc_governor);
-	if (ret) {
-		pr_info("%s: failed to add governor: %d\n", __func__, ret);
-		return ret;
-	}
-
 	ret = platform_driver_register(&helio_dvfsrc_driver);
-	if (ret)
-		devfreq_remove_governor(&helio_dvfsrc_governor);
 
 	return ret;
 }
@@ -931,13 +888,9 @@ late_initcall_sync(helio_dvfsrc_init)
 
 static void __exit helio_dvfsrc_exit(void)
 {
-	int ret = 0;
 
 	platform_driver_unregister(&helio_dvfsrc_driver);
 
-	ret = devfreq_remove_governor(&helio_dvfsrc_governor);
-	if (ret)
-		pr_info("%s: failed to remove governor: %d\n", __func__, ret);
 }
 module_exit(helio_dvfsrc_exit)
 

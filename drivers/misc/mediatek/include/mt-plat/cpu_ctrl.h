@@ -1,21 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 #ifndef _CPU_CTRL_H
 #define _CPU_CTRL_H
-
-
-#include <mtk_ppm_api.h>
 
 enum {
 	CPU_KIR_PERF = 0,
@@ -30,30 +18,45 @@ enum {
 	CPU_KIR_GBE,
 	CPU_KIR_CCCI,
 	CPU_KIR_SYSLIM,
+	CPU_KIR_CORE_CTL,
 	CPU_MAX_KIR
 };
 
 enum {
-	CPU_ISO_KIR_PERF = 0,
+	CPU_ISO_KIR_PERF_CORE = 0,
+	CPU_ISO_KIR_PERF_ISO,
 	CPU_ISO_KIR_FPSGO,
 	CPU_ISO_KIR_CPU_CTRL,
 	CPU_ISO_MAX_KIR
 };
 
+struct cpu_ctrl_data {
+	int min;
+	int max;
+};
 
-extern unsigned int __attribute__((weak)) mt_ppm_userlimit_freq_limit_by_others(
-	unsigned int cluster);
-extern void __attribute__((weak)) ppm_game_mode_change_cb(int is_game_mode);
-extern unsigned int __attribute__((weak)) mt_ppm_userlimit_cpu_freq(unsigned int cluster_num,
-	struct ppm_limit_data *data);
+#ifdef CONFIG_MTK_CPU_FREQ
+#include <mtk_cpufreq_common_api.h>
+unsigned int __attribute__ ((weak))  mt_cpufreq_get_freq_by_idx(
+	unsigned int cid, int idx) { return 0; }
+#else
+#ifdef MTK_MT6739_MTK_CPU_FREQ
 extern unsigned int mt_cpufreq_get_freq_by_idx(int id, int idx);
+#else
+static inline unsigned int mt_cpufreq_get_freq_by_idx(
+	int cid, int idx) { return 0; }
+#endif
+#endif
+
 extern int update_userlimit_cpu_freq(int kicker, int num_cluster
-				, struct ppm_limit_data *freq_limit);
+				, struct cpu_ctrl_data *freq_limit);
 extern int update_userlimit_cpu_core(int kicker, int num_cluster
-				, struct ppm_limit_data *core_limit);
+				, struct cpu_ctrl_data *core_limit);
 extern int sched_isolate_cpu(int cpu);
 extern int sched_deisolate_cpu(int cpu);
 
-int update_isolation_cpu(int kicker, int enable, int cpu);
+int update_cpu_core_limit(int kicker, int cid, int min, int max);
+void update_isolation_cpu(int kicker, int enable, int cpu);
 
 #endif /* _CPU_CTRL_H */
+

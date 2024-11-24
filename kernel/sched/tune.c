@@ -9,7 +9,6 @@
 #include <trace/events/sched.h>
 
 #include "sched.h"
-#include "tune.h"
 
 bool schedtune_initialized = false;
 extern struct reciprocal_value schedtune_spc_rdiv;
@@ -19,6 +18,64 @@ extern struct reciprocal_value schedtune_spc_rdiv;
 
 /*
  * EAS scheduler tunables for task groups.
+ *
+ * When CGroup support is enabled, we have to synchronize two different
+ * paths:
+ *  - slow path: where CGroups are created/updated/removed
+ *  - fast path: where tasks in a CGroups are accounted
+ *
+ * The slow path tracks (a limited number of) CGroups and maps each on a
+ * "boost_group" index. The fastpath accounts tasks currently RUNNABLE on each
+ * "boost_group".
+ *
+ * Once a new CGroup is created, a boost group idx is assigned and the
+ * corresponding "boost_group" marked as valid on each CPU.
+ * Once a CGroup is release, the corresponding "boost_group" is marked as
+ * invalid on each CPU. The CPU boost value (boost_max) is aggregated by
+ * considering only valid boost_groups with a non null tasks counter.
+ *
+ * .:: Locking strategy
+ *
+ * The fast path uses a spin lock for each CPU boost_group which protects the
+ * tasks counter.
+ *
+ * The "valid" and "boost" values of each CPU boost_group is instead
+ * protected by the RCU lock provided by the CGroups callbacks. Thus, only the
+ * slow path can access and modify the boost_group attribtues of each CPU.
+ * The fast path will catch up the most updated values at the next scheduling
+ * event (i.e. enqueue/dequeue).
+ *
+ *                                                        |
+ *                                             SLOW PATH  |   FAST PATH
+ *                              CGroup add/update/remove  |   Scheduler enqueue/dequeue events
+ *                                                        |
+ *                                                        |
+ *                                                        |     DEFINE_PER_CPU(struct boost_groups)
+ *                                                        |     +--------------+----+---+----+----+
+ *                                                        |     |  idle        |    |   |    |    |
+ *                                                        |     |  boost_max   |    |   |    |    |
+ *                                                        |  +---->lock        |    |   |    |    |
+ *  struct schedtune                  allocated_groups    |  |  |  group[    ] |    |   |    |    |
+ *  +------------------------------+         +-------+    |  |  +--+---------+-+----+---+----+----+
+ *  | idx                          |         |       |    |  |     |  valid  |
+ *  | boots / prefer_idle          |         |       |    |  |     |  boost  |
+ *  | perf_{boost/constraints}_idx | <---------+(*)  |    |  |     |  tasks  | <------------+
+ *  | css                          |         +-------+    |  |     +---------+              |
+ *  +-+----------------------------+         |       |    |  |     |         |              |
+ *    ^                                      |       |    |  |     |         |              |
+ *    |                                      +-------+    |  |     +---------+              |
+ *    |                                      |       |    |  |     |         |              |
+ *    |                                      |       |    |  |     |         |              |
+ *    |                                      +-------+    |  |     +---------+              |
+ *    | zmalloc                              |       |    |  |     |         |              |
+ *    |                                      |       |    |  |     |         |              |
+ *    |                                      +-------+    |  |     +---------+              |
+ *    +                              BOOSTGROUPS_COUNT    |  |     BOOSTGROUPS_COUNT        |
+ *  schedtune_boostgroup_init()                           |  +                              |
+ *                                                        |  schedtune_{en,de}queue_task()  |
+ *                                                        |                                 +
+ *                                                        |          schedtune_tasks_update()
+ *                                                        |
  */
 
 /* SchdTune tunables for a group of tasks */
@@ -37,8 +94,12 @@ struct schedtune {
 	int prefer_idle;
 
 #ifdef CONFIG_UCLAMP_TASK_GROUP
-	/* Task utilization clamping */
-	struct			uclamp_se uclamp[UCLAMP_CNT];
+	/* The two decimal precision [%] value requested from user-space */
+	unsigned int		uclamp_pct[UCLAMP_CNT];
+	/* Clamp values requested for a task group */
+	struct uclamp_se	uclamp_req[UCLAMP_CNT];
+	/* Effective clamp values used for a task group */
+	struct uclamp_se	uclamp[UCLAMP_CNT];
 #endif
 };
 
@@ -57,19 +118,6 @@ static inline struct schedtune *parent_st(struct schedtune *st)
 	return css_st(st->css.parent);
 }
 
-#ifdef CONFIG_UCLAMP_TASK_GROUP
-struct uclamp_se *task_schedtune_uclamp(struct task_struct *tsk, int clamp_id)
-{
-	struct schedtune *st;
-
-	rcu_read_lock();
-	st = task_schedtune(tsk);
-	rcu_read_unlock();
-
-	return &st->uclamp[clamp_id];
-}
-#endif
-
 /*
  * SchedTune root control group
  * The root control group is used to defined a system-wide boosting tuning,
@@ -79,7 +127,7 @@ struct uclamp_se *task_schedtune_uclamp(struct task_struct *tsk, int clamp_id)
  * By default, system-wide boosting is disabled, i.e. no boosting is applied
  * to tasks which are not into a child control group.
  */
-static struct schedtune
+struct schedtune
 root_schedtune = {
 	.boost	= 0,
 	.prefer_idle = 0,
@@ -119,10 +167,11 @@ static inline bool is_group_idx_valid(int idx)
  */
 struct boost_groups {
 	/* Maximum boost value for all RUNNABLE tasks on a CPU */
-	bool idle;
 	int boost_max;
 	u64 boost_ts;
 	struct {
+		/* True when this boost group maps an actual cgroup */
+		bool valid;
 		/* The boost for tasks on that boost group */
 		int boost;
 		/* Count of RUNNABLE tasks on that boost group */
@@ -163,6 +212,11 @@ schedtune_cpu_update(int cpu, u64 now)
 	boost_max = bg->group[0].boost;
 	boost_ts = now;
 	for (idx = 1; idx < BOOSTGROUPS_COUNT; ++idx) {
+
+		/* Ignore non boostgroups not mapping a cgroup */
+		if (!bg->group[idx].valid)
+			continue;
+
 		/*
 		 * A boost group affects a CPU only if it has
 		 * RUNNABLE tasks on that CPU or it has hold
@@ -178,6 +232,7 @@ schedtune_cpu_update(int cpu, u64 now)
 		boost_max = bg->group[idx].boost;
 		boost_ts =  bg->group[idx].ts;
 	}
+
 	/* Ensures boost_max is non-negative when all cgroup boost values
 	 * are neagtive. Avoids under-accounting of cpu capacity which may cause
 	 * task stacking and frequency spikes.*/
@@ -198,6 +253,9 @@ schedtune_boostgroup_update(int idx, int boost)
 	/* Update per CPU boost groups */
 	for_each_possible_cpu(cpu) {
 		bg = &per_cpu(cpu_boost_groups, cpu);
+
+		/* CGroups are never associated to non active cgroups */
+		BUG_ON(!bg->group[idx].valid);
 
 		/*
 		 * Keep track of current boost values to compute the per CPU
@@ -233,240 +291,6 @@ schedtune_boostgroup_update(int idx, int boost)
 
 	return 0;
 }
-
-#ifdef CONFIG_UCLAMP_TASK_GROUP
-/**
- * cpu_util_update: update effective clamp
- * @css: the task group to update
- * @clamp_id: the clamp index to update
- * @group_id: the group index mapping the new task clamp value
- * @value: the new task group clamp value
- *
- * The effective clamp for a TG is expected to track the most restrictive
- * value between the ST's clamp value and it's parent effective clamp value.
- * This method achieve that:
- * 1. updating the current TG effective value
- * 2. walking all the descendant task group that needs an update
- *
- * A ST's effective clamp needs to be updated when its current value is not
- * matching the ST's clamp value. In this case indeed either:
- * a) the parent has got a more relaxed clamp value
- *    thus potentially we can relax the effective value for this group
- * b) the parent has got a more strict clamp value
- *    thus potentially we have to restrict the effective value of this group
- *
- * Restriction and relaxation of current ST's effective clamp values needs to
- * be propagated down to all the descendants. When a subgroup is found which
- * has already its effective clamp value matching its clamp value, then we can
- * safely skip all its descendants which are granted to be already in sync.
- *
- * The ST's group_id is also updated to ensure it tracks the effective clamp
- * value.
- */
-static void cpu_util_update(struct cgroup_subsys_state *css,
-				 unsigned int clamp_id, unsigned int group_id,
-				 unsigned int value)
-{
-	struct uclamp_se *uc_se;
-
-	uc_se = &css_st(css)->uclamp[clamp_id];
-	uc_se->effective.value = value;
-	uc_se->effective.group_id = group_id;
-}
-/*
- * free_uclamp_sched_group: release utilization clamp references of a TG
- * @st: the schetune being removed
- *
- * An empty task group can be removed only when it has no more tasks or child
- * groups. This means that we can also safely release all the reference
- * counting to clamp groups.
- */
-static inline void free_uclamp_sched_group(struct schedtune *st)
-{
-	int clamp_id;
-
-	for (clamp_id = 0; clamp_id < UCLAMP_CNT; ++clamp_id)
-		uclamp_group_put(clamp_id, st->uclamp[clamp_id].group_id);
-}
-
-/**
- * alloc_uclamp_sched_group: initialize a new ST's for utilization clamping
- * @st: the newly created schedtune
- *
- * A newly created schedtune inherits its utilization clamp values, for all
- * clamp indexes, from its parent task group.
- * This ensures that its values are properly initialized and that the task
- * group is accounted in the same parent's group index.
- *
- * Return: 0 on error
- */
-static inline int alloc_uclamp_sched_group(struct schedtune *st)
-{
-	struct uclamp_se *uc_se;
-	int clamp_id;
-
-	for (clamp_id = 0; clamp_id < UCLAMP_CNT; ++clamp_id) {
-		uc_se = &st->uclamp[clamp_id];
-		uclamp_group_get(NULL, NULL, &st->uclamp[clamp_id],
-				 clamp_id, uclamp_none(clamp_id));
-		uc_se->effective.value = uc_se->value;
-		uc_se->effective.group_id = uc_se->group_id;
-	}
-
-	return 1;
-}
-
-static int cpu_util_min_write_u64(struct cgroup_subsys_state *css,
-				  struct cftype *cftype, u64 min_value)
-{
-	struct schedtune *st;
-	int ret = 0;
-
-	if (min_value > SCHED_CAPACITY_SCALE)
-		return -ERANGE;
-
-	if (!opp_capacity_tbl_ready)
-		init_opp_capacity_tbl();
-
-	min_value = find_fit_capacity(min_value);
-
-	mutex_lock(&uclamp_mutex);
-	rcu_read_lock();
-
-	st = css_st(css);
-	if (st->uclamp[UCLAMP_MIN].value == min_value)
-		goto out;
-	if (st->uclamp[UCLAMP_MAX].value < min_value) {
-		ret = -EINVAL;
-		goto out;
-	}
-
-	/* Update ST's reference count */
-	uclamp_group_get(NULL, css, &st->uclamp[UCLAMP_MIN],
-			 UCLAMP_MIN, min_value);
-
-	/* Update effective clamps to track the most restrictive value */
-	cpu_util_update(css, UCLAMP_MIN, st->uclamp[UCLAMP_MIN].group_id,
-			     min_value);
-out:
-	rcu_read_unlock();
-	mutex_unlock(&uclamp_mutex);
-
-	return ret;
-}
-
-static int cpu_util_min_pct_write_u64(struct cgroup_subsys_state *css,
-				  struct cftype *cftype, u64 pct)
-{
-	u64 min_value;
-
-	if (pct < 0 || pct > 100)
-		return -ERANGE;
-
-	min_value = scale_from_percent(pct);
-	return cpu_util_min_write_u64(css, cftype, min_value);
-}
-
-static int cpu_util_max_write_u64(struct cgroup_subsys_state *css,
-				  struct cftype *cftype, u64 max_value)
-{
-	struct schedtune *st;
-	int ret = 0;
-
-	if (max_value > SCHED_CAPACITY_SCALE)
-		return -ERANGE;
-
-	if (!opp_capacity_tbl_ready)
-		init_opp_capacity_tbl();
-
-	max_value = find_fit_capacity(max_value);
-
-	mutex_lock(&uclamp_mutex);
-	rcu_read_lock();
-
-	st = css_st(css);
-	if (st->uclamp[UCLAMP_MAX].value == max_value)
-		goto out;
-	if (st->uclamp[UCLAMP_MIN].value > max_value) {
-		ret = -EINVAL;
-		goto out;
-	}
-
-	/* Update ST's reference count */
-	uclamp_group_get(NULL, css, &st->uclamp[UCLAMP_MAX],
-			 UCLAMP_MAX, max_value);
-
-	/* Update effective clamps to track the most restrictive value */
-	cpu_util_update(css, UCLAMP_MAX, st->uclamp[UCLAMP_MAX].group_id,
-			     max_value);
-out:
-	rcu_read_unlock();
-	mutex_unlock(&uclamp_mutex);
-
-	return ret;
-}
-
-static int cpu_util_max_pct_write_u64(struct cgroup_subsys_state *css,
-				  struct cftype *cftype, u64 pct)
-{
-	u64 max_value;
-
-	if (pct < 0 || pct > 100)
-		return -ERANGE;
-
-	max_value = scale_from_percent(pct);
-	return cpu_util_max_write_u64(css, cftype, max_value);
-}
-
-static inline u64 cpu_uclamp_read(struct cgroup_subsys_state *css,
-				  enum uclamp_id clamp_id,
-				  bool effective)
-{
-	struct schedtune *st;
-	u64 util_clamp;
-
-	rcu_read_lock();
-	st = css_st(css);
-	util_clamp = effective
-		? st->uclamp[clamp_id].effective.value
-		: st->uclamp[clamp_id].value;
-	rcu_read_unlock();
-
-	return util_clamp;
-}
-
-static u64 cpu_util_min_read_u64(struct cgroup_subsys_state *css,
-				 struct cftype *cft)
-{
-	return cpu_uclamp_read(css, UCLAMP_MIN, false);
-}
-
-static u64 cpu_util_max_read_u64(struct cgroup_subsys_state *css,
-				 struct cftype *cft)
-{
-	return cpu_uclamp_read(css, UCLAMP_MAX, false);
-}
-
-static u64 cpu_util_min_effective_read_u64(struct cgroup_subsys_state *css,
-					   struct cftype *cft)
-{
-	return cpu_uclamp_read(css, UCLAMP_MIN, true);
-}
-
-static u64 cpu_util_max_effective_read_u64(struct cgroup_subsys_state *css,
-					   struct cftype *cft)
-{
-	return cpu_uclamp_read(css, UCLAMP_MAX, true);
-}
-#else
-static inline void free_uclamp_sched_group(struct schedtune *st) {}
-static inline int alloc_uclamp_sched_group(struct schedtune *st)
-{
-	return 1;
-}
-#endif /* CONFIG_UCLAMP_TASK_GROUP */
-
-#include "tune_plus.c"
 
 #define ENQUEUE_TASK  1
 #define DEQUEUE_TASK -1
@@ -699,6 +523,60 @@ int schedtune_prefer_idle(struct task_struct *p)
 	return prefer_idle;
 }
 
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+void init_root_st_uclamp(int clamp_id)
+{
+	struct uclamp_se uc_max = {};
+
+	uc_max.value = uclamp_none(UCLAMP_MAX);
+	uc_max.bucket_id = uclamp_bucket_id(uc_max.value);
+	uc_max.user_defined = false;
+
+	root_schedtune.uclamp_req[clamp_id] = uc_max;
+	root_schedtune.uclamp[clamp_id] = uc_max;
+}
+
+struct uclamp_se
+uclamp_st_restrict(struct task_struct *p, enum uclamp_id clamp_id)
+{
+	struct uclamp_se uc_req = p->uclamp_req[clamp_id];
+	struct uclamp_se uc_max;
+
+	rcu_read_lock();
+	/*
+	 * Tasks in autogroups or root task group will be
+	 * restricted by system defaults.
+	 */
+	if (task_schedtune(p) == &root_schedtune)
+		goto unlock;
+
+	uc_max = task_schedtune(p)->uclamp[clamp_id];
+
+	if (UCLAMP_MIN == clamp_id && 0 == uc_max.value)
+		goto unlock;
+	if (!uc_req.user_defined || (uc_req.value != uc_max.value &&
+						uc_max.value != uclamp_none(clamp_id))) {
+		rcu_read_unlock();
+		return uc_max;
+	}
+unlock:
+	rcu_read_unlock();
+	return uc_req;
+}
+
+static inline void alloc_uclamp_sched_group(struct schedtune *st,
+					    struct schedtune *parent)
+{
+	enum uclamp_id clamp_id;
+
+	for_each_clamp_id(clamp_id) {
+		uclamp_se_set(&st->uclamp_req[clamp_id],
+			      uclamp_none(clamp_id), false);
+		st->uclamp[clamp_id] = parent->uclamp[clamp_id];
+	}
+}
+#endif
+
 static u64
 prefer_idle_read(struct cgroup_subsys_state *css, struct cftype *cft)
 {
@@ -713,17 +591,6 @@ prefer_idle_write(struct cgroup_subsys_state *css, struct cftype *cft,
 {
 	struct schedtune *st = css_st(css);
 	st->prefer_idle = !!prefer_idle;
-
-#if MET_STUNE_DEBUG
-	/* user: foreground */
-	if (st->idx == 1)
-		met_tag_oneshot(0, "sched_user_prefer_idle_fg",
-				st->prefer_idle);
-	/* user: top-app */
-	if (st->idx == 3)
-		met_tag_oneshot(0, "sched_user_prefer_idle_top",
-				st->prefer_idle);
-#endif
 
 	return 0;
 }
@@ -750,17 +617,187 @@ boost_write(struct cgroup_subsys_state *css, struct cftype *cft,
 	/* Update CPU boost */
 	schedtune_boostgroup_update(st->idx, st->boost);
 
-#if MET_STUNE_DEBUG
-	/* user: foreground */
-	if (st->idx == 1)
-		met_tag_oneshot(0, "sched_user_boost_fg", st->boost);
-	/* user: top-app */
-	if (st->idx == 3)
-		met_tag_oneshot(0, "sched_user_boost_top", st->boost);
-#endif
-
 	return 0;
 }
+
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+static void cpu_util_update_eff(struct cgroup_subsys_state *css)
+{
+	struct cgroup_subsys_state *top_css = css;
+	struct uclamp_se *uc_se = NULL;
+	unsigned int eff[UCLAMP_CNT];
+	enum uclamp_id clamp_id;
+	unsigned int clamps;
+
+	css_for_each_descendant_pre(css, top_css) {
+
+		for_each_clamp_id(clamp_id) {
+			/* Assume effective clamps matches requested clamps */
+			eff[clamp_id] = css_st(css)->uclamp_req[clamp_id].value;
+		}
+		/* Ensure protection is always capped by limit */
+		eff[UCLAMP_MIN] = min(eff[UCLAMP_MIN], eff[UCLAMP_MAX]);
+
+		/* Propagate most restrictive effective clamps */
+		clamps = 0x0;
+		uc_se = css_st(css)->uclamp;
+		for_each_clamp_id(clamp_id) {
+			if (eff[clamp_id] == uc_se[clamp_id].value)
+				continue;
+			uc_se[clamp_id].value = eff[clamp_id];
+			uc_se[clamp_id].bucket_id =
+				uclamp_bucket_id(eff[clamp_id]);
+			clamps |= (0x1 << clamp_id);
+		}
+		if (!clamps) {
+			css = css_rightmost_descendant(css);
+			continue;
+		}
+
+		/* Immediately update descendants RUNNABLE tasks */
+		uclamp_update_active_tasks(css, clamps);
+	}
+}
+
+void uclamp_update_root_st(void)
+{
+	struct schedtune *st = &root_schedtune;
+
+	uclamp_se_set(&st->uclamp_req[UCLAMP_MIN],
+		      sysctl_sched_uclamp_util_min, false);
+	uclamp_se_set(&st->uclamp_req[UCLAMP_MAX],
+		      sysctl_sched_uclamp_util_max, false);
+
+	rcu_read_lock();
+	cpu_util_update_eff(&root_schedtune.css);
+	rcu_read_unlock();
+}
+/*
+ * Integer 10^N with a given N exponent by casting to integer the literal "1eN"
+ * C expression. Since there is no way to convert a macro argument (N) into a
+ * character constant, use two levels of macros.
+ */
+#define _POW10(exp) ((unsigned int)1e##exp)
+#define POW10(exp) _POW10(exp)
+
+struct uclamp_request {
+#define UCLAMP_PERCENT_SHIFT	2
+#define UCLAMP_PERCENT_SCALE	(100 * POW10(UCLAMP_PERCENT_SHIFT))
+	s64 percent;
+	u64 util;
+	int ret;
+};
+
+static inline struct uclamp_request
+capacity_from_percent(char *buf)
+{
+	struct uclamp_request req = {
+		.percent = UCLAMP_PERCENT_SCALE,
+		.util = SCHED_CAPACITY_SCALE,
+		.ret = 0,
+	};
+
+	buf = strim(buf);
+	if (strcmp(buf, "max")) {
+		req.ret = cgroup_parse_float(buf, UCLAMP_PERCENT_SHIFT,
+					     &req.percent);
+		if (req.ret)
+			return req;
+		if (req.percent > UCLAMP_PERCENT_SCALE) {
+			req.ret = -ERANGE;
+			return req;
+		}
+
+		req.util = req.percent << SCHED_CAPACITY_SHIFT;
+		req.util =
+			DIV_ROUND_CLOSEST_ULL(req.util, UCLAMP_PERCENT_SCALE);
+	}
+
+	return req;
+}
+
+static ssize_t cpu_uclamp_write(struct kernfs_open_file *of, char *buf,
+				size_t nbytes, loff_t off,
+				enum uclamp_id clamp_id)
+{
+	struct uclamp_request req;
+	struct schedtune *st;
+
+	req = capacity_from_percent(buf);
+	if (req.ret)
+		return req.ret;
+
+	mutex_lock(&uclamp_mutex);
+	rcu_read_lock();
+
+	st = css_st(of_css(of));
+	if (st->uclamp_req[clamp_id].value != req.util)
+		uclamp_se_set(&st->uclamp_req[clamp_id], req.util, false);
+
+	/*
+	 * Because of not recoverable conversion rounding we keep track of the
+	 * exact requested value
+	 */
+	st->uclamp_pct[clamp_id] = req.percent;
+
+	/* Update effective clamps to track the most restrictive value */
+	cpu_util_update_eff(of_css(of));
+
+	rcu_read_unlock();
+	mutex_unlock(&uclamp_mutex);
+
+	return nbytes;
+}
+
+static ssize_t cpu_uclamp_min_write(struct kernfs_open_file *of,
+				    char *buf, size_t nbytes,
+				    loff_t off)
+{
+	return cpu_uclamp_write(of, buf, nbytes, off, UCLAMP_MIN);
+}
+
+static ssize_t cpu_uclamp_max_write(struct kernfs_open_file *of,
+				    char *buf, size_t nbytes,
+				    loff_t off)
+{
+	return cpu_uclamp_write(of, buf, nbytes, off, UCLAMP_MAX);
+}
+
+static inline void cpu_uclamp_print(struct seq_file *sf,
+				    enum uclamp_id clamp_id)
+{
+	struct schedtune *st;
+	u64 util_clamp;
+	u64 percent;
+	u32 rem;
+
+	rcu_read_lock();
+	st = css_st(seq_css(sf));
+	util_clamp = st->uclamp_req[clamp_id].value;
+	rcu_read_unlock();
+
+	if (util_clamp == SCHED_CAPACITY_SCALE) {
+		seq_puts(sf, "max\n");
+		return;
+	}
+
+	percent = st->uclamp_pct[clamp_id];
+	percent = div_u64_rem(percent, POW10(UCLAMP_PERCENT_SHIFT), &rem);
+	seq_printf(sf, "%llu.%0*u\n", percent, UCLAMP_PERCENT_SHIFT, rem);
+}
+
+static int cpu_uclamp_min_show(struct seq_file *sf, void *v)
+{
+	cpu_uclamp_print(sf, UCLAMP_MIN);
+	return 0;
+}
+
+static int cpu_uclamp_max_show(struct seq_file *sf, void *v)
+{
+	cpu_uclamp_print(sf, UCLAMP_MAX);
+	return 0;
+}
+#endif
 
 static struct cftype files[] = {
 	{
@@ -773,60 +810,49 @@ static struct cftype files[] = {
 		.read_u64 = prefer_idle_read,
 		.write_u64 = prefer_idle_write,
 	},
-#if defined(CONFIG_UCLAMP_TASK_GROUP)
+#ifdef CONFIG_UCLAMP_TASK_GROUP
 	{
-		.name = "util.min",
-		.read_u64 = cpu_util_min_read_u64,
-		.write_u64 = cpu_util_min_write_u64,
+		.name = "uclamp.min",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_uclamp_min_show,
+		.write = cpu_uclamp_min_write,
 	},
 	{
-		.name = "util.min.pct",
-		.write_u64 = cpu_util_min_pct_write_u64,
-	},
-	{
-		.name = "util.min.effective",
-		.read_u64 = cpu_util_min_effective_read_u64,
-	},
-	{
-		.name = "util.max",
-		.read_u64 = cpu_util_max_read_u64,
-		.write_u64 = cpu_util_max_write_u64,
-	},
-	{
-		.name = "util.max.pct",
-		.write_u64 = cpu_util_max_pct_write_u64,
-	},
-	{
-		.name = "util.max.effective",
-		.read_u64 = cpu_util_max_effective_read_u64,
+		.name = "uclamp.max",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = cpu_uclamp_max_show,
+		.write = cpu_uclamp_max_write,
 	},
 #endif
 	{ }	/* terminate */
 };
 
-static int
-schedtune_boostgroup_init(struct schedtune *st)
+static void
+schedtune_boostgroup_init(struct schedtune *st, int idx)
 {
 	struct boost_groups *bg;
 	int cpu;
 
-	/* Keep track of allocated boost groups */
-	allocated_group[st->idx] = st;
-
-	/* Initialize the per CPU boost groups */
+	/* Initialize per CPUs boost group support */
 	for_each_possible_cpu(cpu) {
 		bg = &per_cpu(cpu_boost_groups, cpu);
-		bg->group[st->idx].boost = 0;
-		bg->group[st->idx].tasks = 0;
-		bg->group[st->idx].ts = 0;
+		bg->group[idx].boost = 0;
+		bg->group[idx].valid = true;
+		bg->group[idx].ts = 0;
 	}
 
-	return 0;
+	/* Keep track of allocated boost groups */
+	allocated_group[idx] = st;
+	st->idx = idx;
 }
+
 
 static struct cgroup_subsys_state *
 schedtune_css_alloc(struct cgroup_subsys_state *parent_css)
 {
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+	struct schedtune *parent = parent_css ? css_st(parent_css) : NULL;
+#endif
 	struct schedtune *st;
 	int idx;
 
@@ -853,18 +879,15 @@ schedtune_css_alloc(struct cgroup_subsys_state *parent_css)
 	if (!st)
 		goto out;
 
-	/* Initialize per CPUs boost group support */
-	st->idx = idx;
-	if (schedtune_boostgroup_init(st))
-		goto release;
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+	alloc_uclamp_sched_group(st, parent);
+#endif
 
-	if (!alloc_uclamp_sched_group(st))
-		goto release;
+	/* Initialize per CPUs boost group support */
+	schedtune_boostgroup_init(st, idx);
 
 	return &st->css;
 
-release:
-	kfree(st);
 out:
 	return ERR_PTR(-ENOMEM);
 }
@@ -872,8 +895,15 @@ out:
 static void
 schedtune_boostgroup_release(struct schedtune *st)
 {
-	/* Reset this boost group */
-	schedtune_boostgroup_update(st->idx, 0);
+	struct boost_groups *bg;
+	int cpu;
+
+	/* Reset per CPUs boost group support */
+	for_each_possible_cpu(cpu) {
+		bg = &per_cpu(cpu_boost_groups, cpu);
+		bg->group[st->idx].valid = false;
+		bg->group[st->idx].boost = 0;
+	}
 
 	/* Keep track of allocated boost groups */
 	allocated_group[st->idx] = NULL;
@@ -884,8 +914,8 @@ schedtune_css_free(struct cgroup_subsys_state *css)
 {
 	struct schedtune *st = css_st(css);
 
+	/* Release per CPUs boost group support */
 	schedtune_boostgroup_release(st);
-	free_uclamp_sched_group(st);
 	kfree(st);
 }
 
@@ -898,24 +928,6 @@ struct cgroup_subsys schedtune_cgrp_subsys = {
 	.early_init	= 1,
 };
 
-#ifdef CONFIG_UCLAMP_TASK_GROUP
-void schedtune_init_uclamp(void)
-{
-	struct uclamp_se *uc_se;
-	unsigned int clamp_id;
-
-	for (clamp_id = 0; clamp_id < UCLAMP_CNT; ++clamp_id) {
-		/* Init root ST's clamp group */
-		uc_se = &root_schedtune.uclamp[clamp_id];
-		uclamp_group_get(NULL, NULL, uc_se, clamp_id,
-				 uclamp_none(clamp_id));
-		uc_se->effective.group_id = uc_se->group_id;
-		uc_se->effective.value = uc_se->value;
-	}
-
-}
-#endif
-
 static inline void
 schedtune_init_cgroups(void)
 {
@@ -926,6 +938,7 @@ schedtune_init_cgroups(void)
 	for_each_possible_cpu(cpu) {
 		bg = &per_cpu(cpu_boost_groups, cpu);
 		memset(bg, 0, sizeof(struct boost_groups));
+		bg->group[0].valid = true;
 		raw_spin_lock_init(&bg->lock);
 	}
 
@@ -935,18 +948,85 @@ schedtune_init_cgroups(void)
 	schedtune_initialized = true;
 }
 
+#ifdef CONFIG_SCHED_TUNE
+int prefer_idle_for_perf_idx(int idx, int prefer_idle)
+{
+	struct schedtune *ct = NULL;
+
+	if (!is_group_idx_valid(idx))
+		return -ERANGE;
+
+	ct = allocated_group[idx];
+
+	if (!ct)
+		return -EINVAL;
+
+	rcu_read_lock();
+	ct->prefer_idle = prefer_idle;
+	rcu_read_unlock();
+	return 0;
+}
+EXPORT_SYMBOL(prefer_idle_for_perf_idx);
+#endif
+
+#if defined(CONFIG_UCLAMP_TASK_GROUP) && defined(CONFIG_SCHED_TUNE)
+int uclamp_min_for_perf_idx(int idx, int min_value)
+{
+	struct schedtune *st;
+	struct cgroup_subsys_state *css;
+
+	s64 percent = min_value * UCLAMP_PERCENT_SCALE;
+
+	if (min_value > SCHED_CAPACITY_SCALE)
+		return -ERANGE;
+
+	if (!is_group_idx_valid(idx))
+		return -ERANGE;
+
+	st = allocated_group[idx];
+	if (!st)
+		return -EINVAL;
+
+	css = &st->css;
+
+	mutex_lock(&uclamp_mutex);
+	rcu_read_lock();
+
+	if (st->uclamp_req[UCLAMP_MIN].value != min_value)
+		uclamp_se_set(&st->uclamp_req[UCLAMP_MIN], min_value, false);
+
+	st->uclamp_pct[UCLAMP_MIN] = percent >> SCHED_CAPACITY_SHIFT;
+	cpu_util_update_eff(css);
+
+	rcu_read_unlock();
+	mutex_unlock(&uclamp_mutex);
+
+	return 0;
+
+}
+EXPORT_SYMBOL(uclamp_min_for_perf_idx);
+
+int uclamp_min_pct_for_perf_idx(int idx, int pct)
+{
+	unsigned int min_value;
+
+	if (pct < 0 || pct > 100)
+		return -ERANGE;
+
+	min_value = scale_from_percent(pct);
+	return uclamp_min_for_perf_idx(idx, min_value);
+}
+EXPORT_SYMBOL(uclamp_min_pct_for_perf_idx);
+#endif
+
 /*
  * Initialize the cgroup structures
  */
 static int
 schedtune_init(void)
 {
-	/* set default threshold */
-	calculate_default_stune_threshold();
-
 	schedtune_spc_rdiv = reciprocal_value(100);
 	schedtune_init_cgroups();
-
 	return 0;
 }
 postcore_initcall(schedtune_init);

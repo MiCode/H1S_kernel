@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/backlight.h>
 #include <linux/delay.h>
@@ -194,6 +186,8 @@ static void tianma_panel_init(struct tianma *ctx)
 	usleep_range(20 * 1000, 25 * 1000);
 
 	tianma_dcs_write_seq_static(ctx, 0xDF, 0x50, 0x42);
+	tianma_dcs_write_seq_static(ctx, 0xB0, 0x04);
+	tianma_dcs_write_seq_static(ctx, 0xE4, 0x00, 0x0B);
 	tianma_dcs_write_seq_static(ctx, 0xB0, 0x84);
 	tianma_dcs_write_seq_static(ctx, 0xE6, 0x01);
 	tianma_dcs_write_seq_static(ctx, 0x11);
@@ -368,7 +362,15 @@ static struct mtk_panel_params ext_params = {
 		.rc_tgt_offset_hi      =  DSC_RC_TGT_OFFSET_HI,
 		.rc_tgt_offset_lo      =  DSC_RC_TGT_OFFSET_LO,
 	},
-	.data_rate = MODE_0_DATA_RATE,
+	.dyn_fps = {
+		.data_rate = MODE_0_DATA_RATE,
+	},
+	.data_rate = MODE_2_DATA_RATE,
+	.dyn = {
+		.switch_en = 1,
+		.data_rate = MODE_0_DATA_RATE + 10,
+	},
+
 };
 static struct mtk_panel_params ext_params_mode_1 = {
 	.cust_esd_check = 0,
@@ -416,7 +418,14 @@ static struct mtk_panel_params ext_params_mode_1 = {
 		.rc_tgt_offset_hi      =  DSC_RC_TGT_OFFSET_HI,
 		.rc_tgt_offset_lo      =  DSC_RC_TGT_OFFSET_LO,
 	},
-	.data_rate = MODE_1_DATA_RATE,
+	.dyn_fps = {
+		.data_rate = MODE_1_DATA_RATE,
+	},
+	.data_rate = MODE_2_DATA_RATE,
+	.dyn = {
+		.switch_en = 1,
+		.data_rate = MODE_1_DATA_RATE + 10,
+	},
 };
 
 static struct mtk_panel_params ext_params_mode_2 = {
@@ -465,7 +474,14 @@ static struct mtk_panel_params ext_params_mode_2 = {
 		.rc_tgt_offset_hi      =  DSC_RC_TGT_OFFSET_HI,
 		.rc_tgt_offset_lo      =  DSC_RC_TGT_OFFSET_LO,
 	},
+	.dyn_fps = {
+		.data_rate = MODE_2_DATA_RATE,
+	},
 	.data_rate = MODE_2_DATA_RATE,
+	.dyn = {
+		.switch_en = 1,
+		.data_rate = MODE_2_DATA_RATE + 10,
+	},
 };
 
 static int tianma_setbacklight_cmdq(void *dsi, dcs_write_gce cb,
@@ -496,6 +512,7 @@ struct drm_display_mode *get_mode_by_id(struct drm_panel *panel,
 			return m;
 		i++;
 	}
+	pr_info("%s, %d, failed to get mode:%d, total:%u\n", __func__, __LINE__, mode, i);
 	return NULL;
 }
 
@@ -578,7 +595,7 @@ static void mode_switch_to_120(struct drm_panel *panel,
 			0x69, 0x5A, 0x00, 0x0B, 0x76, 0x0F, 0xFF, 0x0F,
 			0xFF, 0x0F, 0xFF, 0x14, 0x81, 0xF4);
 		tianma_dcs_write_seq_static(ctx, 0xE8, 0x00, 0x02);
-		tianma_dcs_write_seq_static(ctx, 0xE4, 0x00, 0x0A);
+		tianma_dcs_write_seq_static(ctx, 0xE4, 0x00, 0x0B);
 		tianma_dcs_write_seq_static(ctx, 0xB0, 0x84);
 		tianma_dcs_write_seq_static(ctx, 0xE4, 0x33, 0xB4, 0x00,
 			0x00, 0x00, 0x39, 0x04, 0x09, 0x34);
@@ -600,7 +617,7 @@ static void mode_switch_to_90(struct drm_panel *panel,
 	if (stage == BEFORE_DSI_POWERDOWN) {
 		/* set PLL to 285M */
 		tianma_dcs_write_seq_static(ctx, 0xB0, 0x00);
-		tianma_dcs_write_seq_static(ctx, 0xB6, 0x59, 0x00, 0x06,
+		tianma_dcs_write_seq_static(ctx, 0xB6, 0x5A, 0x00, 0x06,
 		0x23, 0x8A, 0x13, 0x1A, 0x05, 0x04, 0xFA, 0x05, 0x20);
 
 		/* switch to 90hz */
@@ -650,7 +667,7 @@ static void mode_switch_to_90(struct drm_panel *panel,
 			0x69, 0x5A, 0x00, 0x0B, 0x76, 0x0F, 0xFF, 0x0F,
 			0xFF, 0x0F, 0xFF, 0x14, 0x81, 0xF4);
 		tianma_dcs_write_seq_static(ctx, 0xE8, 0x00, 0x02);
-		tianma_dcs_write_seq_static(ctx, 0xE4, 0x00, 0x0A);
+		tianma_dcs_write_seq_static(ctx, 0xE4, 0x00, 0x0B);
 		tianma_dcs_write_seq_static(ctx, 0xB0, 0x84);
 		tianma_dcs_write_seq_static(ctx, 0xE4, 0x33, 0xB4, 0x00,
 			0x00, 0x00, 0x4E, 0x04, 0x04, 0x9A);
@@ -666,7 +683,7 @@ static void mode_switch_to_60(struct drm_panel *panel,
 	if (stage == BEFORE_DSI_POWERDOWN) {
 		/* set PLL to 190M */
 		tianma_dcs_write_seq_static(ctx, 0xB0, 0x00);
-		tianma_dcs_write_seq_static(ctx, 0xB6, 0x51, 0x00, 0x06, 0x23,
+		tianma_dcs_write_seq_static(ctx, 0xB6, 0x52, 0x00, 0x06, 0x23,
 			0x8A, 0x13, 0x1A, 0x05, 0x04, 0xFA, 0x05, 0x20);
 
 		/* switch to 60hz */
@@ -716,18 +733,11 @@ static void mode_switch_to_60(struct drm_panel *panel,
 			0x69, 0x5A, 0x00, 0x0B, 0x76, 0x0F, 0xFF, 0x0F,
 			0xFF, 0x0F, 0xFF, 0x14, 0x81, 0xF4);
 		tianma_dcs_write_seq_static(ctx, 0xE8, 0x00, 0x02);
-		tianma_dcs_write_seq_static(ctx, 0xE4, 0x00, 0x0A);
+		tianma_dcs_write_seq_static(ctx, 0xE4, 0x00, 0x0B);
 		tianma_dcs_write_seq_static(ctx, 0xB0, 0x84);
 		tianma_dcs_write_seq_static(ctx, 0xE4, 0x33, 0xB4, 0x00,
 			0x00, 0x00, 0x75, 0x04, 0x00, 0x00);
 		tianma_dcs_write_seq_static(ctx, 0xE6, 0x01);
-
-		// tianma_dcs_write_seq_static(ctx, 0xD4, 0x93, 0x93, 0x60,
-			// 0x1E, 0xE1, 0x02, 0x08, 0x00, 0x00, 0x02, 0x22,
-			// 0x02, 0xEC, 0x03, 0x83, 0x04, 0x00, 0x04, 0x00,
-			// 0x04, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01, 0x00,
-			// 0x01, 0x00);
-
 	}
 }
 
@@ -736,9 +746,11 @@ static int mode_switch(struct drm_panel *panel, unsigned int cur_mode,
 {
 	int ret = 0;
 	struct drm_display_mode *m = get_mode_by_id(panel, dst_mode);
-
 	if (cur_mode == dst_mode)
 		return ret;
+
+	if (m == NULL)
+		return -EINVAL;
 
 	if (m->vrefresh == MODE_0_FPS) { /*switch to 60 */
 		mode_switch_to_60(panel, stage);
@@ -766,6 +778,8 @@ static int panel_ext_reset(struct drm_panel *panel, int on)
 
 static struct mtk_panel_funcs ext_funcs = {
 	.set_backlight_cmdq = tianma_setbacklight_cmdq,
+	/* Not real backlight cmd in AOD, just for QC purpose */
+	.set_aod_light_mode = tianma_setbacklight_cmdq,
 	.ext_param_set = mtk_panel_ext_param_set,
 	.mode_switch = mode_switch,
 	.reset = panel_ext_reset,
@@ -835,7 +849,7 @@ static int tianma_get_modes(struct drm_panel *panel)
 
 	mode_3 = drm_mode_duplicate(panel->drm, &switch_mode_2);
 	if (!mode_3) {
-		dev_info(panel->drm->dev, "failed to add mode %ux%ux@%u\n",
+		dev_err(panel->drm->dev, "failed to add mode %ux%ux@%u\n",
 			switch_mode_2.hdisplay,
 			switch_mode_2.vdisplay,
 			switch_mode_2.vrefresh);

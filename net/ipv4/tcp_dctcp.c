@@ -59,7 +59,18 @@ struct dctcp {
 };
 
 static unsigned int dctcp_shift_g __read_mostly = 4; /* g = 1/2^4 */
-module_param(dctcp_shift_g, uint, 0644);
+
+static int dctcp_shift_g_set(const char *val, const struct kernel_param *kp)
+{
+	return param_set_uint_minmax(val, kp, 0, 10);
+}
+
+static const struct kernel_param_ops dctcp_shift_g_ops = {
+	.set = dctcp_shift_g_set,
+	.get = param_get_uint,
+};
+
+module_param_cb(dctcp_shift_g, &dctcp_shift_g_ops, &dctcp_shift_g, 0644);
 MODULE_PARM_DESC(dctcp_shift_g, "parameter g for updating dctcp_alpha");
 
 static unsigned int dctcp_alpha_on_init __read_mostly = DCTCP_MAX_ALPHA;
@@ -131,7 +142,7 @@ static void dctcp_ce_state_0_to_1(struct sock *sk)
 		 */
 		if (inet_csk(sk)->icsk_ack.pending & ICSK_ACK_TIMER)
 			__tcp_send_ack(sk, ca->prior_rcv_nxt);
-		tcp_enter_quickack_mode(sk, 1);
+		inet_csk(sk)->icsk_ack.pending |= ICSK_ACK_NOW;
 	}
 
 	ca->prior_rcv_nxt = tp->rcv_nxt;
@@ -152,7 +163,7 @@ static void dctcp_ce_state_1_to_0(struct sock *sk)
 		 */
 		if (inet_csk(sk)->icsk_ack.pending & ICSK_ACK_TIMER)
 			__tcp_send_ack(sk, ca->prior_rcv_nxt);
-		tcp_enter_quickack_mode(sk, 1);
+		inet_csk(sk)->icsk_ack.pending |= ICSK_ACK_NOW;
 	}
 
 	ca->prior_rcv_nxt = tp->rcv_nxt;

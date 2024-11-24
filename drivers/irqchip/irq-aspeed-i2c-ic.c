@@ -76,14 +76,14 @@ static int __init aspeed_i2c_ic_of_init(struct device_node *node,
 		return -ENOMEM;
 
 	i2c_ic->base = of_iomap(node, 0);
-	if (IS_ERR(i2c_ic->base)) {
-		ret = PTR_ERR(i2c_ic->base);
+	if (!i2c_ic->base) {
+		ret = -ENOMEM;
 		goto err_free_ic;
 	}
 
 	i2c_ic->parent_irq = irq_of_parse_and_map(node, 0);
-	if (i2c_ic->parent_irq < 0) {
-		ret = i2c_ic->parent_irq;
+	if (!i2c_ic->parent_irq) {
+		ret = -EINVAL;
 		goto err_iounmap;
 	}
 

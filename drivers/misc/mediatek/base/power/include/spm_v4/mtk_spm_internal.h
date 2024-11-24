@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTK_SPM_INTERNAL_H__
 #define __MTK_SPM_INTERNAL_H__
@@ -19,15 +11,39 @@
 #include <linux/atomic.h>
 #include <linux/io.h>
 #include <mt-plat/aee.h>
-
+#include <linux/arm-smccc.h>
 #include "mtk_spm_early_porting.h"
 
 #include "mtk_spm.h"
 #include <mtk_lpae.h>
 
 /* SMC call's marco */
-#define SMC_CALL(_name, _arg0, _arg1, _arg2) \
-	mt_secure_call(_name, _arg0, _arg1, _arg2, 0)
+/* #define SMC_CALL(_name, _arg0, _arg1, _arg2) \
+	mt_secure_call(_name, _arg0, _arg1, _arg2, 0) */
+	
+#define mtk_idle_smc_impl(p1, p2, p3, p4, p5, res) \
+ 			arm_smccc_smc(p1, p2, p3, p4,\
+ 			p5, 0, 0, 0, &res)	
+			
+			
+#define SMC_CALL(_name, _arg0, _arg1, _arg2) ({\
+	struct arm_smccc_res res;\
+	mtk_idle_smc_impl(_name,\
+			_arg0, _arg1, _arg2, 0, res);\
+	res.a0; })
+
+#ifndef mt_secure_call
+#define mt_secure_call(x1, x2, x3, x4, x5) ({\
+		struct arm_smccc_res res;\
+		mtk_idle_smc_impl(x1, x2, x3, x4, x5, res);\
+		res.a0; })
+		
+/* #define mt_secure_call_void(x1, x2, x3, x4, x5) ({\
+		struct arm_smccc_res res;\
+		mtk_idle_smc_impl(x1, x2, x3, x4, x5, res);\
+		}) */
+#endif
+
 
 /**************************************
  * Config and Parameter

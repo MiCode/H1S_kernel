@@ -1,27 +1,23 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2019 MediaTek Inc.
- * Author: Wendell Lin <wendell.lin@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+*/
 #include <linux/clk.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 
 #include <linux/io.h>
-#include <linux/slab.h>
+#include <linux/slab.h>p
 #include <linux/delay.h>
 #include <linux/clkdev.h>
 
 #include <linux/clk-provider.h>
 #include <linux/clk.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include "clk-mtk-v1.h"
 #include "clk-mt6785-pg.h"
 
@@ -4794,7 +4790,7 @@ struct clk *mt_clk_register_power_gate(const char *name,
 {
 	struct mt_power_gate *pg;
 	struct clk *clk;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 
 	pg = kzalloc(sizeof(*pg), GFP_KERNEL);
 	if (!pg)
@@ -4872,7 +4868,7 @@ struct mtk_power_gate {
 	}
 
 /* FIXME: all values needed to be verified */
-struct mtk_power_gate scp_clks[] __initdata = {
+struct mtk_power_gate scp_clks[] = {
 	PGATE(SCP_SYS_MD1, pg_md1, NULL, NULL, SYS_MD1),
 	PGATE(SCP_SYS_CONN, pg_conn, NULL, NULL, SYS_CONN),
 	PGATE(SCP_SYS_DIS, pg_dis, NULL, mm_sel, SYS_DIS),
@@ -4914,7 +4910,7 @@ struct mtk_power_gate scp_clks[] __initdata = {
 		dsp2_sel, SYS_VPU_CORE2_SHUTDOWN),//no dsp3
 };
 
-static void __init init_clk_scpsys(void __iomem *infracfg_reg,
+static int init_clk_scpsys(void __iomem *infracfg_reg,
 				   void __iomem *spm_reg,
 				   void __iomem *infra_reg,
 				   void __iomem *smi_common_reg,
@@ -4951,6 +4947,7 @@ static void __init init_clk_scpsys(void __iomem *infracfg_reg,
 		pr_debug("[CCF] %s: pgate %3d: %s\n", __func__, i, pg->name);
 #endif				/* MT_CCF_DEBUG */
 	}
+	return 0;
 }
 
 /*
@@ -5047,7 +5044,7 @@ void iomap_mm(void)
 #endif
 #endif
 
-static void __init mt_scpsys_init(struct device_node *node)
+static int clk_mt6785_scpsys_probe(struct platform_device *pdev)
 {
 	struct clk_onecell_data *clk_data;
 	void __iomem *infracfg_reg;
@@ -5056,6 +5053,12 @@ static void __init mt_scpsys_init(struct device_node *node)
 	void __iomem *ckgen_reg;
 	void __iomem *smi_common_reg;
 	int r;
+	struct device_node *node = pdev->dev.of_node;
+
+	if (!node) {
+		pr_err("%s node is null\n", __func__);
+		return -EINVAL;
+	}
 
 	infracfg_reg = get_reg(node, 0);
 	spm_reg = get_reg(node, 1);
@@ -5068,7 +5071,7 @@ static void __init mt_scpsys_init(struct device_node *node)
 	if (!infracfg_reg || !spm_reg || !infra_reg  ||
 		!ckgen_reg || !smi_common_reg) {
 		pr_notice("clk-pg-mt3967: missing reg\n");
-		return;
+		return -EINVAL;
 	}
 
 /*
@@ -5077,6 +5080,10 @@ static void __init mt_scpsys_init(struct device_node *node)
  */
 
 	clk_data = alloc_clk_data(SCP_NR_SYSS);
+	if (!clk_data) {
+		pr_err("%s clk_data is null\n", __func__);
+		return -ENOMEM;
+	}
 
 	init_clk_scpsys(infracfg_reg, spm_reg, infra_reg,
 		smi_common_reg, clk_data);
@@ -5122,95 +5129,8 @@ static void __init mt_scpsys_init(struct device_node *node)
 #endif/* !MT_CCF_BRINGUP */
 #endif
 #endif
+	return r;
 }
-CLK_OF_DECLARE_DRIVER(mtk_pg_regs, "mediatek,scpsys", mt_scpsys_init);
-
-#if 0
-static const char * const *get_all_clk_names(size_t *num)
-{
-	static const char * const clks[] = {
-
-		/* CAM */
-		"camsys_larb6",
-		"camsys_dfp_vad",
-		"camsys_larb3",
-		"camsys_cam",
-		"camsys_camtg",
-		"camsys_seninf",
-		"camsys_camsv0",
-		"camsys_camsv1",
-		"camsys_camsv2",
-		"camsys_ccu",
-		/* IMG */
-		"imgsys_larb5",
-		"imgsys_larb2",
-		"imgsys_dip",
-		"imgsys_fdvt",
-		"imgsys_dpe",
-		"imgsys_rsc",
-		"imgsys_mfb",
-		"imgsys_wpe_a",
-		"imgsys_wpe_b",
-		"imgsys_owe",
-		/* MM */
-		"mm_smi_common",
-		"mm_smi_larb0",
-		"mm_smi_larb1",
-		"mm_gals_comm0",
-		"mm_gals_comm1",
-		"mm_gals_ccu2mm",
-		"mm_gals_ipu12mm",
-		"mm_gals_img2mm",
-		"mm_gals_cam2mm",
-		"mm_gals_ipu2mm",
-		"mm_mdp_dl_txck",
-		"mm_ipu_dl_txck",
-		"mm_mdp_rdma0",
-		"mm_mdp_rdma1",
-		"mm_mdp_rsz0",
-		"mm_mdp_rsz1",
-		"mm_mdp_tdshp",
-		"mm_mdp_wrot0",
-		"mm_mdp_wdma0",
-		"mm_fake_eng",
-		"mm_disp_ovl0",
-		"mm_disp_ovl0_2l",
-		"mm_disp_ovl1_2l",
-		"mm_disp_rdma0",
-		"mm_disp_rdma1",
-		"mm_disp_wdma0",
-		"mm_disp_color0",
-		"mm_disp_ccorr0",
-		"mm_disp_aal0",
-		"mm_disp_gamma0",
-		"mm_disp_dither0",
-		"mm_disp_split",
-		"mm_dsi0_mmck",
-		"mm_dsi0_ifck",
-		"mm_dpi_mmck",
-		"mm_dpi_ifck",
-		"mm_fake_eng2",
-		"mm_mdp_dl_rxck",
-		"mm_ipu_dl_rxck",
-		"mm_26m",
-		"mm_mmsys_r2y",
-		"mm_disp_rsz",
-		"mm_mdp_aal",
-		"mm_mdp_hdr",
-		"mm_dbi_mmck",
-		"mm_dbi_ifck",
-		/* VENC */
-		"venc_larb",
-		"venc_venc",
-		"venc_jpgenc",
-		/* VDE */
-		"vdec_cken",
-		"vdec_larb1_cken",
-	};
-	*num = ARRAY_SIZE(clks);
-	return clks;
-}
-#endif
 
 static const char * const *get_cam_clk_names(size_t *num)
 {
@@ -5472,7 +5392,7 @@ void subsys_if_on(void)
 	}
 
 	if (ret > 0)
-		BUG_ON(1);
+		WARN_ON(1);
 #if 0
 	for (i = 0; i < num; i++)
 		dump_cg_state(clks[i]);
@@ -5505,4 +5425,36 @@ void mtcmos_force_off(void)
 	pr_notice("%s: %08x, %08x\n", __func__,
 		clk_readl(PWR_STATUS), clk_readl(PWR_STATUS_2ND));
 }
+
+static const struct of_device_id of_match_clk_mt6785_scpsys[] = {
+	{ .compatible = "mediatek,scpsys", },
+	{}
+};
+
+static struct platform_driver clk_mt6785_scpsys_drv = {
+	.probe = clk_mt6785_scpsys_probe,
+	.driver = {
+		.name = "clk-mt6785-scpsys",
+		.owner = THIS_MODULE,
+		.of_match_table = of_match_clk_mt6785_scpsys,
+	},
+};
+
+static int __init clk_mt6785_scpsys_init(void)
+{
+
+	return platform_driver_register(&clk_mt6785_scpsys_drv);
+}
+
+static void __exit clk_mt6785_scpsys_exit(void)
+{
+	pr_notice("%s: clk_mt6785_scpsys exit!\n", __func__);
+}
+
+
+arch_initcall(clk_mt6785_scpsys_init);
+module_exit(clk_mt6785_scpsys_exit);
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("MTK");
+MODULE_DESCRIPTION("MTK CCF  Driver");
 

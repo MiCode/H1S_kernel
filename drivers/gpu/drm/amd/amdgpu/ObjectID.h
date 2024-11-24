@@ -119,6 +119,7 @@
 #define CONNECTOR_OBJECT_ID_eDP                   0x14
 #define CONNECTOR_OBJECT_ID_MXM                   0x15
 #define CONNECTOR_OBJECT_ID_LVDS_eDP              0x16
+#define CONNECTOR_OBJECT_ID_USBC                  0x17
 
 /* deleted */
 
@@ -136,6 +137,7 @@
 #define GENERIC_OBJECT_ID_PX2_NON_DRIVABLE        0x02
 #define GENERIC_OBJECT_ID_MXM_OPM                 0x03
 #define GENERIC_OBJECT_ID_STEREO_PIN              0x04        //This object could show up from Misc Object table, it follows ATOM_OBJECT format, and contains one ATOM_OBJECT_GPIO_CNTL_RECORD for the stereo pin
+#define GENERIC_OBJECT_ID_BRACKET_LAYOUT          0x05
 
 /****************************************************/
 /* Graphics Object ENUM ID Definition               */
@@ -714,6 +716,13 @@
                                                  GRAPH_OBJECT_ENUM_ID1 << ENUM_ID_SHIFT |\
                                                  GENERIC_OBJECT_ID_STEREO_PIN << OBJECT_ID_SHIFT)
 
+#define GENERICOBJECT_BRACKET_LAYOUT_ENUM_ID1    (GRAPH_OBJECT_TYPE_GENERIC << OBJECT_TYPE_SHIFT |\
+                                                 GRAPH_OBJECT_ENUM_ID1 << ENUM_ID_SHIFT |\
+                                                 GENERIC_OBJECT_ID_BRACKET_LAYOUT << OBJECT_ID_SHIFT)
+
+#define GENERICOBJECT_BRACKET_LAYOUT_ENUM_ID2    (GRAPH_OBJECT_TYPE_GENERIC << OBJECT_TYPE_SHIFT |\
+                                                 GRAPH_OBJECT_ENUM_ID2 << ENUM_ID_SHIFT |\
+                                                 GENERIC_OBJECT_ID_BRACKET_LAYOUT << OBJECT_ID_SHIFT)
 /****************************************************/
 /* Object Cap definition - Shared with BIOS         */
 /****************************************************/

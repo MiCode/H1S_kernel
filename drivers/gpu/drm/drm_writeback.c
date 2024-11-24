@@ -22,10 +22,13 @@
  * Writeback connectors are used to expose hardware which can write the output
  * from a CRTC to a memory buffer. They are used and act similarly to other
  * types of connectors, with some important differences:
- *  - Writeback connectors don't provide a way to output visually to the user.
- *  - Writeback connectors should always report as "disconnected" (so that
- *    clients which don't understand them will ignore them).
- *  - Writeback connectors don't have EDID.
+ *
+ * * Writeback connectors don't provide a way to output visually to the user.
+ *
+ * * Writeback connectors are visible to userspace only when the client sets
+ *   DRM_CLIENT_CAP_WRITEBACK_CONNECTORS.
+ *
+ * * Writeback connectors don't have EDID.
  *
  * A framebuffer may only be attached to a writeback connector when the
  * connector is attached to a CRTC. The WRITEBACK_FB_ID property which sets the
@@ -199,7 +202,7 @@ int drm_writeback_connector_init(struct drm_device *dev,
 	if (ret)
 		goto connector_fail;
 
-	ret = drm_mode_connector_attach_encoder(connector,
+	ret = drm_connector_attach_encoder(connector,
 						&wb_connector->encoder);
 	if (ret)
 		goto attach_fail;

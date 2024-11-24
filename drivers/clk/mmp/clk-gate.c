@@ -99,14 +99,12 @@ struct clk *mmp_clk_register_gate(struct device *dev, const char *name,
 {
 	struct mmp_clk_gate *gate;
 	struct clk *clk;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 
 	/* allocate the gate */
 	gate = kzalloc(sizeof(*gate), GFP_KERNEL);
-	if (!gate) {
-		pr_err("%s:%s could not allocate gate clk\n", __func__, name);
+	if (!gate)
 		return ERR_PTR(-ENOMEM);
-	}
 
 	init.name = name;
 	init.ops = &mmp_clk_gate_ops;

@@ -1,19 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #ifndef __MT_MUSB_REG_H__
 #define __MT_MUSB_REG_H__
 
+#include "musb_debug.h"
 
 #define MUSB_EP0_FIFOSIZE	64	/* This is non-configurable */
 
@@ -228,6 +221,7 @@
 #define MUSB_DEVCTL		0x60	/* 8 bit */
 
 #define MUSB_OPSTATE    0x620
+#define MUSB_OPSTATE_HOST_WAIT_DEV 0x21
 #define OTG_IDLE 0
 
 /*
@@ -344,6 +338,9 @@
 #define VBUSVALID_INT_POL    (1<<8)
 #define IDDIG_INT_POL        (1<<9)
 #define DRVVBUS_INT_POL      (1<<10)
+
+#define RESREG		0x700	/* Reserved Register */
+#define HSTPWRDWN_OPT	(1<<0)	/* connection detection option */
 
 /*
  * OTG 2.0 Registers

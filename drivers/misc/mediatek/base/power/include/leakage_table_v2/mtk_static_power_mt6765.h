@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #ifndef __MTK_STATIC_POWER_MTK6765_H__
@@ -27,13 +19,13 @@
 #define T_OF_FUSE 30
 
 /* devinfo offset for each bank */
-#define DEVINFO_IDX_L 136 /* 07B8 */
-#define DEVINFO_IDX_LL 136 /* 07B8 */
-#define DEVINFO_IDX_CCI 136 /* 07B8 */
-#define DEVINFO_IDX_GPU 137 /* 07BC */
-#define DEVINFO_IDX_VCORE 137 /* 07BC */
-#define DEVINFO_IDX_VMD 137 /* 07BC */
-#define DEVINFO_IDX_MODEM 137 /* 07BC */
+#define DEVINFO_IDX_L 0x220 /* 07B8 */
+#define DEVINFO_IDX_LL 0x220 /* 07B8 */
+#define DEVINFO_IDX_CCI 0x220 /* 07B8 */
+#define DEVINFO_IDX_GPU 0x224 /* 07BC */
+#define DEVINFO_IDX_VCORE 0x224 /* 07BC */
+#define DEVINFO_IDX_VMD 0x224 /* 07BC */
+#define DEVINFO_IDX_MODEM 0x224 /* 07BC */
 
 #define DEVINFO_OFF_L 8
 #define DEVINFO_OFF_LL 16

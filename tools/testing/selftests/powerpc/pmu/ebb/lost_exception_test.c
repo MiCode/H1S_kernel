@@ -75,7 +75,6 @@ static int test_body(void)
 	ebb_freeze_pmcs();
 	ebb_global_disable();
 
-	count_pmc(4, sample_period);
 	mtspr(SPRN_PMC4, 0xdead);
 
 	dump_summary_ebb_state();
@@ -98,5 +97,6 @@ static int lost_exception(void)
 
 int main(void)
 {
+	test_harness_set_timeout(300);
 	return test_harness(lost_exception, "lost_exception");
 }

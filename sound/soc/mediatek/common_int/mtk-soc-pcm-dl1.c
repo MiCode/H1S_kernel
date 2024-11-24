@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -116,7 +105,7 @@ static struct device *mDev;
 /*void StopAudioPcmHardware(void);*/
 static int mtk_soc_dl1_probe(struct platform_device *pdev);
 static int mtk_soc_pcm_dl1_close(struct snd_pcm_substream *substream);
-static int mtk_asoc_dl1_probe(struct snd_soc_platform *platform);
+static int mtk_asoc_dl1_component_probe(struct snd_soc_component *component);
 
 static bool mPrepareDone;
 
@@ -232,7 +221,7 @@ static int mtk_pcm_dl1_open(struct snd_pcm_substream *substream)
 
 	mtk_pcm_dl1_hardware.buffer_bytes_max = GetPLaybackSramFullSize();
 
-	pr_debug("pcm_dl1_hardware.buffer_bytes_max = %zu mPlaybackDramState = %d\n",
+	pr_debug("mtk_pcm_dl1_hardware.buffer_bytes_max = %zu mPlaybackDramState = %d\n",
 		mtk_pcm_dl1_hardware.buffer_bytes_max, mPlaybackDramState);
 	runtime->hw = mtk_pcm_dl1_hardware;
 
@@ -348,6 +337,9 @@ static int mtk_pcm_dl1_start(struct snd_pcm_substream *substream)
 
 static int mtk_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 {
+#if defined(DL1_DEBUG_LOG)
+	pr_debug("%s(), cmd = %d\n", __func__, cmd);
+#endif
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
@@ -359,18 +351,27 @@ static int mtk_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 	return -EINVAL;
 }
 
-static int mtk_pcm_copy(struct snd_pcm_substream *substream, int channel,
-			unsigned long pos, void __user *dst,
-			unsigned long count)
+static int mtk_pcm_copy(struct snd_pcm_substream *substream,
+			int channel,
+			unsigned long pos,
+			void __user *buf,
+			unsigned long bytes)
 {
 	struct afe_block_t *Afe_Block = NULL;
 	int copy_size = 0, Afe_WriteIdx_tmp;
 	unsigned long flags;
 	/* struct snd_pcm_runtime *runtime = substream->runtime; */
-	char *data_w_ptr = (char *)dst;
+	char *data_w_ptr = (char *)buf;
 
 	/* get total bytes to copy */
-	count = audio_frame_to_bytes(substream, count);
+	unsigned long count = bytes;
+
+#ifdef DL1_DEBUG_LOG
+		pr_debug("%s(), pos = %lu, count = %lu\n",
+			 _func__,
+			 pos,
+			 count);
+#endif
 
 	/* check which memif nned to be write */
 	Afe_Block = &pMemControl->rBlock;
@@ -545,6 +546,17 @@ static int mtk_pcm_copy(struct snd_pcm_substream *substream, int channel,
 	return 0;
 }
 
+static int mtk_pcm_silence(struct snd_pcm_substream *substream,
+			   int channel,
+			   unsigned long pos,
+			   unsigned long bytes)
+{
+#if defined(DL1_DEBUG_LOG)
+	pr_debug("%s\n", __func__);
+#endif
+	return 0; /* do nothing */
+}
+
 static void *dummy_page[2];
 
 static struct page *mtk_pcm_page(struct snd_pcm_substream *substream,
@@ -566,18 +578,26 @@ static struct snd_pcm_ops mtk_afe_ops = {
 	.trigger = mtk_pcm_trigger,
 	.pointer = mtk_pcm_pointer,
 	.copy_user = mtk_pcm_copy,
+	.fill_silence = mtk_pcm_silence,
 	.page = mtk_pcm_page,
 };
 
-static struct snd_soc_platform_driver mtk_soc_platform = {
-	.ops = &mtk_afe_ops, .probe = mtk_asoc_dl1_probe,
+static const struct snd_soc_component_driver mtk_soc_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_afe_ops,
+	.probe = mtk_asoc_dl1_component_probe,
 };
 
-static int mtk_asoc_dl1_probe(struct snd_soc_platform *platform)
+static int mtk_asoc_dl1_component_probe(struct snd_soc_component *component)
 {
+#if defined(DL1_DEBUG_LOG)
+	pr_debug("mtk_asoc_dl1_probe\n");
+#endif
 	/* allocate dram */
-	AudDrv_Allocate_mem_Buffer(platform->dev, Soc_Aud_Digital_Block_MEM_DL1,
+	AudDrv_Allocate_mem_Buffer(component->dev,
+				   Soc_Aud_Digital_Block_MEM_DL1,
 				   Dl1_MAX_BUFFER_SIZE);
+
 	Dl1_Playback_dma_buf = Get_Mem_Buffer(Soc_Aud_Digital_Block_MEM_DL1);
 	return 0;
 }
@@ -589,7 +609,7 @@ static int mtk_afe_remove(struct platform_device *pdev)
 #endif
 	AudDrv_Clk_Deinit(&pdev->dev);
 
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 
 	return 0;
 }
@@ -649,6 +669,11 @@ static int mtk_soc_dl1_probe(struct platform_device *pdev)
 #if defined(DL1_DEBUG_LOG)
 	pr_debug("%s\n", __func__);
 #endif
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
 	if (pdev->dev.of_node) {
 		dev_set_name(&pdev->dev, "%s", MT_SOC_DL1_PCM);
 		pdev->name = pdev->dev.kobj.name;
@@ -687,7 +712,10 @@ static int mtk_soc_dl1_probe(struct platform_device *pdev)
 	/* config smartpa gpio pins, set initial state : SMARTPA_OFF */
 	AudDrv_GPIO_SMARTPA_Select(0);
 
-	return snd_soc_register_platform(&pdev->dev, &mtk_soc_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_soc_component,
+					  NULL,
+					  0);
 }
 
 static struct platform_driver mtk_afe_driver = {

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- *  Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __LINUX_MFD_MT6370_PMU_CHARGER_H
@@ -148,11 +140,13 @@
 #define MT6370_MASK_CHG_RST	(1 << MT6370_SHIFT_CHG_RST)
 
 /* ========== CHG_CTRL1 0x11 ============ */
-#define MT6370_SHIFT_OPA_MODE	0
-#define MT6370_SHIFT_HZ_EN	2
+#define MT6370_SHIFT_OPA_MODE		0
+#define MT6370_SHIFT_HZ_EN		2
+#define MT6370_SHIFT_FORCE_SLEEP	3
 
-#define MT6370_MASK_OPA_MODE	(1 << MT6370_SHIFT_OPA_MODE)
-#define MT6370_MASK_HZ_EN	(1 << MT6370_SHIFT_HZ_EN)
+#define MT6370_MASK_OPA_MODE		(1 << MT6370_SHIFT_OPA_MODE)
+#define MT6370_MASK_HZ_EN		(1 << MT6370_SHIFT_HZ_EN)
+#define MT6370_MASK_FORCE_SLEEP		(1 << MT6370_SHIFT_FORCE_SLEEP)
 
 /* ========== CHG_CTRL2 0x12 ============ */
 #define MT6370_SHIFT_CHG_EN		0

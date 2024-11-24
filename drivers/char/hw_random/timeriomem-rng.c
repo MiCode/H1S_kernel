@@ -53,13 +53,6 @@ static int timeriomem_rng_read(struct hwrng *hwrng, void *data,
 	int period_us = ktime_to_us(priv->period);
 
 	/*
-	 * The RNG provides 32-bits per read.  Ensure there is enough space for
-	 * at minimum one read.
-	 */
-	if (max < sizeof(u32))
-		return 0;
-
-	/*
 	 * There may not have been enough time for new data to be generated
 	 * since the last request.  If the caller doesn't want to wait, let them
 	 * bail out.  Otherwise, wait for the completion.  If the new data has
@@ -79,7 +72,7 @@ static int timeriomem_rng_read(struct hwrng *hwrng, void *data,
 		 */
 		if (retval > 0)
 			usleep_range(period_us,
-					period_us + min(1, period_us / 100));
+					period_us + max(1, period_us / 100));
 
 		*(u32 *)data = readl(priv->io_base);
 		retval += sizeof(u32);

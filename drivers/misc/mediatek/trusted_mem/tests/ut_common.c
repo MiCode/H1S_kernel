@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define TMEM_UT_TEST_FMT
@@ -305,6 +298,7 @@ mem_alloc_saturation_variant(enum TRUSTED_MEM_TYPE mem_type, u8 *mem_owner,
 	int max_pool_size = tmem_core_get_max_pool_size(mem_type);
 	int max_items;
 	u32 min_chunk_sz = get_saturation_test_min_chunk_size(mem_type);
+	uint64_t phy_addr;
 
 	for (chunk_size = min_chunk_sz; chunk_size <= SIZE_16M;
 	     chunk_size *= 2) {
@@ -322,6 +316,23 @@ mem_alloc_saturation_variant(enum TRUSTED_MEM_TYPE mem_type, u8 *mem_owner,
 			ASSERT_EQ(1, ref_count, "reference count check");
 			ASSERT_NE(0, g_mem_handle_list[chunk_num],
 				  "handle check");
+
+			if (mem_type == 0) {
+			/* test trusted_mem_api_query_pa() iff svp enable */
+#if defined(CONFIG_MTK_SVP_ON_MTEE_SUPPORT) && defined(CONFIG_MTK_GZ_KREE)
+				tmem_query_gz_handle_to_pa(mem_type, alignment, chunk_size,
+					&ref_count, &g_mem_handle_list[chunk_num], mem_owner, 0, 0,
+					&phy_addr);
+				pr_info("trusted_mem_api_query_pa(): gz_handle=0x%x, pa=0x%lx\n",
+					g_mem_handle_list[chunk_num], phy_addr);
+#else
+				tmem_query_sec_handle_to_pa(mem_type, alignment, chunk_size,
+					&ref_count, &g_mem_handle_list[chunk_num], mem_owner, 0, 0,
+					&phy_addr);
+				pr_info("trusted_mem_api_query_pa(): sec_handle=0x%x, pa=0x%lx\n",
+					g_mem_handle_list[chunk_num], phy_addr);
+#endif
+			}
 		}
 
 		/* one more allocation (expect fail) */

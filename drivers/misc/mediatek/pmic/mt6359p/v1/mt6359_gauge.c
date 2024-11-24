@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 
 #include <linux/delay.h>
@@ -21,7 +13,7 @@
 
 #include <mach/mtk_battery_property.h>
 #include <mach/mtk_pmic.h>
-#include <mt-plat/mtk_battery.h>
+#include <mt-plat/v1/mtk_battery.h>
 #include <mt-plat/upmu_common.h>
 #include <mt-plat/mtk_rtc_hal_common.h>
 #include <mt-plat/mtk_rtc.h>
@@ -1870,6 +1862,12 @@ static void fgauge_set_nafg_intr_internal(int _prd, int _zcv_mv, int _thr_mv)
 	_zcv_reg = MV_to_REG_value(_zcv_mv);
 	_thr_reg = MV_to_REG_value(_thr_mv);
 
+	if (_thr_reg >= 32768) {
+		bm_err("[%s]nag_c_dltv_thr mv=%d ,thr_reg=%d,limit thr_reg to 32767\n",
+			__func__, _thr_mv, _thr_reg);
+		_thr_reg = 32767;
+	}
+
 	NAG_C_DLTV_Threashold_26_16 = (_thr_reg & 0xffff0000) >> 16;
 	NAG_C_DLTV_Threashold_15_0 = (_thr_reg & 0x0000ffff);
 
@@ -1886,7 +1884,7 @@ static void fgauge_set_nafg_intr_internal(int _prd, int _zcv_mv, int _thr_mv)
 
 	pmic_set_register_value(PMIC_AUXADC_NAG_VBAT1_SEL, 0);/* use Batsns */
 
-	bm_debug("[fg_bat_nafg][fgauge_set_nafg_interrupt_internal] time[%d] zcv[%d:%d] thr[%d:%d] 26_16[0x%x] 15_00[0x%x] %d\n",
+	bm_err("[fg_bat_nafg][fgauge_set_nafg_interrupt_internal] time[%d] zcv[%d:%d] thr[%d:%d] 26_16[0x%x] 15_00[0x%x] %d\n",
 		_prd, _zcv_mv, _zcv_reg, _thr_mv, _thr_reg,
 		NAG_C_DLTV_Threashold_26_16, NAG_C_DLTV_Threashold_15_0,
 		pmic_get_register_value(PMIC_AUXADC_NAG_VBAT1_SEL));
@@ -2104,7 +2102,6 @@ static int fgauge_set_zcv_interrupt_threshold(
 	return 0;
 }
 
-
 void reset_zcv_int(struct gauge_device *gauge_dev)
 {
 	struct timespec time, time_now, end_time;
@@ -2118,7 +2115,7 @@ void reset_zcv_int(struct gauge_device *gauge_dev)
 	msleep(30);
 
 	get_monotonic_boottime(&time_now);
-	time.tv_sec = (g_fg_zcv_det_iv + 1) * 3 * 60 + 60;
+	time.tv_sec = (g_fg_zcv_det_iv + 1) * 3 * 60 + 5;
 	time.tv_nsec = 0;
 
 	end_time = timespec_add(time_now, time);

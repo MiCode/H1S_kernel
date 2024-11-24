@@ -8,6 +8,6 @@ config CUSTOM_KERNEL_GYROSCOPE
 	  driver configuration should be configured as well.
 
 source "drivers/misc/mediatek/sensors-1.0/gyroscope/gyrohub/Kconfig"
-source "drivers/misc/mediatek/sensors-1.0/gyroscope/bmi160gy-i2c/Kconfig"
+#source "drivers/misc/mediatek/sensors-1.0/gyroscope/bmi160gy-i2c/Kconfig"
 source "drivers/misc/mediatek/sensors-1.0/gyroscope/ITG1010/Kconfig"
-source "drivers/misc/mediatek/sensors-1.0/gyroscope/mpu6050gy/Kconfig"
+#source "drivers/misc/mediatek/sensors-1.0/gyroscope/mpu6050gy/Kconfig"

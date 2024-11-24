@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/slab.h>
@@ -476,14 +468,6 @@ check_exclusive_core_flag:
 
 	/* Set frequency limit */
 	/* For non share buck */
-#if 0
-	if (opp[PPM_CLUSTER_LL] >= 0 && ACT_CORE(LL) > 0)
-		req->limit[PPM_CLUSTER_LL].max_cpufreq_idx =
-			freq_idx_mapping_tbl[opp[PPM_CLUSTER_LL]];
-	if (opp[PPM_CLUSTER_L] >= 0 && ACT_CORE(L) > 0)
-		req->limit[PPM_CLUSTER_L].max_cpufreq_idx =
-			freq_idx_mapping_tbl[opp[PPM_CLUSTER_L]];
-#endif
 
 	/* Set all frequency limit of the cluster */
 	/* Set OPP of Cluser n to opp[n] */
@@ -632,7 +616,6 @@ void ppm_cobra_init(void)
 
 void ppm_cobra_dump_tbl(struct seq_file *m)
 {
-#if 1
 	struct ppm_cluster_status cluster_status[NR_PPM_CLUSTERS];
 	int i;
 	int power;
@@ -662,37 +645,6 @@ void ppm_cobra_dump_tbl(struct seq_file *m)
 			);
 		}
 	}
-#else
-	int i, j, k;
-
-	seq_puts(m, "\n==========================================\n");
-	seq_puts(m, "basic power table (pwr, perf)");
-	seq_puts(m, "\n==========================================\n");
-	for (i = 0; i < TOTAL_CORE_NUM; i++) {
-		for (j = 0; j < DVFS_OPP_NUM; j++) {
-			seq_printf(m, "[%d][%d] = (%d, %d)\n", i, j,
-				cobra_tbl.ptbl[i][j].power_idx,
-				cobra_tbl.ptbl[i][j].perf_idx);
-		}
-	}
-
-	if (ppm_debug <= 0)
-		return;
-
-	seq_puts(m, "\n============================================\n");
-	seq_puts(m, "LxLL delta table (delta_pwr)");
-	seq_puts(m, "\n============================================\n");
-	for (i = 0; i <= get_cluster_max_cpu_core(PPM_CLUSTER_L); i++) {
-		for (j = 0;
-			j <= get_cluster_max_cpu_core(PPM_CLUSTER_LL); j++) {
-			for (k = 0; k < COBRA_OPP_NUM; k++) {
-				seq_printf(m, "[%d][%d][%d] = (%d)\n", i, j, k,
-					get_delta_pwr_LxLL(i, j, k,
-						PPM_CLUSTER_L));
-			}
-		}
-	}
-#endif
 }
 
 static unsigned int get_limit_opp_and_budget(void)
@@ -709,7 +661,8 @@ static unsigned int get_limit_opp_and_budget(void)
 				continue;
 
 			idx = j * 4 + cobra_lookup_data.limit[j].core - 1;
-			power += cobra_tbl.ptbl[idx][i].power_idx;
+			if (idx > 0)
+				power += cobra_tbl.ptbl[idx][i].power_idx;
 		}
 
 		if (power <= cobra_lookup_data.budget)

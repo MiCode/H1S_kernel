@@ -49,6 +49,7 @@ static netdev_tx_t vxcan_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct net_device *peer;
 	struct canfd_frame *cfd = (struct canfd_frame *)skb->data;
 	struct net_device_stats *peerstats, *srcstats = &dev->stats;
+	u8 len;
 
 	if (can_dropped_invalid_skb(dev, skb))
 		return NETDEV_TX_OK;
@@ -71,12 +72,13 @@ static netdev_tx_t vxcan_xmit(struct sk_buff *skb, struct net_device *dev)
 	skb->dev        = peer;
 	skb->ip_summed  = CHECKSUM_UNNECESSARY;
 
+	len = cfd->len;
 	if (netif_rx_ni(skb) == NET_RX_SUCCESS) {
 		srcstats->tx_packets++;
-		srcstats->tx_bytes += cfd->len;
+		srcstats->tx_bytes += len;
 		peerstats = &peer->stats;
 		peerstats->rx_packets++;
-		peerstats->rx_bytes += cfd->len;
+		peerstats->rx_bytes += len;
 	}
 
 out_unlock:
@@ -154,7 +156,7 @@ static void vxcan_setup(struct net_device *dev)
 	dev->hard_header_len	= 0;
 	dev->addr_len		= 0;
 	dev->tx_queue_len	= 0;
-	dev->flags		= (IFF_NOARP|IFF_ECHO);
+	dev->flags		= IFF_NOARP;
 	dev->netdev_ops		= &vxcan_netdev_ops;
 	dev->needs_free_netdev	= true;
 }
@@ -227,10 +229,8 @@ static int vxcan_newlink(struct net *net, struct net_device *dev,
 	netif_carrier_off(peer);
 
 	err = rtnl_configure_link(peer, ifmp);
-	if (err < 0) {
-		unregister_netdevice(peer);
-		return err;
-	}
+	if (err < 0)
+		goto unregister_network_device;
 
 	/* register first device */
 	if (tb[IFLA_IFNAME])
@@ -239,10 +239,8 @@ static int vxcan_newlink(struct net *net, struct net_device *dev,
 		snprintf(dev->name, IFNAMSIZ, DRV_NAME "%%d");
 
 	err = register_netdevice(dev);
-	if (err < 0) {
-		unregister_netdevice(peer);
-		return err;
-	}
+	if (err < 0)
+		goto unregister_network_device;
 
 	netif_carrier_off(dev);
 
@@ -254,6 +252,10 @@ static int vxcan_newlink(struct net *net, struct net_device *dev,
 	rcu_assign_pointer(priv->peer, dev);
 
 	return 0;
+
+unregister_network_device:
+	unregister_netdevice(peer);
+	return err;
 }
 
 static void vxcan_dellink(struct net_device *dev, struct list_head *head)

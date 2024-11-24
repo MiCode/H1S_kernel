@@ -669,11 +669,10 @@ int ocfs2_reserve_local_alloc_bits(struct ocfs2_super *osb,
 #ifdef CONFIG_OCFS2_DEBUG_FS
 	if (le32_to_cpu(alloc->id1.bitmap1.i_used) !=
 	    ocfs2_local_alloc_count_bits(alloc)) {
-		ocfs2_error(osb->sb, "local alloc inode %llu says it has %u used bits, but a count shows %u\n",
-			    (unsigned long long)le64_to_cpu(alloc->i_blkno),
-			    le32_to_cpu(alloc->id1.bitmap1.i_used),
-			    ocfs2_local_alloc_count_bits(alloc));
-		status = -EIO;
+		status = ocfs2_error(osb->sb, "local alloc inode %llu says it has %u used bits, but a count shows %u\n",
+				(unsigned long long)le64_to_cpu(alloc->i_blkno),
+				le32_to_cpu(alloc->id1.bitmap1.i_used),
+				ocfs2_local_alloc_count_bits(alloc));
 		goto bail;
 	}
 #endif
@@ -1025,6 +1024,25 @@ static int ocfs2_sync_local_to_main(struct ocfs2_super *osb,
 			break;
 		count = 1;
 		start = bit_off + 1;
+	}
+
+	/* clear the contiguous bits until the end boundary */
+	if (count) {
+		blkno = la_start_blk +
+			ocfs2_clusters_to_blocks(osb->sb,
+					start - count);
+
+		trace_ocfs2_sync_local_to_main_free(
+				count, start - count,
+				(unsigned long long)la_start_blk,
+				(unsigned long long)blkno);
+
+		status = ocfs2_release_clusters(handle,
+				main_bm_inode,
+				main_bm_bh, blkno,
+				count);
+		if (status < 0)
+			mlog_errno(status);
 	}
 
 bail:

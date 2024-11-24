@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
-
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _DT_BINDINGS_MT635X_AUXADC_H
@@ -30,5 +22,26 @@
 #define AUXADC_HPOFS_CAL			0x0c
 #define AUXADC_DCXO_TEMP			0x0d
 #define AUXADC_VBIF				0x0e
+#define AUXADC_CHAN_MIN                         AUXADC_BATADC
+#if defined(CONFIG_MACH_MT6768)
+#define AUXADC_CHAN_MAX                         AUXADC_VBIF
+#elif defined(CONFIG_MACH_MT6739)
+#define AUXADC_CHAN_MAX                         AUXADC_VBIF
+#elif defined(CONFIG_MACH_MT6781)
+#define AUXADC_CHAN_MAX                         AUXADC_VBIF
+#elif defined(CONFIG_MACH_MT6877)
+#define AUXADC_CHAN_MAX                         AUXADC_VBIF
+#elif defined(CONFIG_MACH_MT6833)
+#define AUXADC_CHAN_MAX                         AUXADC_VBIF
+#elif defined(CONFIG_MACH_MT6853)
+#define AUXADC_CHAN_MAX                         AUXADC_VBIF
+#elif defined(CONFIG_MACH_MT6873)
+#define AUXADC_CHAN_MAX                         AUXADC_VBIF
+#else
+#define AUXADC_IMP				0x0f
+#define AUXADC_IMIX_R				0x10
+
+#define AUXADC_CHAN_MAX				AUXADC_IMIX_R
+#endif
 
 #endif /* _DT_BINDINGS_MT635X_AUXADC_H */

@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0 OR MIT
 /**************************************************************************
  *
- * Copyright © 2009 - 2015 VMware, Inc., Palo Alto, CA., USA
- * All Rights Reserved.
+ * Copyright 2009 - 2015 VMware, Inc., Palo Alto, CA., USA
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -92,7 +92,7 @@ struct vmw_resource_val_node {
 	struct list_head head;
 	struct drm_hash_item hash;
 	struct vmw_resource *res;
-	struct vmw_dma_buffer *new_backup;
+	struct vmw_buffer_object *new_backup;
 	struct vmw_ctx_binding_state *staged_bindings;
 	unsigned long new_backup_offset;
 	u32 first_usage : 1;
@@ -126,9 +126,9 @@ static int vmw_resource_context_res_add(struct vmw_private *dev_priv,
 static int vmw_translate_mob_ptr(struct vmw_private *dev_priv,
 				 struct vmw_sw_context *sw_context,
 				 SVGAMobId *id,
-				 struct vmw_dma_buffer **vmw_bo_p);
+				 struct vmw_buffer_object **vmw_bo_p);
 static int vmw_bo_to_validate_list(struct vmw_sw_context *sw_context,
-				   struct vmw_dma_buffer *vbo,
+				   struct vmw_buffer_object *vbo,
 				   bool validate_as_mob,
 				   uint32_t *p_val_node);
 /**
@@ -185,7 +185,7 @@ static void vmw_resources_unreserve(struct vmw_sw_context *sw_context,
 		}
 		vmw_resource_unreserve(res, switch_backup, val->new_backup,
 				       val->new_backup_offset);
-		vmw_dmabuf_unreference(&val->new_backup);
+		vmw_bo_unreference(&val->new_backup);
 	}
 }
 
@@ -423,7 +423,7 @@ static int vmw_resource_context_res_add(struct vmw_private *dev_priv,
 	}
 
 	if (dev_priv->has_dx && vmw_res_type(ctx) == vmw_res_dx_context) {
-		struct vmw_dma_buffer *dx_query_mob;
+		struct vmw_buffer_object *dx_query_mob;
 
 		dx_query_mob = vmw_context_get_dx_query_mob(ctx);
 		if (dx_query_mob)
@@ -544,7 +544,7 @@ static int vmw_cmd_ok(struct vmw_private *dev_priv,
  * submission is reached.
  */
 static int vmw_bo_to_validate_list(struct vmw_sw_context *sw_context,
-				   struct vmw_dma_buffer *vbo,
+				   struct vmw_buffer_object *vbo,
 				   bool validate_as_mob,
 				   uint32_t *p_val_node)
 {
@@ -616,7 +616,7 @@ static int vmw_resources_reserve(struct vmw_sw_context *sw_context)
 			return ret;
 
 		if (res->backup) {
-			struct vmw_dma_buffer *vbo = res->backup;
+			struct vmw_buffer_object *vbo = res->backup;
 
 			ret = vmw_bo_to_validate_list
 				(sw_context, vbo,
@@ -628,7 +628,7 @@ static int vmw_resources_reserve(struct vmw_sw_context *sw_context)
 	}
 
 	if (sw_context->dx_query_mob) {
-		struct vmw_dma_buffer *expected_dx_query_mob;
+		struct vmw_buffer_object *expected_dx_query_mob;
 
 		expected_dx_query_mob =
 			vmw_context_get_dx_query_mob(sw_context->dx_query_ctx);
@@ -657,7 +657,7 @@ static int vmw_resources_validate(struct vmw_sw_context *sw_context)
 
 	list_for_each_entry(val, &sw_context->resource_list, head) {
 		struct vmw_resource *res = val->res;
-		struct vmw_dma_buffer *backup = res->backup;
+		struct vmw_buffer_object *backup = res->backup;
 
 		ret = vmw_resource_validate(res);
 		if (unlikely(ret != 0)) {
@@ -668,7 +668,7 @@ static int vmw_resources_validate(struct vmw_sw_context *sw_context)
 
 		/* Check if the resource switched backup buffer */
 		if (backup && res->backup && (backup != res->backup)) {
-			struct vmw_dma_buffer *vbo = res->backup;
+			struct vmw_buffer_object *vbo = res->backup;
 
 			ret = vmw_bo_to_validate_list
 				(sw_context, vbo,
@@ -821,7 +821,7 @@ out_no_reloc:
 static int vmw_rebind_all_dx_query(struct vmw_resource *ctx_res)
 {
 	struct vmw_private *dev_priv = ctx_res->dev_priv;
-	struct vmw_dma_buffer *dx_query_mob;
+	struct vmw_buffer_object *dx_query_mob;
 	struct {
 		SVGA3dCmdHeader header;
 		SVGA3dCmdDXBindAllQuery body;
@@ -1152,7 +1152,7 @@ static int vmw_cmd_present_check(struct vmw_private *dev_priv,
  * command batch.
  */
 static int vmw_query_bo_switch_prepare(struct vmw_private *dev_priv,
-				       struct vmw_dma_buffer *new_query_bo,
+				       struct vmw_buffer_object *new_query_bo,
 				       struct vmw_sw_context *sw_context)
 {
 	struct vmw_res_cache_entry *ctx_entry =
@@ -1234,7 +1234,7 @@ static void vmw_query_bo_switch_commit(struct vmw_private *dev_priv,
 	if (dev_priv->pinned_bo != sw_context->cur_query_bo) {
 		if (dev_priv->pinned_bo) {
 			vmw_bo_pin_reserved(dev_priv->pinned_bo, false);
-			vmw_dmabuf_unreference(&dev_priv->pinned_bo);
+			vmw_bo_unreference(&dev_priv->pinned_bo);
 		}
 
 		if (!sw_context->needs_post_query_barrier) {
@@ -1256,7 +1256,7 @@ static void vmw_query_bo_switch_commit(struct vmw_private *dev_priv,
 			dev_priv->query_cid = sw_context->last_query_ctx->id;
 			dev_priv->query_cid_valid = true;
 			dev_priv->pinned_bo =
-				vmw_dmabuf_reference(sw_context->cur_query_bo);
+				vmw_bo_reference(sw_context->cur_query_bo);
 		}
 	}
 }
@@ -1282,15 +1282,14 @@ static void vmw_query_bo_switch_commit(struct vmw_private *dev_priv,
 static int vmw_translate_mob_ptr(struct vmw_private *dev_priv,
 				 struct vmw_sw_context *sw_context,
 				 SVGAMobId *id,
-				 struct vmw_dma_buffer **vmw_bo_p)
+				 struct vmw_buffer_object **vmw_bo_p)
 {
-	struct vmw_dma_buffer *vmw_bo = NULL;
+	struct vmw_buffer_object *vmw_bo = NULL;
 	uint32_t handle = *id;
 	struct vmw_relocation *reloc;
 	int ret;
 
-	ret = vmw_user_dmabuf_lookup(sw_context->fp->tfile, handle, &vmw_bo,
-				     NULL);
+	ret = vmw_user_bo_lookup(sw_context->fp->tfile, handle, &vmw_bo, NULL);
 	if (unlikely(ret != 0)) {
 		DRM_ERROR("Could not find or use MOB buffer.\n");
 		ret = -EINVAL;
@@ -1316,7 +1315,7 @@ static int vmw_translate_mob_ptr(struct vmw_private *dev_priv,
 	return 0;
 
 out_no_reloc:
-	vmw_dmabuf_unreference(&vmw_bo);
+	vmw_bo_unreference(&vmw_bo);
 	*vmw_bo_p = NULL;
 	return ret;
 }
@@ -1343,15 +1342,14 @@ out_no_reloc:
 static int vmw_translate_guest_ptr(struct vmw_private *dev_priv,
 				   struct vmw_sw_context *sw_context,
 				   SVGAGuestPtr *ptr,
-				   struct vmw_dma_buffer **vmw_bo_p)
+				   struct vmw_buffer_object **vmw_bo_p)
 {
-	struct vmw_dma_buffer *vmw_bo = NULL;
+	struct vmw_buffer_object *vmw_bo = NULL;
 	uint32_t handle = ptr->gmrId;
 	struct vmw_relocation *reloc;
 	int ret;
 
-	ret = vmw_user_dmabuf_lookup(sw_context->fp->tfile, handle, &vmw_bo,
-				     NULL);
+	ret = vmw_user_bo_lookup(sw_context->fp->tfile, handle, &vmw_bo, NULL);
 	if (unlikely(ret != 0)) {
 		DRM_ERROR("Could not find or use GMR region.\n");
 		ret = -EINVAL;
@@ -1376,7 +1374,7 @@ static int vmw_translate_guest_ptr(struct vmw_private *dev_priv,
 	return 0;
 
 out_no_reloc:
-	vmw_dmabuf_unreference(&vmw_bo);
+	vmw_bo_unreference(&vmw_bo);
 	*vmw_bo_p = NULL;
 	return ret;
 }
@@ -1447,7 +1445,7 @@ static int vmw_cmd_dx_bind_query(struct vmw_private *dev_priv,
 		SVGA3dCmdDXBindQuery q;
 	} *cmd;
 
-	struct vmw_dma_buffer *vmw_bo;
+	struct vmw_buffer_object *vmw_bo;
 	int    ret;
 
 
@@ -1466,7 +1464,7 @@ static int vmw_cmd_dx_bind_query(struct vmw_private *dev_priv,
 	sw_context->dx_query_mob = vmw_bo;
 	sw_context->dx_query_ctx = sw_context->dx_ctx_node->res;
 
-	vmw_dmabuf_unreference(&vmw_bo);
+	vmw_bo_unreference(&vmw_bo);
 
 	return ret;
 }
@@ -1549,7 +1547,7 @@ static int vmw_cmd_end_gb_query(struct vmw_private *dev_priv,
 				struct vmw_sw_context *sw_context,
 				SVGA3dCmdHeader *header)
 {
-	struct vmw_dma_buffer *vmw_bo;
+	struct vmw_buffer_object *vmw_bo;
 	struct vmw_query_cmd {
 		SVGA3dCmdHeader header;
 		SVGA3dCmdEndGBQuery q;
@@ -1569,7 +1567,7 @@ static int vmw_cmd_end_gb_query(struct vmw_private *dev_priv,
 
 	ret = vmw_query_bo_switch_prepare(dev_priv, vmw_bo, sw_context);
 
-	vmw_dmabuf_unreference(&vmw_bo);
+	vmw_bo_unreference(&vmw_bo);
 	return ret;
 }
 
@@ -1584,7 +1582,7 @@ static int vmw_cmd_end_query(struct vmw_private *dev_priv,
 			     struct vmw_sw_context *sw_context,
 			     SVGA3dCmdHeader *header)
 {
-	struct vmw_dma_buffer *vmw_bo;
+	struct vmw_buffer_object *vmw_bo;
 	struct vmw_query_cmd {
 		SVGA3dCmdHeader header;
 		SVGA3dCmdEndQuery q;
@@ -1623,7 +1621,7 @@ static int vmw_cmd_end_query(struct vmw_private *dev_priv,
 
 	ret = vmw_query_bo_switch_prepare(dev_priv, vmw_bo, sw_context);
 
-	vmw_dmabuf_unreference(&vmw_bo);
+	vmw_bo_unreference(&vmw_bo);
 	return ret;
 }
 
@@ -1638,7 +1636,7 @@ static int vmw_cmd_wait_gb_query(struct vmw_private *dev_priv,
 				 struct vmw_sw_context *sw_context,
 				 SVGA3dCmdHeader *header)
 {
-	struct vmw_dma_buffer *vmw_bo;
+	struct vmw_buffer_object *vmw_bo;
 	struct vmw_query_cmd {
 		SVGA3dCmdHeader header;
 		SVGA3dCmdWaitForGBQuery q;
@@ -1656,7 +1654,7 @@ static int vmw_cmd_wait_gb_query(struct vmw_private *dev_priv,
 	if (unlikely(ret != 0))
 		return ret;
 
-	vmw_dmabuf_unreference(&vmw_bo);
+	vmw_bo_unreference(&vmw_bo);
 	return 0;
 }
 
@@ -1671,7 +1669,7 @@ static int vmw_cmd_wait_query(struct vmw_private *dev_priv,
 			      struct vmw_sw_context *sw_context,
 			      SVGA3dCmdHeader *header)
 {
-	struct vmw_dma_buffer *vmw_bo;
+	struct vmw_buffer_object *vmw_bo;
 	struct vmw_query_cmd {
 		SVGA3dCmdHeader header;
 		SVGA3dCmdWaitForQuery q;
@@ -1708,7 +1706,7 @@ static int vmw_cmd_wait_query(struct vmw_private *dev_priv,
 	if (unlikely(ret != 0))
 		return ret;
 
-	vmw_dmabuf_unreference(&vmw_bo);
+	vmw_bo_unreference(&vmw_bo);
 	return 0;
 }
 
@@ -1716,7 +1714,7 @@ static int vmw_cmd_dma(struct vmw_private *dev_priv,
 		       struct vmw_sw_context *sw_context,
 		       SVGA3dCmdHeader *header)
 {
-	struct vmw_dma_buffer *vmw_bo = NULL;
+	struct vmw_buffer_object *vmw_bo = NULL;
 	struct vmw_surface *srf = NULL;
 	struct vmw_dma_cmd {
 		SVGA3dCmdHeader header;
@@ -1768,7 +1766,7 @@ static int vmw_cmd_dma(struct vmw_private *dev_priv,
 			     header);
 
 out_no_surface:
-	vmw_dmabuf_unreference(&vmw_bo);
+	vmw_bo_unreference(&vmw_bo);
 	return ret;
 }
 
@@ -1836,7 +1834,7 @@ static int vmw_cmd_tex_state(struct vmw_private *dev_priv,
 	} *cmd;
 
 	SVGA3dTextureState *last_state = (SVGA3dTextureState *)
-	  ((unsigned long) header + header->size + sizeof(header));
+	  ((unsigned long) header + header->size + sizeof(*header));
 	SVGA3dTextureState *cur_state = (SVGA3dTextureState *)
 		((unsigned long) header + sizeof(struct vmw_tex_state_cmd));
 	struct vmw_resource_val_node *ctx_node;
@@ -1887,7 +1885,7 @@ static int vmw_cmd_check_define_gmrfb(struct vmw_private *dev_priv,
 				      struct vmw_sw_context *sw_context,
 				      void *buf)
 {
-	struct vmw_dma_buffer *vmw_bo;
+	struct vmw_buffer_object *vmw_bo;
 	int ret;
 
 	struct {
@@ -1901,7 +1899,7 @@ static int vmw_cmd_check_define_gmrfb(struct vmw_private *dev_priv,
 	if (unlikely(ret != 0))
 		return ret;
 
-	vmw_dmabuf_unreference(&vmw_bo);
+	vmw_bo_unreference(&vmw_bo);
 
 	return ret;
 }
@@ -1928,7 +1926,7 @@ static int vmw_cmd_res_switch_backup(struct vmw_private *dev_priv,
 				     uint32_t *buf_id,
 				     unsigned long backup_offset)
 {
-	struct vmw_dma_buffer *dma_buf;
+	struct vmw_buffer_object *dma_buf;
 	int ret;
 
 	ret = vmw_translate_mob_ptr(dev_priv, sw_context, buf_id, &dma_buf);
@@ -1939,7 +1937,7 @@ static int vmw_cmd_res_switch_backup(struct vmw_private *dev_priv,
 	if (val_node->first_usage)
 		val_node->no_buffer_needed = true;
 
-	vmw_dmabuf_unreference(&val_node->new_backup);
+	vmw_bo_unreference(&val_node->new_backup);
 	val_node->new_backup = dma_buf;
 	val_node->new_backup_offset = backup_offset;
 
@@ -3123,6 +3121,32 @@ static int vmw_cmd_dx_transfer_from_buffer(struct vmw_private *dev_priv,
 				 &cmd->body.destSid, NULL);
 }
 
+/**
+ * vmw_cmd_intra_surface_copy -
+ * Validate an SVGA_3D_CMD_INTRA_SURFACE_COPY command
+ *
+ * @dev_priv: Pointer to a device private struct.
+ * @sw_context: The software context being used for this batch.
+ * @header: Pointer to the command header in the command stream.
+ */
+static int vmw_cmd_intra_surface_copy(struct vmw_private *dev_priv,
+					   struct vmw_sw_context *sw_context,
+					   SVGA3dCmdHeader *header)
+{
+	struct {
+		SVGA3dCmdHeader header;
+		SVGA3dCmdIntraSurfaceCopy body;
+	} *cmd = container_of(header, typeof(*cmd), header);
+
+	if (!(dev_priv->capabilities2 & SVGA_CAP2_INTRA_SURFACE_COPY))
+		return -EINVAL;
+
+	return vmw_cmd_res_check(dev_priv, sw_context, vmw_res_surface,
+				user_surface_converter,
+				&cmd->body.surface.sid, NULL);
+}
+
+
 static int vmw_cmd_check_not_3d(struct vmw_private *dev_priv,
 				struct vmw_sw_context *sw_context,
 				void *buf, uint32_t *size)
@@ -3237,9 +3261,9 @@ static const struct vmw_cmd_entry vmw_cmd_entries[SVGA_3D_CMD_MAX] = {
 		    false, false, false),
 	VMW_CMD_DEF(SVGA_3D_CMD_SCREEN_DMA, &vmw_cmd_invalid,
 		    false, false, false),
-	VMW_CMD_DEF(SVGA_3D_CMD_SET_UNITY_SURFACE_COOKIE, &vmw_cmd_invalid,
+	VMW_CMD_DEF(SVGA_3D_CMD_DEAD1, &vmw_cmd_invalid,
 		    false, false, false),
-	VMW_CMD_DEF(SVGA_3D_CMD_OPEN_CONTEXT_SURFACE, &vmw_cmd_invalid,
+	VMW_CMD_DEF(SVGA_3D_CMD_DEAD2, &vmw_cmd_invalid,
 		    false, false, false),
 	VMW_CMD_DEF(SVGA_3D_CMD_LOGICOPS_BITBLT, &vmw_cmd_invalid,
 		    false, false, false),
@@ -3478,6 +3502,8 @@ static const struct vmw_cmd_entry vmw_cmd_entries[SVGA_3D_CMD_MAX] = {
 	VMW_CMD_DEF(SVGA_3D_CMD_DX_TRANSFER_FROM_BUFFER,
 		    &vmw_cmd_dx_transfer_from_buffer,
 		    true, false, true),
+	VMW_CMD_DEF(SVGA_3D_CMD_INTRA_SURFACE_COPY, &vmw_cmd_intra_surface_copy,
+		    true, false, true),
 };
 
 bool vmw_cmd_describe(const void *buf, u32 *size, char const **cmd)
@@ -3706,16 +3732,16 @@ int vmw_validate_single_buffer(struct vmw_private *dev_priv,
 			       bool interruptible,
 			       bool validate_as_mob)
 {
-	struct vmw_dma_buffer *vbo = container_of(bo, struct vmw_dma_buffer,
-						  base);
+	struct vmw_buffer_object *vbo =
+		container_of(bo, struct vmw_buffer_object, base);
+	struct ttm_operation_ctx ctx = { interruptible, false };
 	int ret;
 
 	if (vbo->pin_count > 0)
 		return 0;
 
 	if (validate_as_mob)
-		return ttm_bo_validate(bo, &vmw_mob_placement, interruptible,
-				       false);
+		return ttm_bo_validate(bo, &vmw_mob_placement, &ctx);
 
 	/**
 	 * Put BO in VRAM if there is space, otherwise as a GMR.
@@ -3724,8 +3750,7 @@ int vmw_validate_single_buffer(struct vmw_private *dev_priv,
 	 * used as a GMR, this will return -ENOMEM.
 	 */
 
-	ret = ttm_bo_validate(bo, &vmw_vram_gmr_placement, interruptible,
-			      false);
+	ret = ttm_bo_validate(bo, &vmw_vram_gmr_placement, &ctx);
 	if (likely(ret == 0 || ret == -ERESTARTSYS))
 		return ret;
 
@@ -3734,7 +3759,7 @@ int vmw_validate_single_buffer(struct vmw_private *dev_priv,
 	 * previous contents.
 	 */
 
-	ret = ttm_bo_validate(bo, &vmw_vram_placement, interruptible, false);
+	ret = ttm_bo_validate(bo, &vmw_vram_placement, &ctx);
 	return ret;
 }
 
@@ -3848,20 +3873,19 @@ int vmw_execbuf_fence_commands(struct drm_file *file_priv,
  * object so we wait for it immediately, and then unreference the
  * user-space reference.
  */
-void
+int
 vmw_execbuf_copy_fence_user(struct vmw_private *dev_priv,
 			    struct vmw_fpriv *vmw_fp,
 			    int ret,
 			    struct drm_vmw_fence_rep __user *user_fence_rep,
 			    struct vmw_fence_obj *fence,
 			    uint32_t fence_handle,
-			    int32_t out_fence_fd,
-			    struct sync_file *sync_file)
+			    int32_t out_fence_fd)
 {
 	struct drm_vmw_fence_rep fence_rep;
 
 	if (user_fence_rep == NULL)
-		return;
+		return 0;
 
 	memset(&fence_rep, 0, sizeof(fence_rep));
 
@@ -3889,20 +3913,14 @@ vmw_execbuf_copy_fence_user(struct vmw_private *dev_priv,
 	 * and unreference the handle.
 	 */
 	if (unlikely(ret != 0) && (fence_rep.error == 0)) {
-		if (sync_file)
-			fput(sync_file->file);
-
-		if (fence_rep.fd != -1) {
-			put_unused_fd(fence_rep.fd);
-			fence_rep.fd = -1;
-		}
-
 		ttm_ref_object_base_unref(vmw_fp->tfile,
 					  fence_handle, TTM_REF_USAGE);
 		DRM_ERROR("Fence copy error. Syncing.\n");
 		(void) vmw_fence_obj_wait(fence, false, false,
 					  VMW_FENCE_WAIT_TIMEOUT);
 	}
+
+	return ret ? -EFAULT : 0;
 }
 
 /**
@@ -4262,15 +4280,22 @@ int vmw_execbuf_process(struct drm_file *file_priv,
 
 			(void) vmw_fence_obj_wait(fence, false, false,
 						  VMW_FENCE_WAIT_TIMEOUT);
+		}
+	}
+
+	ret = vmw_execbuf_copy_fence_user(dev_priv, vmw_fpriv(file_priv), ret,
+				    user_fence_rep, fence, handle, out_fence_fd);
+
+	if (sync_file) {
+		if (ret) {
+			/* usercopy of fence failed, put the file object */
+			fput(sync_file->file);
+			put_unused_fd(out_fence_fd);
 		} else {
 			/* Link the fence with the FD created earlier */
 			fd_install(out_fence_fd, sync_file->file);
 		}
 	}
-
-	vmw_execbuf_copy_fence_user(dev_priv, vmw_fpriv(file_priv), ret,
-				    user_fence_rep, fence, handle,
-				    out_fence_fd, sync_file);
 
 	/* Don't unreference when handing fence out */
 	if (unlikely(out_fence != NULL)) {
@@ -4290,7 +4315,7 @@ int vmw_execbuf_process(struct drm_file *file_priv,
 	 */
 	vmw_resource_list_unreference(sw_context, &resource_list);
 
-	return 0;
+	return ret;
 
 out_unlock_binding:
 	mutex_unlock(&dev_priv->binding_mutex);
@@ -4429,7 +4454,7 @@ void __vmw_execbuf_release_pinned_bo(struct vmw_private *dev_priv,
 
 	ttm_bo_unref(&query_val.bo);
 	ttm_bo_unref(&pinned_val.bo);
-	vmw_dmabuf_unreference(&dev_priv->pinned_bo);
+	vmw_bo_unreference(&dev_priv->pinned_bo);
 out_unlock:
 	return;
 
@@ -4438,7 +4463,7 @@ out_no_emit:
 out_no_reserve:
 	ttm_bo_unref(&query_val.bo);
 	ttm_bo_unref(&pinned_val.bo);
-	vmw_dmabuf_unreference(&dev_priv->pinned_bo);
+	vmw_bo_unreference(&dev_priv->pinned_bo);
 }
 
 /**

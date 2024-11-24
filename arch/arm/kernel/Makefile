@@ -12,19 +12,18 @@ CFLAGS_REMOVE_insn.o = -pg
 CFLAGS_REMOVE_patch.o = -pg
 endif
 
-ifeq ($(cc-name),clang)
-ccflags-y += -DCONFIG_CC_IS_CLANG
-endif
-
 CFLAGS_REMOVE_return_address.o = -pg
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/mtprof/
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/
+
 # Object file lists.
 
 obj-y		:= elf.o entry-common.o irq.o opcodes.o \
-		   process.o ptrace.o reboot.o return_address.o \
+		   process.o ptrace.o reboot.o \
 		   setup.o signal.o sigreturn_codes.o \
 		   stacktrace.o sys_arm.o time.o traps.o
+
+ifneq ($(CONFIG_ARM_UNWIND),y)
+obj-$(CONFIG_FRAME_POINTER)	+= return_address.o
+endif
 
 obj-$(CONFIG_ATAGS)		+= atags_parse.o
 obj-$(CONFIG_ATAGS_PROC)	+= atags_proc.o
@@ -94,6 +93,11 @@ head-y			:= head$(MMUEXT).o
 obj-$(CONFIG_DEBUG_LL)	+= debug.o
 obj-$(CONFIG_EARLY_PRINTK)	+= early_printk.o
 
+# This is executed very early using a temporary stack when no memory allocator
+# nor global data is available. Everything has to be allocated on the stack.
+CFLAGS_head-inflate-data.o := $(call cc-option,-Wframe-larger-than=10240)
+obj-$(CONFIG_XIP_DEFLATED_DATA) += head-inflate-data.o
+
 obj-$(CONFIG_ARM_VIRT_EXT)	+= hyp-stub.o
 AFLAGS_hyp-stub.o		:=-Wa,-march=armv7-a
 ifeq ($(CONFIG_ARM_PSCI),y)
@@ -101,5 +105,7 @@ obj-$(CONFIG_SMP)		+= psci_smp.o
 endif
 
 obj-$(CONFIG_HAVE_ARM_SMCCC)	+= smccc-call.o
+
+obj-$(CONFIG_GENERIC_CPU_VULNERABILITIES) += spectre.o
 
 extra-y := $(head-y) vmlinux.lds

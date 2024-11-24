@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
-
 #ifndef __CMDQ_DEF_H__
 #define __CMDQ_DEF_H__
 
@@ -368,6 +359,9 @@ struct cmdqSecAddrMetadataStruct {
 	uint32_t offset;	/* [IN]_b, buffser offset to secure handle */
 	uint32_t size;		/* buffer size */
 	uint32_t port;		/* hw port id (i.e. M4U port id) */
+	uint32_t sec_id;
+	uint32_t useSecIdinMeta;
+	int32_t ionFd;
 };
 
 /* tablet use */
@@ -395,6 +389,7 @@ struct cmdqSecDataStruct {
 	/* task index in thread's tasklist. -1 for not in tasklist. */
 	int32_t waitCookie;
 	bool resetExecCnt;	/* reset HW thread in SWd */
+	uint64_t extension;
 
 #ifdef CONFIG_MTK_CMDQ_TAB
 	/* tablet use */

@@ -461,7 +461,7 @@ static struct i7core_dev *alloc_i7core_dev(u8 socket,
 	if (!i7core_dev)
 		return NULL;
 
-	i7core_dev->pdev = kzalloc(sizeof(*i7core_dev->pdev) * table->n_devs,
+	i7core_dev->pdev = kcalloc(table->n_devs, sizeof(*i7core_dev->pdev),
 				   GFP_KERNEL);
 	if (!i7core_dev->pdev) {
 		kfree(i7core_dev);
@@ -597,7 +597,7 @@ static int get_dimm_config(struct mem_ctl_info *mci)
 			/* DDR3 has 8 I/O banks */
 			size = (rows * cols * banks * ranks) >> (20 - 3);
 
-			edac_dbg(0, "\tdimm %d %d Mb offset: %x, bank: %d, rank: %d, row: %#x, col: %#x\n",
+			edac_dbg(0, "\tdimm %d %d MiB offset: %x, bank: %d, rank: %d, row: %#x, col: %#x\n",
 				 j, size,
 				 RANKOFFSET(dimm_dod[j]),
 				 banks, ranks, rows, cols);
@@ -1752,7 +1752,7 @@ static void i7core_mce_output_error(struct mem_ctl_info *mci,
 		err = "write parity error";
 		break;
 	case 19:
-		err = "redundacy loss";
+		err = "redundancy loss";
 		break;
 	case 20:
 		err = "reserved";
@@ -2168,8 +2168,13 @@ static int i7core_register_mci(struct i7core_dev *i7core_dev)
 	mci->edac_ctl_cap = EDAC_FLAG_NONE;
 	mci->edac_cap = EDAC_FLAG_NONE;
 	mci->mod_name = "i7core_edac.c";
-	mci->ctl_name = kasprintf(GFP_KERNEL, "i7 core #%d",
-				  i7core_dev->socket);
+
+	mci->ctl_name = kasprintf(GFP_KERNEL, "i7 core #%d", i7core_dev->socket);
+	if (!mci->ctl_name) {
+		rc = -ENOMEM;
+		goto fail1;
+	}
+
 	mci->dev_name = pci_name(i7core_dev->pdev[0]);
 	mci->ctl_page_to_phys = NULL;
 
@@ -2223,6 +2228,8 @@ static int i7core_register_mci(struct i7core_dev *i7core_dev)
 
 fail0:
 	kfree(mci->ctl_name);
+
+fail1:
 	edac_mc_free(mci);
 	i7core_dev->mci = NULL;
 	return rc;

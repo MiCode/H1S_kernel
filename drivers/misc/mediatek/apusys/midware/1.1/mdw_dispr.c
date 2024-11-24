@@ -1,20 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/list.h>
 #include <linux/slab.h>
+#include <linux/vmalloc.h>
 
 #include "mdw_cmn.h"
 #include "mdw_rsc.h"
@@ -74,7 +67,7 @@ static struct mdw_disp_item *mdw_dispr_item_get(
 	struct list_head *tmp = NULL, *list_ptr = NULL;
 
 	/* check packid */
-	if (sc->hdr->pack_id < 0 || sc->hdr->pack_id >= 64 ||
+	if (sc->hdr->pack_id >= 64 ||
 		disp_type < MDW_DISPR_MULTI || disp_type > MDW_DISPR_PACK)
 		return NULL;
 

@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) STMicroelectronics SA 2014
  * Author: Vincent Abriou <vincent.abriou@st.com> for STMicroelectronics.
- * License terms:  GNU General Public License (GPL), version 2
  */
 
 #include <linux/clk.h>
@@ -515,7 +515,9 @@ static int hdmi_vendor_infoframe_config(struct sti_hdmi *hdmi)
 
 	DRM_DEBUG_DRIVER("\n");
 
-	ret = drm_hdmi_vendor_infoframe_from_display_mode(&infoframe, mode);
+	ret = drm_hdmi_vendor_infoframe_from_display_mode(&infoframe,
+							  hdmi->drm_connector,
+							  mode);
 	if (ret < 0) {
 		/*
 		 * Going into that statement does not means vendor infoframe
@@ -924,7 +926,7 @@ static void sti_hdmi_set_mode(struct drm_bridge *bridge,
 	DRM_DEBUG_DRIVER("\n");
 
 	/* Copy the drm display mode in the connector local structure */
-	memcpy(&hdmi->mode, mode, sizeof(struct drm_display_mode));
+	drm_mode_copy(&hdmi->mode, mode);
 
 	/* Update clock framerate according to the selected mode */
 	ret = clk_set_rate(hdmi->clk_pix, mode->clock * 1000);
@@ -975,8 +977,7 @@ static int sti_hdmi_connector_get_modes(struct drm_connector *connector)
 	cec_notifier_set_phys_addr_from_edid(hdmi->notifier, edid);
 
 	count = drm_add_edid_modes(connector, edid);
-	drm_mode_connector_update_edid_property(connector, edid);
-	drm_edid_to_eld(connector, edid);
+	drm_connector_update_edid_property(connector, edid);
 
 	kfree(edid);
 	return count;
@@ -988,8 +989,9 @@ fail:
 
 #define CLK_TOLERANCE_HZ 50
 
-static int sti_hdmi_connector_mode_valid(struct drm_connector *connector,
-					struct drm_display_mode *mode)
+static enum drm_mode_status
+sti_hdmi_connector_mode_valid(struct drm_connector *connector,
+			      struct drm_display_mode *mode)
 {
 	int target = mode->clock * 1000;
 	int target_min = target - CLK_TOLERANCE_HZ;
@@ -1289,7 +1291,7 @@ static int sti_hdmi_bind(struct device *dev, struct device *master, void *data)
 
 	hdmi->drm_connector = drm_connector;
 
-	err = drm_mode_connector_attach_encoder(drm_connector, encoder);
+	err = drm_connector_attach_encoder(drm_connector, encoder);
 	if (err) {
 		DRM_ERROR("Failed to attach a connector to a encoder\n");
 		goto err_sysfs;
@@ -1413,6 +1415,11 @@ static int sti_hdmi_probe(struct platform_device *pdev)
 	init_waitqueue_head(&hdmi->wait_event);
 
 	hdmi->irq = platform_get_irq_byname(pdev, "irq");
+	if (hdmi->irq < 0) {
+		DRM_ERROR("Cannot get HDMI irq\n");
+		ret = hdmi->irq;
+		goto release_adapter;
+	}
 
 	ret = devm_request_threaded_irq(dev, hdmi->irq, hdmi_irq,
 			hdmi_irq_thread, IRQF_ONESHOT, dev_name(dev), hdmi);

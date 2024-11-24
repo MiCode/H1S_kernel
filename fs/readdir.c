@@ -37,13 +37,12 @@ int iterate_dir(struct file *file, struct dir_context *ctx)
 	if (res)
 		goto out;
 
-	if (shared) {
-		inode_lock_shared(inode);
-	} else {
+	if (shared)
+		res = down_read_killable(&inode->i_rwsem);
+	else
 		res = down_write_killable(&inode->i_rwsem);
-		if (res)
-			goto out;
-	}
+	if (res)
+		goto out;
 
 	res = -ENOENT;
 	if (!IS_DEADDIR(inode)) {
@@ -133,6 +132,9 @@ static int fillonedir(struct dir_context *ctx, const char *name, int namlen,
 
 	if (buf->result)
 		return -EINVAL;
+	buf->result = verify_dirent_name(name, namlen);
+	if (buf->result < 0)
+		return buf->result;
 	d_ino = ino;
 	if (sizeof(d_ino) < sizeof(ino) && d_ino != ino) {
 		buf->result = -EOVERFLOW;
@@ -333,8 +335,8 @@ efault:
 	return -EFAULT;
 }
 
-SYSCALL_DEFINE3(getdents64, unsigned int, fd,
-		struct linux_dirent64 __user *, dirent, unsigned int, count)
+int ksys_getdents64(unsigned int fd, struct linux_dirent64 __user *dirent,
+		    unsigned int count)
 {
 	struct fd f;
 	struct linux_dirent64 __user * lastdirent;
@@ -367,6 +369,13 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 	return error;
 }
 
+
+SYSCALL_DEFINE3(getdents64, unsigned int, fd,
+		struct linux_dirent64 __user *, dirent, unsigned int, count)
+{
+	return ksys_getdents64(fd, dirent, count);
+}
+
 #ifdef CONFIG_COMPAT
 struct compat_old_linux_dirent {
 	compat_ulong_t	d_ino;
@@ -392,6 +401,9 @@ static int compat_fillonedir(struct dir_context *ctx, const char *name,
 
 	if (buf->result)
 		return -EINVAL;
+	buf->result = verify_dirent_name(name, namlen);
+	if (buf->result < 0)
+		return buf->result;
 	d_ino = ino;
 	if (sizeof(d_ino) < sizeof(ino) && d_ino != ino) {
 		buf->result = -EOVERFLOW;

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/delay.h>
@@ -43,7 +35,8 @@ static struct _hdmi_factory_context *_get_context(void)
 		memset((void *)&g_context, 0,
 		       sizeof(struct _hdmi_factory_context));
 		is_context_inited = 1;
-		EXTDINFO("[hdmi]_get_context set is_context_inited\n");
+		EXTDINFO("[hdmi]%s set is_context_inited\n",
+			__func__);
 	}
 
 	return &g_context;
@@ -53,7 +46,7 @@ static struct _hdmi_factory_context *_get_context(void)
 
 static void hdmi_factory_callback(enum HDMI_STATE state)
 {
-	EXTDINFO("[hdmi]hdmi_factory_callback, state: %d\n", state);
+	EXTDINFO("[hdmi]%s, state: %d\n", __func__, state);
 	pgc->hdmi_callback_returned = state;
 }
 
@@ -262,7 +255,7 @@ void hdmi_factory_dpi_parameters(int arg, int io_driving)
 	    (LCM_DRIVING_CURRENT) io_driving;
 	hdmi_factory_dpi_params.dispif_config.dpi.dpi_clock = dpi_clock;
 
-	EXTDMSG("[hdmi]hdmi_factory_dpi_parameters:%d\n", arg);
+	EXTDMSG("[hdmi]%s:%d\n", __func__, arg);
 }
 
 int hdmi_factory_mode_test(enum HDMI_FACTORY_TEST test_step, void *info)
@@ -304,10 +297,10 @@ int hdmi_factory_mode_test(enum HDMI_FACTORY_TEST test_step, void *info)
 			 *  data io driving(0bit-7bit)
 			 *  test_type (factory:0, HQA:1, DVT:2)
 			 */
-			int test_type = ((long int)info >> 24);
-			int resolution = (((long int)info >> 16) & 0xFF);
+			int test_type = ((int)info >> 24);
+			int resolution = (((int)info >> 16) & 0xFF);
 			int test_case = resolution;
-			int io_driving = ((long int)info & 0xFFFF);
+			int io_driving = ((int)info & 0xFFFF);
 
 			EXTDMSG("STEP3_START_DPI_AND_CONFIG +\n");
 			EXTDMSG
@@ -343,7 +336,7 @@ int hdmi_factory_mode_test(enum HDMI_FACTORY_TEST test_step, void *info)
 		}
 	case STEP4_DPI_STOP_AND_POWER_OFF:
 		{
-			int test_type = ((long int)info >> 24);
+			int test_type = ((int)info >> 24);
 
 			EXTDMSG("[hdmi] STEP4_DPI_STOP_AND_POWER_OFF\n");
 			hdmi_tx_drv->power_off();

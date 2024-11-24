@@ -1,15 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 /******************************************************************************
  * MTK PMIC Wrapper Driver
  *
@@ -694,80 +687,6 @@ static signed int _pwrap_init_dio(unsigned int dio_en)
 	return 0;
 }
 
-#if 0
-/***************************************************
- * Function : _pwrap_init_cipher()
- * Description :
- * Parameter :
- * Return :
- ****************************************************/
-static signed int _pwrap_init_cipher(void)
-{
-	unsigned int rdata = 0;
-	unsigned int return_value = 0;
-	unsigned int start_time_ns = 0, timeout_ns = 0;
-
-	/* Config CIPHER @ PMIC Wrap */
-	WRAP_WR32(PMIC_WRAP_CIPHER_SWRST, 1);
-	WRAP_WR32(PMIC_WRAP_CIPHER_SWRST, 0);
-	WRAP_WR32(PMIC_WRAP_CIPHER_KEY_SEL, 1);
-	WRAP_WR32(PMIC_WRAP_CIPHER_IV_SEL, 2);
-	WRAP_WR32(PMIC_WRAP_CIPHER_EN, 1);
-
-	/* Config CIPHER @ PMIC */
-	pwrap_write_nochk(PMIC_DEW_CIPHER_SWRST_ADDR, 0x1);
-	pwrap_write_nochk(PMIC_DEW_CIPHER_SWRST_ADDR, 0x0);
-	pwrap_write_nochk(PMIC_DEW_CIPHER_KEY_SEL_ADDR, 0x1);
-	pwrap_write_nochk(PMIC_DEW_CIPHER_IV_SEL_ADDR,  0x2);
-	pwrap_write_nochk(PMIC_DEW_CIPHER_EN_ADDR,  0x1);
-	pr_info("[%s]Config CIPHER of PMIC ok\n", __func__);
-
-	/* wait for cipher data ready @ AP */
-	return_value = wait_for_state_ready_init(wait_for_cipher_ready,
-		TIMEOUT_WAIT_IDLE, PMIC_WRAP_CIPHER_RDY, 0);
-	if (return_value != 0) {
-		pr_info("wait cipher ready fail, ret=%x\n", return_value);
-		return return_value;
-	}
-	pr_info("wait for cipher to be ready ok\n");
-
-	/* wait for cipher data ready @ PMIC */
-	start_time_ns = _pwrap_get_current_time();
-	timeout_ns = _pwrap_time2ns(0xFFFFFF);
-	do {
-		if (_pwrap_timeout_ns(start_time_ns, timeout_ns))
-			pr_info("cipher 0 data\n");
-
-		pwrap_read_nochk(PMIC_DEW_CIPHER_RDY_ADDR, &rdata);
-	} while (rdata != 0x1); /* cipher_ready */
-
-	return_value = pwrap_write_nochk(PMIC_DEW_CIPHER_MODE_ADDR, 0x1);
-	if (return_value != 0) {
-		pr_info("CIPHER_MODE enable fail, ret=%x\n", return_value);
-		return return_value;
-	}
-	pr_info("wait for cipher data ready ok\n");
-
-	/* wait for cipher mode idle */
-	return_value = wait_for_state_ready_init(wait_for_idle_and_sync,
-		TIMEOUT_WAIT_IDLE, PMIC_WRAP_WACS2_RDATA, 0);
-	if (return_value != 0) {
-		pr_info("wait cipher idle fail, ret=%x\n", return_value);
-		return return_value;
-	}
-	WRAP_WR32(PMIC_WRAP_CIPHER_MODE, 1);
-
-	/* Read Test */
-	pwrap_read_nochk(PMIC_DEW_READ_TEST_ADDR, &rdata);
-	if (rdata != DEFAULT_VALUE_READ_TEST) {
-		pr_info("cipher read test fail, err=%x, rdata=%x\n", 1, rdata);
-		return E_PWR_READ_TEST_FAIL;
-	}
-
-	return 0;
-}
-#endif
-
 /************************************************
  * Function : _pwrap_lock_SPISPVReg()
  * Description : protect spi slv register to be write
@@ -783,18 +702,6 @@ static int _pwrap_lock_SPISLVReg(void)
 
 	return 0;
 }
-
-#if 0
-static int _pwrap_unlock_SPISLVReg(void)
-{
-	pwrap_write_nochk(PMIC_SPISLV_KEY_ADDR, 0xbade);
-#ifdef DUAL_PMICS
-	pwrap_write_nochk(EXT_SPISLV_KEY, 0xbade);
-#endif
-
-	return 0;
-}
-#endif
 
 static void _pwrap_InitStaUpd(void)
 {
@@ -1325,11 +1232,6 @@ signed int pwrap_init(void)
 
 	pr_info("%s start!!!!!!!!!!!!!\n", __func__);
 
-#if 0   /* Disable Setup PMIC Driving Strength because Default is already 4mA */
-	/* Set SoC SPI IO Driving Strength to 4 mA */
-	WRAP_WR32(IOCFG_RM_DRV_CFG0_CLR, (0x7 << 18) | (0x7 << 15));
-	WRAP_WR32(IOCFG_RM_DRV_CFG0_SET, (0x1 << 18) | (0x1 << 15));
-#endif
 	__pwrap_spi_clk_set();
 
 	pr_info("__pwrap_spi_clk_set ok\n");
@@ -1390,16 +1292,6 @@ signed int pwrap_init(void)
 		  WRAP_RD32(PMIC_WRAP_SI_SAMPLE_CTRL));
 	pr_notice("PMIC_WRAP_SI_SAMPLE_CTRL_ULPOSC = 0x%x\n",
 		  WRAP_RD32(PMIC_WRAP_SI_SAMPLE_CTRL_ULPOSC));
-
-#if 0
-	/* Enable Encryption */
-	sub_return = _pwrap_init_cipher();
-	if (sub_return != 0) {
-		pr_notice("Encryption fail, ret=%x\n", sub_return);
-		return E_PWR_INIT_CIPHER;
-	}
-	pr_info("_pwrap_init_cipher ok\n");
-#endif
 
 	/*  Write test using WACS2. Check write test default value */
 	sub_return = _pwrap_wacs2_write_test(0);
@@ -1554,15 +1446,6 @@ signed int pwrap_init(void)
 	pwrap_of_iounmap();
 #endif
 
-/* for simulation runtime ipi test */
-#if 0
-	mdelay(20000);
-	for (i = 0; i < 5; i++) {
-		pwrap_ut(1);
-		pwrap_ut(2);
-		pwrap_ut(3);
-	}
-#endif
 	return 0;
 }
 
@@ -2019,13 +1902,6 @@ static irqreturn_t mt_pmic_wrap_irq(int irqno, void *dev_id)
 		pr_notice("[PWRAP] INT0 error = 0x%x\n", int0_flg);
 		pwrap_dump_all_register();
 		WRAP_WR32(PMIC_WRAP_INT0_CLR, 0xffffffff);
-#if 0
-		/* trigger MD ASSERT when CRC fail */
-		if ((int0_flg & 0x02) == 0x02) {
-			exec_ccci_kern_func_by_md_id
-			(MD_SYS1, ID_FORCE_MD_ASSERT, NULL, 0);
-		}
-#endif
 	}
 
 	if ((int1_flg & 0xffffffff) != 0) {

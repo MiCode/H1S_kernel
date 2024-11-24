@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2011-2014 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY;
- * without even the implied warranty of MERCHANTABILITY or FITNESS FOR
- * A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (C) 2011 MediaTek Inc.
  */
 
 /******************************************************************************
@@ -43,6 +30,11 @@
 #include <linux/poll.h>
 #include <linux/proc_fs.h>
 #include <linux/string.h>
+#include <linux/reboot.h>
+#include <linux/reboot-mode.h>
+#include <linux/of.h>
+#include <sec_hal.h>
+#include <mt-plat/sync_write.h>
 /* #include <mach/memory.h> */
 #include <linux/io.h>
 #include <linux/device.h>
@@ -81,7 +73,6 @@ static struct sec_mod sec = { 0 };
 static struct cdev sec_dev;
 static struct class *sec_class;
 static struct device *sec_device;
-
 void __iomem *hacc_base;
 static const struct of_device_id masp_of_ids[] = {
 	{.compatible = "mediatek,hacc",},
@@ -153,6 +144,26 @@ static const struct file_operations sec_proc_rid_fops = {
 	.release = seq_release,
 };
 
+/**************************************************************************
+ *  set_dmverity_reboot eio flag
+ **************************************************************************/
+
+
+// notify_call function
+static int reboot_handler_set_eio_flag(struct notifier_block *reboot,
+						unsigned long mode,
+					  void *cmd)
+{	int ret = 0;
+	const char *dm_error_cmd = "dm-verity device corrupted";
+
+	if (cmd && !strcmp(cmd, dm_error_cmd))
+		ret = masp_hal_set_dm_verity_error();
+	return ret;
+}
+
+static struct notifier_block reboot_handler_notifier = {
+	.notifier_call = reboot_handler_set_eio_flag,
+};
 
 /**************************************************************************
  *  SEC MODULE PARAMETER
@@ -300,7 +311,7 @@ static int __init masp_init(void)
 			  ret);
 		return ret;
 	}
-
+	register_reboot_notifier(&reboot_handler_notifier);
 	return ret;
 }
 
@@ -344,6 +355,7 @@ static void __exit masp_exit(void)
 {
 	/*platform_driver_unregister(&es_driver);*/
 	platform_driver_unregister(&masp_driver);
+	unregister_reboot_notifier(&reboot_handler_notifier);
 }
 module_init(masp_init);
 module_exit(masp_exit);

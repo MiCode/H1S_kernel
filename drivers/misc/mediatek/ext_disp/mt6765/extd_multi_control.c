@@ -1,18 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/kthread.h>
 #include <uapi/linux/sched/types.h>
+
 #include "extd_multi_control.h"
 #include "disp_drv_platform.h"
 #include "external_display.h"
@@ -38,7 +31,7 @@ static int get_dev_index(unsigned int session)
 	int dev_id = session & 0x0FF;
 
 	if (dev_id >= DEV_MAX_NUM) {
-		EXTDERR("get_dev_index device id error:%d\n", dev_id);
+		EXTDERR("%s device id error:%d\n", __func__, dev_id);
 		return -1;
 	}
 
@@ -52,8 +45,8 @@ static int extd_create_path(enum EXT_DISP_PATH_MODE mode, unsigned int session)
 {
 	int ret = 0;
 
-	EXTDMSG("extd_create_path session:%08x, mode:%d\n", session,
-			mode);
+	EXTDMSG("%s session:%08x, mode:%d\n", __func__,
+		session, mode);
 
 	ext_disp_path_set_mode(mode, session);
 	ret = ext_disp_init(NULL, session);
@@ -94,8 +87,8 @@ static int create_external_display_path(unsigned int session, int mode)
 	int has_virtual_disp = 0;
 	int has_physical_disp = 0;
 
-	EXTDMSG("create_external_display_path session:%08x, mode:%d\n",
-		session, mode);
+	EXTDMSG("%s session:%08x, mode:%d\n",
+		__func__, session, mode);
 
 	if (DISP_SESSION_TYPE(session) == DISP_SESSION_MEMORY
 	    && EXTD_OVERLAY_CNT > 0) {
@@ -206,8 +199,8 @@ static void destroy_external_display_path(unsigned int session, int mode)
 {
 	int device_id = 0;
 
-	EXTDMSG("destroy_external_display_path session:%08x\n",
-		session);
+	EXTDMSG("%s session:%08x\n",
+		__func__, session);
 	device_id = DISP_SESSION_DEV(session);
 	if ((DISP_SESSION_TYPE(session) == DISP_SESSION_EXTERNAL)
 	    && (device_id != DEV_LCM)) {
@@ -254,7 +247,7 @@ static int disp_switch_mode_kthread(void *data)
 
 	sched_setscheduler(current, SCHED_RR, &param);
 
-	EXTDMSG("disp_switch_mode_kthread in!\n");
+	EXTDMSG("%s in!\n", __func__);
 
 	for (;;) {
 		wait_event_interruptible(switch_mode_wq,
@@ -397,7 +390,7 @@ static int path_change_with_cascade(enum DISP_MODE mode,
 			extd_set_layer_num(1, session_id);
 		}
 
-		EXTDMSG("path_change_with_cascade, wake up\n");
+		EXTDMSG("%s, wake up\n", __func__);
 		path_info.cur_mode = mode;
 		path_info.ext_sid = session_id;
 		path_info.switching = device_id;
@@ -657,9 +650,9 @@ int external_display_frame_cfg(struct disp_frame_cfg_t *cfg)
 	if (trigger_event) {
 		/* to debug UI thread or MM thread */
 		unsigned int proc_name = (current->comm[0] << 24) |
-		    (current->comm[1] << 16) | (current->
-						comm[2] << 8) | (current->
-								 comm[3] << 0);
+		    (current->comm[1] << 16) |
+		    (current->comm[2] << 8) |
+		    (current->comm[3] << 0);
 		dprec_start(trigger_event, proc_name, 0);
 	}
 	DISPPR_FENCE("T+/E%d\n", DISP_SESSION_DEV(session_id));

@@ -164,7 +164,6 @@ int transport_lookup_tmr_lun(struct se_cmd *se_cmd, u64 unpacked_lun)
 	struct se_session *se_sess = se_cmd->se_sess;
 	struct se_node_acl *nacl = se_sess->se_node_acl;
 	struct se_tmr_req *se_tmr = se_cmd->se_tmr_req;
-	unsigned long flags;
 
 	rcu_read_lock();
 	deve = target_nacl_find_deve(nacl, unpacked_lun);
@@ -194,10 +193,6 @@ out_unlock:
 	}
 	se_cmd->se_dev = rcu_dereference_raw(se_lun->lun_se_dev);
 	se_tmr->tmr_dev = rcu_dereference_raw(se_lun->lun_se_dev);
-
-	spin_lock_irqsave(&se_tmr->tmr_dev->se_tmr_lock, flags);
-	list_add_tail(&se_tmr->tmr_list, &se_tmr->tmr_dev->dev_tmr_list);
-	spin_unlock_irqrestore(&se_tmr->tmr_dev->se_tmr_lock, flags);
 
 	return 0;
 }
@@ -336,7 +331,6 @@ int core_enable_device_list_for_node(
 		return -ENOMEM;
 	}
 
-	atomic_set(&new->ua_count, 0);
 	spin_lock_init(&new->ua_lock);
 	INIT_LIST_HEAD(&new->ua_list);
 	INIT_LIST_HEAD(&new->lun_link);
@@ -791,6 +785,8 @@ struct se_device *target_alloc_device(struct se_hba *hba, const char *name)
 	INIT_LIST_HEAD(&dev->t10_alua.lba_map_list);
 	spin_lock_init(&dev->t10_alua.lba_map_lock);
 
+	INIT_WORK(&dev->delayed_cmd_work, target_do_delayed_work);
+
 	dev->t10_wwn.t10_dev = dev;
 	dev->t10_alua.t10_dev = dev;
 
@@ -879,32 +875,7 @@ sector_t target_to_linux_sector(struct se_device *dev, sector_t lb)
 }
 EXPORT_SYMBOL(target_to_linux_sector);
 
-/**
- * target_find_device - find a se_device by its dev_index
- * @id: dev_index
- * @do_depend: true if caller needs target_depend_item to be done
- *
- * If do_depend is true, the caller must do a target_undepend_item
- * when finished using the device.
- *
- * If do_depend is false, the caller must be called in a configfs
- * callback or during removal.
- */
-struct se_device *target_find_device(int id, bool do_depend)
-{
-	struct se_device *dev;
-
-	mutex_lock(&device_mutex);
-	dev = idr_find(&devices_idr, id);
-	if (dev && do_depend && target_depend_item(&dev->dev_group.cg_item))
-		dev = NULL;
-	mutex_unlock(&device_mutex);
-	return dev;
-}
-EXPORT_SYMBOL(target_find_device);
-
 struct devices_idr_iter {
-	struct config_item *prev_item;
 	int (*fn)(struct se_device *dev, void *data);
 	void *data;
 };
@@ -914,10 +885,8 @@ static int target_devices_idr_iter(int id, void *p, void *data)
 {
 	struct devices_idr_iter *iter = data;
 	struct se_device *dev = p;
+	struct config_item *item;
 	int ret;
-
-	config_item_put(iter->prev_item);
-	iter->prev_item = NULL;
 
 	/*
 	 * We add the device early to the idr, so it can be used
@@ -925,15 +894,16 @@ static int target_devices_idr_iter(int id, void *p, void *data)
 	 * to allow other callers to access partially setup devices,
 	 * so we skip them here.
 	 */
-	if (!(dev->dev_flags & DF_CONFIGURED))
+	if (!target_dev_configured(dev))
 		return 0;
 
-	iter->prev_item = config_item_get_unless_zero(&dev->dev_group.cg_item);
-	if (!iter->prev_item)
+	item = config_item_get_unless_zero(&dev->dev_group.cg_item);
+	if (!item)
 		return 0;
 	mutex_unlock(&device_mutex);
 
 	ret = iter->fn(dev, iter->data);
+	config_item_put(item);
 
 	mutex_lock(&device_mutex);
 	return ret;
@@ -956,7 +926,6 @@ int target_for_each_device(int (*fn)(struct se_device *dev, void *data),
 	mutex_lock(&device_mutex);
 	ret = idr_for_each(&devices_idr, target_devices_idr_iter, &iter);
 	mutex_unlock(&device_mutex);
-	config_item_put(iter.prev_item);
 	return ret;
 }
 
@@ -965,7 +934,7 @@ int target_configure_device(struct se_device *dev)
 	struct se_hba *hba = dev->se_hba;
 	int ret, id;
 
-	if (dev->dev_flags & DF_CONFIGURED) {
+	if (target_dev_configured(dev)) {
 		pr_err("se_dev->se_dev_ptr already set for storage"
 				" object\n");
 		return -EEXIST;
@@ -1009,7 +978,7 @@ int target_configure_device(struct se_device *dev)
 
 	ret = core_setup_alua(dev);
 	if (ret)
-		goto out_free_index;
+		goto out_destroy_device;
 
 	/*
 	 * Startup the struct se_device processing thread
@@ -1053,6 +1022,8 @@ int target_configure_device(struct se_device *dev)
 
 out_free_alua:
 	core_alua_free_lu_gp_mem(dev);
+out_destroy_device:
+	dev->transport->destroy_device(dev);
 out_free_index:
 	mutex_lock(&device_mutex);
 	idr_remove(&devices_idr, dev->dev_index);
@@ -1068,7 +1039,7 @@ void target_free_device(struct se_device *dev)
 
 	WARN_ON(!list_empty(&dev->dev_sep_list));
 
-	if (dev->dev_flags & DF_CONFIGURED) {
+	if (target_dev_configured(dev)) {
 		destroy_workqueue(dev->tmr_wq);
 
 		dev->transport->destroy_device(dev);

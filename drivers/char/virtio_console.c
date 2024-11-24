@@ -433,8 +433,7 @@ static struct port_buffer *alloc_buf(struct virtio_device *vdev, size_t buf_size
 	 * Allocate buffer and the sg list. The sg list array is allocated
 	 * directly after the port_buffer struct.
 	 */
-	buf = kmalloc(sizeof(*buf) + sizeof(struct scatterlist) * pages,
-		      GFP_KERNEL);
+	buf = kmalloc(struct_size(buf, sg, pages), GFP_KERNEL);
 	if (!buf)
 		goto fail;
 
@@ -489,7 +488,7 @@ static struct port_buffer *get_inbuf(struct port *port)
 
 	buf = virtqueue_get_buf(port->in_vq, &len);
 	if (buf) {
-		buf->len = len;
+		buf->len = min_t(size_t, len, buf->size);
 		buf->offset = 0;
 		port->stats.bytes_received += len;
 	}
@@ -982,25 +981,25 @@ error_out:
 	return ret;
 }
 
-static unsigned int port_fops_poll(struct file *filp, poll_table *wait)
+static __poll_t port_fops_poll(struct file *filp, poll_table *wait)
 {
 	struct port *port;
-	unsigned int ret;
+	__poll_t ret;
 
 	port = filp->private_data;
 	poll_wait(filp, &port->waitqueue, wait);
 
 	if (!port->guest_connected) {
 		/* Port got unplugged */
-		return POLLHUP;
+		return EPOLLHUP;
 	}
 	ret = 0;
 	if (!will_read_block(port))
-		ret |= POLLIN | POLLRDNORM;
+		ret |= EPOLLIN | EPOLLRDNORM;
 	if (!will_write_block(port))
-		ret |= POLLOUT;
+		ret |= EPOLLOUT;
 	if (!port->host_connected)
-		ret |= POLLHUP;
+		ret |= EPOLLHUP;
 
 	return ret;
 }
@@ -1310,51 +1309,35 @@ static const struct attribute_group port_attribute_group = {
 	.attrs = port_sysfs_entries,
 };
 
-static ssize_t debugfs_read(struct file *filp, char __user *ubuf,
-			    size_t count, loff_t *offp)
+static int debugfs_show(struct seq_file *s, void *data)
 {
-	struct port *port;
-	char *buf;
-	ssize_t ret, out_offset, out_count;
+	struct port *port = s->private;
 
-	out_count = 1024;
-	buf = kmalloc(out_count, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
+	seq_printf(s, "name: %s\n", port->name ? port->name : "");
+	seq_printf(s, "guest_connected: %d\n", port->guest_connected);
+	seq_printf(s, "host_connected: %d\n", port->host_connected);
+	seq_printf(s, "outvq_full: %d\n", port->outvq_full);
+	seq_printf(s, "bytes_sent: %lu\n", port->stats.bytes_sent);
+	seq_printf(s, "bytes_received: %lu\n", port->stats.bytes_received);
+	seq_printf(s, "bytes_discarded: %lu\n", port->stats.bytes_discarded);
+	seq_printf(s, "is_console: %s\n",
+		   is_console_port(port) ? "yes" : "no");
+	seq_printf(s, "console_vtermno: %u\n", port->cons.vtermno);
 
-	port = filp->private_data;
-	out_offset = 0;
-	out_offset += snprintf(buf + out_offset, out_count,
-			       "name: %s\n", port->name ? port->name : "");
-	out_offset += snprintf(buf + out_offset, out_count - out_offset,
-			       "guest_connected: %d\n", port->guest_connected);
-	out_offset += snprintf(buf + out_offset, out_count - out_offset,
-			       "host_connected: %d\n", port->host_connected);
-	out_offset += snprintf(buf + out_offset, out_count - out_offset,
-			       "outvq_full: %d\n", port->outvq_full);
-	out_offset += snprintf(buf + out_offset, out_count - out_offset,
-			       "bytes_sent: %lu\n", port->stats.bytes_sent);
-	out_offset += snprintf(buf + out_offset, out_count - out_offset,
-			       "bytes_received: %lu\n",
-			       port->stats.bytes_received);
-	out_offset += snprintf(buf + out_offset, out_count - out_offset,
-			       "bytes_discarded: %lu\n",
-			       port->stats.bytes_discarded);
-	out_offset += snprintf(buf + out_offset, out_count - out_offset,
-			       "is_console: %s\n",
-			       is_console_port(port) ? "yes" : "no");
-	out_offset += snprintf(buf + out_offset, out_count - out_offset,
-			       "console_vtermno: %u\n", port->cons.vtermno);
+	return 0;
+}
 
-	ret = simple_read_from_buffer(ubuf, count, offp, buf, out_offset);
-	kfree(buf);
-	return ret;
+static int debugfs_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, debugfs_show, inode->i_private);
 }
 
 static const struct file_operations port_debugfs_ops = {
 	.owner = THIS_MODULE,
-	.open  = simple_open,
-	.read  = debugfs_read,
+	.open = debugfs_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
 };
 
 static void set_console_size(struct port *port, u16 rows, u16 cols)
@@ -1755,7 +1738,7 @@ static void control_work_handler(struct work_struct *work)
 	while ((buf = virtqueue_get_buf(vq, &len))) {
 		spin_unlock(&portdev->c_ivq_lock);
 
-		buf->len = len;
+		buf->len = min_t(size_t, len, buf->size);
 		buf->offset = 0;
 
 		handle_control_message(vq->vdev, portdev, buf);
@@ -1894,13 +1877,14 @@ static int init_vqs(struct ports_device *portdev)
 	nr_ports = portdev->max_nr_ports;
 	nr_queues = use_multiport(portdev) ? (nr_ports + 1) * 2 : 2;
 
-	vqs = kmalloc(nr_queues * sizeof(struct virtqueue *), GFP_KERNEL);
-	io_callbacks = kmalloc(nr_queues * sizeof(vq_callback_t *), GFP_KERNEL);
-	io_names = kmalloc(nr_queues * sizeof(char *), GFP_KERNEL);
-	portdev->in_vqs = kmalloc(nr_ports * sizeof(struct virtqueue *),
-				  GFP_KERNEL);
-	portdev->out_vqs = kmalloc(nr_ports * sizeof(struct virtqueue *),
-				   GFP_KERNEL);
+	vqs = kmalloc_array(nr_queues, sizeof(struct virtqueue *), GFP_KERNEL);
+	io_callbacks = kmalloc_array(nr_queues, sizeof(vq_callback_t *),
+				     GFP_KERNEL);
+	io_names = kmalloc_array(nr_queues, sizeof(char *), GFP_KERNEL);
+	portdev->in_vqs = kmalloc_array(nr_ports, sizeof(struct virtqueue *),
+					GFP_KERNEL);
+	portdev->out_vqs = kmalloc_array(nr_ports, sizeof(struct virtqueue *),
+					 GFP_KERNEL);
 	if (!vqs || !io_callbacks || !io_names || !portdev->in_vqs ||
 	    !portdev->out_vqs) {
 		err = -ENOMEM;
@@ -2001,6 +1985,13 @@ static void virtcons_remove(struct virtio_device *vdev)
 	list_del(&portdev->list);
 	spin_unlock_irq(&pdrvdata_lock);
 
+	/* Device is going away, exit any polling for buffers */
+	virtio_break_device(vdev);
+	if (use_multiport(portdev))
+		flush_work(&portdev->control_work);
+	else
+		flush_work(&portdev->config_work);
+
 	/* Disable interrupts for vqs */
 	vdev->config->reset(vdev);
 	/* Finish up work that's lined up */
@@ -2084,17 +2075,9 @@ static int virtcons_probe(struct virtio_device *vdev)
 		multiport = true;
 	}
 
-	err = init_vqs(portdev);
-	if (err < 0) {
-		dev_err(&vdev->dev, "Error %d initializing vqs\n", err);
-		goto free_chrdev;
-	}
-
 	spin_lock_init(&portdev->ports_lock);
 	INIT_LIST_HEAD(&portdev->ports);
 	INIT_LIST_HEAD(&portdev->list);
-
-	virtio_device_ready(portdev->vdev);
 
 	INIT_WORK(&portdev->config_work, &config_work_handler);
 	INIT_WORK(&portdev->control_work, &control_work_handler);
@@ -2102,7 +2085,17 @@ static int virtcons_probe(struct virtio_device *vdev)
 	if (multiport) {
 		spin_lock_init(&portdev->c_ivq_lock);
 		spin_lock_init(&portdev->c_ovq_lock);
+	}
 
+	err = init_vqs(portdev);
+	if (err < 0) {
+		dev_err(&vdev->dev, "Error %d initializing vqs\n", err);
+		goto free_chrdev;
+	}
+
+	virtio_device_ready(portdev->vdev);
+
+	if (multiport) {
 		err = fill_queue(portdev->c_ivq, &portdev->c_ivq_lock);
 		if (err < 0) {
 			dev_err(&vdev->dev,
@@ -2158,6 +2151,7 @@ static struct virtio_device_id id_table[] = {
 	{ VIRTIO_ID_CONSOLE, VIRTIO_DEV_ANY_ID },
 	{ 0 },
 };
+MODULE_DEVICE_TABLE(virtio, id_table);
 
 static unsigned int features[] = {
 	VIRTIO_CONSOLE_F_SIZE,
@@ -2170,6 +2164,7 @@ static struct virtio_device_id rproc_serial_id_table[] = {
 #endif
 	{ 0 },
 };
+MODULE_DEVICE_TABLE(virtio, rproc_serial_id_table);
 
 static unsigned int rproc_serial_features[] = {
 };
@@ -2272,7 +2267,7 @@ static struct virtio_driver virtio_rproc_serial = {
 	.remove =	virtcons_remove,
 };
 
-static int __init init(void)
+static int __init virtio_console_init(void)
 {
 	int err;
 
@@ -2309,7 +2304,7 @@ free:
 	return err;
 }
 
-static void __exit fini(void)
+static void __exit virtio_console_fini(void)
 {
 	reclaim_dma_bufs();
 
@@ -2319,9 +2314,8 @@ static void __exit fini(void)
 	class_destroy(pdrvdata.class);
 	debugfs_remove_recursive(pdrvdata.debugfs_dir);
 }
-module_init(init);
-module_exit(fini);
+module_init(virtio_console_init);
+module_exit(virtio_console_fini);
 
-MODULE_DEVICE_TABLE(virtio, id_table);
 MODULE_DESCRIPTION("Virtio console driver");
 MODULE_LICENSE("GPL");

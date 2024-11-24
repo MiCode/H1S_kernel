@@ -69,7 +69,7 @@ enum {
 #else
 #define MAX_LOCKDEP_ENTRIES	32768UL
 
-#define MAX_LOCKDEP_CHAINS_BITS	17
+#define MAX_LOCKDEP_CHAINS_BITS	16
 
 /*
  * Stack-trace: tightly packed array of stack backtrace
@@ -184,20 +184,4 @@ DECLARE_PER_CPU(struct lockdep_stats, lockdep_stats);
 # define debug_atomic_inc(ptr)		do { } while (0)
 # define debug_atomic_dec(ptr)		do { } while (0)
 # define debug_atomic_read(ptr)		0
-#endif
-
-#include <kernel/sched/sched.h>
-#ifdef CONFIG_MTK_AEE_FEATURE
-#include <mt-plat/aee.h>
-#endif
-#ifdef CONFIG_MTK_RAM_CONSOLE
-#include <mt-plat/mtk_ram_console.h>
-#endif
-
-void lockdep_test_init(void);
-
-#ifdef MTK_LOCK_MONITOR
-#include <asm/stacktrace.h>
-#include <linux/sched/task_stack.h>
-void lock_monitor_init(void);
 #endif

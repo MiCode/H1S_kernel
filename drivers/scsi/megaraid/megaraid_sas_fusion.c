@@ -85,19 +85,45 @@ int megasas_transition_to_ready(struct megasas_instance *instance, int ocr);
 void megaraid_sas_kill_hba(struct megasas_instance *instance);
 
 extern u32 megasas_dbg_lvl;
-void megasas_sriov_heartbeat_handler(unsigned long instance_addr);
 int megasas_sriov_start_heartbeat(struct megasas_instance *instance,
 				  int initial);
-void megasas_start_timer(struct megasas_instance *instance,
-			struct timer_list *timer,
-			 void *fn, unsigned long interval);
+void megasas_start_timer(struct megasas_instance *instance);
 extern struct megasas_mgmt_info megasas_mgmt_info;
 extern unsigned int resetwaittime;
 extern unsigned int dual_qdepth_disable;
 static void megasas_free_rdpq_fusion(struct megasas_instance *instance);
 static void megasas_free_reply_fusion(struct megasas_instance *instance);
+static inline
+void megasas_configure_queue_sizes(struct megasas_instance *instance);
 
+/**
+ * megasas_check_same_4gb_region -	check if allocation
+ *					crosses same 4GB boundary or not
+ * @instance -				adapter's soft instance
+ * start_addr -			start address of DMA allocation
+ * size -				size of allocation in bytes
+ * return -				true : allocation does not cross same
+ *					4GB boundary
+ *					false: allocation crosses same
+ *					4GB boundary
+ */
+static inline bool megasas_check_same_4gb_region
+	(struct megasas_instance *instance, dma_addr_t start_addr, size_t size)
+{
+	dma_addr_t end_addr;
 
+	end_addr = start_addr + size;
+
+	if (upper_32_bits(start_addr) != upper_32_bits(end_addr)) {
+		dev_err(&instance->pdev->dev,
+			"Failed to get same 4GB boundary: start_addr: 0x%llx end_addr: 0x%llx\n",
+			(unsigned long long)start_addr,
+			(unsigned long long)end_addr);
+		return false;
+	}
+
+	return true;
+}
 
 /**
  * megasas_enable_intr_fusion -	Enables interrupts
@@ -248,8 +274,8 @@ megasas_fusion_update_can_queue(struct megasas_instance *instance, int fw_boot_c
 			(instance->instancet->read_fw_status_reg(reg_set) & 0x00FFFF) - MEGASAS_FUSION_IOCTL_CMDS;
 
 	dev_info(&instance->pdev->dev,
-			"Current firmware maximum commands: %d\t LDIO threshold: %d\n",
-			cur_max_fw_cmds, ldio_threshold);
+		 "Current firmware supports maximum commands: %d\t LDIO threshold: %d\n",
+		 cur_max_fw_cmds, ldio_threshold);
 
 	if (fw_boot_context == OCR_CONTEXT) {
 		cur_max_fw_cmds = cur_max_fw_cmds - 1;
@@ -264,10 +290,6 @@ megasas_fusion_update_can_queue(struct megasas_instance *instance, int fw_boot_c
 		instance->max_fw_cmds = cur_max_fw_cmds;
 		instance->ldio_threshold = ldio_threshold;
 
-		if (!instance->is_rdpq)
-			instance->max_fw_cmds =
-				min_t(u16, instance->max_fw_cmds, 1024);
-
 		if (reset_devices)
 			instance->max_fw_cmds = min(instance->max_fw_cmds,
 						(u16)MEGASAS_KDUMP_QUEUE_DEPTH);
@@ -277,19 +299,7 @@ megasas_fusion_update_can_queue(struct megasas_instance *instance, int fw_boot_c
 		* does not exceed max cmds that the FW can support
 		*/
 		instance->max_fw_cmds = instance->max_fw_cmds-1;
-
-		instance->max_scsi_cmds = instance->max_fw_cmds -
-				(MEGASAS_FUSION_INTERNAL_CMDS +
-				MEGASAS_FUSION_IOCTL_CMDS);
-		instance->cur_can_queue = instance->max_scsi_cmds;
-		instance->host->can_queue = instance->cur_can_queue;
 	}
-
-	if (instance->adapter_type == VENTURA_SERIES)
-		instance->max_mpt_cmds =
-		instance->max_fw_cmds * RAID_1_PEER_CMDS;
-	else
-		instance->max_mpt_cmds = instance->max_fw_cmds;
 }
 /**
  * megasas_free_cmds_fusion -	Free all the cmds in the free cmd pool
@@ -302,17 +312,23 @@ megasas_free_cmds_fusion(struct megasas_instance *instance)
 	struct fusion_context *fusion = instance->ctrl_context;
 	struct megasas_cmd_fusion *cmd;
 
-	/* SG, Sense */
-	for (i = 0; i < instance->max_mpt_cmds; i++) {
-		cmd = fusion->cmd_list[i];
-		if (cmd) {
-			if (cmd->sg_frame)
-				dma_pool_free(fusion->sg_dma_pool, cmd->sg_frame,
-				      cmd->sg_frame_phys_addr);
-			if (cmd->sense)
-				dma_pool_free(fusion->sense_dma_pool, cmd->sense,
-				      cmd->sense_phys_addr);
+	if (fusion->sense)
+		dma_pool_free(fusion->sense_dma_pool, fusion->sense,
+			      fusion->sense_phys_addr);
+
+	/* SG */
+	if (fusion->cmd_list) {
+		for (i = 0; i < instance->max_mpt_cmds; i++) {
+			cmd = fusion->cmd_list[i];
+			if (cmd) {
+				if (cmd->sg_frame)
+					dma_pool_free(fusion->sg_dma_pool,
+						      cmd->sg_frame,
+						      cmd->sg_frame_phys_addr);
+			}
+			kfree(cmd);
 		}
+		kfree(fusion->cmd_list);
 	}
 
 	if (fusion->sg_dma_pool) {
@@ -344,13 +360,6 @@ megasas_free_cmds_fusion(struct megasas_instance *instance)
 		dma_pool_destroy(fusion->io_request_frames_pool);
 		fusion->io_request_frames_pool = NULL;
 	}
-
-
-	/* cmd_list */
-	for (i = 0; i < instance->max_mpt_cmds; i++)
-		kfree(fusion->cmd_list[i]);
-
-	kfree(fusion->cmd_list);
 }
 
 /**
@@ -364,10 +373,12 @@ static int megasas_create_sg_sense_fusion(struct megasas_instance *instance)
 	u16 max_cmd;
 	struct fusion_context *fusion;
 	struct megasas_cmd_fusion *cmd;
+	int sense_sz;
+	u32 offset;
 
 	fusion = instance->ctrl_context;
 	max_cmd = instance->max_fw_cmds;
-
+	sense_sz = instance->max_mpt_cmds * SCSI_SENSE_BUFFERSIZE;
 
 	fusion->sg_dma_pool =
 			dma_pool_create("mr_sg", &instance->pdev->dev,
@@ -376,12 +387,57 @@ static int megasas_create_sg_sense_fusion(struct megasas_instance *instance)
 	/* SCSI_SENSE_BUFFERSIZE  = 96 bytes */
 	fusion->sense_dma_pool =
 			dma_pool_create("mr_sense", &instance->pdev->dev,
-				SCSI_SENSE_BUFFERSIZE, 64, 0);
+				sense_sz, 64, 0);
 
 	if (!fusion->sense_dma_pool || !fusion->sg_dma_pool) {
 		dev_err(&instance->pdev->dev,
 			"Failed from %s %d\n",  __func__, __LINE__);
 		return -ENOMEM;
+	}
+
+	fusion->sense = dma_pool_alloc(fusion->sense_dma_pool,
+				       GFP_KERNEL, &fusion->sense_phys_addr);
+	if (!fusion->sense) {
+		dev_err(&instance->pdev->dev,
+			"failed from %s %d\n",  __func__, __LINE__);
+		return -ENOMEM;
+	}
+
+	/* sense buffer, request frame and reply desc pool requires to be in
+	 * same 4 gb region. Below function will check this.
+	 * In case of failure, new pci pool will be created with updated
+	 * alignment.
+	 * Older allocation and pool will be destroyed.
+	 * Alignment will be used such a way that next allocation if success,
+	 * will always meet same 4gb region requirement.
+	 * Actual requirement is not alignment, but we need start and end of
+	 * DMA address must have same upper 32 bit address.
+	 */
+
+	if (!megasas_check_same_4gb_region(instance, fusion->sense_phys_addr,
+					   sense_sz)) {
+		dma_pool_free(fusion->sense_dma_pool, fusion->sense,
+			      fusion->sense_phys_addr);
+		fusion->sense = NULL;
+		dma_pool_destroy(fusion->sense_dma_pool);
+
+		fusion->sense_dma_pool =
+			dma_pool_create("mr_sense_align", &instance->pdev->dev,
+					sense_sz, roundup_pow_of_two(sense_sz),
+					0);
+		if (!fusion->sense_dma_pool) {
+			dev_err(&instance->pdev->dev,
+				"Failed from %s %d\n",  __func__, __LINE__);
+			return -ENOMEM;
+		}
+		fusion->sense = dma_pool_alloc(fusion->sense_dma_pool,
+					       GFP_KERNEL,
+					       &fusion->sense_phys_addr);
+		if (!fusion->sense) {
+			dev_err(&instance->pdev->dev,
+				"failed from %s %d\n",  __func__, __LINE__);
+			return -ENOMEM;
+		}
 	}
 
 	/*
@@ -392,9 +448,11 @@ static int megasas_create_sg_sense_fusion(struct megasas_instance *instance)
 		cmd->sg_frame = dma_pool_alloc(fusion->sg_dma_pool,
 					GFP_KERNEL, &cmd->sg_frame_phys_addr);
 
-		cmd->sense = dma_pool_alloc(fusion->sense_dma_pool,
-					GFP_KERNEL, &cmd->sense_phys_addr);
-		if (!cmd->sg_frame || !cmd->sense) {
+		offset = SCSI_SENSE_BUFFERSIZE * i;
+		cmd->sense = (u8 *)fusion->sense + offset;
+		cmd->sense_phys_addr = fusion->sense_phys_addr + offset;
+
+		if (!cmd->sg_frame) {
 			dev_err(&instance->pdev->dev,
 				"Failed from %s %d\n",  __func__, __LINE__);
 			return -ENOMEM;
@@ -404,13 +462,10 @@ static int megasas_create_sg_sense_fusion(struct megasas_instance *instance)
 	/* create sense buffer for the raid 1/10 fp */
 	for (i = max_cmd; i < instance->max_mpt_cmds; i++) {
 		cmd = fusion->cmd_list[i];
-		cmd->sense = dma_pool_alloc(fusion->sense_dma_pool,
-			GFP_KERNEL, &cmd->sense_phys_addr);
-		if (!cmd->sense) {
-			dev_err(&instance->pdev->dev,
-				"Failed from %s %d\n",  __func__, __LINE__);
-			return -ENOMEM;
-		}
+		offset = SCSI_SENSE_BUFFERSIZE * i;
+		cmd->sense = (u8 *)fusion->sense + offset;
+		cmd->sense_phys_addr = fusion->sense_phys_addr + offset;
+
 	}
 
 	return 0;
@@ -432,7 +487,7 @@ megasas_alloc_cmdlist_fusion(struct megasas_instance *instance)
 	 * commands.
 	 */
 	fusion->cmd_list =
-		kzalloc(sizeof(struct megasas_cmd_fusion *) * max_mpt_cmd,
+		kcalloc(max_mpt_cmd, sizeof(struct megasas_cmd_fusion *),
 			GFP_KERNEL);
 	if (!fusion->cmd_list) {
 		dev_err(&instance->pdev->dev,
@@ -462,16 +517,7 @@ megasas_alloc_request_fusion(struct megasas_instance *instance)
 
 	fusion = instance->ctrl_context;
 
-	fusion->req_frames_desc =
-		dma_alloc_coherent(&instance->pdev->dev,
-			fusion->request_alloc_sz,
-			&fusion->req_frames_desc_phys, GFP_KERNEL);
-	if (!fusion->req_frames_desc) {
-		dev_err(&instance->pdev->dev,
-			"Failed from %s %d\n",  __func__, __LINE__);
-		return -ENOMEM;
-	}
-
+retry_alloc:
 	fusion->io_request_frames_pool =
 			dma_pool_create("mr_ioreq", &instance->pdev->dev,
 				fusion->io_frames_alloc_sz, 16, 0);
@@ -484,12 +530,65 @@ megasas_alloc_request_fusion(struct megasas_instance *instance)
 
 	fusion->io_request_frames =
 			dma_pool_alloc(fusion->io_request_frames_pool,
-				GFP_KERNEL, &fusion->io_request_frames_phys);
+				GFP_KERNEL | __GFP_NOWARN,
+				&fusion->io_request_frames_phys);
 	if (!fusion->io_request_frames) {
+		if (instance->max_fw_cmds >= (MEGASAS_REDUCE_QD_COUNT * 2)) {
+			instance->max_fw_cmds -= MEGASAS_REDUCE_QD_COUNT;
+			dma_pool_destroy(fusion->io_request_frames_pool);
+			megasas_configure_queue_sizes(instance);
+			goto retry_alloc;
+		} else {
+			dev_err(&instance->pdev->dev,
+				"Failed from %s %d\n",  __func__, __LINE__);
+			return -ENOMEM;
+		}
+	}
+
+	if (!megasas_check_same_4gb_region(instance,
+					   fusion->io_request_frames_phys,
+					   fusion->io_frames_alloc_sz)) {
+		dma_pool_free(fusion->io_request_frames_pool,
+			      fusion->io_request_frames,
+			      fusion->io_request_frames_phys);
+		fusion->io_request_frames = NULL;
+		dma_pool_destroy(fusion->io_request_frames_pool);
+
+		fusion->io_request_frames_pool =
+			dma_pool_create("mr_ioreq_align",
+					&instance->pdev->dev,
+					fusion->io_frames_alloc_sz,
+					roundup_pow_of_two(fusion->io_frames_alloc_sz),
+					0);
+
+		if (!fusion->io_request_frames_pool) {
+			dev_err(&instance->pdev->dev,
+				"Failed from %s %d\n",  __func__, __LINE__);
+			return -ENOMEM;
+		}
+
+		fusion->io_request_frames =
+			dma_pool_alloc(fusion->io_request_frames_pool,
+				       GFP_KERNEL | __GFP_NOWARN,
+				       &fusion->io_request_frames_phys);
+
+		if (!fusion->io_request_frames) {
+			dev_err(&instance->pdev->dev,
+				"Failed from %s %d\n",  __func__, __LINE__);
+			return -ENOMEM;
+		}
+	}
+
+	fusion->req_frames_desc =
+		dma_alloc_coherent(&instance->pdev->dev,
+				   fusion->request_alloc_sz,
+				   &fusion->req_frames_desc_phys, GFP_KERNEL);
+	if (!fusion->req_frames_desc) {
 		dev_err(&instance->pdev->dev,
 			"Failed from %s %d\n",  __func__, __LINE__);
 		return -ENOMEM;
 	}
+
 	return 0;
 }
 
@@ -520,6 +619,41 @@ megasas_alloc_reply_fusion(struct megasas_instance *instance)
 			"Failed from %s %d\n",  __func__, __LINE__);
 		return -ENOMEM;
 	}
+
+	if (!megasas_check_same_4gb_region(instance,
+					   fusion->reply_frames_desc_phys[0],
+					   (fusion->reply_alloc_sz * count))) {
+		dma_pool_free(fusion->reply_frames_desc_pool,
+			      fusion->reply_frames_desc[0],
+			      fusion->reply_frames_desc_phys[0]);
+		fusion->reply_frames_desc[0] = NULL;
+		dma_pool_destroy(fusion->reply_frames_desc_pool);
+
+		fusion->reply_frames_desc_pool =
+			dma_pool_create("mr_reply_align",
+					&instance->pdev->dev,
+					fusion->reply_alloc_sz * count,
+					roundup_pow_of_two(fusion->reply_alloc_sz * count),
+					0);
+
+		if (!fusion->reply_frames_desc_pool) {
+			dev_err(&instance->pdev->dev,
+				"Failed from %s %d\n",  __func__, __LINE__);
+			return -ENOMEM;
+		}
+
+		fusion->reply_frames_desc[0] =
+			dma_pool_alloc(fusion->reply_frames_desc_pool,
+				       GFP_KERNEL,
+				       &fusion->reply_frames_desc_phys[0]);
+
+		if (!fusion->reply_frames_desc[0]) {
+			dev_err(&instance->pdev->dev,
+				"Failed from %s %d\n",  __func__, __LINE__);
+			return -ENOMEM;
+		}
+	}
+
 	reply_desc = fusion->reply_frames_desc[0];
 	for (i = 0; i < fusion->reply_q_depth * count; i++, reply_desc++)
 		reply_desc->Words = cpu_to_le64(ULLONG_MAX);
@@ -538,52 +672,123 @@ megasas_alloc_reply_fusion(struct megasas_instance *instance)
 int
 megasas_alloc_rdpq_fusion(struct megasas_instance *instance)
 {
-	int i, j, count;
+	int i, j, k, msix_count;
 	struct fusion_context *fusion;
 	union MPI2_REPLY_DESCRIPTORS_UNION *reply_desc;
+	union MPI2_REPLY_DESCRIPTORS_UNION *rdpq_chunk_virt[RDPQ_MAX_CHUNK_COUNT];
+	dma_addr_t rdpq_chunk_phys[RDPQ_MAX_CHUNK_COUNT];
+	u8 dma_alloc_count, abs_index;
+	u32 chunk_size, array_size, offset;
 
 	fusion = instance->ctrl_context;
+	chunk_size = fusion->reply_alloc_sz * RDPQ_MAX_INDEX_IN_ONE_CHUNK;
+	array_size = sizeof(struct MPI2_IOC_INIT_RDPQ_ARRAY_ENTRY) *
+		     MAX_MSIX_QUEUES_FUSION;
 
-	fusion->rdpq_virt = pci_alloc_consistent(instance->pdev,
-				sizeof(struct MPI2_IOC_INIT_RDPQ_ARRAY_ENTRY) * MAX_MSIX_QUEUES_FUSION,
-				&fusion->rdpq_phys);
+	fusion->rdpq_virt = pci_zalloc_consistent(instance->pdev, array_size,
+						  &fusion->rdpq_phys);
 	if (!fusion->rdpq_virt) {
 		dev_err(&instance->pdev->dev,
 			"Failed from %s %d\n",  __func__, __LINE__);
 		return -ENOMEM;
 	}
 
-	memset(fusion->rdpq_virt, 0,
-			sizeof(struct MPI2_IOC_INIT_RDPQ_ARRAY_ENTRY) * MAX_MSIX_QUEUES_FUSION);
-	count = instance->msix_vectors > 0 ? instance->msix_vectors : 1;
+	msix_count = instance->msix_vectors > 0 ? instance->msix_vectors : 1;
+
 	fusion->reply_frames_desc_pool = dma_pool_create("mr_rdpq",
 							 &instance->pdev->dev,
-							 fusion->reply_alloc_sz,
-							 16, 0);
+							 chunk_size, 16, 0);
+	fusion->reply_frames_desc_pool_align =
+				dma_pool_create("mr_rdpq_align",
+						&instance->pdev->dev,
+						chunk_size,
+						roundup_pow_of_two(chunk_size),
+						0);
 
-	if (!fusion->reply_frames_desc_pool) {
+	if (!fusion->reply_frames_desc_pool ||
+	    !fusion->reply_frames_desc_pool_align) {
 		dev_err(&instance->pdev->dev,
 			"Failed from %s %d\n",  __func__, __LINE__);
 		return -ENOMEM;
 	}
 
-	for (i = 0; i < count; i++) {
-		fusion->reply_frames_desc[i] =
-				dma_pool_alloc(fusion->reply_frames_desc_pool,
-					GFP_KERNEL, &fusion->reply_frames_desc_phys[i]);
-		if (!fusion->reply_frames_desc[i]) {
+/*
+ * For INVADER_SERIES each set of 8 reply queues(0-7, 8-15, ..) and
+ * VENTURA_SERIES each set of 16 reply queues(0-15, 16-31, ..) should be
+ * within 4GB boundary and also reply queues in a set must have same
+ * upper 32-bits in their memory address. so here driver is allocating the
+ * DMA'able memory for reply queues according. Driver uses limitation of
+ * VENTURA_SERIES to manage INVADER_SERIES as well.
+ */
+	dma_alloc_count = DIV_ROUND_UP(msix_count, RDPQ_MAX_INDEX_IN_ONE_CHUNK);
+
+	for (i = 0; i < dma_alloc_count; i++) {
+		rdpq_chunk_virt[i] =
+			dma_pool_alloc(fusion->reply_frames_desc_pool,
+				       GFP_KERNEL, &rdpq_chunk_phys[i]);
+		if (!rdpq_chunk_virt[i]) {
 			dev_err(&instance->pdev->dev,
 				"Failed from %s %d\n",  __func__, __LINE__);
 			return -ENOMEM;
 		}
+		/* reply desc pool requires to be in same 4 gb region.
+		 * Below function will check this.
+		 * In case of failure, new pci pool will be created with updated
+		 * alignment.
+		 * For RDPQ buffers, driver always allocate two separate pci pool.
+		 * Alignment will be used such a way that next allocation if
+		 * success, will always meet same 4gb region requirement.
+		 * rdpq_tracker keep track of each buffer's physical,
+		 * virtual address and pci pool descriptor. It will help driver
+		 * while freeing the resources.
+		 *
+		 */
+		if (!megasas_check_same_4gb_region(instance, rdpq_chunk_phys[i],
+						   chunk_size)) {
+			dma_pool_free(fusion->reply_frames_desc_pool,
+				      rdpq_chunk_virt[i],
+				      rdpq_chunk_phys[i]);
 
-		fusion->rdpq_virt[i].RDPQBaseAddress =
-			cpu_to_le64(fusion->reply_frames_desc_phys[i]);
+			rdpq_chunk_virt[i] =
+				dma_pool_alloc(fusion->reply_frames_desc_pool_align,
+					       GFP_KERNEL, &rdpq_chunk_phys[i]);
+			if (!rdpq_chunk_virt[i]) {
+				dev_err(&instance->pdev->dev,
+					"Failed from %s %d\n",
+					__func__, __LINE__);
+				return -ENOMEM;
+			}
+			fusion->rdpq_tracker[i].dma_pool_ptr =
+					fusion->reply_frames_desc_pool_align;
+		} else {
+			fusion->rdpq_tracker[i].dma_pool_ptr =
+					fusion->reply_frames_desc_pool;
+		}
 
-		reply_desc = fusion->reply_frames_desc[i];
-		for (j = 0; j < fusion->reply_q_depth; j++, reply_desc++)
-			reply_desc->Words = cpu_to_le64(ULLONG_MAX);
+		fusion->rdpq_tracker[i].pool_entry_phys = rdpq_chunk_phys[i];
+		fusion->rdpq_tracker[i].pool_entry_virt = rdpq_chunk_virt[i];
 	}
+
+	for (k = 0; k < dma_alloc_count; k++) {
+		for (i = 0; i < RDPQ_MAX_INDEX_IN_ONE_CHUNK; i++) {
+			abs_index = (k * RDPQ_MAX_INDEX_IN_ONE_CHUNK) + i;
+
+			if (abs_index == msix_count)
+				break;
+			offset = fusion->reply_alloc_sz * i;
+			fusion->rdpq_virt[abs_index].RDPQBaseAddress =
+					cpu_to_le64(rdpq_chunk_phys[k] + offset);
+			fusion->reply_frames_desc_phys[abs_index] =
+					rdpq_chunk_phys[k] + offset;
+			fusion->reply_frames_desc[abs_index] =
+					(union MPI2_REPLY_DESCRIPTORS_UNION *)((u8 *)rdpq_chunk_virt[k] + offset);
+
+			reply_desc = fusion->reply_frames_desc[abs_index];
+			for (j = 0; j < fusion->reply_q_depth; j++, reply_desc++)
+				reply_desc->Words = ULLONG_MAX;
+		}
+	}
+
 	return 0;
 }
 
@@ -595,15 +800,18 @@ megasas_free_rdpq_fusion(struct megasas_instance *instance) {
 
 	fusion = instance->ctrl_context;
 
-	for (i = 0; i < MAX_MSIX_QUEUES_FUSION; i++) {
-		if (fusion->reply_frames_desc[i])
-			dma_pool_free(fusion->reply_frames_desc_pool,
-				fusion->reply_frames_desc[i],
-				fusion->reply_frames_desc_phys[i]);
+	for (i = 0; i < RDPQ_MAX_CHUNK_COUNT; i++) {
+		if (fusion->rdpq_tracker[i].pool_entry_virt)
+			dma_pool_free(fusion->rdpq_tracker[i].dma_pool_ptr,
+				      fusion->rdpq_tracker[i].pool_entry_virt,
+				      fusion->rdpq_tracker[i].pool_entry_phys);
+
 	}
 
 	if (fusion->reply_frames_desc_pool)
 		dma_pool_destroy(fusion->reply_frames_desc_pool);
+	if (fusion->reply_frames_desc_pool_align)
+		dma_pool_destroy(fusion->reply_frames_desc_pool_align);
 
 	if (fusion->rdpq_virt)
 		pci_free_consistent(instance->pdev,
@@ -658,9 +866,6 @@ megasas_alloc_cmds_fusion(struct megasas_instance *instance)
 
 	fusion = instance->ctrl_context;
 
-	if (megasas_alloc_cmdlist_fusion(instance))
-		goto fail_exit;
-
 	if (megasas_alloc_request_fusion(instance))
 		goto fail_exit;
 
@@ -671,6 +876,11 @@ megasas_alloc_cmds_fusion(struct megasas_instance *instance)
 		if (megasas_alloc_reply_fusion(instance))
 			goto fail_exit;
 
+	if (megasas_alloc_cmdlist_fusion(instance))
+		goto fail_exit;
+
+	dev_info(&instance->pdev->dev, "Configured max firmware commands: %d\n",
+		 instance->max_fw_cmds);
 
 	/* The first 256 bytes (SMID 0) is not used. Don't add to the cmd list */
 	io_req_base = fusion->io_request_frames + MEGA_MPI2_RAID_DEFAULT_IO_FRAME_SIZE;
@@ -766,21 +976,33 @@ megasas_ioc_init_fusion(struct megasas_instance *instance)
 	const char *sys_info;
 	MFI_CAPABILITIES *drv_ops;
 	u32 scratch_pad_2;
+	ktime_t time;
+	bool cur_fw_64bit_dma_capable;
 
 	fusion = instance->ctrl_context;
 
-	cmd = megasas_get_cmd(instance);
+	ioc_init_handle = fusion->ioc_init_request_phys;
+	IOCInitMessage = fusion->ioc_init_request;
 
-	if (!cmd) {
-		dev_err(&instance->pdev->dev, "Could not allocate cmd for INIT Frame\n");
-		ret = 1;
-		goto fail_get_cmd;
-	}
+	cmd = fusion->ioc_init_cmd;
 
 	scratch_pad_2 = readl
 		(&instance->reg_set->outbound_scratch_pad_2);
 
 	cur_rdpq_mode = (scratch_pad_2 & MR_RDPQ_MODE_OFFSET) ? 1 : 0;
+
+	if (instance->adapter_type == INVADER_SERIES) {
+		cur_fw_64bit_dma_capable =
+			(scratch_pad_2 & MR_CAN_HANDLE_64_BIT_DMA_OFFSET) ? true : false;
+
+		if (instance->consistent_mask_64bit && !cur_fw_64bit_dma_capable) {
+			dev_err(&instance->pdev->dev, "Driver was operating on 64bit "
+				"DMA mask, but upcoming FW does not support 64bit DMA mask\n");
+			megaraid_sas_kill_hba(instance);
+			ret = 1;
+			goto fail_fw_init;
+		}
+	}
 
 	if (instance->is_rdpq && !cur_rdpq_mode) {
 		dev_err(&instance->pdev->dev, "Firmware downgrade *NOT SUPPORTED*"
@@ -793,18 +1015,6 @@ megasas_ioc_init_fusion(struct megasas_instance *instance)
 		MR_CAN_HANDLE_SYNC_CACHE_OFFSET) ? 1 : 0;
 	dev_info(&instance->pdev->dev, "FW supports sync cache\t: %s\n",
 		 instance->fw_sync_cache_support ? "Yes" : "No");
-
-	IOCInitMessage =
-	  dma_alloc_coherent(&instance->pdev->dev,
-			     sizeof(struct MPI2_IOC_INIT_REQUEST),
-			     &ioc_init_handle, GFP_KERNEL);
-
-	if (!IOCInitMessage) {
-		dev_err(&instance->pdev->dev, "Could not allocate memory for "
-		       "IOCInitMessage\n");
-		ret = 1;
-		goto fail_fw_init;
-	}
 
 	memset(IOCInitMessage, 0, sizeof(struct MPI2_IOC_INIT_REQUEST));
 
@@ -821,10 +1031,16 @@ megasas_ioc_init_fusion(struct megasas_instance *instance)
 	IOCInitMessage->MsgFlags = instance->is_rdpq ?
 			MPI2_IOCINIT_MSGFLAG_RDPQ_ARRAY_MODE : 0;
 	IOCInitMessage->SystemRequestFrameBaseAddress = cpu_to_le64(fusion->io_request_frames_phys);
+	IOCInitMessage->SenseBufferAddressHigh = cpu_to_le32(upper_32_bits(fusion->sense_phys_addr));
 	IOCInitMessage->HostMSIxVectors = instance->msix_vectors;
 	IOCInitMessage->HostPageSize = MR_DEFAULT_NVME_PAGE_SHIFT;
+
+	time = ktime_get_real();
+	/* Convert to milliseconds as per FW requirement */
+	IOCInitMessage->TimeStamp = cpu_to_le64(ktime_to_ms(time));
+
 	init_frame = (struct megasas_init_frame *)cmd->frame;
-	memset(init_frame, 0, MEGAMFI_FRAME_SIZE);
+	memset(init_frame, 0, IOC_INIT_FRAME_SIZE);
 
 	frame_hdr = &cmd->frame->hdr;
 	frame_hdr->cmd_status = 0xFF;
@@ -856,6 +1072,11 @@ megasas_ioc_init_fusion(struct megasas_instance *instance)
 
 	drv_ops->mfi_capabilities.support_qd_throttling = 1;
 	drv_ops->mfi_capabilities.support_pd_map_target_id = 1;
+	drv_ops->mfi_capabilities.support_nvme_passthru = 1;
+
+	if (instance->consistent_mask_64bit)
+		drv_ops->mfi_capabilities.support_64bit_mode = 1;
+
 	/* Convert capability to LE32 */
 	cpu_to_le32s((u32 *)&init_frame->driver_operations.mfi_capabilities);
 
@@ -865,8 +1086,8 @@ megasas_ioc_init_fusion(struct megasas_instance *instance)
 			strlen(sys_info) > 64 ? 64 : strlen(sys_info));
 		instance->system_info_buf->systemIdLength =
 			strlen(sys_info) > 64 ? 64 : strlen(sys_info);
-		init_frame->system_info_lo = instance->system_info_h;
-		init_frame->system_info_hi = 0;
+		init_frame->system_info_lo = cpu_to_le32(lower_32_bits(instance->system_info_h));
+		init_frame->system_info_hi = cpu_to_le32(upper_32_bits(instance->system_info_h));
 	}
 
 	init_frame->queue_info_new_phys_addr_hi =
@@ -906,12 +1127,6 @@ megasas_ioc_init_fusion(struct megasas_instance *instance)
 	return 0;
 
 fail_fw_init:
-	megasas_return_cmd(instance, cmd);
-	if (IOCInitMessage)
-		dma_free_coherent(&instance->pdev->dev,
-				  sizeof(struct MPI2_IOC_INIT_REQUEST),
-				  IOCInitMessage, ioc_init_handle);
-fail_get_cmd:
 	dev_err(&instance->pdev->dev,
 		"Init cmd return status FAILED for SCSI host %d\n",
 		instance->host->host_no);
@@ -956,6 +1171,15 @@ megasas_sync_pd_seq_num(struct megasas_instance *instance, bool pend) {
 
 	memset(pd_sync, 0, pd_seq_map_sz);
 	memset(dcmd->mbox.b, 0, MFI_MBOX_SIZE);
+
+	if (pend) {
+		dcmd->mbox.b[0] = MEGASAS_DCMD_MBOX_PEND_FLAG;
+		dcmd->flags = MFI_FRAME_DIR_WRITE;
+		instance->jbod_seq_cmd = cmd;
+	} else {
+		dcmd->flags = MFI_FRAME_DIR_READ;
+	}
+
 	dcmd->cmd = MFI_CMD_DCMD;
 	dcmd->cmd_status = 0xFF;
 	dcmd->sge_count = 1;
@@ -963,21 +1187,16 @@ megasas_sync_pd_seq_num(struct megasas_instance *instance, bool pend) {
 	dcmd->pad_0 = 0;
 	dcmd->data_xfer_len = cpu_to_le32(pd_seq_map_sz);
 	dcmd->opcode = cpu_to_le32(MR_DCMD_SYSTEM_PD_MAP_GET_INFO);
-	dcmd->sgl.sge32[0].phys_addr = cpu_to_le32(pd_seq_h);
-	dcmd->sgl.sge32[0].length = cpu_to_le32(pd_seq_map_sz);
+
+	megasas_set_dma_settings(instance, dcmd, pd_seq_h, pd_seq_map_sz);
 
 	if (pend) {
-		dcmd->mbox.b[0] = MEGASAS_DCMD_MBOX_PEND_FLAG;
-		dcmd->flags = cpu_to_le16(MFI_FRAME_DIR_WRITE);
-		instance->jbod_seq_cmd = cmd;
 		instance->instancet->issue_dcmd(instance, cmd);
 		return 0;
 	}
 
-	dcmd->flags = cpu_to_le16(MFI_FRAME_DIR_READ);
-
 	/* Below code is only for non pended DCMD */
-	if (instance->ctrl_context && !instance->mask_interrupts)
+	if (!instance->mask_interrupts)
 		ret = megasas_issue_blocked_cmd(instance, cmd,
 			MFI_IO_TIMEOUT_SECS);
 	else
@@ -990,7 +1209,7 @@ megasas_sync_pd_seq_num(struct megasas_instance *instance, bool pend) {
 		ret = -EINVAL;
 	}
 
-	if (ret == DCMD_TIMEOUT && instance->ctrl_context)
+	if (ret == DCMD_TIMEOUT)
 		megaraid_sas_kill_hba(instance);
 
 	if (ret == DCMD_SUCCESS)
@@ -1058,21 +1277,21 @@ megasas_get_ld_map_info(struct megasas_instance *instance)
 	dcmd->cmd = MFI_CMD_DCMD;
 	dcmd->cmd_status = 0xFF;
 	dcmd->sge_count = 1;
-	dcmd->flags = cpu_to_le16(MFI_FRAME_DIR_READ);
+	dcmd->flags = MFI_FRAME_DIR_READ;
 	dcmd->timeout = 0;
 	dcmd->pad_0 = 0;
 	dcmd->data_xfer_len = cpu_to_le32(size_map_info);
 	dcmd->opcode = cpu_to_le32(MR_DCMD_LD_MAP_GET_INFO);
-	dcmd->sgl.sge32[0].phys_addr = cpu_to_le32(ci_h);
-	dcmd->sgl.sge32[0].length = cpu_to_le32(size_map_info);
 
-	if (instance->ctrl_context && !instance->mask_interrupts)
+	megasas_set_dma_settings(instance, dcmd, ci_h, size_map_info);
+
+	if (!instance->mask_interrupts)
 		ret = megasas_issue_blocked_cmd(instance, cmd,
 			MFI_IO_TIMEOUT_SECS);
 	else
 		ret = megasas_issue_polled(instance, cmd);
 
-	if (ret == DCMD_TIMEOUT && instance->ctrl_context)
+	if (ret == DCMD_TIMEOUT)
 		megaraid_sas_kill_hba(instance);
 
 	megasas_return_cmd(instance, cmd);
@@ -1087,7 +1306,7 @@ megasas_get_map_info(struct megasas_instance *instance)
 
 	fusion->fast_path_io = 0;
 	if (!megasas_get_ld_map_info(instance)) {
-		if (MR_ValidateMapInfo(instance)) {
+		if (MR_ValidateMapInfo(instance, instance->map_id)) {
 			fusion->fast_path_io = 1;
 			return 0;
 		}
@@ -1162,15 +1381,15 @@ megasas_sync_map_info(struct megasas_instance *instance)
 	dcmd->cmd = MFI_CMD_DCMD;
 	dcmd->cmd_status = 0xFF;
 	dcmd->sge_count = 1;
-	dcmd->flags = cpu_to_le16(MFI_FRAME_DIR_WRITE);
+	dcmd->flags = MFI_FRAME_DIR_WRITE;
 	dcmd->timeout = 0;
 	dcmd->pad_0 = 0;
 	dcmd->data_xfer_len = cpu_to_le32(size_map_info);
 	dcmd->mbox.b[0] = num_lds;
 	dcmd->mbox.b[1] = MEGASAS_DCMD_MBOX_PEND_FLAG;
 	dcmd->opcode = cpu_to_le32(MR_DCMD_LD_MAP_GET_INFO);
-	dcmd->sgl.sge32[0].phys_addr = cpu_to_le32(ci_h);
-	dcmd->sgl.sge32[0].length = cpu_to_le32(size_map_info);
+
+	megasas_set_dma_settings(instance, dcmd, ci_h, size_map_info);
 
 	instance->map_update_cmd = cmd;
 
@@ -1326,6 +1545,94 @@ ld_drv_map_alloc_fail:
 }
 
 /**
+ * megasas_configure_queue_sizes -	Calculate size of request desc queue,
+ *					reply desc queue,
+ *					IO request frame queue, set can_queue.
+ * @instance:				Adapter soft state
+ * @return:				void
+ */
+static inline
+void megasas_configure_queue_sizes(struct megasas_instance *instance)
+{
+	struct fusion_context *fusion;
+	u16 max_cmd;
+
+	fusion = instance->ctrl_context;
+	max_cmd = instance->max_fw_cmds;
+
+	if (instance->adapter_type == VENTURA_SERIES)
+		instance->max_mpt_cmds = instance->max_fw_cmds * RAID_1_PEER_CMDS;
+	else
+		instance->max_mpt_cmds = instance->max_fw_cmds;
+
+	instance->max_scsi_cmds = instance->max_fw_cmds -
+			(MEGASAS_FUSION_INTERNAL_CMDS +
+			MEGASAS_FUSION_IOCTL_CMDS);
+	instance->cur_can_queue = instance->max_scsi_cmds;
+	instance->host->can_queue = instance->cur_can_queue;
+
+	fusion->reply_q_depth = 2 * ((max_cmd + 1 + 15) / 16) * 16;
+
+	fusion->request_alloc_sz = sizeof(union MEGASAS_REQUEST_DESCRIPTOR_UNION) *
+					  instance->max_mpt_cmds;
+	fusion->reply_alloc_sz = sizeof(union MPI2_REPLY_DESCRIPTORS_UNION) *
+					(fusion->reply_q_depth);
+	fusion->io_frames_alloc_sz = MEGA_MPI2_RAID_DEFAULT_IO_FRAME_SIZE +
+		(MEGA_MPI2_RAID_DEFAULT_IO_FRAME_SIZE
+		 * (instance->max_mpt_cmds + 1)); /* Extra 1 for SMID 0 */
+}
+
+static int megasas_alloc_ioc_init_frame(struct megasas_instance *instance)
+{
+	struct fusion_context *fusion;
+	struct megasas_cmd *cmd;
+
+	fusion = instance->ctrl_context;
+
+	cmd = kzalloc(sizeof(struct megasas_cmd), GFP_KERNEL);
+
+	if (!cmd) {
+		dev_err(&instance->pdev->dev, "Failed from func: %s line: %d\n",
+			__func__, __LINE__);
+		return -ENOMEM;
+	}
+
+	cmd->frame = dma_alloc_coherent(&instance->pdev->dev,
+					IOC_INIT_FRAME_SIZE,
+					&cmd->frame_phys_addr, GFP_KERNEL);
+
+	if (!cmd->frame) {
+		dev_err(&instance->pdev->dev, "Failed from func: %s line: %d\n",
+			__func__, __LINE__);
+		kfree(cmd);
+		return -ENOMEM;
+	}
+
+	fusion->ioc_init_cmd = cmd;
+	return 0;
+}
+
+/**
+ * megasas_free_ioc_init_cmd -	Free IOC INIT command frame
+ * @instance:		Adapter soft state
+ */
+static inline void megasas_free_ioc_init_cmd(struct megasas_instance *instance)
+{
+	struct fusion_context *fusion;
+
+	fusion = instance->ctrl_context;
+
+	if (fusion->ioc_init_cmd && fusion->ioc_init_cmd->frame)
+		dma_free_coherent(&instance->pdev->dev,
+				  IOC_INIT_FRAME_SIZE,
+				  fusion->ioc_init_cmd->frame,
+				  fusion->ioc_init_cmd->frame_phys_addr);
+
+	if (fusion->ioc_init_cmd)
+		kfree(fusion->ioc_init_cmd);
+}
+
+/**
  * megasas_init_adapter_fusion -	Initializes the FW
  * @instance:		Adapter soft state
  *
@@ -1336,7 +1643,6 @@ megasas_init_adapter_fusion(struct megasas_instance *instance)
 {
 	struct megasas_register_set __iomem *reg_set;
 	struct fusion_context *fusion;
-	u16 max_cmd;
 	u32 scratch_pad_2;
 	int i = 0, count;
 
@@ -1352,17 +1658,7 @@ megasas_init_adapter_fusion(struct megasas_instance *instance)
 	instance->max_mfi_cmds =
 		MEGASAS_FUSION_INTERNAL_CMDS + MEGASAS_FUSION_IOCTL_CMDS;
 
-	max_cmd = instance->max_fw_cmds;
-
-	fusion->reply_q_depth = 2 * (((max_cmd + 1 + 15)/16)*16);
-
-	fusion->request_alloc_sz =
-	sizeof(union MEGASAS_REQUEST_DESCRIPTOR_UNION) * instance->max_mpt_cmds;
-	fusion->reply_alloc_sz = sizeof(union MPI2_REPLY_DESCRIPTORS_UNION)
-		*(fusion->reply_q_depth);
-	fusion->io_frames_alloc_sz = MEGA_MPI2_RAID_DEFAULT_IO_FRAME_SIZE +
-		(MEGA_MPI2_RAID_DEFAULT_IO_FRAME_SIZE
-		* (instance->max_mpt_cmds + 1)); /* Extra 1 for SMID 0 */
+	megasas_configure_queue_sizes(instance);
 
 	scratch_pad_2 = readl(&instance->reg_set->outbound_scratch_pad_2);
 	/* If scratch_pad_2 & MEGASAS_MAX_CHAIN_SIZE_UNITS_MASK is set,
@@ -1420,6 +1716,9 @@ megasas_init_adapter_fusion(struct megasas_instance *instance)
 				MEGASAS_FUSION_IOCTL_CMDS);
 	sema_init(&instance->ioctl_sem, MEGASAS_FUSION_IOCTL_CMDS);
 
+	if (megasas_alloc_ioc_init_frame(instance))
+		return 1;
+
 	/*
 	 * Allocate memory for descriptors
 	 * Create a pool of commands
@@ -1457,6 +1756,7 @@ fail_ioc_init:
 fail_alloc_cmds:
 	megasas_free_cmds(instance);
 fail_alloc_mfi_cmds:
+	megasas_free_ioc_init_cmd(instance);
 	return 1;
 }
 
@@ -1594,7 +1894,7 @@ megasas_is_prp_possible(struct megasas_instance *instance,
  * then sending IOs with holes.
  *
  * Though driver can request block layer to disable IO merging by calling-
- * queue_flag_set_unlocked(QUEUE_FLAG_NOMERGES, sdev->request_queue) but
+ * blk_queue_flag_set(QUEUE_FLAG_NOMERGES, sdev->request_queue) but
  * user may tune sysfs parameter- nomerges again to 0 or 1.
  *
  * If in future IO scheduling is enabled with SCSI BLK MQ,
@@ -2341,22 +2641,17 @@ megasas_build_ldio_fusion(struct megasas_instance *instance,
 			fp_possible = (io_info.fpOkForIo > 0) ? true : false;
 	}
 
-	cmd->request_desc->SCSIIO.MSIxIndex =
-		instance->reply_map[raw_smp_processor_id()];
+	if (instance->msix_load_balance)
+		cmd->request_desc->SCSIIO.MSIxIndex =
+			(mega_mod64(atomic64_add_return(1, &instance->total_io_count),
+				    instance->msix_vectors));
+	else
+		cmd->request_desc->SCSIIO.MSIxIndex =
+			instance->reply_map[raw_smp_processor_id()];
 
 	praid_context = &io_request->RaidContext;
 
 	if (instance->adapter_type == VENTURA_SERIES) {
-		spin_lock_irqsave(&instance->stream_lock, spinlock_flags);
-		megasas_stream_detect(instance, cmd, &io_info);
-		spin_unlock_irqrestore(&instance->stream_lock, spinlock_flags);
-		/* In ventura if stream detected for a read and it is read ahead
-		 *  capable make this IO as LDIO
-		 */
-		if (is_stream_detected(&io_request->RaidContext.raid_context_g35) &&
-		    io_info.isRead && io_info.ra_capable)
-			fp_possible = false;
-
 		/* FP for Optimal raid level 1.
 		 * All large RAID-1 writes (> 32 KiB, both WT and WB modes)
 		 * are built by the driver as LD I/Os.
@@ -2380,6 +2675,20 @@ megasas_build_ldio_fusion(struct megasas_instance *instance,
 					atomic_set(&mrdev_priv->r1_ldio_hint,
 						   instance->r1_ldio_hint_default);
 			}
+		}
+
+		if (!fp_possible ||
+		    (io_info.isRead && io_info.ra_capable)) {
+			spin_lock_irqsave(&instance->stream_lock,
+					  spinlock_flags);
+			megasas_stream_detect(instance, cmd, &io_info);
+			spin_unlock_irqrestore(&instance->stream_lock,
+					       spinlock_flags);
+			/* In ventura if stream detected for a read and it is
+			 * read ahead capable make this IO as LDIO
+			 */
+			if (is_stream_detected(&io_request->RaidContext.raid_context_g35))
+				fp_possible = false;
 		}
 
 		/* If raid is NULL, set CPU affinity to default CPU0 */
@@ -2665,8 +2974,13 @@ megasas_build_syspd_fusion(struct megasas_instance *instance,
 
 	cmd->request_desc->SCSIIO.DevHandle = io_request->DevHandle;
 
-	cmd->request_desc->SCSIIO.MSIxIndex =
-		instance->reply_map[raw_smp_processor_id()];
+	if (instance->msix_load_balance)
+		cmd->request_desc->SCSIIO.MSIxIndex =
+			(mega_mod64(atomic64_add_return(1, &instance->total_io_count),
+				    instance->msix_vectors));
+	else
+		cmd->request_desc->SCSIIO.MSIxIndex =
+			instance->reply_map[raw_smp_processor_id()];
 
 	if (!fp_possible) {
 		/* system pd firmware path */
@@ -2793,7 +3107,8 @@ megasas_build_io_fusion(struct megasas_instance *instance,
 	io_request->SGLOffset0 =
 		offsetof(struct MPI2_RAID_SCSI_IO_REQUEST, SGL) / 4;
 
-	io_request->SenseBufferLowAddress = cpu_to_le32(cmd->sense_phys_addr);
+	io_request->SenseBufferLowAddress =
+		cpu_to_le32(lower_32_bits(cmd->sense_phys_addr));
 	io_request->SenseBufferLength = SCSI_SENSE_BUFFERSIZE;
 
 	cmd->scmd = scp;
@@ -2834,7 +3149,7 @@ void megasas_prepare_secondRaid1_IO(struct megasas_instance *instance,
 	       (fusion->max_sge_in_main_msg * sizeof(union MPI2_SGE_IO_UNION)));
 	/*sense buffer is different for r1 command*/
 	r1_cmd->io_request->SenseBufferLowAddress =
-			cpu_to_le32(r1_cmd->sense_phys_addr);
+			cpu_to_le32(lower_32_bits(r1_cmd->sense_phys_addr));
 	r1_cmd->scmd = cmd->scmd;
 	req_desc2 = megasas_get_request_descriptor(instance,
 						   (r1_cmd->index - 1));
@@ -3374,6 +3689,7 @@ megasas_issue_dcmd_fusion(struct megasas_instance *instance,
 void
 megasas_release_fusion(struct megasas_instance *instance)
 {
+	megasas_free_ioc_init_cmd(instance);
 	megasas_free_cmds(instance);
 	megasas_free_cmds_fusion(instance);
 
@@ -3634,8 +3950,11 @@ void megasas_refire_mgmt_cmd(struct megasas_instance *instance)
 	struct fusion_context *fusion;
 	struct megasas_cmd *cmd_mfi;
 	union MEGASAS_REQUEST_DESCRIPTOR_UNION *req_desc;
+	struct MPI2_RAID_SCSI_IO_REQUEST *scsi_io_req;
 	u16 smid;
 	bool refire_cmd = 0;
+	u8 result;
+	u32 opcode = 0;
 
 	fusion = instance->ctrl_context;
 
@@ -3646,29 +3965,58 @@ void megasas_refire_mgmt_cmd(struct megasas_instance *instance)
 		cmd_fusion = fusion->cmd_list[j];
 		cmd_mfi = instance->cmd_list[cmd_fusion->sync_cmd_idx];
 		smid = le16_to_cpu(cmd_mfi->context.smid);
+		result = REFIRE_CMD;
 
 		if (!smid)
 			continue;
 
-		/* Do not refire shutdown command */
-		if (le32_to_cpu(cmd_mfi->frame->dcmd.opcode) ==
-			MR_DCMD_CTRL_SHUTDOWN) {
-			cmd_mfi->frame->dcmd.cmd_status = MFI_STAT_OK;
-			megasas_complete_cmd(instance, cmd_mfi, DID_OK);
-			continue;
+		req_desc = megasas_get_request_descriptor(instance, smid - 1);
+
+		switch (cmd_mfi->frame->hdr.cmd) {
+		case MFI_CMD_DCMD:
+			opcode = le32_to_cpu(cmd_mfi->frame->dcmd.opcode);
+			 /* Do not refire shutdown command */
+			if (opcode == MR_DCMD_CTRL_SHUTDOWN) {
+				cmd_mfi->frame->dcmd.cmd_status = MFI_STAT_OK;
+				result = COMPLETE_CMD;
+				break;
+			}
+
+			refire_cmd = ((opcode != MR_DCMD_LD_MAP_GET_INFO)) &&
+				      (opcode != MR_DCMD_SYSTEM_PD_MAP_GET_INFO) &&
+				      !(cmd_mfi->flags & DRV_DCMD_SKIP_REFIRE);
+
+			if (!refire_cmd)
+				result = RETURN_CMD;
+
+			break;
+		case MFI_CMD_NVME:
+			if (!instance->support_nvme_passthru) {
+				cmd_mfi->frame->hdr.cmd_status = MFI_STAT_INVALID_CMD;
+				result = COMPLETE_CMD;
+			}
+
+			break;
+		default:
+			break;
 		}
 
-		req_desc = megasas_get_request_descriptor
-					(instance, smid - 1);
-		refire_cmd = req_desc && ((cmd_mfi->frame->dcmd.opcode !=
-				cpu_to_le32(MR_DCMD_LD_MAP_GET_INFO)) &&
-				 (cmd_mfi->frame->dcmd.opcode !=
-				cpu_to_le32(MR_DCMD_SYSTEM_PD_MAP_GET_INFO)))
-				&& !(cmd_mfi->flags & DRV_DCMD_SKIP_REFIRE);
-		if (refire_cmd)
+		scsi_io_req = (struct MPI2_RAID_SCSI_IO_REQUEST *)
+				cmd_fusion->io_request;
+		if (scsi_io_req->Function == MPI2_FUNCTION_SCSI_TASK_MGMT)
+			result = RETURN_CMD;
+
+		switch (result) {
+		case REFIRE_CMD:
 			megasas_fire_cmd_fusion(instance, req_desc);
-		else
+			break;
+		case RETURN_CMD:
 			megasas_return_cmd(instance, cmd_mfi);
+			break;
+		case COMPLETE_CMD:
+			megasas_complete_cmd(instance, cmd_mfi, DID_OK);
+			break;
+		}
 	}
 }
 
@@ -3777,7 +4125,8 @@ megasas_tm_response_code(struct megasas_instance *instance,
  */
 static int
 megasas_issue_tm(struct megasas_instance *instance, u16 device_handle,
-	uint channel, uint id, u16 smid_task, u8 type)
+	uint channel, uint id, u16 smid_task, u8 type,
+	struct MR_PRIV_DEVICE *mr_device_priv_data)
 {
 	struct MR_TASK_MANAGE_REQUEST *mr_request;
 	struct MPI2_SCSI_TASK_MANAGE_REQUEST *mpi_request;
@@ -3788,6 +4137,7 @@ megasas_issue_tm(struct megasas_instance *instance, u16 device_handle,
 	struct fusion_context *fusion = NULL;
 	struct megasas_cmd_fusion *scsi_lookup;
 	int rc;
+	int timeout = MEGASAS_DEFAULT_TM_TIMEOUT;
 	struct MPI2_SCSI_TASK_MANAGE_REPLY *mpi_reply;
 
 	fusion = instance->ctrl_context;
@@ -3839,12 +4189,20 @@ megasas_issue_tm(struct megasas_instance *instance, u16 device_handle,
 	init_completion(&cmd_fusion->done);
 	megasas_fire_cmd_fusion(instance, req_desc);
 
-	timeleft = wait_for_completion_timeout(&cmd_fusion->done, 50 * HZ);
+	switch (type) {
+	case MPI2_SCSITASKMGMT_TASKTYPE_ABORT_TASK:
+		timeout = mr_device_priv_data->task_abort_tmo;
+		break;
+	case MPI2_SCSITASKMGMT_TASKTYPE_TARGET_RESET:
+		timeout = mr_device_priv_data->target_reset_tmo;
+		break;
+	}
+
+	timeleft = wait_for_completion_timeout(&cmd_fusion->done, timeout * HZ);
 
 	if (!timeleft) {
 		dev_err(&instance->pdev->dev,
 			"task mgmt type 0x%x timed out\n", type);
-		cmd_mfi->flags |= DRV_DCMD_SKIP_REFIRE;
 		mutex_unlock(&instance->reset_mutex);
 		rc = megasas_reset_fusion(instance->host, MFI_IO_TIMEOUT_OCR);
 		mutex_lock(&instance->reset_mutex);
@@ -4019,7 +4377,7 @@ int megasas_task_abort_fusion(struct scsi_cmnd *scmd)
 	devhandle = megasas_get_tm_devhandle(scmd->device);
 
 	if (devhandle == (u16)ULONG_MAX) {
-		ret = SUCCESS;
+		ret = FAILED;
 		sdev_printk(KERN_INFO, scmd->device,
 			"task abort issued for invalid devhandle\n");
 		mutex_unlock(&instance->reset_mutex);
@@ -4032,7 +4390,8 @@ int megasas_task_abort_fusion(struct scsi_cmnd *scmd)
 	mr_device_priv_data->tm_busy = 1;
 	ret = megasas_issue_tm(instance, devhandle,
 			scmd->device->channel, scmd->device->id, smid,
-			MPI2_SCSITASKMGMT_TASKTYPE_ABORT_TASK);
+			MPI2_SCSITASKMGMT_TASKTYPE_ABORT_TASK,
+			mr_device_priv_data);
 	mr_device_priv_data->tm_busy = 0;
 
 	mutex_unlock(&instance->reset_mutex);
@@ -4091,7 +4450,7 @@ int megasas_reset_target_fusion(struct scsi_cmnd *scmd)
 	devhandle = megasas_get_tm_devhandle(scmd->device);
 
 	if (devhandle == (u16)ULONG_MAX) {
-		ret = SUCCESS;
+		ret = FAILED;
 		sdev_printk(KERN_INFO, scmd->device,
 			"target reset issued for invalid devhandle\n");
 		mutex_unlock(&instance->reset_mutex);
@@ -4104,7 +4463,8 @@ int megasas_reset_target_fusion(struct scsi_cmnd *scmd)
 	mr_device_priv_data->tm_busy = 1;
 	ret = megasas_issue_tm(instance, devhandle,
 			scmd->device->channel, scmd->device->id, 0,
-			MPI2_SCSITASKMGMT_TASKTYPE_TARGET_RESET);
+			MPI2_SCSITASKMGMT_TASKTYPE_TARGET_RESET,
+			mr_device_priv_data);
 	mr_device_priv_data->tm_busy = 0;
 	mutex_unlock(&instance->reset_mutex);
 out:
@@ -4159,6 +4519,8 @@ int megasas_reset_fusion(struct Scsi_Host *shost, int reason)
 	u32 io_timeout_in_crash_mode = 0;
 	struct scsi_cmnd *scmd_local = NULL;
 	struct scsi_device *sdev;
+	int ret_target_prop = DCMD_FAILED;
+	bool is_target_prop = false;
 
 	instance = (struct megasas_instance *)shost->hostdata;
 	fusion = instance->ctrl_context;
@@ -4309,8 +4671,6 @@ transition_to_ready:
 					continue;
 			}
 
-			megasas_refire_mgmt_cmd(instance);
-
 			if (megasas_get_ctrl_info(instance)) {
 				dev_info(&instance->pdev->dev,
 					"Failed from %s %d\n",
@@ -4319,6 +4679,9 @@ transition_to_ready:
 				retval = FAILED;
 				goto out;
 			}
+
+			megasas_refire_mgmt_cmd(instance);
+
 			/* Reset load balance info */
 			if (fusion->load_balance_info)
 				memset(fusion->load_balance_info, 0,
@@ -4329,9 +4692,6 @@ transition_to_ready:
 				megasas_sync_map_info(instance);
 
 			megasas_setup_jbod_map(instance);
-
-			shost_for_each_device(sdev, shost)
-				megasas_set_dynamic_target_properties(sdev);
 
 			/* reset stream detection array */
 			if (instance->adapter_type == VENTURA_SERIES) {
@@ -4346,6 +4706,16 @@ transition_to_ready:
 			clear_bit(MEGASAS_FUSION_IN_RESET,
 				  &instance->reset_flags);
 			instance->instancet->enable_intr(instance);
+
+			shost_for_each_device(sdev, shost) {
+				if ((instance->tgt_prop) &&
+				    (instance->nvme_page_size))
+					ret_target_prop = megasas_get_target_prop(instance, sdev);
+
+				is_target_prop = (ret_target_prop == DCMD_SUCCESS) ? true : false;
+				megasas_set_dynamic_target_properties(sdev, is_target_prop);
+			}
+
 			atomic_set(&instance->adprecovery, MEGASAS_HBA_OPERATIONAL);
 
 			dev_info(&instance->pdev->dev, "Interrupts are enabled and"
@@ -4355,10 +4725,7 @@ transition_to_ready:
 			/* Restart SR-IOV heartbeat */
 			if (instance->requestorId) {
 				if (!megasas_sriov_start_heartbeat(instance, 0))
-					megasas_start_timer(instance,
-							    &instance->sriov_heartbeat_timer,
-							    megasas_sriov_heartbeat_handler,
-							    MEGASAS_SRIOV_HEARTBEAT_INTERVAL_VF);
+					megasas_start_timer(instance);
 				else
 					instance->skip_heartbeat_timer_del = 1;
 			}
@@ -4390,10 +4757,7 @@ fail_kill_adapter:
 	} else {
 		/* For VF: Restart HB timer if we didn't OCR */
 		if (instance->requestorId) {
-			megasas_start_timer(instance,
-					    &instance->sriov_heartbeat_timer,
-					    megasas_sriov_heartbeat_handler,
-					    MEGASAS_SRIOV_HEARTBEAT_INTERVAL_VF);
+			megasas_start_timer(instance);
 		}
 		clear_bit(MEGASAS_FUSION_IN_RESET, &instance->reset_flags);
 		instance->instancet->enable_intr(instance);
@@ -4488,19 +4852,31 @@ megasas_alloc_fusion_context(struct megasas_instance *instance)
 {
 	struct fusion_context *fusion;
 
-	instance->ctrl_context_pages = get_order(sizeof(struct fusion_context));
-	instance->ctrl_context = (void *)__get_free_pages(GFP_KERNEL | __GFP_ZERO,
-		instance->ctrl_context_pages);
+	instance->ctrl_context = kzalloc(sizeof(struct fusion_context),
+					 GFP_KERNEL);
 	if (!instance->ctrl_context) {
-		/* fall back to using vmalloc for fusion_context */
-		instance->ctrl_context = vzalloc(sizeof(struct fusion_context));
-		if (!instance->ctrl_context) {
-			dev_err(&instance->pdev->dev, "Failed from %s %d\n", __func__, __LINE__);
-			return -ENOMEM;
-		}
+		dev_err(&instance->pdev->dev, "Failed from %s %d\n",
+			__func__, __LINE__);
+		return -ENOMEM;
 	}
 
 	fusion = instance->ctrl_context;
+
+	fusion->log_to_span_pages = get_order(MAX_LOGICAL_DRIVES_EXT *
+					      sizeof(LD_SPAN_INFO));
+	fusion->log_to_span =
+		(PLD_SPAN_INFO)__get_free_pages(GFP_KERNEL | __GFP_ZERO,
+						fusion->log_to_span_pages);
+	if (!fusion->log_to_span) {
+		fusion->log_to_span =
+			vzalloc(array_size(MAX_LOGICAL_DRIVES_EXT,
+					   sizeof(LD_SPAN_INFO)));
+		if (!fusion->log_to_span) {
+			dev_err(&instance->pdev->dev, "Failed from %s %d\n",
+				__func__, __LINE__);
+			return -ENOMEM;
+		}
+	}
 
 	fusion->load_balance_info_pages = get_order(MAX_LOGICAL_DRIVES_EXT *
 		sizeof(struct LD_LOAD_BALANCE_INFO));
@@ -4508,8 +4884,9 @@ megasas_alloc_fusion_context(struct megasas_instance *instance)
 		(struct LD_LOAD_BALANCE_INFO *)__get_free_pages(GFP_KERNEL | __GFP_ZERO,
 		fusion->load_balance_info_pages);
 	if (!fusion->load_balance_info) {
-		fusion->load_balance_info = vzalloc(MAX_LOGICAL_DRIVES_EXT *
-			sizeof(struct LD_LOAD_BALANCE_INFO));
+		fusion->load_balance_info =
+			vzalloc(array_size(MAX_LOGICAL_DRIVES_EXT,
+					   sizeof(struct LD_LOAD_BALANCE_INFO)));
 		if (!fusion->load_balance_info)
 			dev_err(&instance->pdev->dev, "Failed to allocate load_balance_info, "
 				"continuing without Load Balance support\n");
@@ -4532,11 +4909,15 @@ megasas_free_fusion_context(struct megasas_instance *instance)
 					fusion->load_balance_info_pages);
 		}
 
-		if (is_vmalloc_addr(fusion))
-			vfree(fusion);
-		else
-			free_pages((ulong)fusion,
-				instance->ctrl_context_pages);
+		if (fusion->log_to_span) {
+			if (is_vmalloc_addr(fusion->log_to_span))
+				vfree(fusion->log_to_span);
+			else
+				free_pages((ulong)fusion->log_to_span,
+					   fusion->log_to_span_pages);
+		}
+
+		kfree(fusion);
 	}
 }
 

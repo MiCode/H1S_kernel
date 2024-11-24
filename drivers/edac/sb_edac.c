@@ -36,7 +36,7 @@ static LIST_HEAD(sbridge_edac_list);
  * Alter this version for the module when modifications are made
  */
 #define SBRIDGE_REVISION    " Ver: 1.1.2 "
-#define EDAC_MOD_STR      "sbridge_edac"
+#define EDAC_MOD_STR	    "sb_edac"
 
 /*
  * Debug macros
@@ -110,6 +110,10 @@ static const u32 knl_interleave_list[] = {
 	0xdc, 0xe4, 0xec, 0xf4, 0xfc, /* 15-19 */
 	0x104, 0x10c, 0x114, 0x11c,   /* 20-23 */
 };
+#define MAX_INTERLEAVE							\
+	(max_t(unsigned int, ARRAY_SIZE(sbridge_interleave_list),	\
+	       max_t(unsigned int, ARRAY_SIZE(ibridge_interleave_list),	\
+		     ARRAY_SIZE(knl_interleave_list))))
 
 struct interleave_pkg {
 	unsigned char start;
@@ -321,7 +325,6 @@ struct sbridge_info {
 	const u32	*interleave_list;
 	const struct interleave_pkg *interleave_pkg;
 	u8		max_sad;
-	u8		max_interleave;
 	u8		(*get_node_id)(struct sbridge_pvt *pvt);
 	enum mem_type	(*get_memory_type)(struct sbridge_pvt *pvt);
 	enum dev_type	(*get_width)(struct sbridge_pvt *pvt, u32 mtr);
@@ -349,6 +352,7 @@ struct pci_id_table {
 
 struct sbridge_dev {
 	struct list_head	list;
+	int			seg;
 	u8			bus, mc;
 	u8			node_id, source_id;
 	struct pci_dev		**pdev;
@@ -726,7 +730,8 @@ static inline int numcol(u32 mtr)
 	return 1 << cols;
 }
 
-static struct sbridge_dev *get_sbridge_dev(u8 bus, enum domain dom, int multi_bus,
+static struct sbridge_dev *get_sbridge_dev(int seg, u8 bus, enum domain dom,
+					   int multi_bus,
 					   struct sbridge_dev *prev)
 {
 	struct sbridge_dev *sbridge_dev;
@@ -744,14 +749,15 @@ static struct sbridge_dev *get_sbridge_dev(u8 bus, enum domain dom, int multi_bu
 				      : sbridge_edac_list.next, struct sbridge_dev, list);
 
 	list_for_each_entry_from(sbridge_dev, &sbridge_edac_list, list) {
-		if (sbridge_dev->bus == bus && (dom == SOCK || dom == sbridge_dev->dom))
+		if ((sbridge_dev->seg == seg) && (sbridge_dev->bus == bus) &&
+				(dom == SOCK || dom == sbridge_dev->dom))
 			return sbridge_dev;
 	}
 
 	return NULL;
 }
 
-static struct sbridge_dev *alloc_sbridge_dev(u8 bus, enum domain dom,
+static struct sbridge_dev *alloc_sbridge_dev(int seg, u8 bus, enum domain dom,
 					     const struct pci_id_table *table)
 {
 	struct sbridge_dev *sbridge_dev;
@@ -768,6 +774,7 @@ static struct sbridge_dev *alloc_sbridge_dev(u8 bus, enum domain dom,
 		return NULL;
 	}
 
+	sbridge_dev->seg = seg;
 	sbridge_dev->bus = bus;
 	sbridge_dev->dom = dom;
 	sbridge_dev->n_devs = table->n_devs_per_imc;
@@ -1014,7 +1021,7 @@ static u64 haswell_get_tohm(struct sbridge_pvt *pvt)
 	pci_read_config_dword(pvt->info.pci_vtd, HASWELL_TOHM_1, &reg);
 	rc = ((reg << 6) | rc) << 26;
 
-	return rc | 0x1ffffff;
+	return rc | 0x3ffffff;
 }
 
 static u64 knl_get_tolm(struct sbridge_pvt *pvt)
@@ -1318,9 +1325,7 @@ static int knl_get_dimm_capacity(struct sbridge_pvt *pvt, u64 *mc_sizes)
 	int cur_reg_start;
 	int mc;
 	int channel;
-	int way;
 	int participants[KNL_MAX_CHANNELS];
-	int participant_count = 0;
 
 	for (i = 0; i < KNL_MAX_CHANNELS; i++)
 		mc_sizes[i] = 0;
@@ -1495,31 +1500,20 @@ static int knl_get_dimm_capacity(struct sbridge_pvt *pvt, u64 *mc_sizes)
 		 * this channel mapped to the given target?
 		 */
 		for (channel = 0; channel < KNL_MAX_CHANNELS; channel++) {
-			for (way = 0; way < intrlv_ways; way++) {
-				int target;
-				int cha;
+			int target;
+			int cha;
 
-				if (KNL_MOD3(dram_rule))
-					target = way;
-				else
-					target = 0x7 & sad_pkg(
-				pvt->info.interleave_pkg, interleave_reg, way);
-
+			for (target = 0; target < KNL_MAX_CHANNELS; target++) {
 				for (cha = 0; cha < KNL_MAX_CHAS; cha++) {
 					if (knl_get_mc_route(target,
 						mc_route_reg[cha]) == channel
 						&& !participants[channel]) {
-						participant_count++;
 						participants[channel] = 1;
 						break;
 					}
 				}
 			}
 		}
-
-		if (participant_count != intrlv_ways)
-			edac_dbg(0, "participant_count (%d) != interleave_ways (%d): DIMM size may be incorrect\n",
-				participant_count, intrlv_ways);
 
 		for (channel = 0; channel < KNL_MAX_CHANNELS; channel++) {
 			mc = knl_channel_mc(channel);
@@ -1628,7 +1622,7 @@ static int __populate_dimms(struct mem_ctl_info *mci,
 				size = ((u64)rows * cols * banks * ranks) >> (20 - 3);
 				npages = MiB_TO_PAGES(size);
 
-				edac_dbg(0, "mc#%d: ha %d channel %d, dimm %d, %lld Mb (%d pages) bank: %d, rank: %d, row: %#x, col: %#x\n",
+				edac_dbg(0, "mc#%d: ha %d channel %d, dimm %d, %lld MiB (%d pages) bank: %d, rank: %d, row: %#x, col: %#x\n",
 					 pvt->sbridge_dev->mc, pvt->sbridge_dev->dom, i, j,
 					 size, npages,
 					 banks, ranks, rows, cols);
@@ -1912,7 +1906,7 @@ static int get_memory_error_data(struct mem_ctl_info *mci,
 	int			n_rir, n_sads, n_tads, sad_way, sck_xch;
 	int			sad_interl, idx, base_ch;
 	int			interleave_mode, shiftup = 0;
-	unsigned		sad_interleave[pvt->info.max_interleave];
+	unsigned int		sad_interleave[MAX_INTERLEAVE];
 	u32			reg, dram_rule;
 	u8			ch_way, sck_way, pkg, sad_ha = 0;
 	u32			tad_offset;
@@ -2256,6 +2250,7 @@ static int sbridge_get_onedevice(struct pci_dev **prev,
 	struct sbridge_dev *sbridge_dev = NULL;
 	const struct pci_id_descr *dev_descr = &table->descr[devno];
 	struct pci_dev *pdev = NULL;
+	int seg = 0;
 	u8 bus = 0;
 	int i = 0;
 
@@ -2286,10 +2281,12 @@ static int sbridge_get_onedevice(struct pci_dev **prev,
 		/* End of list, leave */
 		return -ENODEV;
 	}
+	seg = pci_domain_nr(pdev->bus);
 	bus = pdev->bus->number;
 
 next_imc:
-	sbridge_dev = get_sbridge_dev(bus, dev_descr->dom, multi_bus, sbridge_dev);
+	sbridge_dev = get_sbridge_dev(seg, bus, dev_descr->dom,
+				      multi_bus, sbridge_dev);
 	if (!sbridge_dev) {
 		/* If the HA1 wasn't found, don't create EDAC second memory controller */
 		if (dev_descr->dom == IMC1 && devno != 1) {
@@ -2302,7 +2299,7 @@ next_imc:
 		if (dev_descr->dom == SOCK)
 			goto out_imc;
 
-		sbridge_dev = alloc_sbridge_dev(bus, dev_descr->dom, table);
+		sbridge_dev = alloc_sbridge_dev(seg, bus, dev_descr->dom, table);
 		if (!sbridge_dev) {
 			pci_dev_put(pdev);
 			return -ENOMEM;
@@ -3166,7 +3163,7 @@ static int sbridge_register_mci(struct sbridge_dev *sbridge_dev, enum type type)
 		MEM_FLAG_DDR4 : MEM_FLAG_DDR3;
 	mci->edac_ctl_cap = EDAC_FLAG_NONE;
 	mci->edac_cap = EDAC_FLAG_NONE;
-	mci->mod_name = "sb_edac.c";
+	mci->mod_name = EDAC_MOD_STR;
 	mci->dev_name = pci_name(pdev);
 	mci->ctl_page_to_phys = NULL;
 
@@ -3185,7 +3182,6 @@ static int sbridge_register_mci(struct sbridge_dev *sbridge_dev, enum type type)
 		pvt->info.dram_attr = dram_attr;
 		pvt->info.max_sad = ARRAY_SIZE(ibridge_dram_rule);
 		pvt->info.interleave_list = ibridge_interleave_list;
-		pvt->info.max_interleave = ARRAY_SIZE(ibridge_interleave_list);
 		pvt->info.interleave_pkg = ibridge_interleave_pkg;
 		pvt->info.get_width = ibridge_get_width;
 
@@ -3210,7 +3206,6 @@ static int sbridge_register_mci(struct sbridge_dev *sbridge_dev, enum type type)
 		pvt->info.dram_attr = dram_attr;
 		pvt->info.max_sad = ARRAY_SIZE(sbridge_dram_rule);
 		pvt->info.interleave_list = sbridge_interleave_list;
-		pvt->info.max_interleave = ARRAY_SIZE(sbridge_interleave_list);
 		pvt->info.interleave_pkg = sbridge_interleave_pkg;
 		pvt->info.get_width = sbridge_get_width;
 
@@ -3235,7 +3230,6 @@ static int sbridge_register_mci(struct sbridge_dev *sbridge_dev, enum type type)
 		pvt->info.dram_attr = dram_attr;
 		pvt->info.max_sad = ARRAY_SIZE(ibridge_dram_rule);
 		pvt->info.interleave_list = ibridge_interleave_list;
-		pvt->info.max_interleave = ARRAY_SIZE(ibridge_interleave_list);
 		pvt->info.interleave_pkg = ibridge_interleave_pkg;
 		pvt->info.get_width = ibridge_get_width;
 
@@ -3260,7 +3254,6 @@ static int sbridge_register_mci(struct sbridge_dev *sbridge_dev, enum type type)
 		pvt->info.dram_attr = dram_attr;
 		pvt->info.max_sad = ARRAY_SIZE(ibridge_dram_rule);
 		pvt->info.interleave_list = ibridge_interleave_list;
-		pvt->info.max_interleave = ARRAY_SIZE(ibridge_interleave_list);
 		pvt->info.interleave_pkg = ibridge_interleave_pkg;
 		pvt->info.get_width = broadwell_get_width;
 
@@ -3285,7 +3278,6 @@ static int sbridge_register_mci(struct sbridge_dev *sbridge_dev, enum type type)
 		pvt->info.dram_attr = dram_attr_knl;
 		pvt->info.max_sad = ARRAY_SIZE(knl_dram_rule);
 		pvt->info.interleave_list = knl_interleave_list;
-		pvt->info.max_interleave = ARRAY_SIZE(knl_interleave_list);
 		pvt->info.interleave_pkg = ibridge_interleave_pkg;
 		pvt->info.get_width = knl_get_width;
 
@@ -3296,6 +3288,11 @@ static int sbridge_register_mci(struct sbridge_dev *sbridge_dev, enum type type)
 		mci->ctl_name = kasprintf(GFP_KERNEL, "Knights Landing SrcID#%d_Ha#%d",
 			pvt->sbridge_dev->source_id, pvt->sbridge_dev->dom);
 		break;
+	}
+
+	if (!mci->ctl_name) {
+		rc = -ENOMEM;
+		goto fail0;
 	}
 
 	/* Get dimm basic config and the memory layout */
@@ -3413,9 +3410,14 @@ static void sbridge_remove(void)
 static int __init sbridge_init(void)
 {
 	const struct x86_cpu_id *id;
+	const char *owner;
 	int rc;
 
 	edac_dbg(2, "\n");
+
+	owner = edac_get_owner();
+	if (owner && strncmp(owner, EDAC_MOD_STR, sizeof(EDAC_MOD_STR)))
+		return -EBUSY;
 
 	id = x86_match_cpu(sbridge_cpuids);
 	if (!id)

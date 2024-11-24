@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _MTK_DRM_GEM_H_
 #define _MTK_DRM_GEM_H_
@@ -50,6 +42,7 @@ struct mtk_drm_gem_obj {
 #endif
 	bool sec;
 	bool is_dumb;
+	int sec_id;
 };
 
 #define to_mtk_gem_obj(x) container_of(x, struct mtk_drm_gem_obj, base)

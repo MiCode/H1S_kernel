@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/proc_fs.h>
@@ -460,7 +452,8 @@ int ppm_procfs_init(void)
 	}
 
 	for_each_ppm_clusters(i) {
-		sprintf(str, "dump_cluster_%d_dvfs_table", i);
+		if (sprintf(str, "dump_cluster_%d_dvfs_table", i) == 0)
+			continue;
 
 		if (!proc_create_data(str, 0644,
 			dir, &ppm_dump_dvfs_table_proc_fops,

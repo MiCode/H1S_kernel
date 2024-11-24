@@ -62,7 +62,7 @@ struct tegra_fuse {
 void tegra_init_revision(void);
 void tegra_init_apbmisc(void);
 
-bool __init tegra_fuse_read_spare(unsigned int spare);
+u32 __init tegra_fuse_read_spare(unsigned int spare);
 u32 __init tegra_fuse_read_early(unsigned int offset);
 
 #ifdef CONFIG_ARCH_TEGRA_2x_SOC
@@ -103,6 +103,10 @@ extern const struct tegra_fuse_soc tegra124_fuse_soc;
 
 #ifdef CONFIG_ARCH_TEGRA_210_SOC
 extern const struct tegra_fuse_soc tegra210_fuse_soc;
+#endif
+
+#ifdef CONFIG_ARCH_TEGRA_186_SOC
+extern const struct tegra_fuse_soc tegra186_fuse_soc;
 #endif
 
 #endif

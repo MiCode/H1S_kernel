@@ -1,15 +1,4 @@
-#
-# Copyright (C) 2015 MediaTek Inc.
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License version 2 as
-# published by the Free Software Foundation.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-# GNU General Public License for more details.
-#
+# SPDX-License-Identifier: GPL-2.0
 
 ifeq ($(CONFIG_MTK_GCOV_KERNEL),y)
 GCOV_PROFILE := y
@@ -17,8 +6,10 @@ endif
 
 # platform driver
 snd-soc-mtk-common-objs := mtk-afe-platform-driver.o mtk-afe-fe-dai.o
-
+ifeq (, $(filter y,$(CONFIG_MACH_MT6761) $(CONFIG_MACH_MT6765) $(CONFIG_MACH_MT6779)))
 obj-$(CONFIG_MTK_ION) += mtk-mmap-ion.o
+ccflags-y += -DMMAP_SUPPORT
+endif
 obj-$(CONFIG_SND_SOC_MEDIATEK) += snd-soc-mtk-common.o
 obj-$(CONFIG_SND_SOC_MTK_SRAM) += mtk-sram-manager.o
 
@@ -27,11 +18,17 @@ obj-$(CONFIG_SND_SOC_MTK_SMART_PHONE) += snd-soc-mtk-sp-common.o mtk-usip.o
 
 obj-$(CONFIG_SND_SOC_MTK_BTCVSD) += mtk-btcvsd.o
 
-subdir-ccflags-y += -I$(srctree)/drivers/staging/android/ion
-subdir-ccflags-y += -I$(srctree)/drivers/staging/android/ion/mtk
+subdir-ccflags-y += -I$(srctree)/drivers/staging/android/mtk_ion
+subdir-ccflags-y += -I$(srctree)/drivers/staging/android/mtk_ion/mtk
 
 ifeq ($(CONFIG_SND_SOC_MTK_AUDIO_DSP),y)
-subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/audio_ipi/common/framework/
+ifeq ($(CONFIG_MACH_MT6779),y)
+subdir-ccflags-y += -I$(srctree)/sound/soc/mediatek/audio_dsp/v1
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/audio_ipi/common_v1/framework/
+else
+subdir-ccflags-y += -I$(srctree)/sound/soc/mediatek/audio_dsp/v2
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/audio_ipi/common_v2/framework/
+endif
 endif
 
 ifeq ($(CONFIG_MTK_AUDIODSP_SUPPORT),y)

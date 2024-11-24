@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #define pr_fmt(fmt) "<SEN_LIST> " fmt
@@ -21,6 +12,7 @@
 #include <linux/atomic.h>
 #include <linux/spinlock.h>
 #include <linux/uaccess.h>
+#include <linux/fs.h>
 
 #include "SCP_sensorHub.h"
 #include "sensor_list.h"
@@ -169,7 +161,7 @@ static struct scp_power_monitor scp_ready_notifier = {
 	.name = "sensorlist",
 	.notifier_call = scp_ready_event,
 };
-#endif
+#else
 int sensorlist_register_deviceinfo(int sensor,
 		struct sensorInfo_NonHub_t *devinfo)
 {
@@ -185,6 +177,7 @@ int sensorlist_register_deviceinfo(int sensor,
 	spin_unlock(&sensorlist_info_lock);
 	return 0;
 }
+#endif
 
 static int sensorlist_open(struct inode *inode, struct file *file)
 {
@@ -195,8 +188,6 @@ static ssize_t
 sensorlist_read(struct file *file, char __user *buf,
 	size_t count, loff_t *ptr)
 {
-	struct sensorlist_info_t temp[maxhandle];
-
 	if (!atomic_read(&first_ready_after_boot))
 		return -EINVAL;
 	if (count == 0)
@@ -206,12 +197,12 @@ sensorlist_read(struct file *file, char __user *buf,
 	if (count > maxhandle * sizeof(struct sensorlist_info_t))
 		count = maxhandle * sizeof(struct sensorlist_info_t);
 
-	memset(temp, 0, sizeof(temp));
 	spin_lock(&sensorlist_info_lock);
-	memcpy(temp, sensorlist_info, sizeof(temp));
-	spin_unlock(&sensorlist_info_lock);
-	if (copy_to_user(buf, temp, count))
+	if (copy_to_user(buf, sensorlist_info, count)) {
+		spin_unlock(&sensorlist_info_lock);
 		return -EFAULT;
+	}
+	spin_unlock(&sensorlist_info_lock);
 	return count;
 }
 

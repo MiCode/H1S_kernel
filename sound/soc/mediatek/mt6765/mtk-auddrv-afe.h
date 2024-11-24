@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -103,6 +96,8 @@ enum audio_sdm_level {
  *****************************************************************************/
 
 #define AUDIO_CLK_CFG_4 (0x0080)
+#define AUDIO_CLK_CFG_4_CLR (0x0088)
+#define AUDIO_CLK_CFG_4_SET (0x0084)
 #define AUDIO_CLK_CFG_6 (0x00A0)
 #define AUDIO_CLK_CFG_7 (0x00B0)
 #define AUDIO_CLK_CFG_8 (0x00C0)

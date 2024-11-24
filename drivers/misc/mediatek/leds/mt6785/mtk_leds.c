@@ -1,16 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -39,13 +31,13 @@
 #include <mt-plat/upmu_common.h>
 #endif
 
-#ifdef CONFIG_MTK_FB
+/*#ifdef CONFIG_MTK_FB */
 #include <ddp_gamma.h>
 #include "ddp_pwm.h"
 #include "mtkfb.h"
-#endif
+/*#endif */
 
-#define MET_USER_EVENT_SUPPORT
+/*#define MET_USER_EVENT_SUPPORT */
 #ifdef MET_USER_EVENT_SUPPORT
 #include <mt-plat/met_drv.h>
 #endif
@@ -75,14 +67,14 @@ static unsigned int bl_brightness_hal = 102;
 static unsigned int bl_duty_hal = 21;
 #endif
 static unsigned int bl_div_hal = CLK_DIV1;
-
+static unsigned int bl_frequency_hal = 32000;
 /* for button led don't do ISINK disable first time */
 static int button_flag_isink0;
 static int button_flag_isink1;
 struct wakeup_source leds_suspend_lock;
 struct cust_mt65xx_led *pled_dtsi;
 
-char *leds_name[TYPE_TOTAL] = {
+char *leds_name[MT65XX_LED_TYPE_TOTAL] = {
 	"red",
 	"green",
 	"blue",
@@ -151,9 +143,47 @@ static void backlight_debug_log(int level, int mappingLevel)
 
 void mt_leds_wake_lock_init(void)
 {
-	wakeup_source_init(&leds_suspend_lock, "leds wakelock");
+/*	wakeup_source_init(&leds_suspend_lock, "leds wakelock"); */
+}
+unsigned int mt_get_bl_brightness(void)
+{
+	return bl_brightness_hal;
 }
 
+unsigned int mt_get_bl_duty(void)
+{
+	return bl_duty_hal;
+}
+
+unsigned int mt_get_bl_div(void)
+{
+	return bl_div_hal;
+}
+
+unsigned int mt_get_bl_frequency(void)
+{
+	return bl_frequency_hal;
+}
+
+unsigned int *mt_get_div_array(void)
+{
+	return &div_array_hal[0];
+}
+
+void mt_set_bl_duty(unsigned int level)
+{
+	bl_duty_hal = level;
+}
+
+void mt_set_bl_div(unsigned int div)
+{
+	bl_div_hal = div;
+}
+
+void mt_set_bl_frequency(unsigned int freq)
+{
+	bl_frequency_hal = freq;
+}
 struct cust_mt65xx_led *get_cust_led_dtsi(void)
 {
 	struct device_node *led_node = NULL;
@@ -166,14 +196,14 @@ struct cust_mt65xx_led *get_cust_led_dtsi(void)
 		goto out;
 
 	pr_info("[LED] %s pled_dtsi is null, load dts file\n", __func__);
-	pled_dtsi = kmalloc(TYPE_TOTAL * sizeof(struct cust_mt65xx_led),
+	pled_dtsi = kmalloc(MT65XX_LED_TYPE_TOTAL * sizeof(struct cust_mt65xx_led),
 			GFP_KERNEL);
 	if (pled_dtsi == NULL) {
 		LEDS_DEBUG("%s kmalloc fail\n", __func__);
 		goto out;
 	}
 
-	for (i = 0; i < TYPE_TOTAL; i++) {
+	for (i = 0; i < MT65XX_LED_TYPE_TOTAL; i++) {
 		char node_name[32] = "mediatek,";
 
 		if (strlen(node_name) + strlen(leds_name[i]) + 1 >

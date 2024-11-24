@@ -9,6 +9,8 @@
 #include <linux/notifier.h>
 #include <linux/device.h>
 #include <linux/workqueue.h>
+#include <linux/cpumask.h>
+#include <linux/interrupt.h>
 
 enum {
 	PM_QOS_RESERVED = 0,
@@ -17,6 +19,7 @@ enum {
 	PM_QOS_NETWORK_THROUGHPUT,
 	PM_QOS_MEMORY_BANDWIDTH,
 
+#if defined(CONFIG_MACH_MT6771)
 	PM_QOS_CPU_MEMORY_BANDWIDTH,
 	PM_QOS_GPU_MEMORY_BANDWIDTH,
 	PM_QOS_MM_MEMORY_BANDWIDTH,
@@ -44,7 +47,7 @@ enum {
 	PM_QOS_ISP_HRT_BANDWIDTH,
 	PM_QOS_APU_MEMORY_BANDWIDTH,
 	PM_QOS_VVPU_OPP,
-
+#endif
 	/* insert new class ID */
 	PM_QOS_NUM_CLASSES,
 };
@@ -56,12 +59,15 @@ enum pm_qos_flags_status {
 	PM_QOS_FLAGS_ALL,
 };
 
-#define PM_QOS_DEFAULT_VALUE -1
+#define PM_QOS_DEFAULT_VALUE	(-1)
+#define PM_QOS_LATENCY_ANY	S32_MAX
+#define PM_QOS_LATENCY_ANY_NS	((s64)PM_QOS_LATENCY_ANY * NSEC_PER_USEC)
 
 #define PM_QOS_CPU_DMA_LAT_DEFAULT_VALUE	(2000 * USEC_PER_SEC)
 #define PM_QOS_NETWORK_LAT_DEFAULT_VALUE	(2000 * USEC_PER_SEC)
 #define PM_QOS_NETWORK_THROUGHPUT_DEFAULT_VALUE	0
 #define PM_QOS_MEMORY_BANDWIDTH_DEFAULT_VALUE	0
+#if defined(CONFIG_MACH_MT6771)
 #define PM_QOS_CPU_MEMORY_BANDWIDTH_DEFAULT_VALUE	0
 #define PM_QOS_GPU_MEMORY_BANDWIDTH_DEFAULT_VALUE	0
 #define PM_QOS_MM_MEMORY_BANDWIDTH_DEFAULT_VALUE	0
@@ -79,21 +85,42 @@ enum pm_qos_flags_status {
 #define PM_QOS_MM_FREQ_DEFAULT_VALUE		0
 #define PM_QOS_ISP_HRT_BANDWIDTH_DEFAULT_VALUE         0
 #define PM_QOS_APU_MEMORY_BANDWIDTH_DEFAULT_VALUE      0
-#define PM_QOS_RESUME_LATENCY_DEFAULT_VALUE	0
+#define PM_QOS_VVPU_OPP_DEFAULT_VALUE			3
+#define PM_QOS_FLAG_REMOTE_WAKEUP	(1 << 1)
+#endif
 #define PM_QOS_LATENCY_TOLERANCE_DEFAULT_VALUE	0
 #define PM_QOS_LATENCY_TOLERANCE_NO_CONSTRAINT	(-1)
-#define PM_QOS_LATENCY_ANY			((s32)(~(__u32)0 >> 1))
-#define PM_QOS_VVPU_OPP_DEFAULT_VALUE			3
+#define PM_QOS_RESUME_LATENCY_DEFAULT_VALUE	PM_QOS_LATENCY_ANY
+#define PM_QOS_RESUME_LATENCY_NO_CONSTRAINT	PM_QOS_LATENCY_ANY
+#define PM_QOS_RESUME_LATENCY_NO_CONSTRAINT_NS	PM_QOS_LATENCY_ANY_NS
 
 #define PM_QOS_FLAG_NO_POWER_OFF	(1 << 0)
-#define PM_QOS_FLAG_REMOTE_WAKEUP	(1 << 1)
+
+enum pm_qos_req_type {
+	PM_QOS_REQ_ALL_CORES = 0,
+	PM_QOS_REQ_AFFINE_CORES,
+#ifdef CONFIG_SMP
+	PM_QOS_REQ_AFFINE_IRQ,
+#endif
+};
 
 struct pm_qos_request {
+	enum pm_qos_req_type type;
+#if defined(CONFIG_MACH_MT6771)
 	struct list_head list_node;
+#endif
+	struct cpumask cpus_affine;
+#ifdef CONFIG_SMP
+	uint32_t irq;
+	/* Internal structure members */
+	struct irq_affinity_notify irq_notify;
+#endif
 	struct plist_node node;
 	int pm_qos_class;
 	struct delayed_work work; /* for pm_qos_update_request_timeout */
+#if defined(CONFIG_MACH_MT6771)
 	char owner[20];
+#endif
 };
 
 struct pm_qos_flags_request {
@@ -129,13 +156,18 @@ enum pm_qos_type {
  * types linux supports for 32 bit quantites
  */
 struct pm_qos_constraints {
+#if defined(CONFIG_MACH_MT6771)
 	struct list_head req_list;
+#endif
 	struct plist_head list;
 	s32 target_value;	/* Do not change to 64 bit */
+	s32 target_per_cpu[NR_CPUS];
 	s32 default_value;
 	s32 no_constraint_value;
 	enum pm_qos_type type;
+#if defined(CONFIG_MACH_MT6771)
 	struct mutex qos_lock;
+#endif
 	struct blocking_notifier_head *notifiers;
 };
 
@@ -166,7 +198,8 @@ static inline int dev_pm_qos_request_active(struct dev_pm_qos_request *req)
 }
 
 int pm_qos_update_target(struct pm_qos_constraints *c, struct plist_node *node,
-			 enum pm_qos_req_action action, int value);
+			 enum pm_qos_req_action action, int value,
+			 bool dev_req);
 bool pm_qos_update_flags(struct pm_qos_flags *pqf,
 			 struct pm_qos_flags_request *req,
 			 enum pm_qos_req_action action, s32 val);
@@ -179,10 +212,37 @@ void pm_qos_update_request_timeout(struct pm_qos_request *req,
 void pm_qos_remove_request(struct pm_qos_request *req);
 
 int pm_qos_request(int pm_qos_class);
+int pm_qos_request_for_cpu(int pm_qos_class, int cpu);
+int pm_qos_request_for_cpumask(int pm_qos_class, struct cpumask *mask);
 int pm_qos_add_notifier(int pm_qos_class, struct notifier_block *notifier);
 int pm_qos_remove_notifier(int pm_qos_class, struct notifier_block *notifier);
 int pm_qos_request_active(struct pm_qos_request *req);
 s32 pm_qos_read_value(struct pm_qos_constraints *c);
+
+#if defined(CONFIG_MACH_MT6771)
+
+#define MTK_PM_QOS_MEMORY_BANDWIDTH PM_QOS_MEMORY_BANDWIDTH
+#define MTK_PM_QOS_VCORE_OPP PM_QOS_VCORE_OPP
+#define MTK_PM_QOS_MM_MEMORY_BANDWIDTH PM_QOS_MM_MEMORY_BANDWIDTH
+#define MTK_PM_QOS_VCORE_OPP_DEFAULT_VALUE PM_QOS_VCORE_OPP_DEFAULT_VALUE
+#define MTK_PM_QOS_MEMORY_BANDWIDTH_DEFAULT_VALUE PM_QOS_MEMORY_BANDWIDTH_DEFAULT_VALUE
+
+#define mtk_pm_qos_request pm_qos_request
+
+#define mtk_pm_qos_add_request(_req, _class, _value) \
+			pm_qos_add_request(_req, _class, _value)
+#define mtk_pm_qos_update_request(_req, _value) \
+			pm_qos_update_request(_req, _value)
+#define mtk_pm_qos_remove_request(_req) \
+			pm_qos_remove_request(_req)
+#define mtk_pm_qos_add_notifier(_class, _notifier) \
+			pm_qos_add_notifier(_class, _notifier)
+#define mtk_pm_qos_remove_notifier(_class, _notifier) \
+			pm_qos_remove_notifier(_class, _notifier)
+#define mtk_pm_qos_request_active(_req) \
+			pm_qos_request_active(_req)
+
+#endif
 
 #ifdef CONFIG_PM
 enum pm_qos_flags_status __dev_pm_qos_flags(struct device *dev, s32 mask);
@@ -197,8 +257,6 @@ int dev_pm_qos_add_notifier(struct device *dev,
 			    struct notifier_block *notifier);
 int dev_pm_qos_remove_notifier(struct device *dev,
 			       struct notifier_block *notifier);
-int dev_pm_qos_add_global_notifier(struct notifier_block *notifier);
-int dev_pm_qos_remove_global_notifier(struct notifier_block *notifier);
 void dev_pm_qos_constraints_init(struct device *dev);
 void dev_pm_qos_constraints_destroy(struct device *dev);
 int dev_pm_qos_add_ancestor_request(struct device *dev,
@@ -227,7 +285,8 @@ static inline s32 dev_pm_qos_requested_flags(struct device *dev)
 static inline s32 dev_pm_qos_raw_read_value(struct device *dev)
 {
 	return IS_ERR_OR_NULL(dev->power.qos) ?
-		0 : pm_qos_read_value(&dev->power.qos->resume_latency);
+		PM_QOS_RESUME_LATENCY_NO_CONSTRAINT :
+		pm_qos_read_value(&dev->power.qos->resume_latency);
 }
 #else
 static inline enum pm_qos_flags_status __dev_pm_qos_flags(struct device *dev,
@@ -237,9 +296,9 @@ static inline enum pm_qos_flags_status dev_pm_qos_flags(struct device *dev,
 							s32 mask)
 			{ return PM_QOS_FLAGS_UNDEFINED; }
 static inline s32 __dev_pm_qos_read_value(struct device *dev)
-			{ return 0; }
+			{ return PM_QOS_RESUME_LATENCY_NO_CONSTRAINT; }
 static inline s32 dev_pm_qos_read_value(struct device *dev)
-			{ return 0; }
+			{ return PM_QOS_RESUME_LATENCY_NO_CONSTRAINT; }
 static inline int dev_pm_qos_add_request(struct device *dev,
 					 struct dev_pm_qos_request *req,
 					 enum dev_pm_qos_req_type type,
@@ -285,9 +344,15 @@ static inline int dev_pm_qos_expose_latency_tolerance(struct device *dev)
 			{ return 0; }
 static inline void dev_pm_qos_hide_latency_tolerance(struct device *dev) {}
 
-static inline s32 dev_pm_qos_requested_resume_latency(struct device *dev) { return 0; }
+static inline s32 dev_pm_qos_requested_resume_latency(struct device *dev)
+{
+	return PM_QOS_RESUME_LATENCY_NO_CONSTRAINT;
+}
 static inline s32 dev_pm_qos_requested_flags(struct device *dev) { return 0; }
-static inline s32 dev_pm_qos_raw_read_value(struct device *dev) { return 0; }
+static inline s32 dev_pm_qos_raw_read_value(struct device *dev)
+{
+	return PM_QOS_RESUME_LATENCY_NO_CONSTRAINT;
+}
 #endif
 
 #endif

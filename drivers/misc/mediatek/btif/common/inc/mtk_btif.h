@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __MTK_BTIF_H_
@@ -33,7 +25,6 @@
 #include <linux/string.h>
 #include <linux/time.h>		/* gettimeofday */
 #include <asm-generic/bug.h>
-#include <linux/irqchip/mtk-gic-extend.h> /* for mt_irq_dump_status() */
 
 #include "btif_pub.h"
 #include "btif_dma_pub.h"
@@ -121,26 +112,6 @@ struct _mtk_btif_setting_ {
 };
 /*---------------------------------------------------------------------------*/
 
-#if 0
-/*---------------------------------------------------------------------------*/
-struct _mtk_btif_register_ {
-	unsigned int iir;	/*Interrupt Identification Register */
-	unsigned int lsr;	/*Line Status Register */
-	unsigned int fake_lcr;	/*Fake Lcr Regiseter */
-	unsigned int fifo_ctrl;	/*FIFO Control Register */
-	unsigned int ier;	/*Interrupt Enable Register */
-	unsigned int sleep_en;	/*Sleep Enable Register */
-	unsigned int rto_counter;	/*Rx Timeout Counter Register */
-	unsigned int dma_en;	/*DMA Enalbe Register */
-	unsigned int tri_lvl;	/*Tx/Rx Trigger Level Register */
-	unsigned int wat_time;	/*Async Wait Time Register */
-	unsigned int handshake;	/*New HandShake Mode Register */
-	unsigned int sleep_wak;	/*Sleep Wakeup Reigster */
-};
-/*---------------------------------------------------------------------------*/
-
-#endif
-
 struct _btif_buf_str_ {
 	unsigned int size;
 	unsigned char *p_buf;
@@ -161,18 +132,10 @@ struct _mtk_btif_dma_ {
 					/*struct _mtk_btif_ **/ void *p_btif;
 					/*BTIF pointer to which DMA belongs */
 
-#if 0
-	unsigned int channel;	/*DMA's channel */
-#endif
-
 	enum _ENUM_BTIF_DIR_ dir;	/*DMA's direction: */
 	bool enable;		/*DMA enable or disable flag */
 
 	struct _MTK_DMA_INFO_STR_ *p_dma_info;	/*DMA's IRQ information */
-
-#if 0
-	struct _mtk_dma_register_ register;	/*DMA's register */
-#endif
 
 	spinlock_t iolock;	/*io lock for DMA channel */
 	atomic_t entry;		/* entry count */
@@ -190,8 +153,8 @@ typedef void (*MTK_BTIF_RX_NOTIFY) (void);
 
 struct _btif_log_buf_t_ {
 	unsigned int len;
-	struct timeval timer;
-	struct timespec ts;
+	struct timespec64 timer;
+	struct timespec64 ts;
 	unsigned char buffer[BTIF_LOG_SZ];
 };
 
@@ -214,17 +177,10 @@ struct _mtk_btif_ {
 	unsigned int open_counter;	/*open counter */
 	bool enable;		/*BTIF module enable flag */
 	bool lpbk_flag;		/*BTIF module enable flag */
-#if 0
-	unsigned long base;	/* BTIF controller base address */
-#endif
 
 	enum _ENUM_BTIF_STATE_ state;	/*BTIF state mechanism */
 	struct mutex state_mtx;	/*lock to BTIF state mechanism's state change */
 	struct mutex ops_mtx;	/*lock to BTIF's open and close */
-
-#if 0
-	struct _mtk_btif_register_ register;	/*BTIF registers */
-#endif
 
 	enum _ENUM_BTIF_MODE_ tx_mode;	/* BTIF Tx channel mode */
 	enum _ENUM_BTIF_MODE_ rx_mode;	/* BTIF Rx channel mode */
@@ -284,31 +240,6 @@ struct _mtk_btif_ {
 	int delay_sched_time;
 #endif
 };
-/*---------------------------------------------------------------------------*/
-
-/*---------------------------------------------------------------------------*/
-#if 0
-/*---------------------------------------------------------------------------*/
-struct _mtk_dma_register_ {
-	unsigned int int_flag;	/*Tx offset:0x0     Rx offset:0x0 */
-	unsigned int int_enable;	/*Tx offset:0x4     Rx offset:0x4 */
-	unsigned int dma_enable;	/*Tx offset:0x8     Rx offset:0x8 */
-	unsigned int dma_reset;	/*Tx offset:0xc     Rx offset:0xc */
-	unsigned int dma_stop;	/*Tx offset:0x10     Rx offset:0x10 */
-	unsigned int dma_flush;	/*Tx offset:0x14     Rx offset:0x14 */
-	unsigned int vff_addr;	/*Tx offset:0x1c     Rx offset:0x1c */
-	unsigned int vff_len;	/*Tx offset:0x24     Rx offset:0x24 */
-	unsigned int vff_thr;	/*Tx offset:0x28     Rx offset:0x28 */
-	unsigned int vff_wpt;	/*Tx offset:0x2c     Rx offset:0x2c */
-	unsigned int vff_rpt;	/*Tx offset:0x30     Rx offset:0x30 */
-	unsigned int rx_fc_thr;	/*Tx:No this register     Rx offset:0x34 */
-	unsigned int int_buf_size;	/*Tx offset:0x38     Rx offset:0x38 */
-	unsigned int vff_valid_size;	/*Tx offset:0x3c     Rx offset:0x3c */
-	unsigned int vff_left_size;	/*Tx offset:0x40     Rx offset:0x40 */
-	unsigned int debug_status;	/*Tx offset:0x50     Rx offset:0x50 */
-};
-/*---------------------------------------------------------------------------*/
-#endif
 
 /*---------------------------------------------------------------------------*/
 struct _mtk_btif_user_ {
@@ -390,5 +321,9 @@ int btif_rx_data_path_unlock(struct _mtk_btif_ *p_btif);
 int btif_rx_buf_has_pending_data(struct _mtk_btif_ *p_btif);
 int btif_rx_dma_has_pending_data(struct _mtk_btif_ *p_btif);
 int btif_tx_dma_has_pending_data(struct _mtk_btif_ *p_btif);
+void btif_dump_dma_vfifo(struct _mtk_btif_ *p_btif);
+bool btif_is_tx_complete(struct _mtk_btif_ *p_btif);
 struct task_struct *btif_rx_thread_get(struct _mtk_btif_ *p_btif);
+void btif_do_gettimeofday(struct timespec64 *tv);
+int btif_dump_array(const char *string, const char *p_buf, int len);
 #endif /*__MTK_BTIF_H_*/

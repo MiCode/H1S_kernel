@@ -1,74 +1,39 @@
-Energy cost model for energy-aware scheduling (EXPERIMENTAL)
+			   =======================
+			   Energy Aware Scheduling
+			   =======================
 
-Introduction
-=============
+1. Introduction
+---------------
 
-The basic energy model uses platform energy data stored in sched_group_energy
-data structures attached to the sched_groups in the sched_domain hierarchy. The
-energy cost model offers two functions that can be used to guide scheduling
-decisions:
+Energy Aware Scheduling (or EAS) gives the scheduler the ability to predict
+the impact of its decisions on the energy consumed by CPUs. EAS relies on an
+Energy Model (EM) of the CPUs to select an energy efficient CPU for each task,
+with a minimal impact on throughput. This document aims at providing an
+introduction on how EAS works, what are the main design decisions behind it, and
+details what is needed to get it to run.
 
-1.	static unsigned int sched_group_energy(struct energy_env *eenv)
-2.	static int energy_diff(struct energy_env *eenv)
+Before going any further, please note that at the time of writing:
 
-sched_group_energy() estimates the energy consumed by all cpus in a specific
-sched_group including any shared resources owned exclusively by this group of
-cpus. Resources shared with other cpus are excluded (e.g. later level caches).
+   /!\ EAS does not support platforms with symmetric CPU topologies /!\
 
-energy_diff() estimates the total energy impact of a utilization change. That
-is, adding, removing, or migrating utilization (tasks).
+EAS operates only on heterogeneous CPU topologies (such as Arm big.LITTLE)
+because this is where the potential for saving energy through scheduling is
+the highest.
 
-Both functions use a struct energy_env to specify the scenario to be evaluated:
-
-	struct energy_env {
-		struct sched_group      *sg_top;
-		struct sched_group      *sg_cap;
-		int                     cap_idx;
-		int                     util_delta;
-		int                     src_cpu;
-		int                     dst_cpu;
-		int                     energy;
-	};
-
-sg_top: sched_group to be evaluated. Not used by energy_diff().
-
-sg_cap: sched_group covering the cpus in the same frequency domain. Set by
-sched_group_energy().
-
-cap_idx: Capacity state to be used for energy calculations. Set by
-find_new_capacity().
-
-util_delta: Amount of utilization to be added, removed, or migrated.
-
-src_cpu: Source cpu from where 'util_delta' utilization is removed. Should be
--1 if no source (e.g. task wake-up).
-
-dst_cpu: Destination cpu where 'util_delta' utilization is added. Should be -1
-if utilization is removed (e.g. terminating tasks).
-
-energy: Result of sched_group_energy().
-
-The metric used to represent utilization is the actual per-entity running time
-averaged over time using a geometric series. Very similar to the existing
-per-entity load-tracking, but _not_ scaled by task priority and capped by the
-capacity of the cpu. The latter property does mean that utilization may
-underestimate the compute requirements for task on fully/over utilized cpus.
-The greatest potential for energy savings without affecting performance too much
-is scenarios where the system isn't fully utilized. If the system is deemed
-fully utilized load-balancing should be done with task load (includes task
-priority) instead in the interest of fairness and performance.
+The actual EM used by EAS is _not_ maintained by the scheduler, but by a
+dedicated framework. For details about this framework and what it provides,
+please refer to its documentation (see Documentation/power/energy-model.txt).
 
 
-Background and Terminology
-===========================
+2. Background and Terminology
+-----------------------------
 
 To make it clear from the start:
+ - energy = [joule] (resource like a battery on powered devices)
+ - power = energy/time = [joule/second] = [watt]
 
-energy = [joule] (resource like a battery on powered devices)
-power = energy/time = [joule/second] = [watt]
-
-The goal of energy-aware scheduling is to minimize energy, while still getting
-the job done. That is, we want to maximize:
+The goal of EAS is to minimize energy, while still getting the job done. That
+is, we want to maximize:
 
 	performance [inst/s]
 	--------------------
@@ -83,280 +48,378 @@ which is equivalent to minimizing:
 while still getting 'good' performance. It is essentially an alternative
 optimization objective to the current performance-only objective for the
 scheduler. This alternative considers two objectives: energy-efficiency and
-performance. Hence, there needs to be a user controllable knob to switch the
-objective. Since it is early days, this is currently a sched_feature
-(ENERGY_AWARE).
+performance.
 
-The idea behind introducing an energy cost model is to allow the scheduler to
-evaluate the implications of its decisions rather than applying energy-saving
-techniques blindly that may only have positive effects on some platforms. At
-the same time, the energy cost model must be as simple as possible to minimize
-the scheduler latency impact.
+The idea behind introducing an EM is to allow the scheduler to evaluate the
+implications of its decisions rather than blindly applying energy-saving
+techniques that may have positive effects only on some platforms. At the same
+time, the EM must be as simple as possible to minimize the scheduler latency
+impact.
 
-Platform topology
-------------------
-
-The system topology (cpus, caches, and NUMA information, not peripherals) is
-represented in the scheduler by the sched_domain hierarchy which has
-sched_groups attached at each level that covers one or more cpus (see
-sched-domains.txt for more details). To add energy awareness to the scheduler
-we need to consider power and frequency domains.
-
-Power domain:
-
-A power domain is a part of the system that can be powered on/off
-independently. Power domains are typically organized in a hierarchy where you
-may be able to power down just a cpu or a group of cpus along with any
-associated resources (e.g.  shared caches). Powering up a cpu means that all
-power domains it is a part of in the hierarchy must be powered up. Hence, it is
-more expensive to power up the first cpu that belongs to a higher level power
-domain than powering up additional cpus in the same high level domain. Two
-level power domain hierarchy example:
-
-		Power source
-		         +-------------------------------+----...
-per group PD		 G                               G
-		         |           +----------+        |
-		    +--------+-------| Shared   |  (other groups)
-per-cpu PD	    G        G       | resource |
-		    |        |       +----------+
-		+-------+ +-------+
-		| CPU 0 | | CPU 1 |
-		+-------+ +-------+
-
-Frequency domain:
-
-Frequency domains (P-states) typically cover the same group of cpus as one of
-the power domain levels. That is, there might be several smaller power domains
-sharing the same frequency (P-state) or there might be a power domain spanning
-multiple frequency domains.
-
-From a scheduling point of view there is no need to know the actual frequencies
-[Hz]. All the scheduler cares about is the compute capacity available at the
-current state (P-state) the cpu is in and any other available states. For that
-reason, and to also factor in any cpu micro-architecture differences, compute
-capacity scaling states are called 'capacity states' in this document. For SMP
-systems this is equivalent to P-states. For mixed micro-architecture systems
-(like ARM big.LITTLE) it is P-states scaled according to the micro-architecture
-performance relative to the other cpus in the system.
-
-Energy modelling:
-------------------
-
-Due to the hierarchical nature of the power domains, the most obvious way to
-model energy costs is therefore to associate power and energy costs with
-domains (groups of cpus). Energy costs of shared resources are associated with
-the group of cpus that share the resources, only the cost of powering the
-cpu itself and any private resources (e.g. private L1 caches) is associated
-with the per-cpu groups (lowest level).
-
-For example, for an SMP system with per-cpu power domains and a cluster level
-(group of cpus) power domain we get the overall energy costs to be:
-
-	energy = energy_cluster + n * energy_cpu
-
-where 'n' is the number of cpus powered up and energy_cluster is the cost paid
-as soon as any cpu in the cluster is powered up.
-
-The power and frequency domains can naturally be mapped onto the existing
-sched_domain hierarchy and sched_groups by adding the necessary data to the
-existing data structures.
-
-The energy model considers energy consumption from two contributors (shown in
-the illustration below):
-
-1. Busy energy: Energy consumed while a cpu and the higher level groups that it
-belongs to are busy running tasks. Busy energy is associated with the state of
-the cpu, not an event. The time the cpu spends in this state varies. Thus, the
-most obvious platform parameter for this contribution is busy power
-(energy/time).
-
-2. Idle energy: Energy consumed while a cpu and higher level groups that it
-belongs to are idle (in a C-state). Like busy energy, idle energy is associated
-with the state of the cpu. Thus, the platform parameter for this contribution
-is idle power (energy/time).
-
-Energy consumed during transitions from an idle-state (C-state) to a busy state
-(P-state) or going the other way is ignored by the model to simplify the energy
-model calculations.
+In short, EAS changes the way CFS tasks are assigned to CPUs. When it is time
+for the scheduler to decide where a task should run (during wake-up), the EM
+is used to break the tie between several good CPU candidates and pick the one
+that is predicted to yield the best energy consumption without harming the
+system's throughput. The predictions made by EAS rely on specific elements of
+knowledge about the platform's topology, which include the 'capacity' of CPUs,
+and their respective energy costs.
 
 
-	Power
-	^
-	|            busy->idle             idle->busy
-	|            transition             transition
-	|
-	|                _                      __
-	|               / \                    /  \__________________
-	|______________/   \                  /
-	|                   \                /
-	|  Busy              \    Idle      /        Busy
-	|  low P-state        \____________/         high P-state
-	|
-	+------------------------------------------------------------> time
+3. Topology information
+-----------------------
 
-Busy    |--------------|                          |-----------------|
+EAS (as well as the rest of the scheduler) uses the notion of 'capacity' to
+differentiate CPUs with different computing throughput. The 'capacity' of a CPU
+represents the amount of work it can absorb when running at its highest
+frequency compared to the most capable CPU of the system. Capacity values are
+normalized in a 1024 range, and are comparable with the utilization signals of
+tasks and CPUs computed by the Per-Entity Load Tracking (PELT) mechanism. Thanks
+to capacity and utilization values, EAS is able to estimate how big/busy a
+task/CPU is, and to take this into consideration when evaluating performance vs
+energy trade-offs. The capacity of CPUs is provided via arch-specific code
+through the arch_scale_cpu_capacity() callback.
 
-Wakeup                 |------|            |------|
+The rest of platform knowledge used by EAS is directly read from the Energy
+Model (EM) framework. The EM of a platform is composed of a power cost table
+per 'performance domain' in the system (see Documentation/power/energy-model.txt
+for futher details about performance domains).
 
-Idle                          |------------|
+The scheduler manages references to the EM objects in the topology code when the
+scheduling domains are built, or re-built. For each root domain (rd), the
+scheduler maintains a singly linked list of all performance domains intersecting
+the current rd->span. Each node in the list contains a pointer to a struct
+em_perf_domain as provided by the EM framework.
+
+The lists are attached to the root domains in order to cope with exclusive
+cpuset configurations. Since the boundaries of exclusive cpusets do not
+necessarily match those of performance domains, the lists of different root
+domains can contain duplicate elements.
+
+Example 1.
+    Let us consider a platform with 12 CPUs, split in 3 performance domains
+    (pd0, pd4 and pd8), organized as follows:
+
+	          CPUs:   0 1 2 3 4 5 6 7 8 9 10 11
+	          PDs:   |--pd0--|--pd4--|---pd8---|
+	          RDs:   |----rd1----|-----rd2-----|
+
+    Now, consider that userspace decided to split the system with two
+    exclusive cpusets, hence creating two independent root domains, each
+    containing 6 CPUs. The two root domains are denoted rd1 and rd2 in the
+    above figure. Since pd4 intersects with both rd1 and rd2, it will be
+    present in the linked list '->pd' attached to each of them:
+       * rd1->pd: pd0 -> pd4
+       * rd2->pd: pd4 -> pd8
+
+    Please note that the scheduler will create two duplicate list nodes for
+    pd4 (one for each list). However, both just hold a pointer to the same
+    shared data structure of the EM framework.
+
+Since the access to these lists can happen concurrently with hotplug and other
+things, they are protected by RCU, like the rest of topology structures
+manipulated by the scheduler.
+
+EAS also maintains a static key (sched_energy_present) which is enabled when at
+least one root domain meets all conditions for EAS to start. Those conditions
+are summarized in Section 6.
 
 
-The basic algorithm
-====================
+4. Energy-Aware task placement
+------------------------------
 
-The basic idea is to determine the total energy impact when utilization is
-added or removed by estimating the impact at each level in the sched_domain
-hierarchy starting from the bottom (sched_group contains just a single cpu).
-The energy cost comes from busy time (sched_group is awake because one or more
-cpus are busy) and idle time (in an idle-state). Energy model numbers account
-for energy costs associated with all cpus in the sched_group as a group.
+EAS overrides the CFS task wake-up balancing code. It uses the EM of the
+platform and the PELT signals to choose an energy-efficient target CPU during
+wake-up balance. When EAS is enabled, select_task_rq_fair() calls
+find_energy_efficient_cpu() to do the placement decision. This function looks
+for the CPU with the highest spare capacity (CPU capacity - CPU utilization) in
+each performance domain since it is the one which will allow us to keep the
+frequency the lowest. Then, the function checks if placing the task there could
+save energy compared to leaving it on prev_cpu, i.e. the CPU where the task ran
+in its previous activation.
 
-	for_each_domain(cpu, sd) {
-		sg = sched_group_of(cpu)
-		energy_before = curr_util(sg) * busy_power(sg)
-				+ (1-curr_util(sg)) * idle_power(sg)
-		energy_after = new_util(sg) * busy_power(sg)
-				+ (1-new_util(sg)) * idle_power(sg)
-		energy_diff += energy_before - energy_after
+find_energy_efficient_cpu() uses compute_energy() to estimate what will be the
+energy consumed by the system if the waking task was migrated. compute_energy()
+looks at the current utilization landscape of the CPUs and adjusts it to
+'simulate' the task migration. The EM framework provides the em_pd_energy() API
+which computes the expected energy consumption of each performance domain for
+the given utilization landscape.
 
-	}
+An example of energy-optimized task placement decision is detailed below.
 
-	return energy_diff
+Example 2.
+    Let us consider a (fake) platform with 2 independent performance domains
+    composed of two CPUs each. CPU0 and CPU1 are little CPUs; CPU2 and CPU3
+    are big.
 
-{curr, new}_util: The cpu utilization at the lowest level and the overall
-non-idle time for the entire group for higher levels. Utilization is in the
-range 0.0 to 1.0 in the pseudo-code.
+    The scheduler must decide where to place a task P whose util_avg = 200
+    and prev_cpu = 0.
 
-busy_power: The power consumption of the sched_group.
+    The current utilization landscape of the CPUs is depicted on the graph
+    below. CPUs 0-3 have a util_avg of 400, 100, 600 and 500 respectively
+    Each performance domain has three Operating Performance Points (OPPs).
+    The CPU capacity and power cost associated with each OPP is listed in
+    the Energy Model table. The util_avg of P is shown on the figures
+    below as 'PP'.
 
-idle_power: The power consumption of the sched_group when idle.
+    CPU util.
+      1024                 - - - - - - -              Energy Model
+                                               +-----------+-------------+
+                                               |  Little   |     Big     |
+       768                 =============       +-----+-----+------+------+
+                                               | Cap | Pwr | Cap  | Pwr  |
+                                               +-----+-----+------+------+
+       512  ===========    - ##- - - - -       | 170 | 50  | 512  | 400  |
+                             ##     ##         | 341 | 150 | 768  | 800  |
+       341  -PP - - - -      ##     ##         | 512 | 300 | 1024 | 1700 |
+             PP              ##     ##         +-----+-----+------+------+
+       170  -## - - - -      ##     ##
+             ##     ##       ##     ##
+           ------------    -------------
+            CPU0   CPU1     CPU2   CPU3
 
-Note: It is a fundamental assumption that the utilization is (roughly) scale
-invariant. Task utilization tracking factors in any frequency scaling and
-performance scaling differences due to difference cpu microarchitectures such
-that task utilization can be used across the entire system.
+      Current OPP: =====       Other OPP: - - -     util_avg (100 each): ##
 
 
-Platform energy data
-=====================
+    find_energy_efficient_cpu() will first look for the CPUs with the
+    maximum spare capacity in the two performance domains. In this example,
+    CPU1 and CPU3. Then it will estimate the energy of the system if P was
+    placed on either of them, and check if that would save some energy
+    compared to leaving P on CPU0. EAS assumes that OPPs follow utilization
+    (which is coherent with the behaviour of the schedutil CPUFreq
+    governor, see Section 6. for more details on this topic).
 
-struct sched_group_energy can be attached to sched_groups in the sched_domain
-hierarchy and has the following members:
+    Case 1. P is migrated to CPU1
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-cap_states:
-	List of struct capacity_state representing the supported capacity states
-	(P-states). struct capacity_state has two members: cap and power, which
-	represents the compute capacity and the busy_power of the state. The
-	list must be ordered by capacity low->high.
+      1024                 - - - - - - -
 
-nr_cap_states:
-	Number of capacity states in cap_states list.
+                                            Energy calculation:
+       768                 =============     * CPU0: 200 / 341 * 150 = 88
+                                             * CPU1: 300 / 341 * 150 = 131
+                                             * CPU2: 600 / 768 * 800 = 625
+       512  - - - - - -    - ##- - - - -     * CPU3: 500 / 768 * 800 = 520
+                             ##     ##          => total_energy = 1364
+       341  ===========      ##     ##
+                    PP       ##     ##
+       170  -## - - PP-      ##     ##
+             ##     ##       ##     ##
+           ------------    -------------
+            CPU0   CPU1     CPU2   CPU3
 
-idle_states:
-	List of struct idle_state containing idle_state power cost for each
-	idle-state supported by the system orderd by shallowest state first.
-	All states must be included at all level in the hierarchy, i.e. a
-	sched_group spanning just a single cpu must also include coupled
-	idle-states (cluster states). In addition to the cpuidle idle-states,
-	the list must also contain an entry for the idling using the arch
-	default idle (arch_idle_cpu()). Despite this state may not be a true
-	hardware idle-state it is considered the shallowest idle-state in the
-	energy model and must be the first entry. cpus may enter this state
-	(possibly 'active idling') if cpuidle decides not enter a cpuidle
-	idle-state. Default idle may not be used when cpuidle is enabled.
-	In this case, it should just be a copy of the first cpuidle idle-state.
 
-nr_idle_states:
-	Number of idle states in idle_states list.
+    Case 2. P is migrated to CPU3
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-There are no unit requirements for the energy cost data. Data can be normalized
-with any reference, however, the normalization must be consistent across all
-energy cost data. That is, one bogo-joule/watt must be the same quantity for
-data, but we don't care what it is.
+      1024                 - - - - - - -
 
-A recipe for platform characterization
-=======================================
+                                            Energy calculation:
+       768                 =============     * CPU0: 200 / 341 * 150 = 88
+                                             * CPU1: 100 / 341 * 150 = 43
+                                    PP       * CPU2: 600 / 768 * 800 = 625
+       512  - - - - - -    - ##- - -PP -     * CPU3: 700 / 768 * 800 = 729
+                             ##     ##          => total_energy = 1485
+       341  ===========      ##     ##
+                             ##     ##
+       170  -## - - - -      ##     ##
+             ##     ##       ##     ##
+           ------------    -------------
+            CPU0   CPU1     CPU2   CPU3
 
-Obtaining the actual model data for a particular platform requires some way of
-measuring power/energy. There isn't a tool to help with this (yet). This
-section provides a recipe for use as reference. It covers the steps used to
-characterize the ARM TC2 development platform. This sort of measurements is
-expected to be done anyway when tuning cpuidle and cpufreq for a given
-platform.
 
-The energy model needs two types of data (struct sched_group_energy holds
-these) for each sched_group where energy costs should be taken into account:
+    Case 3. P stays on prev_cpu / CPU 0
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-1. Capacity state information
+      1024                 - - - - - - -
 
-A list containing the compute capacity and power consumption when fully
-utilized attributed to the group as a whole for each available capacity state.
-At the lowest level (group contains just a single cpu) this is the power of the
-cpu alone without including power consumed by resources shared with other cpus.
-It basically needs to fit the basic modelling approach described in "Background
-and Terminology" section:
+                                            Energy calculation:
+       768                 =============     * CPU0: 400 / 512 * 300 = 234
+                                             * CPU1: 100 / 512 * 300 = 58
+                                             * CPU2: 600 / 768 * 800 = 625
+       512  ===========    - ##- - - - -     * CPU3: 500 / 768 * 800 = 520
+                             ##     ##          => total_energy = 1437
+       341  -PP - - - -      ##     ##
+             PP              ##     ##
+       170  -## - - - -      ##     ##
+             ##     ##       ##     ##
+           ------------    -------------
+            CPU0   CPU1     CPU2   CPU3
 
-	energy_system = energy_shared + n * energy_cpu
 
-for a system containing 'n' busy cpus. Only 'energy_cpu' should be included at
-the lowest level. 'energy_shared' is included at the next level which
-represents the group of cpus among which the resources are shared.
+    From these calculations, the Case 1 has the lowest total energy. So CPU 1
+    is be the best candidate from an energy-efficiency standpoint.
 
-This model is, of course, a simplification of reality. Thus, power/energy
-attributions might not always exactly represent how the hardware is designed.
-Also, busy power is likely to depend on the workload. It is therefore
-recommended to use a representative mix of workloads when characterizing the
-capacity states.
+Big CPUs are generally more power hungry than the little ones and are thus used
+mainly when a task doesn't fit the littles. However, little CPUs aren't always
+necessarily more energy-efficient than big CPUs. For some systems, the high OPPs
+of the little CPUs can be less energy-efficient than the lowest OPPs of the
+bigs, for example. So, if the little CPUs happen to have enough utilization at
+a specific point in time, a small task waking up at that moment could be better
+of executing on the big side in order to save energy, even though it would fit
+on the little side.
 
-If the group has no capacity scaling support, the list will contain a single
-state where power is the busy power attributed to the group. The capacity
-should be set to a default value (1024).
+And even in the case where all OPPs of the big CPUs are less energy-efficient
+than those of the little, using the big CPUs for a small task might still, under
+specific conditions, save energy. Indeed, placing a task on a little CPU can
+result in raising the OPP of the entire performance domain, and that will
+increase the cost of the tasks already running there. If the waking task is
+placed on a big CPU, its own execution cost might be higher than if it was
+running on a little, but it won't impact the other tasks of the little CPUs
+which will keep running at a lower OPP. So, when considering the total energy
+consumed by CPUs, the extra cost of running that one task on a big core can be
+smaller than the cost of raising the OPP on the little CPUs for all the other
+tasks.
 
-When frequency domains include multiple power domains, the group representing
-the frequency domain and all child groups share capacity states. This must be
-indicated by setting the SD_SHARE_CAP_STATES sched_domain flag. All groups at
-all levels that share the capacity state must have the list of capacity states
-with the power set to the contribution of the individual group.
+The examples above would be nearly impossible to get right in a generic way, and
+for all platforms, without knowing the cost of running at different OPPs on all
+CPUs of the system. Thanks to its EM-based design, EAS should cope with them
+correctly without too many troubles. However, in order to ensure a minimal
+impact on throughput for high-utilization scenarios, EAS also implements another
+mechanism called 'over-utilization'.
 
-2. Idle power information
 
-Stored in the idle_states list. The power number is the group idle power
-consumption in each idle state as well when the group is idle but has not
-entered an idle-state ('active idle' as mentioned earlier). Due to the way the
-energy model is defined, the idle power of the deepest group idle state can
-alternatively be accounted for in the parent group busy power. In that case the
-group idle state power values are offset such that the idle power of the
-deepest state is zero. It is less intuitive, but it is easier to measure as
-idle power consumed by the group and the busy/idle power of the parent group
-cannot be distinguished without per group measurement points.
+5. Over-utilization
+-------------------
 
-Measuring capacity states and idle power:
+From a general standpoint, the use-cases where EAS can help the most are those
+involving a light/medium CPU utilization. Whenever long CPU-bound tasks are
+being run, they will require all of the available CPU capacity, and there isn't
+much that can be done by the scheduler to save energy without severly harming
+throughput. In order to avoid hurting performance with EAS, CPUs are flagged as
+'over-utilized' as soon as they are used at more than 80% of their compute
+capacity. As long as no CPUs are over-utilized in a root domain, load balancing
+is disabled and EAS overridess the wake-up balancing code. EAS is likely to load
+the most energy efficient CPUs of the system more than the others if that can be
+done without harming throughput. So, the load-balancer is disabled to prevent
+it from breaking the energy-efficient task placement found by EAS. It is safe to
+do so when the system isn't overutilized since being below the 80% tipping point
+implies that:
 
-The capacity states' capacity and power can be estimated by running a benchmark
-workload at each available capacity state. By restricting the benchmark to run
-on subsets of cpus it is possible to extrapolate the power consumption of
-shared resources.
+    a. there is some idle time on all CPUs, so the utilization signals used by
+       EAS are likely to accurately represent the 'size' of the various tasks
+       in the system;
+    b. all tasks should already be provided with enough CPU capacity,
+       regardless of their nice values;
+    c. since there is spare capacity all tasks must be blocking/sleeping
+       regularly and balancing at wake-up is sufficient.
 
-ARM TC2 has two clusters of two and three cpus respectively. Each cluster has a
-shared L2 cache. TC2 has on-chip energy counters per cluster. Running a
-benchmark workload on just one cpu in a cluster means that power is consumed in
-the cluster (higher level group) and a single cpu (lowest level group). Adding
-another benchmark task to another cpu increases the power consumption by the
-amount consumed by the additional cpu. Hence, it is possible to extrapolate the
-cluster busy power.
+As soon as one CPU goes above the 80% tipping point, at least one of the three
+assumptions above becomes incorrect. In this scenario, the 'overutilized' flag
+is raised for the entire root domain, EAS is disabled, and the load-balancer is
+re-enabled. By doing so, the scheduler falls back onto load-based algorithms for
+wake-up and load balance under CPU-bound conditions. This provides a better
+respect of the nice values of tasks.
 
-For platforms that don't have energy counters or equivalent instrumentation
-built-in, it may be possible to use an external DAQ to acquire similar data.
+Since the notion of overutilization largely relies on detecting whether or not
+there is some idle time in the system, the CPU capacity 'stolen' by higher
+(than CFS) scheduling classes (as well as IRQ) must be taken into account. As
+such, the detection of overutilization accounts for the capacity used not only
+by CFS tasks, but also by the other scheduling classes and IRQ.
 
-If the benchmark includes some performance score (for example sysbench cpu
-benchmark), this can be used to record the compute capacity.
 
-Measuring idle power requires insight into the idle state implementation on the
-particular platform. Specifically, if the platform has coupled idle-states (or
-package states). To measure non-coupled per-cpu idle-states it is necessary to
-keep one cpu busy to keep any shared resources alive to isolate the idle power
-of the cpu from idle/busy power of the shared resources. The cpu can be tricked
-into different per-cpu idle states by disabling the other states. Based on
-various combinations of measurements with specific cpus busy and disabling
-idle-states it is possible to extrapolate the idle-state power.
+6. Dependencies and requirements for EAS
+----------------------------------------
+
+Energy Aware Scheduling depends on the CPUs of the system having specific
+hardware properties and on other features of the kernel being enabled. This
+section lists these dependencies and provides hints as to how they can be met.
+
+
+  6.1 - Asymmetric CPU topology
+
+As mentioned in the introduction, EAS is only supported on platforms with
+asymmetric CPU topologies for now. This requirement is checked at run-time by
+looking for the presence of the SD_ASYM_CPUCAPACITY flag when the scheduling
+domains are built.
+
+The flag is set/cleared automatically by the scheduler topology code whenever
+there are CPUs with different capacities in a root domain. The capacities of
+CPUs are provided by arch-specific code through the arch_scale_cpu_capacity()
+callback. As an example, arm and arm64 share an implementation of this callback
+which uses a combination of CPUFreq data and device-tree bindings to compute the
+capacity of CPUs (see drivers/base/arch_topology.c for more details).
+
+So, in order to use EAS on your platform your architecture must implement the
+arch_scale_cpu_capacity() callback, and some of the CPUs must have a lower
+capacity than others.
+
+Please note that EAS is not fundamentally incompatible with SMP, but no
+significant savings on SMP platforms have been observed yet. This restriction
+could be amended in the future if proven otherwise.
+
+
+  6.2 - Energy Model presence
+
+EAS uses the EM of a platform to estimate the impact of scheduling decisions on
+energy. So, your platform must provide power cost tables to the EM framework in
+order to make EAS start. To do so, please refer to documentation of the
+independent EM framework in Documentation/power/energy-model.txt.
+
+Please also note that the scheduling domains need to be re-built after the
+EM has been registered in order to start EAS.
+
+
+  6.3 - Energy Model complexity
+
+The task wake-up path is very latency-sensitive. When the EM of a platform is
+too complex (too many CPUs, too many performance domains, too many performance
+states, ...), the cost of using it in the wake-up path can become prohibitive.
+The energy-aware wake-up algorithm has a complexity of:
+
+	C = Nd * (Nc + Ns)
+
+with: Nd the number of performance domains; Nc the number of CPUs; and Ns the
+total number of OPPs (ex: for two perf. domains with 4 OPPs each, Ns = 8).
+
+A complexity check is performed at the root domain level, when scheduling
+domains are built. EAS will not start on a root domain if its C happens to be
+higher than the completely arbitrary EM_MAX_COMPLEXITY threshold (2048 at the
+time of writing).
+
+If you really want to use EAS but the complexity of your platform's Energy
+Model is too high to be used with a single root domain, you're left with only
+two possible options:
+
+    1. split your system into separate, smaller, root domains using exclusive
+       cpusets and enable EAS locally on each of them. This option has the
+       benefit to work out of the box but the drawback of preventing load
+       balance between root domains, which can result in an unbalanced system
+       overall;
+    2. submit patches to reduce the complexity of the EAS wake-up algorithm,
+       hence enabling it to cope with larger EMs in reasonable time.
+
+
+  6.4 - Schedutil governor
+
+EAS tries to predict at which OPP will the CPUs be running in the close future
+in order to estimate their energy consumption. To do so, it is assumed that OPPs
+of CPUs follow their utilization.
+
+Although it is very difficult to provide hard guarantees regarding the accuracy
+of this assumption in practice (because the hardware might not do what it is
+told to do, for example), schedutil as opposed to other CPUFreq governors at
+least _requests_ frequencies calculated using the utilization signals.
+Consequently, the only sane governor to use together with EAS is schedutil,
+because it is the only one providing some degree of consistency between
+frequency requests and energy predictions.
+
+Using EAS with any other governor than schedutil is not supported.
+
+
+  6.5 Scale-invariant utilization signals
+
+In order to make accurate prediction across CPUs and for all performance
+states, EAS needs frequency-invariant and CPU-invariant PELT signals. These can
+be obtained using the architecture-defined arch_scale{cpu,freq}_capacity()
+callbacks.
+
+Using EAS on a platform that doesn't implement these two callbacks is not
+supported.
+
+
+  6.6 Multithreading (SMT)
+
+EAS in its current form is SMT unaware and is not able to leverage
+multithreaded hardware to save energy. EAS considers threads as independent
+CPUs, which can actually be counter-productive for both performance and energy.
+
+EAS on SMT is not supported.

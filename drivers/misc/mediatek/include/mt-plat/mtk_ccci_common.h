@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __MT_CCCI_COMMON_H__
@@ -56,12 +48,15 @@ enum MD_LOAD_TYPE {
 	modem_ultwcg,
 	modem_ulftg,
 	modem_ulfctg,
+#if 0
 	modem_unlwg,
 	modem_unlwtg,
 	modem_unlwctg,
 	modem_unlwcg,
 	modem_unltctg,
 	MAX_IMG_NUM = modem_unltctg /* this enum starts from 1 */
+#endif
+	MAX_IMG_NUM = modem_ulfctg /* this enum starts from 1 */
 };
 
 /* MD logger configure file */
@@ -326,6 +321,9 @@ enum{
 #define CCCI_ERR_LOAD_IMG_NOT_FOUND \
 	(CCCI_ERR_LOAD_IMG_START_ID+13)
 
+/* -- boot mode  -- */
+#define DISABLE_MTK_BOOT_MODE 1
+
 /* export to other kernel modules, */
 /*better not let other module include ECCCI header directly (except IPC...) */
 enum MD_STATE_FOR_USER {
@@ -407,6 +405,9 @@ enum {
 	C2K_PPP_LINE_STATUS = 0x11F,	/*usb bypass for 93 and later*/
 	MD_DISPLAY_DYNAMIC_MIPI = 0x120, /* MIPI for TC16 */
 	MD_RF_HOPPING_NOTIFY = 0x121,
+	/* 0x125 for CCMSG_ID_SYSMSGSVC_RF_HOPPING_NOTIFY */
+	MD_CAMERA_FRE_HOPPING = 0x125,
+
 	CCMSG_ID_SYSMSGSVC_LOWPWR_APSTS_NOTIFY = 0x128,
 
 	/*c2k ctrl msg start from 0x200*/
@@ -432,6 +433,7 @@ enum {
 	MODEM_CAP_NAPI = (1<<0),
 	MODEM_CAP_TXBUSY_STOP = (1<<1),
 	MODEM_CAP_SGIO = (1<<2),
+	MODEM_CAP_HWTXCSUM = (1<<3),
 	/*bit16-bit31:
 	 *for modem capability only
 	 *related with ccmni driver
@@ -539,36 +541,43 @@ enum SMEM_USER_ID {
 
 	/* squence of other users does not matter */
 	SMEM_USER_RAW_CCB_CTRL,
-	SMEM_USER_RAW_DHL,
+	SMEM_USER_RAW_DHL, /* 5 */
 	SMEM_USER_RAW_MDM,
 	SMEM_USER_RAW_NETD,
 	SMEM_USER_RAW_USB,
 	SMEM_USER_RAW_AUDIO,
-	SMEM_USER_RAW_DFD,
+	SMEM_USER_RAW_DFD, /* 10 */
 	SMEM_USER_RAW_LWA,
 	SMEM_USER_RAW_MDCCCI_DBG,
 	SMEM_USER_RAW_MDSS_DBG,
 	SMEM_USER_RAW_RUNTIME_DATA,
-	SMEM_USER_RAW_FORCE_ASSERT,
+	SMEM_USER_RAW_FORCE_ASSERT, /* 15 */
 	SMEM_USER_CCISM_SCP,
 	SMEM_USER_RAW_MD2MD,
 	SMEM_USER_RAW_RESERVED,
 	SMEM_USER_CCISM_MCU,
-	SMEM_USER_CCISM_MCU_EXP,
+	SMEM_USER_CCISM_MCU_EXP, /* 20 */
 	SMEM_USER_SMART_LOGGING,
 	SMEM_USER_RAW_MD_CONSYS,
 	SMEM_USER_RAW_PHY_CAP,
 	SMEM_USER_RAW_USIP,
-	SMEM_USER_RESV_0, /* Sync to MT6779 SMEM_USER_MAX_K */
+	SMEM_USER_RESV_0, /* 25. Sync to MT6779 SMEM_USER_MAX_K */
 	SMEM_USER_ALIGN_PADDING, /* Sync to MT6779 SMEM_USER_NON_PADDING */
 	SMEM_USER_RAW_UDC_DATA,
 	SMEM_USER_RAW_UDC_DESCTAB,
 	SMEM_USER_RAW_AMMS_POS,
-	SMEM_USER_RAW_ALIGN_PADDING,
-	SMEM_USER_MD_WIFI_PROXY,
-	SMEM_USER_MD_NVRAM_CACHE,
+	SMEM_USER_RAW_ALIGN_PADDING, /* 30.= SMEM_USER_RAW_AMMS_ALIGN_PADDING */
+	SMEM_USER_MD_WIFI_PROXY, /* 31 */
+	SMEM_USER_MD_NVRAM_CACHE, /* 32 */
 	SMEM_USER_LOW_POWER,
 	SMEM_USER_SECURITY_SMEM,
+	SMEM_USER_SAP_EX_DBG, /* 35 */
+	SMEM_USER_SAP_DFD_DBG, /* 36 */
+	SMEM_USER_32K_LOW_POWER,
+	SMEM_USER_USB_DATA,
+	SMEM_USER_MD_CDMR, /* CDMR:Crash Dump Memory Region/MIDR:Modem Internals Dump Region */
+	SMEM_USER_RESERVED, /* 40 */
+	SMEM_USER_MD_DRDI, /* 41 */
 	SMEM_USER_MAX,
 };
 
@@ -576,6 +585,20 @@ enum SYS_CB_ID {
 	ID_GET_FDD_THERMAL_DATA = 0,
 	ID_GET_TDD_THERMAL_DATA,
 };
+
+enum KERNEL_USER_ID {
+	ID_MD_CAMERA = 0,
+	ID_USER_MAX,
+};
+
+typedef int (*ccci_misc_cb_func_t)(int, void *, int);
+struct ccci_misc_cb_func_info {
+	enum KERNEL_USER_ID	id;
+	ccci_misc_cb_func_t	func;
+};
+
+int register_ccci_func_call_back(int md_id, unsigned int id,
+	ccci_misc_cb_func_t func);
 
 typedef int (*ccci_sys_cb_func_t)(int, int);
 struct ccci_sys_cb_func_info {
@@ -608,7 +631,7 @@ int ccci_sysfs_add_modem(int md_id, void *kobj, void *ktype,
 int get_modem_support_cap(int md_id); /* Export by ccci util */
 int set_modem_support_cap(int md_id, int new_val);
 char *ccci_get_md_info_str(int md_id);
-void get_md_postfix(int md_id, char k[], char buf[], char buf_ex[]);
+void get_md_postfix(int md_id, const char k[], char buf[], char buf_ex[]);
 void update_ccci_port_ver(unsigned int new_ver);
 int ccci_load_firmware(int md_id, void *img_inf, char img_err_str[],
 	char post_fix[], struct device *dev);
@@ -652,7 +675,7 @@ int modem_dcd_state(void);
 void notify_time_update(void);
 int wait_time_update_notify(void);
 /* callback for system power off*/
-void ccci_power_off(void);
+//void ccci_power_off(void);
 /* LK load modem, Export by ccci util */
 int modem_run_env_ready(int md_id);
 int get_lk_load_md_info(char buf[], int size);
@@ -664,8 +687,9 @@ void clear_meta_1st_boot_arg(int md_id);
 
 /* CCCI dump */
 #define CCCI_DUMP_TIME_FLAG		(1<<0)
-#define CCCI_DUMP_CLR_BUF_FLAG	(1<<1)
+#define CCCI_DUMP_CLR_BUF_FLAG		(1<<1)
 #define CCCI_DUMP_CURR_FLAG		(1<<2)
+#define CCCI_DUMP_ANDROID_TIME_FLAG	(1<<3)
 enum {
 	CCCI_DUMP_INIT = 0,
 	CCCI_DUMP_BOOTUP,
@@ -675,6 +699,7 @@ enum {
 	CCCI_DUMP_HISTORY,
 	CCCI_DUMP_REGISTER,
 	CCCI_DUMP_DPMA_DRB,
+	CCCI_DUMP_MD_INIT,
 	CCCI_DUMP_MAX,
 };
 void ccci_util_mem_dump(int md_id, int buf_type, void *start_addr, int len);
@@ -701,14 +726,17 @@ struct _mpu_cfg *get_mpu_region_cfg_info(int region_id);
 int ccci_get_opt_val(char *opt_name);
 
 /* RAT configure relate */
-unsigned int get_wm_bitmap_for_ubin(void); /* Universal bin */
-void update_rat_bit_map_to_drv(int md_id, unsigned int val);
 int get_md_img_type(int md_id);
-int get_legacy_md_type(int md_id);
-int check_md_type(int data);
-
+int check_rat_at_md_img(int md_id, char str[]);
+unsigned int get_md_bin_capability(int md_id);
+int set_soc_md_rt_rat_str(int md_id, char str[]);
+unsigned int get_soc_md_rt_rat(int md_id);
+int check_rat_at_rt_setting(int md_id, char str[]);
+unsigned int get_soc_md_rt_rat_idx(int md_id);
+int set_soc_md_rt_rat_by_idx(int md_id, unsigned int wm_idx);
 int get_nc_smem_region_info(unsigned int id, unsigned int *ap_off,
-				unsigned int *md_off, unsigned int *size);
+                            unsigned int *md_off, unsigned int *size);
+
 int get_md_resv_csmem_info(int md_id, phys_addr_t *buf_base,
 	unsigned int *buf_size);
 int get_md_cache_region_info(int region_id, unsigned int *buf_base,
@@ -716,7 +744,7 @@ int get_md_cache_region_info(int region_id, unsigned int *buf_base,
 void __iomem *ccci_map_phy_addr(phys_addr_t phy_addr, unsigned int size);
 unsigned int get_mtee_is_enabled(void);
 int mtk_ccci_request_port(char *name);
-int mtk_ccci_send_data(int index, char *buf, int size);
+int mtk_ccci_send_data(int index, const char *buf, int size);
 int mtk_ccci_read_data(int index, char *buf, size_t count);
 int mtk_ccci_open_port(int index);
 int mtk_ccci_release_port(int index);

@@ -32,7 +32,6 @@
 
 #include <asm/arm_dsu_pmu.h>
 #include <asm/local64.h>
-#include <asm/smp_plat.h>
 
 /* PMU event codes */
 #define DSU_PMU_EVT_CYCLES		0x11
@@ -261,7 +260,7 @@ static inline u64 dsu_pmu_read_counter(struct perf_event *event)
 		return 0;
 
 	if (!dsu_pmu_counter_valid(dsu_pmu, idx)) {
-		dev_notice(event->pmu->dev,
+		dev_err(event->pmu->dev,
 			"Trying reading invalid counter %d\n", idx);
 		return 0;
 	}
@@ -287,7 +286,7 @@ static void dsu_pmu_write_counter(struct perf_event *event, u64 val)
 		return;
 
 	if (!dsu_pmu_counter_valid(dsu_pmu, idx)) {
-		dev_notice(event->pmu->dev,
+		dev_err(event->pmu->dev,
 			"writing to invalid counter %d\n", idx);
 		return;
 	}
@@ -340,7 +339,7 @@ static inline void dsu_pmu_set_event(struct dsu_pmu *dsu_pmu,
 	unsigned long flags;
 
 	if (!dsu_pmu_counter_valid(dsu_pmu, idx)) {
-		dev_notice(event->pmu->dev,
+		dev_err(event->pmu->dev,
 			"Trying to set invalid counter %d\n", idx);
 		return;
 	}
@@ -537,7 +536,7 @@ static bool dsu_pmu_validate_group(struct perf_event *event)
 	memset(fake_hw.used_mask, 0, sizeof(fake_hw.used_mask));
 	if (!dsu_pmu_validate_event(event->pmu, &fake_hw, leader))
 		return false;
-	list_for_each_entry(sibling, &leader->sibling_list, group_entry) {
+	for_each_sibling_event(sibling, leader) {
 		if (!dsu_pmu_validate_event(event->pmu, &fake_hw, sibling))
 			return false;
 	}
@@ -612,31 +611,6 @@ static struct dsu_pmu *dsu_pmu_alloc(struct platform_device *pdev)
 	return dsu_pmu;
 }
 
-static int get_cpu_number(struct device_node *dn)
-{
-	const __be32 *cell;
-	u64 hwid;
-	int i;
-
-	cell = of_get_property(dn, "reg", NULL);
-	if (!cell)
-		return -1;
-
-	hwid = of_read_number(cell, of_n_addr_cells(dn));
-
-	/*
-	 * Non affinity bits must be set to 0 in the DT
-	 */
-	if (hwid & ~MPIDR_HWID_BITMASK)
-		return -1;
-
-	for (i = 0; i < num_possible_cpus(); i++)
-		if (cpu_logical_map(i) == hwid)
-			return i;
-
-	return -1;
-}
-
 /**
  * dsu_pmu_dt_get_cpus: Get the list of CPUs in the cluster.
  */
@@ -652,7 +626,7 @@ static int dsu_pmu_dt_get_cpus(struct device_node *dev, cpumask_t *mask)
 		cpu_node = of_parse_phandle(dev, "cpus", i);
 		if (!cpu_node)
 			break;
-		cpu = get_cpu_number(cpu_node);
+		cpu = of_cpu_node_to_id(cpu_node);
 		of_node_put(cpu_node);
 		/*
 		 * We have to ignore the failures here and continue scanning
@@ -684,17 +658,15 @@ static void dsu_pmu_probe_pmu(struct dsu_pmu *dsu_pmu)
 		return;
 	cpmceid[0] = __dsu_pmu_read_pmceid(0);
 	cpmceid[1] = __dsu_pmu_read_pmceid(1);
-	bitmap_from_u32array(dsu_pmu->cpmceid_bitmap,
-			DSU_PMU_MAX_COMMON_EVENTS,
-			cpmceid,
-			ARRAY_SIZE(cpmceid));
+	bitmap_from_arr32(dsu_pmu->cpmceid_bitmap, cpmceid,
+			  DSU_PMU_MAX_COMMON_EVENTS);
 }
 
 static void dsu_pmu_set_active_cpu(int cpu, struct dsu_pmu *dsu_pmu)
 {
 	cpumask_set_cpu(cpu, &dsu_pmu->active_cpu);
 	if (irq_set_affinity_hint(dsu_pmu->irq, &dsu_pmu->active_cpu))
-		pr_notice("Failed to set irq affinity to %d\n", cpu);
+		pr_warn("Failed to set irq affinity to %d\n", cpu);
 }
 
 /*
@@ -722,13 +694,13 @@ static int dsu_pmu_device_probe(struct platform_device *pdev)
 
 	rc = dsu_pmu_dt_get_cpus(pdev->dev.of_node, &dsu_pmu->associated_cpus);
 	if (rc) {
-		dev_notice(&pdev->dev, "Failed to parse the CPUs\n");
+		dev_warn(&pdev->dev, "Failed to parse the CPUs\n");
 		return rc;
 	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
-		dev_notice(&pdev->dev, "Failed to find IRQ\n");
+		dev_warn(&pdev->dev, "Failed to find IRQ\n");
 		return -EINVAL;
 	}
 
@@ -739,7 +711,7 @@ static int dsu_pmu_device_probe(struct platform_device *pdev)
 	rc = devm_request_irq(&pdev->dev, irq, dsu_pmu_handle_irq,
 			      IRQF_NOBALANCING, name, dsu_pmu);
 	if (rc) {
-		dev_notice(&pdev->dev, "Failed to request IRQ %d\n", irq);
+		dev_warn(&pdev->dev, "Failed to request IRQ %d\n", irq);
 		return rc;
 	}
 
@@ -805,9 +777,6 @@ static int dsu_pmu_cpu_online(unsigned int cpu, struct hlist_node *node)
 	struct dsu_pmu *dsu_pmu = hlist_entry_safe(node, struct dsu_pmu,
 						   cpuhp_node);
 
-	if (!dsu_pmu)
-		return 0;
-
 	if (!cpumask_test_cpu(cpu, &dsu_pmu->associated_cpus))
 		return 0;
 
@@ -826,9 +795,6 @@ static int dsu_pmu_cpu_teardown(unsigned int cpu, struct hlist_node *node)
 	int dst;
 	struct dsu_pmu *dsu_pmu = hlist_entry_safe(node, struct dsu_pmu,
 						   cpuhp_node);
-
-	if (!dsu_pmu)
-		return 0;
 
 	if (!cpumask_test_and_clear_cpu(cpu, &dsu_pmu->active_cpu))
 		return 0;
@@ -857,7 +823,11 @@ static int __init dsu_pmu_init(void)
 	if (ret < 0)
 		return ret;
 	dsu_pmu_cpuhp_state = ret;
-	return platform_driver_register(&dsu_pmu_driver);
+	ret = platform_driver_register(&dsu_pmu_driver);
+	if (ret)
+		cpuhp_remove_multi_state(dsu_pmu_cpuhp_state);
+
+	return ret;
 }
 
 static void __exit dsu_pmu_exit(void)

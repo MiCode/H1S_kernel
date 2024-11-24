@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /*****************************************************************************
@@ -29,7 +21,7 @@
 #ifndef _OV8858MIPI_SENSOR_H
 #define _OV8858MIPI_SENSOR_H
 
-/* 表示sensor的几种工作模式状态：init preview capture video hvideo svideo */
+/* 卤铆脢戮sensor碌脛录赂脰脰鹿陇脳梅脛拢脢陆脳麓脤卢拢潞init preview capture video hvideo svideo */
 enum IMGSENSOR_MODE {
 	IMGSENSOR_MODE_INIT,
 	IMGSENSOR_MODE_PREVIEW,
@@ -39,7 +31,7 @@ enum IMGSENSOR_MODE {
 	IMGSENSOR_MODE_SLIM_VIDEO,
 };
 
-/* 表示几种（不同工作模式状态下）的sensor参数信息 */
+/* 卤铆脢戮录赂脰脰拢篓虏禄脥卢鹿陇脳梅脛拢脢陆脳麓脤卢脧脗拢漏碌脛sensor虏脦脢媒脨脜脧垄 */
 struct imgsensor_mode_struct {
 	kal_uint32 pclk;	/* record different mode's pclk */
 	kal_uint32 linelength;	/* record different mode's linelength */
@@ -64,7 +56,7 @@ struct imgsensor_mode_struct {
 
 };
 
-/* 表示（当前状态工作模式）下的sensor参数信息 */
+/* 卤铆脢戮拢篓碌卤脟掳脳麓脤卢鹿陇脳梅脛拢脢陆拢漏脧脗碌脛sensor虏脦脢媒脨脜脧垄 */
 /* SENSOR PRIVATE STRUCT FOR VARIABLES*/
 struct imgsensor_struct {
 	kal_uint8 mirror;	/* mirrorflip information */
@@ -94,7 +86,7 @@ struct imgsensor_struct {
 	kal_uint8 i2c_write_id;	/* record current sensor's i2c write id */
 };
 
-/* sensor基本信息，datasheet上的信息 */
+/* sensor禄霉卤戮脨脜脧垄拢卢datasheet脡脧碌脛脨脜脧垄 */
 /* SENSOR PRIVATE STRUCT FOR CONSTANT*/
 struct imgsensor_info_struct {
 	kal_uint16 sensor_id;	/* record sensor id defined in Kd_imgsensor.h */

@@ -827,7 +827,7 @@ static void rtl88e_dm_check_edca_turbo(struct ieee80211_hw *hw)
 	}
 
 	if (rtlpriv->btcoexist.bt_edca_dl != 0) {
-		edca_be_ul = rtlpriv->btcoexist.bt_edca_dl;
+		edca_be_dl = rtlpriv->btcoexist.bt_edca_dl;
 		bt_change_edca = true;
 	}
 
@@ -1221,7 +1221,8 @@ static void rtl88e_dm_refresh_rate_adaptive_mask(struct ieee80211_hw *hw)
 			sta = rtl_find_sta(hw, mac->bssid);
 			if (sta)
 				rtlpriv->cfg->ops->update_rate_tbl(hw, sta,
-								   p_ra->ratr_state);
+							p_ra->ratr_state,
+								   true);
 			rcu_read_unlock();
 
 			p_ra->pre_ratr_state = p_ra->ratr_state;
@@ -1707,9 +1708,11 @@ static void rtl88e_dm_fast_ant_training(struct ieee80211_hw *hw)
 	}
 }
 
-void rtl88e_dm_fast_antenna_training_callback(unsigned long data)
+void rtl88e_dm_fast_antenna_training_callback(struct timer_list *t)
 {
-	struct ieee80211_hw *hw = (struct ieee80211_hw *)data;
+	struct rtl_priv *rtlpriv =
+		from_timer(rtlpriv, t, works.fast_antenna_training_timer);
+	struct ieee80211_hw *hw = rtlpriv->hw;
 
 	rtl88e_dm_fast_ant_training(hw);
 }

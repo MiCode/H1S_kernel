@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2015 MediaTek Inc.
- * Author: Mars.Cheng <mars.cheng@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (C) 2019 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -31,7 +22,8 @@
 /* #include <linux/irqchip/arm-gic-v3.h> */
 #include <linux/irqchip/mtk-gic-extend.h>
 #include <linux/io.h>
-#include <mt-plat/mtk_secure_api.h>
+#include <linux/soc/mediatek/mtk_sip_svc.h>
+#include <linux/arm-smccc.h>
 #ifdef CONFIG_CPU_PM
 #include <linux/cpu_pm.h>
 #endif
@@ -145,7 +137,7 @@ u32 mt_irq_get_pol_hw(u32 hwirq)
 	void __iomem *base = INT_POL_CTL0;
 
 	if (hwirq < 32) {
-		pr_err("Fail to set polarity of interrupt %d\n", hwirq);
+		pr_notice("Fail to set polarity of interrupt %d\n", hwirq);
 		return 0;
 	}
 
@@ -156,9 +148,10 @@ u32 mt_irq_get_pol_hw(u32 hwirq)
 	 */
 	if ((reg_len_pol0 != 0) && (reg >= reg_len_pol0)) {
 		if (!INT_POL_CTL1) {
-			pr_err("MUST have 2nd INT_POL_CTRL\n");
+			pr_notice("MUST have 2nd INT_POL_CTRL\n");
 			/* is a bug */
-			BUG_ON(1);
+			WARN_ON(1);
+			return 0;
 		}
 		reg -= reg_len_pol0;
 		base = INT_POL_CTL1;
@@ -336,6 +329,21 @@ u32 mt_irq_get_en_hw(unsigned int hwirq)
 	return (readl_relaxed(base + (hwirq/32)*4) & bit) ?
 		1 : 0;
 }
+
+unsigned int mt_irq_get_sens(unsigned int irq)
+{
+	unsigned int config;
+
+	/*
+	 * 2'b10 edge
+	 * 2'b00 level
+	 */
+	config = readl_relaxed(GIC_DIST_BASE + GIC_DIST_CONFIG + (irq / 16) * 4);
+	config = (config >> (irq % 16) * 2) & 0x3;
+
+	return config;
+
+}
 #endif
 
 void mt_irq_set_pending_hw(unsigned int hwirq)
@@ -371,7 +379,7 @@ void mt_irq_unmask_for_sleep_ex(unsigned int virq)
 	mask = 1 << (hwirq % 32);
 
 	if (hwirq < 16) {
-		pr_err("Fail to enable interrupt %d\n", hwirq);
+		pr_notice("Fail to enable interrupt %d\n", hwirq);
 		return;
 	}
 
@@ -394,7 +402,7 @@ void mt_irq_unmask_for_sleep(unsigned int hwirq)
 	dist_base = GIC_DIST_BASE;
 
 	if (hwirq < 16) {
-		pr_err("Fail to enable interrupt %d\n", hwirq);
+		pr_notice("Fail to enable interrupt %d\n", hwirq);
 		return;
 	}
 
@@ -418,7 +426,7 @@ void mt_irq_mask_for_sleep(unsigned int irq)
 	dist_base = GIC_DIST_BASE;
 
 	if (irq < 16) {
-		pr_err("Fail to enable interrupt %d\n", irq);
+		pr_notice("Fail to enable interrupt %d\n", irq);
 		return;
 	}
 
@@ -430,6 +438,7 @@ void mt_irq_mask_for_sleep(unsigned int irq)
 char *mt_irq_dump_status_buf(int irq, char *buf)
 {
 	int rc, is_gic600 = 0;
+	struct arm_smccc_res res = {0};
 	unsigned int result;
 	char *ptr = buf;
 
@@ -443,7 +452,12 @@ char *mt_irq_dump_status_buf(int irq, char *buf)
 		((result >> GICD_V3_IIDR_PROD_ID_SHIFT) == GICD_V3_IIDR_GIC600) ? 1 : 0;
 
 	ptr += sprintf(ptr, "[mt gic dump] irq = %d\n", irq);
-	rc = mt_secure_call(MTK_SIP_KERNEL_GIC_DUMP, irq, 0, 0, 0);
+
+#if defined(CONFIG_ARM64) || defined(CONFIG_ARM_PSCI)
+	arm_smccc_smc(MTK_SIP_KERNEL_GIC_DUMP, irq, 0, 0, 0, 0, 0, 0, &res);
+#endif
+
+	rc = res.a0;
 
 	if (rc < 0) {
 		ptr += sprintf(ptr, "[mt gic dump] not allowed to dump!\n");
@@ -494,24 +508,6 @@ char *mt_irq_dump_status_buf(int irq, char *buf)
 	return ptr;
 }
 
-int mt_irq_dump_cpu(int irq)
-{
-	int rc;
-	unsigned long result;
-
-	irq = virq_to_hwirq(irq);
-
-	rc = mt_secure_call(MTK_SIP_KERNEL_GIC_DUMP, irq, 0, 0, 0);
-
-	if (rc < 0)
-		return rc;
-
-	/* get target cpu mask */
-	result = (rc >> 14) & 0xffff;
-
-	return (int)(find_first_bit((unsigned long *)&result, 16));
-}
-
 void mt_irq_dump_status(int irq)
 {
 	char *buf = kmalloc(2048, GFP_ATOMIC);
@@ -520,7 +516,7 @@ void mt_irq_dump_status(int irq)
 		return;
 
 	if (mt_irq_dump_status_buf(irq, buf))
-		pr_warn("%s", buf);
+		pr_notice("%s", buf);
 
 	kfree(buf);
 }
@@ -538,7 +534,7 @@ void _mt_irq_set_polarity(unsigned int hwirq, unsigned int polarity)
 	void __iomem *base = INT_POL_CTL0;
 
 	if (hwirq < 32) {
-		pr_err("Fail to set polarity of interrupt %d\n", hwirq);
+		pr_notice("Fail to set polarity of interrupt %d\n", hwirq);
 		return;
 	}
 
@@ -550,9 +546,10 @@ void _mt_irq_set_polarity(unsigned int hwirq, unsigned int polarity)
 	 */
 	if ((reg_len_pol0 != 0) && (reg >= reg_len_pol0)) {
 		if (!INT_POL_CTL1) {
-			pr_err("MUST have 2nd INT_POL_CTRL\n");
+			pr_notice("MUST have 2nd INT_POL_CTRL\n");
 			/* is a bug */
-			BUG_ON(1);
+			WARN_ON(1);
+			return;
 		}
 		reg -= reg_len_pol0;
 		base = INT_POL_CTL1;
@@ -571,8 +568,15 @@ void _mt_irq_set_polarity(unsigned int hwirq, unsigned int polarity)
 }
 #endif
 
-#if defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893)
+#ifdef CONFIG_MACH_MT6779
+#define GIC_INT_MASK (MCUSYS_BASE_SWMODE + 0xa6f0)
+#define GIC500_ACTIVE_SEL_SHIFT 16
+#define GIC500_ACTIVE_SEL_MASK (0x7 << GIC500_ACTIVE_SEL_SHIFT)
+#define GIC500_ACTIVE_CPU_SHIFT 0
+#define GIC500_ACTIVE_CPU_MASK (0xff << GIC500_ACTIVE_CPU_SHIFT)
+#elif defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6873) || \
+	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) ||\
+	defined(CONFIG_MACH_MT6877) || defined(CONFIG_MACH_MT6781)
 #define GIC_INT_MASK (MCUSYS_BASE_SWMODE + 0xaa88)
 #define GIC500_ACTIVE_CPU_SHIFT 0
 #define GIC500_ACTIVE_CPU_MASK (0xff << GIC500_ACTIVE_CPU_SHIFT)
@@ -609,6 +613,9 @@ int remove_cpu_from_prefer_schedule_domain(unsigned int cpu)
 	unsigned long domain;
 
 	if (irq_sw_mode_support() != 1)
+		return 0;
+
+	if (!MCUSYS_BASE_SWMODE)
 		return 0;
 
 	spin_lock(&domain_lock);
@@ -679,7 +686,7 @@ int __init mt_gic_ext_init(void)
 
 	node = of_find_compatible_node(NULL, NULL, "arm,gic-v3");
 	if (!node) {
-		pr_err("[gic_ext] find arm,gic-v3 node failed\n");
+		pr_notice("[gic_ext] find arm,gic-v3 node failed\n");
 		return -EINVAL;
 	}
 
@@ -708,7 +715,7 @@ int __init mt_gic_ext_init(void)
 #endif
 
 	irq_sw_mode_init();
-	pr_warn("### gic-v3 init done. ###\n");
+	pr_notice("### gic-v3 init done. ###\n");
 
 	return 0;
 }

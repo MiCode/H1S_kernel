@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -26,27 +18,42 @@
 #include <linux/proc_fs.h>
 #include <linux/uaccess.h>
 
-#include <mach/mtk_pbm.h>
+#include <mtk_pbm.h>
 #include <mtk_pbm_common.h>
 #include <mtk_pbm_data.h>
+#include <linux/power_supply.h>
 
 #ifndef DISABLE_PBM_FEATURE
+#include <linux/iio/consumer.h>
+#include <mtk_gpufreq.h>
+#if (defined(CONFIG_MACH_MT6877) \
+	|| defined(CONFIG_MACH_MT6768) \
+	|| defined(CONFIG_MACH_MT6781) \
+	|| defined(CONFIG_MACH_MT6885) \
+	|| defined(CONFIG_MACH_MT6873) \
+	|| defined(CONFIG_MACH_MT6833))
 #include <mach/upmu_sw.h>
 #include <mt-plat/upmu_common.h>
 #include <mt-plat/mtk_auxadc_intf.h>
 #include <mtk_cpufreq_api.h>
-#include <mtk_gpufreq.h>
 #ifdef CONFIG_THERMAL
 #include <mach/mtk_thermal.h>
+#endif
+#else
+#include <mtk_dynamic_loading_throttling.h>
 #endif
 #include <mtk_ppm_api.h>
 #endif
 
 #ifndef DISABLE_PBM_FEATURE
 static bool mt_pbm_debug;
+static int g_pbm_stop;
 
 static int mt_pbm_log_divisor;
 static int mt_pbm_log_counter;
+
+
+
 
 #ifdef pr_fmt
 #undef pr_fmt
@@ -111,6 +118,13 @@ tscpu_get_min_cpu_pwr(void)
 }
 
 unsigned int __attribute__ ((weak))
+mt_ppm_get_leakage_mw(enum ppm_cluster_lkg cluster)
+{
+	pr_notice_ratelimited("%s not ready\n", __func__);
+	return 0;
+}
+
+unsigned int __attribute__ ((weak))
 mt_gpufreq_get_leakage_mw(void)
 {
 	pr_warn_ratelimited("%s not ready\n", __func__);
@@ -129,25 +143,59 @@ mt_gpufreq_set_power_limit_by_pbm(unsigned int limited_power)
 	pr_warn_ratelimited("%s not ready\n", __func__);
 }
 
+#if (defined(CONFIG_MACH_MT6877) \
+	|| defined(CONFIG_MACH_MT6768) \
+	|| defined(CONFIG_MACH_MT6781) \
+	|| defined(CONFIG_MACH_MT6833))
 u32 __attribute__ ((weak))
 spm_vcorefs_get_MD_status(void)
 {
-	pr_warn_ratelimited("%s not ready\n", __func__);
+	pr_notice("%s not ready\n", __func__);
 	return 0;
 }
 
-int get_battery_volt(void)
+static int get_battery_volt(void)
 {
 	return pmic_get_auxadc_value(AUXADC_LIST_BATADC);
 	/* return 3900; */
 }
 
+
+#else
+static int get_battery_volt(void)
+{
+	union power_supply_propval prop;
+	struct power_supply *psy;
+	int ret;
+
+	psy = power_supply_get_by_name("battery");
+	if (psy == NULL) {
+		pr_notice("%s can't get battery node\n", __func__);
+		return -ENODEV;
+	}
+
+	ret = power_supply_get_property(psy,
+		POWER_SUPPLY_PROP_VOLTAGE_NOW, &prop);
+	if (ret || prop.intval < 0) {
+		pr_info("%s: POWER_SUPPLY_PROP_VOLTAGE_NOW fail\n", __func__);
+		return -EINVAL;
+	}
+
+	return prop.intval / 1000;
+}
+#endif
 unsigned int ma_to_mw(unsigned int val)
 {
 	unsigned int bat_vol = 0;
 	unsigned int ret_val = 0;
 
 	bat_vol = get_battery_volt();	/* return mV */
+	if (bat_vol <= 0) {
+		pr_notice_ratelimited("[%s] wrong volt=%d, set 4V\n",
+			bat_vol);
+		bat_vol = 4000;
+	}
+
 	ret_val = (bat_vol * val) / 1000;	/* mW = (mV * mA)/1000 */
 	pr_info("[%s] %d(mV) * %d(mA) = %d(mW)\n",
 		__func__, bat_vol, val, ret_val);
@@ -323,28 +371,37 @@ static void pbm_allocate_budget_manager(void)
 	hpf_ctrl.to_gpu_budget = togpu;
 
 	if (mt_pbm_debug) {
-		pr_info
-("(C/G)=%d,%d=>(D/L/M1/F/C/G)=%d,%d,%d,%d,%d,%d(Multi:%d),%d\n",
-cpu, gpu, dlpt, leakage, md1, flash, tocpu, togpu,
-multiple, cpu_lower_bound);
+		pr_info("(C/G)=%d,%d=>(D/L/M1/F/C/G)=%d,%d,%d,%d,%d,%d(Multi:%d),%d\n",
+			cpu, gpu, dlpt, leakage, md1, flash, tocpu, togpu,
+			multiple, cpu_lower_bound);
 	} else {
+	#if (defined(CONFIG_MACH_MT6877) \
+	|| defined(CONFIG_MACH_MT6768) \
+	|| defined(CONFIG_MACH_MT6781) \
+	|| defined(CONFIG_MACH_MT6833))
+		if (((abs(pre_tocpu - tocpu) >= 100) && cpu > tocpu) ||
+			((abs(pre_togpu - togpu) >= 30) && gpu > togpu)) {
+	#else
 		if (((abs(pre_tocpu - tocpu) >= 10) && cpu > tocpu) ||
 			((abs(pre_togpu - togpu) >= 10) && gpu > togpu)) {
-			pr_info
-("(C/G)=%d,%d=>(D/L/M1/F/C/G)=%d,%d,%d,%d,%d,%d(Multi:%d),%d\n",
-cpu, gpu, dlpt, leakage, md1, flash, tocpu, togpu,
-multiple, cpu_lower_bound);
+	#endif
+			pr_info_ratelimited
+			("(C/G)=%d,%d=>(D/L/M1/F/C/G)=%d,%d,%d,%d,%d,%d(Multi:%d),%d\n",
+				cpu, gpu, dlpt, leakage, md1, flash, tocpu, togpu,
+				multiple, cpu_lower_bound);
 			pre_tocpu = tocpu;
 			pre_togpu = togpu;
 		} else if ((cpu > tocpu) || (gpu > togpu)) {
 			pr_warn_ratelimited
-("(C/G)=%d,%d => (D/L/M1/F/C/G)=%d,%d,%d,%d,%d,%d (Multi:%d),%d\n",
-cpu, gpu, dlpt, leakage, md1, flash, tocpu, togpu, multiple, cpu_lower_bound);
+				("(C/G)=%d,%d => (D/L/M1/F/C/G)=%d,%d,%d,%d,%d,%d (Multi:%d),%d\n",
+				cpu, gpu, dlpt, leakage, md1, flash, tocpu, togpu,
+				multiple, cpu_lower_bound);
 		} else {
 			pre_tocpu = tocpu;
 			pre_togpu = togpu;
 		}
 	}
+
 }
 
 static bool pbm_func_enable_check(void)
@@ -552,7 +609,7 @@ static int pbm_thread_handle(void *data)
 
 		mutex_lock(&pbm_mutex);
 		if (g_dlpt_need_do == 1) {
-			if (g_dlpt_stop == 0) {
+			if (g_pbm_stop == 0) {
 				pbm_allocate_budget_manager();
 				g_dlpt_state_sync = 0;
 			} else {
@@ -630,7 +687,7 @@ _mt_pbm_pm_callback(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
-#if 1 /* CONFIG_PBM_PROC_FS */
+/* CONFIG_PBM_PROC_FS */
 /*
  * show current debug status
  */
@@ -694,7 +751,10 @@ static ssize_t mt_pbm_debug_proc_write
 
 	return count;
 }
-
+#if (defined(CONFIG_MACH_MT6877) \
+	|| defined(CONFIG_MACH_MT6768) \
+	|| defined(CONFIG_MACH_MT6781) \
+	|| defined(CONFIG_MACH_MT6833))
 static int mt_pbm_debug_log_reduc_proc_show(struct seq_file *m, void *v)
 {
 	if (mt_pbm_log_divisor) {
@@ -738,12 +798,59 @@ static ssize_t mt_pbm_debug_log_reduc_proc_write
 	return count;
 }
 
+
+#endif
+
+
+
+static int mt_pbm_stop_proc_show(struct seq_file *m, void *v)
+{
+	if (g_pbm_stop)
+		seq_puts(m, "pbm stop\n");
+	else
+		seq_puts(m, "pbm enable\n");
+
+	return 0;
+}
+
+static ssize_t mt_pbm_stop_proc_write
+(struct file *file, const char __user *buffer, size_t count, loff_t *data)
+{
+	char desc[32];
+	int len = 0;
+	int debug = 0;
+
+	len = (count < (sizeof(desc) - 1)) ? count : (sizeof(desc) - 1);
+	if (copy_from_user(desc, buffer, len))
+		return 0;
+	desc[len] = '\0';
+
+	/* if (sscanf(desc, "%d", &debug) == 1) { */
+	if (kstrtoint(desc, 10, &debug) == 0) {
+		g_pbm_stop = debug;
+		if (debug == 0)
+			g_pbm_stop = 0;
+
+		else if (debug == 1)
+
+			g_pbm_stop = 1;
+
+		else
+			pr_notice("Should be [0:enable pbm, 1:stop pbm]\n");
+	} else
+		pr_notice("Should be [0:enable pbm, 1:stop pbm]\n");
+
+	return count;
+}
+
 static int mt_pbm_manual_mode_proc_show(struct seq_file *m, void *v)
 {
 	if (pbm_ctrl.manual_mode >= 1)
 		seq_puts(m, "pbm manual mode enabled\n");
 	else
 		seq_puts(m, "pbm manual disabled\n");
+
+	seq_puts(m, "pbm manual disabled\n");
 
 	return 0;
 }
@@ -816,8 +923,13 @@ static const struct file_operations mt_ ## name ## _proc_fops = {	\
 
 PROC_FOPS_RW(pbm_debug);
 
+PROC_FOPS_RW(pbm_stop);
+#if (defined(CONFIG_MACH_MT6877) \
+	|| defined(CONFIG_MACH_MT6768) \
+	|| defined(CONFIG_MACH_MT6781) \
+	|| defined(CONFIG_MACH_MT6833))
 PROC_FOPS_RW(pbm_debug_log_reduc);
-
+#endif
 PROC_FOPS_RW(pbm_manual_mode);
 
 static int mt_pbm_create_procfs(void)
@@ -832,7 +944,13 @@ static int mt_pbm_create_procfs(void)
 
 	const struct pentry entries[] = {
 		PROC_ENTRY(pbm_debug),
-		PROC_ENTRY(pbm_debug_log_reduc),
+		PROC_ENTRY(pbm_stop),
+#if (defined(CONFIG_MACH_MT6877) \
+	|| defined(CONFIG_MACH_MT6768) \
+	|| defined(CONFIG_MACH_MT6781) \
+	|| defined(CONFIG_MACH_MT6833))
+	PROC_ENTRY(pbm_debug_log_reduc),
+#endif
 		PROC_ENTRY(pbm_manual_mode),
 	};
 
@@ -852,20 +970,23 @@ static int mt_pbm_create_procfs(void)
 
 	return 0;
 }
-#endif	/* CONFIG_PBM_PROC_FS */
+/* CONFIG_PBM_PROC_FS */
 
 static int __init pbm_module_init(void)
 {
 	int ret = 0;
 
-	#if 1 /* CONFIG_PBM_PROC_FS */
+	/* CONFIG_PBM_PROC_FS */
 	mt_pbm_create_procfs();
-	#endif
 
 	pm_notifier(_mt_pbm_pm_callback, 0);
 
 	register_dlpt_notify(&kicker_pbm_by_dlpt, DLPT_PRIO_PBM);
 	ret = create_pbm_kthread();
+	if (ret) {
+		pr_notice("FAILED TO CREATE PBM KTHREAD\n");
+		return ret;
+	}
 
 	#ifdef MD_POWER_UT
 	/* pr_info("share_reg: %x", spm_vcorefs_get_MD_status());*/
@@ -875,10 +996,6 @@ static int __init pbm_module_init(void)
 
 	pr_info("%s : Done\n", __func__);
 
-	if (ret) {
-		pr_err("FAILED TO CREATE PBM KTHREAD\n");
-		return ret;
-	}
 	return ret;
 }
 

@@ -104,6 +104,25 @@ void drm_mode_object_unregister(struct drm_device *dev,
 	mutex_unlock(&dev->mode_config.idr_mutex);
 }
 
+/**
+ * drm_lease_required - check types which must be leased to be used
+ * @type: type of object
+ *
+ * Returns whether the provided type of drm_mode_object must
+ * be owned or leased to be used by a process.
+ */
+bool drm_mode_object_lease_required(uint32_t type)
+{
+	switch(type) {
+	case DRM_MODE_OBJECT_CRTC:
+	case DRM_MODE_OBJECT_CONNECTOR:
+	case DRM_MODE_OBJECT_PLANE:
+		return true;
+	default:
+		return false;
+	}
+}
+
 struct drm_mode_object *__drm_mode_object_find(struct drm_device *dev,
 					       struct drm_file *file_priv,
 					       uint32_t id, uint32_t type)
@@ -117,6 +136,10 @@ struct drm_mode_object *__drm_mode_object_find(struct drm_device *dev,
 	if (obj && obj->id != id)
 		obj = NULL;
 
+	if (obj && drm_mode_object_lease_required(obj->type) &&
+	    !_drm_lease_held(file_priv, obj->id))
+		obj = NULL;
+
 	if (obj && obj->free_cb) {
 		if (!kref_get_unless_zero(&obj->refcount))
 			obj = NULL;
@@ -128,6 +151,7 @@ struct drm_mode_object *__drm_mode_object_find(struct drm_device *dev,
 
 /**
  * drm_mode_object_find - look up a drm object with static lifetime
+ * @dev: drm device
  * @file_priv: drm file
  * @id: id of the mode object
  * @type: type of the mode object
@@ -249,8 +273,9 @@ int drm_object_property_set_value(struct drm_mode_object *obj,
 }
 EXPORT_SYMBOL(drm_object_property_set_value);
 
-int __drm_object_property_get_value(struct drm_mode_object *obj,
-				  struct drm_property *property, uint64_t *val)
+static int __drm_object_property_get_value(struct drm_mode_object *obj,
+					   struct drm_property *property,
+					   uint64_t *val)
 {
 	int i;
 
@@ -408,8 +433,7 @@ static int set_property_legacy(struct drm_mode_object *obj,
 	drm_modeset_lock_all(dev);
 	switch (obj->type) {
 	case DRM_MODE_OBJECT_CONNECTOR:
-		ret = drm_mode_connector_set_obj_prop(obj, prop,
-						      prop_value);
+		ret = drm_connector_set_obj_prop(obj, prop, prop_value);
 		break;
 	case DRM_MODE_OBJECT_CRTC:
 		ret = drm_mode_crtc_set_obj_prop(obj, prop, prop_value);
@@ -483,8 +507,7 @@ int drm_mode_obj_set_property_ioctl(struct drm_device *dev, void *data,
 	if (!drm_core_check_feature(dev, DRIVER_MODESET))
 		return -EINVAL;
 
-	arg_obj = drm_mode_object_find(dev, file_priv,
-				arg->obj_id, arg->obj_type);
+	arg_obj = drm_mode_object_find(dev, file_priv, arg->obj_id, arg->obj_type);
 	if (!arg_obj)
 		return -ENOENT;
 

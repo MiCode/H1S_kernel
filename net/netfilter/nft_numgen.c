@@ -20,17 +20,14 @@
 static DEFINE_PER_CPU(struct rnd_state, nft_numgen_prandom_state);
 
 struct nft_ng_inc {
-	enum nft_registers      dreg:8;
+	u8			dreg;
 	u32			modulus;
 	atomic_t		counter;
 	u32			offset;
 };
 
-static void nft_ng_inc_eval(const struct nft_expr *expr,
-			    struct nft_regs *regs,
-			    const struct nft_pktinfo *pkt)
+static u32 nft_ng_inc_gen(struct nft_ng_inc *priv)
 {
-	struct nft_ng_inc *priv = nft_expr_priv(expr);
 	u32 nval, oval;
 
 	do {
@@ -38,7 +35,16 @@ static void nft_ng_inc_eval(const struct nft_expr *expr,
 		nval = (oval + 1 < priv->modulus) ? oval + 1 : 0;
 	} while (atomic_cmpxchg(&priv->counter, oval, nval) != oval);
 
-	regs->data[priv->dreg] = nval + priv->offset;
+	return nval + priv->offset;
+}
+
+static void nft_ng_inc_eval(const struct nft_expr *expr,
+			    struct nft_regs *regs,
+			    const struct nft_pktinfo *pkt)
+{
+	struct nft_ng_inc *priv = nft_expr_priv(expr);
+
+	regs->data[priv->dreg] = nft_ng_inc_gen(priv);
 }
 
 static const struct nla_policy nft_ng_policy[NFTA_NG_MAX + 1] = {
@@ -64,11 +70,10 @@ static int nft_ng_inc_init(const struct nft_ctx *ctx,
 	if (priv->offset + priv->modulus - 1 < priv->offset)
 		return -EOVERFLOW;
 
-	priv->dreg = nft_parse_register(tb[NFTA_NG_DREG]);
 	atomic_set(&priv->counter, priv->modulus - 1);
 
-	return nft_validate_register_store(ctx, priv->dreg, NULL,
-					   NFT_DATA_VALUE, sizeof(u32));
+	return nft_parse_register_store(ctx, tb[NFTA_NG_DREG], &priv->dreg,
+					NULL, NFT_DATA_VALUE, sizeof(u32));
 }
 
 static int nft_ng_dump(struct sk_buff *skb, enum nft_registers dreg,
@@ -98,21 +103,26 @@ static int nft_ng_inc_dump(struct sk_buff *skb, const struct nft_expr *expr)
 }
 
 struct nft_ng_random {
-	enum nft_registers      dreg:8;
+	u8			dreg;
 	u32			modulus;
 	u32			offset;
 };
+
+static u32 nft_ng_random_gen(struct nft_ng_random *priv)
+{
+	struct rnd_state *state = this_cpu_ptr(&nft_numgen_prandom_state);
+
+	return reciprocal_scale(prandom_u32_state(state), priv->modulus) +
+	       priv->offset;
+}
 
 static void nft_ng_random_eval(const struct nft_expr *expr,
 			       struct nft_regs *regs,
 			       const struct nft_pktinfo *pkt)
 {
 	struct nft_ng_random *priv = nft_expr_priv(expr);
-	struct rnd_state *state = this_cpu_ptr(&nft_numgen_prandom_state);
-	u32 val;
 
-	val = reciprocal_scale(prandom_u32_state(state), priv->modulus);
-	regs->data[priv->dreg] = val + priv->offset;
+	regs->data[priv->dreg] = nft_ng_random_gen(priv);
 }
 
 static int nft_ng_random_init(const struct nft_ctx *ctx,
@@ -133,10 +143,8 @@ static int nft_ng_random_init(const struct nft_ctx *ctx,
 
 	prandom_init_once(&nft_numgen_prandom_state);
 
-	priv->dreg = nft_parse_register(tb[NFTA_NG_DREG]);
-
-	return nft_validate_register_store(ctx, priv->dreg, NULL,
-					   NFT_DATA_VALUE, sizeof(u32));
+	return nft_parse_register_store(ctx, tb[NFTA_NG_DREG], &priv->dreg,
+					NULL, NFT_DATA_VALUE, sizeof(u32));
 }
 
 static int nft_ng_random_dump(struct sk_buff *skb, const struct nft_expr *expr)

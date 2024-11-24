@@ -48,7 +48,6 @@ static const struct of_device_id whitelist[] __initconst = {
 
 	{ .compatible = "samsung,exynos3250", },
 	{ .compatible = "samsung,exynos4210", },
-	{ .compatible = "samsung,exynos4212", },
 	{ .compatible = "samsung,exynos5250", },
 #ifndef CONFIG_BL_SWITCHER
 	{ .compatible = "samsung,exynos5800", },
@@ -67,8 +66,6 @@ static const struct of_device_id whitelist[] __initconst = {
 	{ .compatible = "renesas,r8a7792", },
 	{ .compatible = "renesas,r8a7793", },
 	{ .compatible = "renesas,r8a7794", },
-	{ .compatible = "renesas,r8a7795", },
-	{ .compatible = "renesas,r8a7796", },
 	{ .compatible = "renesas,sh73a0", },
 
 	{ .compatible = "rockchip,rk2928", },
@@ -82,8 +79,6 @@ static const struct of_device_id whitelist[] __initconst = {
 	{ .compatible = "rockchip,rk3366", },
 	{ .compatible = "rockchip,rk3368", },
 	{ .compatible = "rockchip,rk3399", },
-
-	{ .compatible = "socionext,uniphier-ld6b", },
 
 	{ .compatible = "st-ericsson,u8500", },
 	{ .compatible = "st-ericsson,u8540", },
@@ -113,15 +108,17 @@ static const struct of_device_id blacklist[] __initconst = {
 
 	{ .compatible = "mediatek,mt2701", },
 	{ .compatible = "mediatek,mt2712", },
+	{ .compatible = "mediatek,mt6779", },
 	{ .compatible = "mediatek,mt7622", },
 	{ .compatible = "mediatek,mt7623", },
-	{ .compatible = "mediatek,mt8168", },
 	{ .compatible = "mediatek,mt817x", },
 	{ .compatible = "mediatek,mt8173", },
 	{ .compatible = "mediatek,mt8176", },
-	{ .compatible = "mediatek,mt8167", },
 
 	{ .compatible = "nvidia,tegra124", },
+
+	{ .compatible = "qcom,apq8096", },
+	{ .compatible = "qcom,msm8996", },
 
 	{ .compatible = "st,stih407", },
 	{ .compatible = "st,stih410", },

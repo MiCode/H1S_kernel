@@ -96,9 +96,6 @@ struct vc4_dpi {
 	struct platform_device *pdev;
 
 	struct drm_encoder *encoder;
-	struct drm_connector *connector;
-	struct drm_bridge *bridge;
-	bool is_panel_bridge;
 
 	void __iomem *regs;
 
@@ -166,41 +163,71 @@ static void vc4_dpi_encoder_disable(struct drm_encoder *encoder)
 
 static void vc4_dpi_encoder_enable(struct drm_encoder *encoder)
 {
+	struct drm_device *dev = encoder->dev;
 	struct drm_display_mode *mode = &encoder->crtc->mode;
 	struct vc4_dpi_encoder *vc4_encoder = to_vc4_dpi_encoder(encoder);
 	struct vc4_dpi *dpi = vc4_encoder->dpi;
+	struct drm_connector_list_iter conn_iter;
+	struct drm_connector *connector = NULL, *connector_scan;
 	u32 dpi_c = DPI_ENABLE | DPI_OUTPUT_ENABLE_MODE;
 	int ret;
 
-	if (dpi->connector->display_info.num_bus_formats) {
-		u32 bus_format = dpi->connector->display_info.bus_formats[0];
-
-		switch (bus_format) {
-		case MEDIA_BUS_FMT_RGB888_1X24:
-			dpi_c |= VC4_SET_FIELD(DPI_FORMAT_24BIT_888_RGB,
-					       DPI_FORMAT);
-			break;
-		case MEDIA_BUS_FMT_BGR888_1X24:
-			dpi_c |= VC4_SET_FIELD(DPI_FORMAT_24BIT_888_RGB,
-					       DPI_FORMAT);
-			dpi_c |= VC4_SET_FIELD(DPI_ORDER_BGR, DPI_ORDER);
-			break;
-		case MEDIA_BUS_FMT_RGB666_1X24_CPADHI:
-			dpi_c |= VC4_SET_FIELD(DPI_FORMAT_18BIT_666_RGB_2,
-					       DPI_FORMAT);
-			break;
-		case MEDIA_BUS_FMT_RGB666_1X18:
-			dpi_c |= VC4_SET_FIELD(DPI_FORMAT_18BIT_666_RGB_1,
-					       DPI_FORMAT);
-			break;
-		case MEDIA_BUS_FMT_RGB565_1X16:
-			dpi_c |= VC4_SET_FIELD(DPI_FORMAT_16BIT_565_RGB_3,
-					       DPI_FORMAT);
-			break;
-		default:
-			DRM_ERROR("Unknown media bus format %d\n", bus_format);
+	/* Look up the connector attached to DPI so we can get the
+	 * bus_format.  Ideally the bridge would tell us the
+	 * bus_format we want, but it doesn't yet, so assume that it's
+	 * uniform throughout the bridge chain.
+	 */
+	drm_connector_list_iter_begin(dev, &conn_iter);
+	drm_for_each_connector_iter(connector_scan, &conn_iter) {
+		if (connector_scan->encoder == encoder) {
+			connector = connector_scan;
 			break;
 		}
+	}
+	drm_connector_list_iter_end(&conn_iter);
+
+	if (connector) {
+		if (connector->display_info.num_bus_formats) {
+			u32 bus_format = connector->display_info.bus_formats[0];
+
+			switch (bus_format) {
+			case MEDIA_BUS_FMT_RGB888_1X24:
+				dpi_c |= VC4_SET_FIELD(DPI_FORMAT_24BIT_888_RGB,
+						       DPI_FORMAT);
+				break;
+			case MEDIA_BUS_FMT_BGR888_1X24:
+				dpi_c |= VC4_SET_FIELD(DPI_FORMAT_24BIT_888_RGB,
+						       DPI_FORMAT);
+				dpi_c |= VC4_SET_FIELD(DPI_ORDER_BGR,
+						       DPI_ORDER);
+				break;
+			case MEDIA_BUS_FMT_RGB666_1X24_CPADHI:
+				dpi_c |= VC4_SET_FIELD(DPI_FORMAT_18BIT_666_RGB_2,
+						       DPI_FORMAT);
+				break;
+			case MEDIA_BUS_FMT_RGB666_1X18:
+				dpi_c |= VC4_SET_FIELD(DPI_FORMAT_18BIT_666_RGB_1,
+						       DPI_FORMAT);
+				break;
+			case MEDIA_BUS_FMT_RGB565_1X16:
+				dpi_c |= VC4_SET_FIELD(DPI_FORMAT_16BIT_565_RGB_1,
+						       DPI_FORMAT);
+				break;
+			default:
+				DRM_ERROR("Unknown media bus format %d\n",
+					  bus_format);
+				break;
+			}
+		}
+
+		if (connector->display_info.bus_flags & DRM_BUS_FLAG_PIXDATA_DRIVE_NEGEDGE)
+			dpi_c |= DPI_PIXEL_CLK_INVERT;
+
+		if (connector->display_info.bus_flags & DRM_BUS_FLAG_DE_LOW)
+			dpi_c |= DPI_OUTPUT_ENABLE_INVERT;
+	} else {
+		/* Default to 24bit if no connector found. */
+		dpi_c |= VC4_SET_FIELD(DPI_FORMAT_24BIT_888_RGB, DPI_FORMAT);
 	}
 
 	if (mode->flags & DRM_MODE_FLAG_NHSYNC)
@@ -251,10 +278,11 @@ static int vc4_dpi_init_bridge(struct vc4_dpi *dpi)
 {
 	struct device *dev = &dpi->pdev->dev;
 	struct drm_panel *panel;
+	struct drm_bridge *bridge;
 	int ret;
 
 	ret = drm_of_find_panel_or_bridge(dev->of_node, 0, 0,
-					  &panel, &dpi->bridge);
+					  &panel, &bridge);
 	if (ret) {
 		/* If nothing was connected in the DT, that's not an
 		 * error.
@@ -265,13 +293,10 @@ static int vc4_dpi_init_bridge(struct vc4_dpi *dpi)
 			return ret;
 	}
 
-	if (panel) {
-		dpi->bridge = drm_panel_bridge_add(panel,
-						   DRM_MODE_CONNECTOR_DPI);
-		dpi->is_panel_bridge = true;
-	}
+	if (panel)
+		bridge = drm_panel_bridge_add(panel, DRM_MODE_CONNECTOR_DPI);
 
-	return drm_bridge_attach(dpi->encoder, dpi->bridge, NULL);
+	return drm_bridge_attach(dpi->encoder, bridge, NULL);
 }
 
 static int vc4_dpi_bind(struct device *dev, struct device *master, void *data)
@@ -352,8 +377,7 @@ static void vc4_dpi_unbind(struct device *dev, struct device *master,
 	struct vc4_dev *vc4 = to_vc4_dev(drm);
 	struct vc4_dpi *dpi = dev_get_drvdata(dev);
 
-	if (dpi->is_panel_bridge)
-		drm_panel_bridge_remove(dpi->bridge);
+	drm_of_panel_bridge_remove(dev->of_node, 0, 0);
 
 	drm_encoder_cleanup(dpi->encoder);
 

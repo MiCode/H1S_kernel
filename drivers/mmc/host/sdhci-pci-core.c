@@ -12,6 +12,7 @@
  *     - JMicron (hardware and technical support)
  */
 
+#include <linux/bitfield.h>
 #include <linux/string.h>
 #include <linux/delay.h>
 #include <linux/highmem.h>
@@ -29,18 +30,45 @@
 #include <linux/mmc/slot-gpio.h>
 #include <linux/mmc/sdhci-pci-data.h>
 #include <linux/acpi.h>
+#include <linux/dmi.h>
+
+#include "cqhci.h"
 
 #include "sdhci.h"
 #include "sdhci-pci.h"
-#include "sdhci-pci-o2micro.h"
 
-static int sdhci_pci_enable_dma(struct sdhci_host *host);
 static void sdhci_pci_hw_reset(struct sdhci_host *host);
 
 #ifdef CONFIG_PM_SLEEP
-static int __sdhci_pci_suspend_host(struct sdhci_pci_chip *chip)
+static int sdhci_pci_init_wakeup(struct sdhci_pci_chip *chip)
+{
+	mmc_pm_flag_t pm_flags = 0;
+	bool cap_cd_wake = false;
+	int i;
+
+	for (i = 0; i < chip->num_slots; i++) {
+		struct sdhci_pci_slot *slot = chip->slots[i];
+
+		if (slot) {
+			pm_flags |= slot->host->mmc->pm_flags;
+			if (slot->host->mmc->caps & MMC_CAP_CD_WAKE)
+				cap_cd_wake = true;
+		}
+	}
+
+	if ((pm_flags & MMC_PM_KEEP_POWER) && (pm_flags & MMC_PM_WAKE_SDIO_IRQ))
+		return device_wakeup_enable(&chip->pdev->dev);
+	else if (!cap_cd_wake)
+		return device_wakeup_disable(&chip->pdev->dev);
+
+	return 0;
+}
+
+static int sdhci_pci_suspend_host(struct sdhci_pci_chip *chip)
 {
 	int i, ret;
+
+	sdhci_pci_init_wakeup(chip);
 
 	for (i = 0; i < chip->num_slots; i++) {
 		struct sdhci_pci_slot *slot = chip->slots[i];
@@ -58,8 +86,8 @@ static int __sdhci_pci_suspend_host(struct sdhci_pci_chip *chip)
 		if (ret)
 			goto err_pci_suspend;
 
-		if (host->mmc->pm_flags & MMC_PM_WAKE_SDIO_IRQ)
-			sdhci_enable_irq_wakeups(host);
+		if (device_may_wakeup(&chip->pdev->dev))
+			mmc_gpio_set_cd_wake(host->mmc, true);
 	}
 
 	return 0;
@@ -68,36 +96,6 @@ err_pci_suspend:
 	while (--i >= 0)
 		sdhci_resume_host(chip->slots[i]->host);
 	return ret;
-}
-
-static int sdhci_pci_init_wakeup(struct sdhci_pci_chip *chip)
-{
-	mmc_pm_flag_t pm_flags = 0;
-	int i;
-
-	for (i = 0; i < chip->num_slots; i++) {
-		struct sdhci_pci_slot *slot = chip->slots[i];
-
-		if (slot)
-			pm_flags |= slot->host->mmc->pm_flags;
-	}
-
-	return device_init_wakeup(&chip->pdev->dev,
-				  (pm_flags & MMC_PM_KEEP_POWER) &&
-				  (pm_flags & MMC_PM_WAKE_SDIO_IRQ));
-}
-
-static int sdhci_pci_suspend_host(struct sdhci_pci_chip *chip)
-{
-	int ret;
-
-	ret = __sdhci_pci_suspend_host(chip);
-	if (ret)
-		return ret;
-
-	sdhci_pci_init_wakeup(chip);
-
-	return 0;
 }
 
 int sdhci_pci_resume_host(struct sdhci_pci_chip *chip)
@@ -113,9 +111,33 @@ int sdhci_pci_resume_host(struct sdhci_pci_chip *chip)
 		ret = sdhci_resume_host(slot->host);
 		if (ret)
 			return ret;
+
+		mmc_gpio_set_cd_wake(slot->host->mmc, false);
 	}
 
 	return 0;
+}
+
+static int sdhci_cqhci_suspend(struct sdhci_pci_chip *chip)
+{
+	int ret;
+
+	ret = cqhci_suspend(chip->slots[0]->host->mmc);
+	if (ret)
+		return ret;
+
+	return sdhci_pci_suspend_host(chip);
+}
+
+static int sdhci_cqhci_resume(struct sdhci_pci_chip *chip)
+{
+	int ret;
+
+	ret = sdhci_pci_resume_host(chip);
+	if (ret)
+		return ret;
+
+	return cqhci_resume(chip->slots[0]->host->mmc);
 }
 #endif
 
@@ -167,7 +189,47 @@ static int sdhci_pci_runtime_resume_host(struct sdhci_pci_chip *chip)
 
 	return 0;
 }
+
+static int sdhci_cqhci_runtime_suspend(struct sdhci_pci_chip *chip)
+{
+	int ret;
+
+	ret = cqhci_suspend(chip->slots[0]->host->mmc);
+	if (ret)
+		return ret;
+
+	return sdhci_pci_runtime_suspend_host(chip);
+}
+
+static int sdhci_cqhci_runtime_resume(struct sdhci_pci_chip *chip)
+{
+	int ret;
+
+	ret = sdhci_pci_runtime_resume_host(chip);
+	if (ret)
+		return ret;
+
+	return cqhci_resume(chip->slots[0]->host->mmc);
+}
 #endif
+
+static u32 sdhci_cqhci_irq(struct sdhci_host *host, u32 intmask)
+{
+	int cmd_error = 0;
+	int data_error = 0;
+
+	if (!sdhci_cqe_irq(host, intmask, &cmd_error, &data_error))
+		return intmask;
+
+	cqhci_irq(host->mmc, intmask, cmd_error, data_error);
+
+	return 0;
+}
+
+static void sdhci_pci_dumpregs(struct mmc_host *mmc)
+{
+	sdhci_dumpregs(mmc_priv(mmc));
+}
 
 /*****************************************************************************\
  *                                                                           *
@@ -393,6 +455,7 @@ static const struct sdhci_pci_fixes sdhci_intel_pch_sdio = {
 enum {
 	INTEL_DSM_FNS		=  0,
 	INTEL_DSM_V18_SWITCH	=  3,
+	INTEL_DSM_V33_SWITCH	=  4,
 	INTEL_DSM_DRV_STRENGTH	=  9,
 	INTEL_DSM_D3_RETUNE	= 10,
 };
@@ -401,6 +464,10 @@ struct intel_host {
 	u32	dsm_fns;
 	int	drv_strength;
 	bool	d3_retune;
+	bool	rpm_retune_ok;
+	bool	needs_pwr_off;
+	u32	glk_rx_ctrl1;
+	u32	glk_tun_val;
 };
 
 static const guid_t intel_dsm_guid =
@@ -524,8 +591,24 @@ out:
 static void sdhci_intel_set_power(struct sdhci_host *host, unsigned char mode,
 				  unsigned short vdd)
 {
+	struct sdhci_pci_slot *slot = sdhci_priv(host);
+	struct intel_host *intel_host = sdhci_pci_priv(slot);
 	int cntr;
 	u8 reg;
+
+	/*
+	 * Bus power may control card power, but a full reset still may not
+	 * reset the power, whereas a direct write to SDHCI_POWER_CONTROL can.
+	 * That might be needed to initialize correctly, if the card was left
+	 * powered on previously.
+	 */
+	if (intel_host->needs_pwr_off) {
+		intel_host->needs_pwr_off = false;
+		if (mode != MMC_POWER_OFF) {
+			sdhci_writeb(host, 0, SDHCI_POWER_CONTROL);
+			usleep_range(10000, 12500);
+		}
+	}
 
 	sdhci_set_power(host, mode, vdd);
 
@@ -563,17 +646,37 @@ static void intel_hs400_enhanced_strobe(struct mmc_host *mmc,
 	sdhci_writel(host, val, INTEL_HS400_ES_REG);
 }
 
-static void sdhci_intel_voltage_switch(struct sdhci_host *host)
+static int intel_start_signal_voltage_switch(struct mmc_host *mmc,
+					     struct mmc_ios *ios)
 {
+	struct device *dev = mmc_dev(mmc);
+	struct sdhci_host *host = mmc_priv(mmc);
 	struct sdhci_pci_slot *slot = sdhci_priv(host);
 	struct intel_host *intel_host = sdhci_pci_priv(slot);
-	struct device *dev = &slot->chip->pdev->dev;
+	unsigned int fn;
 	u32 result = 0;
 	int err;
 
-	err = intel_dsm(intel_host, dev, INTEL_DSM_V18_SWITCH, &result);
-	pr_debug("%s: %s DSM error %d result %u\n",
-		 mmc_hostname(host->mmc), __func__, err, result);
+	err = sdhci_start_signal_voltage_switch(mmc, ios);
+	if (err)
+		return err;
+
+	switch (ios->signal_voltage) {
+	case MMC_SIGNAL_VOLTAGE_330:
+		fn = INTEL_DSM_V33_SWITCH;
+		break;
+	case MMC_SIGNAL_VOLTAGE_180:
+		fn = INTEL_DSM_V18_SWITCH;
+		break;
+	default:
+		return 0;
+	}
+
+	err = intel_dsm(intel_host, dev, fn, &result);
+	pr_debug("%s: %s DSM fn %u error %d result %u\n",
+		 mmc_hostname(mmc), __func__, fn, err, result);
+
+	return 0;
 }
 
 static const struct sdhci_ops sdhci_intel_byt_ops = {
@@ -584,7 +687,17 @@ static const struct sdhci_ops sdhci_intel_byt_ops = {
 	.reset			= sdhci_reset,
 	.set_uhs_signaling	= sdhci_set_uhs_signaling,
 	.hw_reset		= sdhci_pci_hw_reset,
-	.voltage_switch		= sdhci_intel_voltage_switch,
+};
+
+static const struct sdhci_ops sdhci_intel_glk_ops = {
+	.set_clock		= sdhci_set_clock,
+	.set_power		= sdhci_intel_set_power,
+	.enable_dma		= sdhci_pci_enable_dma,
+	.set_bus_width		= sdhci_set_bus_width,
+	.reset			= sdhci_reset,
+	.set_uhs_signaling	= sdhci_set_uhs_signaling,
+	.hw_reset		= sdhci_pci_hw_reset,
+	.irq			= sdhci_cqhci_irq,
 };
 
 static void byt_read_dsm(struct sdhci_pci_slot *slot)
@@ -622,6 +735,7 @@ static void byt_probe_slot(struct sdhci_pci_slot *slot)
 	byt_read_dsm(slot);
 
 	ops->execute_tuning = intel_execute_tuning;
+	ops->start_signal_voltage_switch = intel_start_signal_voltage_switch;
 }
 
 static int byt_emmc_probe_slot(struct sdhci_pci_slot *slot)
@@ -639,18 +753,147 @@ static int byt_emmc_probe_slot(struct sdhci_pci_slot *slot)
 	return 0;
 }
 
+static bool glk_broken_cqhci(struct sdhci_pci_slot *slot)
+{
+	return slot->chip->pdev->device == PCI_DEVICE_ID_INTEL_GLK_EMMC &&
+	       (dmi_match(DMI_BIOS_VENDOR, "LENOVO") ||
+		dmi_match(DMI_SYS_VENDOR, "IRBIS"));
+}
+
 static int glk_emmc_probe_slot(struct sdhci_pci_slot *slot)
 {
 	int ret = byt_emmc_probe_slot(slot);
+
+	if (!glk_broken_cqhci(slot))
+		slot->host->mmc->caps2 |= MMC_CAP2_CQE;
 
 	if (slot->chip->pdev->device != PCI_DEVICE_ID_INTEL_GLK_EMMC) {
 		slot->host->mmc->caps2 |= MMC_CAP2_HS400_ES,
 		slot->host->mmc_host_ops.hs400_enhanced_strobe =
 						intel_hs400_enhanced_strobe;
+		slot->host->mmc->caps2 |= MMC_CAP2_CQE_DCMD;
 	}
 
 	return ret;
 }
+
+static const struct cqhci_host_ops glk_cqhci_ops = {
+	.enable		= sdhci_cqe_enable,
+	.disable	= sdhci_cqe_disable,
+	.dumpregs	= sdhci_pci_dumpregs,
+};
+
+static int glk_emmc_add_host(struct sdhci_pci_slot *slot)
+{
+	struct device *dev = &slot->chip->pdev->dev;
+	struct sdhci_host *host = slot->host;
+	struct cqhci_host *cq_host;
+	bool dma64;
+	int ret;
+
+	ret = sdhci_setup_host(host);
+	if (ret)
+		return ret;
+
+	cq_host = devm_kzalloc(dev, sizeof(*cq_host), GFP_KERNEL);
+	if (!cq_host) {
+		ret = -ENOMEM;
+		goto cleanup;
+	}
+
+	cq_host->mmio = host->ioaddr + 0x200;
+	cq_host->quirks |= CQHCI_QUIRK_SHORT_TXFR_DESC_SZ;
+	cq_host->ops = &glk_cqhci_ops;
+
+	dma64 = host->flags & SDHCI_USE_64_BIT_DMA;
+	if (dma64)
+		cq_host->caps |= CQHCI_TASK_DESC_SZ_128;
+
+	ret = cqhci_init(cq_host, host->mmc, dma64);
+	if (ret)
+		goto cleanup;
+
+	ret = __sdhci_add_host(host);
+	if (ret)
+		goto cleanup;
+
+	return 0;
+
+cleanup:
+	sdhci_cleanup_host(host);
+	return ret;
+}
+
+#ifdef CONFIG_PM
+#define GLK_RX_CTRL1	0x834
+#define GLK_TUN_VAL	0x840
+#define GLK_PATH_PLL	GENMASK(13, 8)
+#define GLK_DLY		GENMASK(6, 0)
+/* Workaround firmware failing to restore the tuning value */
+static void glk_rpm_retune_wa(struct sdhci_pci_chip *chip, bool susp)
+{
+	struct sdhci_pci_slot *slot = chip->slots[0];
+	struct intel_host *intel_host = sdhci_pci_priv(slot);
+	struct sdhci_host *host = slot->host;
+	u32 glk_rx_ctrl1;
+	u32 glk_tun_val;
+	u32 dly;
+
+	if (intel_host->rpm_retune_ok || !mmc_can_retune(host->mmc))
+		return;
+
+	glk_rx_ctrl1 = sdhci_readl(host, GLK_RX_CTRL1);
+	glk_tun_val = sdhci_readl(host, GLK_TUN_VAL);
+
+	if (susp) {
+		intel_host->glk_rx_ctrl1 = glk_rx_ctrl1;
+		intel_host->glk_tun_val = glk_tun_val;
+		return;
+	}
+
+	if (!intel_host->glk_tun_val)
+		return;
+
+	if (glk_rx_ctrl1 != intel_host->glk_rx_ctrl1) {
+		intel_host->rpm_retune_ok = true;
+		return;
+	}
+
+	dly = FIELD_PREP(GLK_DLY, FIELD_GET(GLK_PATH_PLL, glk_rx_ctrl1) +
+				  (intel_host->glk_tun_val << 1));
+	if (dly == FIELD_GET(GLK_DLY, glk_rx_ctrl1))
+		return;
+
+	glk_rx_ctrl1 = (glk_rx_ctrl1 & ~GLK_DLY) | dly;
+	sdhci_writel(host, glk_rx_ctrl1, GLK_RX_CTRL1);
+
+	intel_host->rpm_retune_ok = true;
+	chip->rpm_retune = true;
+	mmc_retune_needed(host->mmc);
+	pr_info("%s: Requiring re-tune after rpm resume", mmc_hostname(host->mmc));
+}
+
+static void glk_rpm_retune_chk(struct sdhci_pci_chip *chip, bool susp)
+{
+	if (chip->pdev->device == PCI_DEVICE_ID_INTEL_GLK_EMMC &&
+	    !chip->rpm_retune)
+		glk_rpm_retune_wa(chip, susp);
+}
+
+static int glk_runtime_suspend(struct sdhci_pci_chip *chip)
+{
+	glk_rpm_retune_chk(chip, true);
+
+	return sdhci_cqhci_runtime_suspend(chip);
+}
+
+static int glk_runtime_resume(struct sdhci_pci_chip *chip)
+{
+	glk_rpm_retune_chk(chip, false);
+
+	return sdhci_cqhci_runtime_resume(chip);
+}
+#endif
 
 #ifdef CONFIG_ACPI
 static int ni_set_max_freq(struct sdhci_pci_slot *slot)
@@ -700,6 +943,14 @@ static int byt_sdio_probe_slot(struct sdhci_pci_slot *slot)
 	return 0;
 }
 
+static void byt_needs_pwr_off(struct sdhci_pci_slot *slot)
+{
+	struct intel_host *intel_host = sdhci_pci_priv(slot);
+	u8 reg = sdhci_readb(slot->host, SDHCI_POWER_CONTROL);
+
+	intel_host->needs_pwr_off = reg  & SDHCI_POWER_ON;
+}
+
 static int byt_sd_probe_slot(struct sdhci_pci_slot *slot)
 {
 	byt_probe_slot(slot);
@@ -712,6 +963,12 @@ static int byt_sd_probe_slot(struct sdhci_pci_slot *slot)
 	    slot->chip->pdev->device == PCI_DEVICE_ID_INTEL_APL_SD ||
 	    slot->chip->pdev->device == PCI_DEVICE_ID_INTEL_GLK_SD)
 		slot->host->mmc_host_ops.get_cd = bxt_get_cd;
+
+	if (slot->chip->pdev->subsystem_vendor == PCI_VENDOR_ID_NI &&
+	    slot->chip->pdev->subsystem_device == PCI_SUBDEVICE_ID_NI_78E3)
+		slot->host->mmc->caps2 |= MMC_CAP2_AVOID_3_3V;
+
+	byt_needs_pwr_off(slot);
 
 	return 0;
 }
@@ -730,11 +987,20 @@ static const struct sdhci_pci_fixes sdhci_intel_byt_emmc = {
 static const struct sdhci_pci_fixes sdhci_intel_glk_emmc = {
 	.allow_runtime_pm	= true,
 	.probe_slot		= glk_emmc_probe_slot,
+	.add_host		= glk_emmc_add_host,
+#ifdef CONFIG_PM_SLEEP
+	.suspend		= sdhci_cqhci_suspend,
+	.resume			= sdhci_cqhci_resume,
+#endif
+#ifdef CONFIG_PM
+	.runtime_suspend	= glk_runtime_suspend,
+	.runtime_resume		= glk_runtime_resume,
+#endif
 	.quirks			= SDHCI_QUIRK_NO_ENDATTR_IN_NOPDESC,
 	.quirks2		= SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
 				  SDHCI_QUIRK2_CAPS_BIT63_FOR_HS400 |
 				  SDHCI_QUIRK2_STOP_WITH_TC,
-	.ops			= &sdhci_intel_byt_ops,
+	.ops			= &sdhci_intel_glk_ops,
 	.priv_size		= sizeof(struct intel_host),
 };
 
@@ -830,15 +1096,6 @@ static const struct sdhci_pci_fixes sdhci_intel_mrfld_mmc = {
 	.probe_slot	= intel_mrfld_mmc_probe_slot,
 };
 
-/* O2Micro extra registers */
-#define O2_SD_LOCK_WP		0xD3
-#define O2_SD_MULTI_VCC3V	0xEE
-#define O2_SD_CLKREQ		0xEC
-#define O2_SD_CAPS		0xE0
-#define O2_SD_ADMA1		0xE2
-#define O2_SD_ADMA2		0xE7
-#define O2_SD_INF_MOD		0xF1
-
 static int jmicron_pmos(struct sdhci_pci_chip *chip, int on)
 {
 	u8 scratch;
@@ -846,7 +1103,7 @@ static int jmicron_pmos(struct sdhci_pci_chip *chip, int on)
 
 	ret = pci_read_config_byte(chip->pdev, 0xAE, &scratch);
 	if (ret)
-		return ret;
+		goto fail;
 
 	/*
 	 * Turn PMOS on [bit 0], set over current detection to 2.4 V
@@ -857,7 +1114,10 @@ static int jmicron_pmos(struct sdhci_pci_chip *chip, int on)
 	else
 		scratch &= ~0x47;
 
-	return pci_write_config_byte(chip->pdev, 0xAE, scratch);
+	ret = pci_write_config_byte(chip->pdev, 0xAE, scratch);
+
+fail:
+	return pcibios_err_to_errno(ret);
 }
 
 static int jmicron_probe(struct sdhci_pci_chip *chip)
@@ -997,7 +1257,7 @@ static int jmicron_suspend(struct sdhci_pci_chip *chip)
 {
 	int i, ret;
 
-	ret = __sdhci_pci_suspend_host(chip);
+	ret = sdhci_pci_suspend_host(chip);
 	if (ret)
 		return ret;
 
@@ -1006,8 +1266,6 @@ static int jmicron_suspend(struct sdhci_pci_chip *chip)
 		for (i = 0; i < chip->num_slots; i++)
 			jmicron_enable_mmc(chip->slots[i]->host, 0);
 	}
-
-	sdhci_pci_init_wakeup(chip);
 
 	return 0;
 }
@@ -1277,6 +1535,8 @@ static int amd_probe(struct sdhci_pci_chip *chip)
 		}
 	}
 
+	pci_dev_put(smbus_dev);
+
 	if (gen == AMD_CHIPSET_BEFORE_ML || gen == AMD_CHIPSET_CZ)
 		chip->quirks2 |= SDHCI_QUIRK2_CLEAR_TRANSFERMODE_REG_BEFORE_CMD;
 
@@ -1343,6 +1603,7 @@ static const struct pci_device_id pci_ids[] = {
 	SDHCI_PCI_DEVICE(INTEL, SPT_SDIO,  intel_byt_sdio),
 	SDHCI_PCI_DEVICE(INTEL, SPT_SD,    intel_byt_sd),
 	SDHCI_PCI_DEVICE(INTEL, DNV_EMMC,  intel_byt_emmc),
+	SDHCI_PCI_DEVICE(INTEL, CDF_EMMC,  intel_glk_emmc),
 	SDHCI_PCI_DEVICE(INTEL, BXT_EMMC,  intel_byt_emmc),
 	SDHCI_PCI_DEVICE(INTEL, BXT_SDIO,  intel_byt_sdio),
 	SDHCI_PCI_DEVICE(INTEL, BXT_SD,    intel_byt_sd),
@@ -1358,6 +1619,10 @@ static const struct pci_device_id pci_ids[] = {
 	SDHCI_PCI_DEVICE(INTEL, CNP_EMMC,  intel_glk_emmc),
 	SDHCI_PCI_DEVICE(INTEL, CNP_SD,    intel_byt_sd),
 	SDHCI_PCI_DEVICE(INTEL, CNPH_SD,   intel_byt_sd),
+	SDHCI_PCI_DEVICE(INTEL, ICP_EMMC,  intel_glk_emmc),
+	SDHCI_PCI_DEVICE(INTEL, ICP_SD,    intel_byt_sd),
+	SDHCI_PCI_DEVICE(INTEL, CML_EMMC,  intel_glk_emmc),
+	SDHCI_PCI_DEVICE(INTEL, CML_SD,    intel_byt_sd),
 	SDHCI_PCI_DEVICE(O2, 8120,     o2),
 	SDHCI_PCI_DEVICE(O2, 8220,     o2),
 	SDHCI_PCI_DEVICE(O2, 8221,     o2),
@@ -1368,6 +1633,8 @@ static const struct pci_device_id pci_ids[] = {
 	SDHCI_PCI_DEVICE(O2, SDS1,     o2),
 	SDHCI_PCI_DEVICE(O2, SEABIRD0, o2),
 	SDHCI_PCI_DEVICE(O2, SEABIRD1, o2),
+	SDHCI_PCI_DEVICE(ARASAN, PHY_EMMC, arasan),
+	SDHCI_PCI_DEVICE(SYNOPSYS, DWC_MSHC, snps),
 	SDHCI_PCI_DEVICE_CLASS(AMD, SYSTEM_SDHCI, PCI_CLASS_MASK, amd),
 	/* Generic SD host controller */
 	{PCI_DEVICE_CLASS(SYSTEM_SDHCI, PCI_CLASS_MASK)},
@@ -1382,7 +1649,7 @@ MODULE_DEVICE_TABLE(pci, pci_ids);
  *                                                                           *
 \*****************************************************************************/
 
-static int sdhci_pci_enable_dma(struct sdhci_host *host)
+int sdhci_pci_enable_dma(struct sdhci_host *host)
 {
 	struct sdhci_pci_slot *slot;
 	struct pci_dev *pdev;
@@ -1605,9 +1872,15 @@ static struct sdhci_pci_slot *sdhci_pci_probe_slot(
 		}
 	}
 
-	host->mmc->pm_caps = MMC_PM_KEEP_POWER | MMC_PM_WAKE_SDIO_IRQ;
+	host->mmc->pm_caps = MMC_PM_KEEP_POWER;
 	host->mmc->slotno = slotno;
 	host->mmc->caps2 |= MMC_CAP2_NO_PRESCAN_POWERUP;
+
+	if (device_can_wakeup(&pdev->dev))
+		host->mmc->pm_caps |= MMC_PM_WAKE_SDIO_IRQ;
+
+	if (host->mmc->caps & MMC_CAP_CD_WAKE)
+		device_init_wakeup(&pdev->dev, true);
 
 	if (slot->cd_idx >= 0) {
 		ret = mmc_gpiod_request_cd(host->mmc, "cd", slot->cd_idx,
@@ -1716,7 +1989,7 @@ static int sdhci_pci_probe(struct pci_dev *pdev,
 
 	ret = pci_read_config_byte(pdev, PCI_SLOT_INFO, &slots);
 	if (ret)
-		return ret;
+		return pcibios_err_to_errno(ret);
 
 	slots = PCI_SLOT_INFO_SLOTS(slots) + 1;
 	dev_dbg(&pdev->dev, "found %d slot(s)\n", slots);
@@ -1727,7 +2000,7 @@ static int sdhci_pci_probe(struct pci_dev *pdev,
 
 	ret = pci_read_config_byte(pdev, PCI_SLOT_INFO, &first_bar);
 	if (ret)
-		return ret;
+		return pcibios_err_to_errno(ret);
 
 	first_bar &= PCI_SLOT_INFO_FIRST_BAR_MASK;
 

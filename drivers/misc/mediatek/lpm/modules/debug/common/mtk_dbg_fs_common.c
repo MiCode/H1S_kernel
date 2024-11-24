@@ -14,11 +14,9 @@
 #include <mtk_dbg_common_v1.h>
 #include <mtk_lpm_module.h>
 #include <mtk_resource_constraint_v1.h>
-#include <mtk_idle_sysfs.h>
 #include <mtk_suspend_sysfs.h>
 #include <mtk_spm_sysfs.h>
-#include <mtk_power_gs_api.h>
-#include <mt-plat/mtk_ccci_common.h>
+
 
 #define MTK_DGB_SUSP_NODE	"/sys/kernel/debug/suspend/suspend_state"
 
@@ -42,21 +40,9 @@ static struct syscore_ops spm_block_syscore_ops = {
 	.resume = spm_syscore_block_resume,
 };
 
-static unsigned int mtk_suspend_debug_flag;
-static unsigned int power_golden_dump_type = GS_ALL;
-
 /* debugfs for debug in syscore callback */
 static int spm_syscore_dbg_suspend(void)
 {
-	if (mtk_suspend_debug_flag & MTK_DUMP_GPIO)
-		mtk_suspend_gpio_dbg();
-#if !defined(CONFIG_FPGA_EARLY_PORTING)
-#ifdef CONFIG_MTK_BASE_POWER
-	if (mtk_suspend_debug_flag & MTK_DUMP_LP_GOLDEN)
-		mt_power_gs_dump_suspend(power_golden_dump_type);
-#endif
-#endif
-	mtk_suspend_clk_dbg();
 	return 0;
 }
 static void spm_syscore_dbg_resume(void) {}
@@ -78,12 +64,6 @@ static ssize_t mtk_dbg_suspend_state_read(char *ToUser, size_t sz, void *priv)
 	mtk_dbg_log("echo kernel_suspend 0/1 > %s\n", MTK_DGB_SUSP_NODE);
 	mtk_dbg_log("mtk_suspend disable/enable:\n");
 	mtk_dbg_log("echo mtk_suspend 0/1 > %s\n", MTK_DGB_SUSP_NODE);
-	mtk_dbg_log("gpio dump disable/enable:\n");
-	mtk_dbg_log("echo gpio_dump 0/1 > %s\n", MTK_DGB_SUSP_NODE);
-	mtk_dbg_log("golden dump disable/enable:\n");
-	mtk_dbg_log("echo golden_dump 0/1 > %s\n", MTK_DGB_SUSP_NODE);
-	mtk_dbg_log("golden type setting (default)PMIC[0], CG[1], DCM[2]:\n");
-	mtk_dbg_log("echo golden_type 1/3/7 > %s\n", MTK_DGB_SUSP_NODE);
 
 	return p - ToUser;
 }
@@ -112,18 +92,7 @@ static ssize_t mtk_dbg_suspend_state_write(char *FromUser,
 			/* 1:unblock in syscore */
 			else
 				unregister_syscore_ops(&spm_block_syscore_ops);
-		} else if (!strcmp(cmd, "gpio_dump")) {
-			if (param)
-				mtk_suspend_debug_flag |= MTK_DUMP_GPIO;
-			else
-				mtk_suspend_debug_flag &= ~(MTK_DUMP_GPIO);
-		} else if (!strcmp(cmd, "golden_dump")) {
-			if (param)
-				mtk_suspend_debug_flag |= MTK_DUMP_LP_GOLDEN;
-			else
-				mtk_suspend_debug_flag &= ~(MTK_DUMP_LP_GOLDEN);
-		} else if (!strcmp(cmd, "golden_type"))
-			power_golden_dump_type = (param & 0xf);
+		}
 
 		return sz;
 	}
@@ -229,48 +198,6 @@ static const struct mtk_lp_sysfs_op mtk_dbg_spm_spmfw_ver_fops = {
 	.fs_read = mtk_dbg_get_spmfw_version,
 };
 
-#define MD_SLEEP_INFO_SMEM_OFFEST (4)
-static ssize_t mtk_dbg_get_system_stats(char *ToUserBuf,
-			  size_t sz, void *priv)
-{
-	/* dump sleep info */
-#if defined(CONFIG_MTK_ECCCI_DRIVER)
-	u32 len = 0;
-	u32 *share_mem = NULL;
-	struct md_sleep_status md_data;
-
-	share_mem = (u32 *)get_smem_start_addr(MD_SYS1,
-		SMEM_USER_LOW_POWER, NULL);
-	memset(&md_data, 0, sizeof(struct md_sleep_status));
-	if (share_mem != NULL) {
-		share_mem = share_mem + MD_SLEEP_INFO_SMEM_OFFEST;
-		memcpy(&md_data, share_mem, sizeof(struct md_sleep_status));
-	}
-	len = snprintf(ToUserBuf, sz,
-	"26M:%lld:%lld.%03lld\nAP:%lld:%lld.%03lld\nMD:%lld:%lld.%03lld\n",
-	spm_26M_off_count,
-	PCM_TICK_TO_SEC(spm_26M_off_duration),
-	PCM_TICK_TO_SEC((spm_26M_off_duration % PCM_32K_TICKS_PER_SEC)
-		* 1000),
-	ap_pd_count,
-	PCM_TICK_TO_SEC(ap_slp_duration),
-	PCM_TICK_TO_SEC((ap_slp_duration % PCM_32K_TICKS_PER_SEC)
-		* 1000),
-	md_data.sleep_cnt,
-	PCM_TICK_TO_SEC(md_data.sleep_time),
-	PCM_TICK_TO_SEC((md_data.sleep_time % PCM_32K_TICKS_PER_SEC)
-		* 1000));
-
-	return (len > sz) ? sz : len;
-#else
-	return 0;
-#endif
-}
-
-static const struct mtk_lp_sysfs_op mtk_dbg_spm_system_stats_fops = {
-	.fs_read = mtk_dbg_get_system_stats,
-};
-
 static void mtk_dbg_spm_fs_init(void)
 {
 	mtk_spm_sysfs_root_entry_create();
@@ -281,13 +208,11 @@ static void mtk_dbg_spm_fs_init(void)
 			, &mtk_dbg_spm_last_debugflag_fops, NULL);
 	mtk_spm_sysfs_entry_node_add("spmfw_version", 0444
 			, &mtk_dbg_spm_spmfw_ver_fops, NULL);
-	mtk_spm_sysfs_entry_node_add("system_stats", 0444
-			, &mtk_dbg_spm_system_stats_fops, NULL);
 }
 
 static bool mtk_system_console_suspend;
 
-static void __exit mtk_dbg_common_fs_exit(void)
+void mtk_dbg_common_fs_exit(void)
 {
 	/* restore suspend console */
 	console_suspend_enabled = mtk_system_console_suspend;
@@ -299,7 +224,7 @@ static void __exit mtk_dbg_common_fs_exit(void)
 	unregister_syscore_ops(&spm_dbg_syscore_ops);
 }
 
-static int __init mtk_dbg_common_fs_init(void)
+int mtk_dbg_common_fs_init(void)
 {
 	/* wakeup source init for suspend enable and disable */
 	mtk_suspend_lock = wakeup_source_register(NULL, "mtk_suspend_wakelock");
@@ -318,10 +243,3 @@ static int __init mtk_dbg_common_fs_init(void)
 	pr_info("%s %d: finish", __func__, __LINE__);
 	return 0;
 }
-
-module_init(mtk_dbg_common_fs_init);
-module_exit(mtk_dbg_common_fs_exit);
-
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("MediaTek Low Power FileSystem");
-MODULE_AUTHOR("MediaTek Inc.");

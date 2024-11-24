@@ -536,7 +536,6 @@ static const struct iio_chan_spec isl29028_channels[] = {
 
 static const struct iio_info isl29028_info = {
 	.attrs = &isl29108_group,
-	.driver_module = THIS_MODULE,
 	.read_raw = isl29028_read_raw,
 	.write_raw = isl29028_write_raw,
 };
@@ -640,7 +639,7 @@ static int isl29028_probe(struct i2c_client *client,
 					 ISL29028_POWER_OFF_DELAY_MS);
 	pm_runtime_use_autosuspend(&client->dev);
 
-	ret = devm_iio_device_register(indio_dev->dev.parent, indio_dev);
+	ret = iio_device_register(indio_dev);
 	if (ret < 0) {
 		dev_err(&client->dev,
 			"%s(): iio registration failed with error %d\n",

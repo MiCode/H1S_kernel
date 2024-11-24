@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __IMGSENSOR_I2C_H__
@@ -18,7 +10,12 @@
 #include <linux/i2c.h>
 #include <linux/mutex.h>
 
+#ifndef NO_I2C_MTK
 #include "i2c-mtk.h"
+#else
+#define mtk_i2c_transfer(adap, msgs, num, ext_flag, timing) \
+	i2c_transfer(adap, msgs, num)
+#endif
 
 #include "imgsensor_cfg_table.h"
 

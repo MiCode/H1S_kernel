@@ -74,10 +74,9 @@ trans:
 
 		"3: ;"
 		: [tfhar] "=r" (tfhar), [res] "=r" (result),
-		[texasr] "=r" (texasr), [cptr1] "=r" (cptr1)
+		[texasr] "=r" (texasr), [cptr1] "=b" (cptr1)
 		: [sprn_texasr] "i"  (SPRN_TEXASR)
-		: "memory", "r0", "r1", "r2", "r3", "r4",
-		"r8", "r9", "r10", "r11", "r31"
+		: "memory", "r0", "r8", "r31"
 		);
 
 	/* There are 2 32bit instructions before tbegin. */

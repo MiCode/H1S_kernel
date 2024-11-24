@@ -13,6 +13,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/clk.h>
@@ -104,7 +105,7 @@ static int imx_rngc_self_test(struct imx_rngc *rngc)
 	cmd = readl(rngc->base + RNGC_COMMAND);
 	writel(cmd | RNGC_CMD_SELF_TEST, rngc->base + RNGC_COMMAND);
 
-	ret = wait_for_completion_timeout(&rngc->rng_op_done, RNGC_TIMEOUT);
+	ret = wait_for_completion_timeout(&rngc->rng_op_done, msecs_to_jiffies(RNGC_TIMEOUT));
 	if (!ret) {
 		imx_rngc_irq_mask_clear(rngc);
 		return -ETIMEDOUT;
@@ -187,9 +188,7 @@ static int imx_rngc_init(struct hwrng *rng)
 		cmd = readl(rngc->base + RNGC_COMMAND);
 		writel(cmd | RNGC_CMD_SEED, rngc->base + RNGC_COMMAND);
 
-		ret = wait_for_completion_timeout(&rngc->rng_op_done,
-				RNGC_TIMEOUT);
-
+		ret = wait_for_completion_timeout(&rngc->rng_op_done, msecs_to_jiffies(RNGC_TIMEOUT));
 		if (!ret) {
 			imx_rngc_irq_mask_clear(rngc);
 			return -ETIMEDOUT;
@@ -284,8 +283,7 @@ static int __exit imx_rngc_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int imx_rngc_suspend(struct device *dev)
+static int __maybe_unused imx_rngc_suspend(struct device *dev)
 {
 	struct imx_rngc *rngc = dev_get_drvdata(dev);
 
@@ -294,7 +292,7 @@ static int imx_rngc_suspend(struct device *dev)
 	return 0;
 }
 
-static int imx_rngc_resume(struct device *dev)
+static int __maybe_unused imx_rngc_resume(struct device *dev)
 {
 	struct imx_rngc *rngc = dev_get_drvdata(dev);
 
@@ -303,11 +301,7 @@ static int imx_rngc_resume(struct device *dev)
 	return 0;
 }
 
-static const struct dev_pm_ops imx_rngc_pm_ops = {
-	.suspend	= imx_rngc_suspend,
-	.resume		= imx_rngc_resume,
-};
-#endif
+static SIMPLE_DEV_PM_OPS(imx_rngc_pm_ops, imx_rngc_suspend, imx_rngc_resume);
 
 static const struct of_device_id imx_rngc_dt_ids[] = {
 	{ .compatible = "fsl,imx25-rngb", .data = NULL, },
@@ -318,9 +312,7 @@ MODULE_DEVICE_TABLE(of, imx_rngc_dt_ids);
 static struct platform_driver imx_rngc_driver = {
 	.driver = {
 		.name = "imx_rngc",
-#ifdef CONFIG_PM
 		.pm = &imx_rngc_pm_ops,
-#endif
 		.of_match_table = imx_rngc_dt_ids,
 	},
 	.remove = __exit_p(imx_rngc_remove),

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
-//
-// mtk-sp-pcm-ops.c  --  Mediatek Smart Phone PCM Operation
-//
-// Copyright (c) 2017 MediaTek Inc.
-// Author: Kai Chieh Chuang <kaichieh.chuang@mediatek.com>
+/*
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Kai Chieh Chuang <kaichieh.chuang@mediatek.com>
+ */
 
 #include <linux/io.h>
 #include <linux/module.h>
@@ -49,6 +48,7 @@ int mtk_sp_clean_written_buffer_ack(struct snd_pcm_substream *substream)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mtk_sp_clean_written_buffer_ack);
 
 MODULE_DESCRIPTION("Mediatek Smart Phone PCM Operation");
 MODULE_AUTHOR("Kai Chieh Chuang <kaichieh.chuang@mediatek.com>");

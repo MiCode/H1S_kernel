@@ -1,23 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2007 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License v2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
-#ifndef __BTRFS_I__
-#define __BTRFS_I__
+#ifndef BTRFS_INODE_H
+#define BTRFS_INODE_H
 
 #include <linux/hash.h>
 #include "extent_map.h"
@@ -32,18 +19,18 @@
  * ordered operations list so that we make sure to flush out any
  * new data the application may have written before commit.
  */
-#define BTRFS_INODE_ORDERED_DATA_CLOSE		0
-#define BTRFS_INODE_ORPHAN_META_RESERVED	1
-#define BTRFS_INODE_DUMMY			2
-#define BTRFS_INODE_IN_DEFRAG			3
-#define BTRFS_INODE_DELALLOC_META_RESERVED	4
-#define BTRFS_INODE_HAS_ORPHAN_ITEM		5
-#define BTRFS_INODE_HAS_ASYNC_EXTENT		6
-#define BTRFS_INODE_NEEDS_FULL_SYNC		7
-#define BTRFS_INODE_COPY_EVERYTHING		8
-#define BTRFS_INODE_IN_DELALLOC_LIST		9
-#define BTRFS_INODE_READDIO_NEED_LOCK		10
-#define BTRFS_INODE_HAS_PROPS		        11
+enum {
+	BTRFS_INODE_ORDERED_DATA_CLOSE = 0,
+	BTRFS_INODE_DUMMY,
+	BTRFS_INODE_IN_DEFRAG,
+	BTRFS_INODE_HAS_ASYNC_EXTENT,
+	BTRFS_INODE_NEEDS_FULL_SYNC,
+	BTRFS_INODE_COPY_EVERYTHING,
+	BTRFS_INODE_IN_DELALLOC_LIST,
+	BTRFS_INODE_READDIO_NEED_LOCK,
+	BTRFS_INODE_HAS_PROPS,
+	BTRFS_INODE_SNAPSHOT_FLUSH,
+};
 
 /* in memory btrfs inode */
 struct btrfs_inode {
@@ -182,7 +169,8 @@ struct btrfs_inode {
 	 * of extent items we've reserved metadata for.
 	 */
 	unsigned outstanding_extents;
-	unsigned reserved_extents;
+
+	struct btrfs_block_rsv block_rsv;
 
 	/*
 	 * Cached values of inode properties
@@ -197,11 +185,10 @@ struct btrfs_inode {
 	struct btrfs_delayed_node *delayed_node;
 
 	/* File creation time. */
-	struct timespec i_otime;
+	struct timespec64 i_otime;
 
 	/* Hook into fs_info->delayed_iputs */
 	struct list_head delayed_iput;
-	long delayed_iput_count;
 
 	/*
 	 * To avoid races between lockless (i_mutex not held) direct IO writes
@@ -271,6 +258,17 @@ static inline bool btrfs_is_free_space_inode(struct btrfs_inode *inode)
 	if (inode->location.objectid == BTRFS_FREE_INO_OBJECTID)
 		return true;
 	return false;
+}
+
+static inline void btrfs_mod_outstanding_extents(struct btrfs_inode *inode,
+						 int mod)
+{
+	lockdep_assert_held(&inode->lock);
+	inode->outstanding_extents += mod;
+	if (btrfs_is_free_space_inode(inode))
+		return;
+	trace_btrfs_inode_mod_outstanding_extents(inode->root, btrfs_ino(inode),
+						  mod);
 }
 
 static inline int btrfs_inode_in_log(struct btrfs_inode *inode, u64 generation)
@@ -359,7 +357,5 @@ static inline void btrfs_print_data_csum_error(struct btrfs_inode *inode,
 			root->objectid, btrfs_ino(inode),
 			logical_start, csum, csum_expected, mirror_num);
 }
-
-bool btrfs_page_exists_in_range(struct inode *inode, loff_t start, loff_t end);
 
 #endif

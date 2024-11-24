@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 #ifndef __CCCI_PLATFORM_H__
 #define __CCCI_PLATFORM_H__
@@ -18,6 +11,14 @@
 #include "ccci_config.h"
 #include "modem_sys.h"
 
+struct  ccci_plat_val {
+	void __iomem *infra_ao_base;
+	unsigned int md_gen;
+	unsigned long offset_epof_md1;
+	void __iomem *md_plat_info;
+};
+
+static struct ccci_plat_val md_cd_plat_val_ptr;
 #define ccci_write32(b, a, v)           mt_reg_sync_writel(v, (b)+(a))
 #define ccci_write16(b, a, v)           mt_reg_sync_writew(v, (b)+(a))
 #define ccci_write8(b, a, v)            mt_reg_sync_writeb(v, (b)+(a))
@@ -34,9 +35,7 @@ unsigned int ccci_get_md_debug_mode(struct ccci_modem *md);
 
 int ccci_plat_common_init(void);
 int ccci_platform_init(struct ccci_modem *md);
-void ccci_reset_ccif_hw(unsigned char md_id,
-			int ccif_id, void __iomem *baseA, void __iomem *baseB);
-void ccci_set_clk_cg(struct ccci_modem *md, unsigned int is_on);
+
 #ifdef ENABLE_DRAM_API
 extern phys_addr_t get_max_DRAM_size(void);
 #endif

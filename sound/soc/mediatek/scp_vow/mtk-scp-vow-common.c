@@ -11,7 +11,9 @@
 #include "mtk-sram-manager.h"
 #include "mtk-base-afe.h"
 #include "mtk-afe-fe-dai.h"
-#include "scp_helper.h"
+#if IS_ENABLED(CONFIG_MTK_TINYSYS_SCP_SUPPORT)
+#include "scp.h"
+#endif
 #include "mtk-scp-vow-common.h"
 #include "mtk-scp-vow-platform.h"
 
@@ -48,10 +50,16 @@ int allocate_vow_bargein_mem(struct snd_pcm_substream *substream,
 	} else {
 		/* Using DRAM */
 		dev_info(afe->dev, "%s(), use DRAM\n", __func__);
+#if IS_ENABLED(CONFIG_MTK_TINYSYS_SCP_SUPPORT)
 		dma_buf->addr = scp_get_reserve_mem_phys(VOW_BARGEIN_MEM_ID);
 		dma_buf->area =
 		    (uint8_t *)scp_get_reserve_mem_virt(VOW_BARGEIN_MEM_ID);
 		memif->using_sram = 0;
+#else
+		dev_info(afe->dev, "%s(), scp not supported, scp_get_reserve_mem failed.\n",
+			__func__);
+		return -EINVAL;
+#endif
 
 	}
 
@@ -73,6 +81,8 @@ int allocate_vow_bargein_mem(struct snd_pcm_substream *substream,
 	if ((memif->using_sram == 0) && (afe->request_dram_resource))
 		afe->request_dram_resource(afe->dev);
 
+	*phys_addr = dma_buf->addr;
+	*virt_addr = dma_buf->area;
 	return ret;
 }
 

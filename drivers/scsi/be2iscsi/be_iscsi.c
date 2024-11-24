@@ -1,11 +1,14 @@
 /*
- * Copyright 2017 Broadcom. All Rights Reserved.
- * The term "Broadcom" refers to Broadcom Limited and/or its subsidiaries.
+ * This file is part of the Emulex Linux Device Driver for Enterprise iSCSI
+ * Host Bus Adapters. Refer to the README file included with this package
+ * for driver version and adapter compatibility.
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version 2
- * as published by the Free Software Foundation. The full GNU General
- * Public License is included in this distribution in the file called COPYING.
+ * Copyright (c) 2018 Broadcom. All Rights Reserved.
+ * The term "Broadcom" refers to Broadcom Inc. and/or its subsidiaries.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License as published
+ * by the Free Software Foundation.
  *
  * Contact Information:
  * linux-drivers@broadcom.com
@@ -442,6 +445,10 @@ int beiscsi_iface_set_param(struct Scsi_Host *shost,
 	}
 
 	nla_for_each_attr(attrib, data, dt_len, rm_len) {
+		/* ignore nla_type as it is never used */
+		if (nla_len(attrib) < sizeof(*iface_param))
+			return -EINVAL;
+
 		iface_param = nla_data(attrib);
 
 		if (iface_param->param_type != ISCSI_NET_PARAM)
@@ -684,41 +691,6 @@ int beiscsi_set_param(struct iscsi_cls_conn *cls_conn,
 }
 
 /**
- * beiscsi_get_initname - Read Initiator Name from flash
- * @buf: buffer bointer
- * @phba: The device priv structure instance
- *
- * returns number of bytes
- */
-static int beiscsi_get_initname(char *buf, struct beiscsi_hba *phba)
-{
-	int rc;
-	unsigned int tag;
-	struct be_mcc_wrb *wrb;
-	struct be_cmd_hba_name *resp;
-
-	tag = be_cmd_get_initname(phba);
-	if (!tag) {
-		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_CONFIG,
-			    "BS_%d : Getting Initiator Name Failed\n");
-
-		return -EBUSY;
-	}
-
-	rc = beiscsi_mccq_compl_wait(phba, tag, &wrb, NULL);
-	if (rc) {
-		beiscsi_log(phba, KERN_ERR,
-			    BEISCSI_LOG_CONFIG | BEISCSI_LOG_MBOX,
-			    "BS_%d : Initiator Name MBX Failed\n");
-		return rc;
-	}
-
-	resp = embedded_payload(wrb);
-	rc = sprintf(buf, "%s\n", resp->initiator_name);
-	return rc;
-}
-
-/**
  * beiscsi_get_port_state - Get the Port State
  * @shost : pointer to scsi_host structure
  *
@@ -772,7 +744,6 @@ static void beiscsi_get_port_speed(struct Scsi_Host *shost)
  * @param: parameter type identifier
  * @buf: buffer pointer
  *
- * returns host parameter
  */
 int beiscsi_get_host_param(struct Scsi_Host *shost,
 			   enum iscsi_host_param param, char *buf)
@@ -783,7 +754,7 @@ int beiscsi_get_host_param(struct Scsi_Host *shost,
 	if (!beiscsi_hba_is_online(phba)) {
 		beiscsi_log(phba, KERN_INFO, BEISCSI_LOG_CONFIG,
 			    "BS_%d : HBA in error 0x%lx\n", phba->state);
-		return -EBUSY;
+		return 0;
 	}
 	beiscsi_log(phba, KERN_INFO, BEISCSI_LOG_CONFIG,
 		    "BS_%d : In beiscsi_get_host_param, param = %d\n", param);
@@ -794,15 +765,19 @@ int beiscsi_get_host_param(struct Scsi_Host *shost,
 		if (status < 0) {
 			beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_CONFIG,
 				    "BS_%d : beiscsi_get_macaddr Failed\n");
-			return status;
+			return 0;
 		}
 		break;
 	case ISCSI_HOST_PARAM_INITIATOR_NAME:
-		status = beiscsi_get_initname(buf, phba);
+		/* try fetching user configured name first */
+		status = beiscsi_get_initiator_name(phba, buf, true);
 		if (status < 0) {
-			beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_CONFIG,
-				    "BS_%d : Retreiving Initiator Name Failed\n");
-			return status;
+			status = beiscsi_get_initiator_name(phba, buf, false);
+			if (status < 0) {
+				beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_CONFIG,
+					    "BS_%d : Retreiving Initiator Name Failed\n");
+				status = 0;
+			}
 		}
 		break;
 	case ISCSI_HOST_PARAM_PORT_STATE:

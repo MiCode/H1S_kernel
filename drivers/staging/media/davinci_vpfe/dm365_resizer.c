@@ -480,7 +480,7 @@ resizer_configure_common_in_params(struct vpfe_resizer_device *resizer)
 	return 0;
 }
 static int
-resizer_configure_in_continious_mode(struct vpfe_resizer_device *resizer)
+resizer_configure_in_continuous_mode(struct vpfe_resizer_device *resizer)
 {
 	struct device *dev = resizer->crop_resizer.subdev.v4l2_dev->dev;
 	struct resizer_params *param = &resizer->config;
@@ -794,7 +794,7 @@ resizer_configure_in_single_shot_mode(struct vpfe_resizer_device *resizer)
 }
 
 static void
-resizer_set_defualt_configuration(struct vpfe_resizer_device *resizer)
+resizer_set_default_configuration(struct vpfe_resizer_device *resizer)
 {
 #define  WIDTH_I 640
 #define  HEIGHT_I 480
@@ -916,10 +916,11 @@ resizer_set_configuration(struct vpfe_resizer_device *resizer,
 			  struct vpfe_rsz_config *chan_config)
 {
 	if (!chan_config->config)
-		resizer_set_defualt_configuration(resizer);
+		resizer_set_default_configuration(resizer);
 	else
 		if (copy_from_user(&resizer->config.user_config,
-		    chan_config->config, sizeof(struct vpfe_rsz_config_params)))
+				   (void __user *)chan_config->config,
+				   sizeof(struct vpfe_rsz_config_params)))
 			return -EFAULT;
 
 	return 0;
@@ -942,9 +943,9 @@ resizer_get_configuration(struct vpfe_resizer_device *resizer,
 		return -EINVAL;
 	}
 
-	if (copy_to_user((void *)chan_config->config,
-	   (void *)&resizer->config.user_config,
-	   sizeof(struct vpfe_rsz_config_params))) {
+	if (copy_to_user((void __user *)chan_config->config,
+			 (void *)&resizer->config.user_config,
+			 sizeof(struct vpfe_rsz_config_params))) {
 		dev_err(dev, "resizer_get_configuration: Error in copy to user\n");
 		return -EFAULT;
 	}
@@ -1059,7 +1060,7 @@ static void resizer_ss_isr(struct vpfe_resizer_device *resizer)
 	/* If resizer B is enabled */
 	if (pipe->output_num > 1 && resizer->resizer_b.output ==
 	    RESIZER_OUTPUT_MEMORY) {
-		spin_lock(&video_out->dma_queue_lock);
+		spin_lock(&video_out2->dma_queue_lock);
 		vpfe_video_process_buffer_complete(video_out2);
 		video_out2->state = VPFE_VIDEO_BUFFER_NOT_QUEUED;
 		vpfe_video_schedule_next_buffer(video_out2);
@@ -1242,7 +1243,7 @@ static int resizer_do_hw_setup(struct vpfe_resizer_device *resizer)
 		    ipipeif_source == IPIPEIF_OUTPUT_RESIZER)
 			ret = resizer_configure_in_single_shot_mode(resizer);
 		else
-			ret =  resizer_configure_in_continious_mode(resizer);
+			ret =  resizer_configure_in_continuous_mode(resizer);
 		if (ret)
 			return ret;
 		ret = config_rsz_hw(resizer, param);

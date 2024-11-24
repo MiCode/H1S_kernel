@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2022 MediaTek Inc.
  */
 
 /******************************************************************************
@@ -67,26 +60,6 @@
 #ifdef __MFB_KERNEL_PERFORMANCE_MEASURE__
 #include <linux/met_drv.h>
 #include <linux/mtk_ftrace.h>
-#endif
-#if 0
-/* Another Performance Measure Usage */
-#include <linux/kallsyms.h>
-#include <linux/ftrace_event.h>
-static unsigned long __read_mostly tracing_mark_write_addr;
-#define _kernel_trace_begin(name) {\
-	tracing_mark_write_addr =\
-		kallsyms_lookup_name("tracing_mark_write");\
-	event_trace_printk(tracing_mark_write_addr,\
-		"B|%d|%s\n", current->tgid, name);\
-}
-#define _kernel_trace_end() {\
-	event_trace_printk(tracing_mark_write_addr,  "E\n");\
-}
-/* How to Use */
-/* char strName[128]; */
-/* sprintf(strName, "TAG_K_WAKEUP (%d)",sof_count[_PASS1]); */
-/* _kernel_trace_begin(strName); */
-/* _kernel_trace_end(); */
 #endif
 
 
@@ -147,7 +120,7 @@ struct MFB_CLK_STRUCT mfb_clk;
 #define MFB_USE_GCE
 /* #define MFB_DEBUG_USE */
 #define DUMMY_MFB	   (0)
-/* #define MFB_MULTIPROCESS_TIMEING_ISSUE  */
+/* #define MFB_MULTIPROCESS_TIMING_ISSUE  */
 /*I can' test the situation in FPGA due to slow FPGA. */
 #define MyTag "[MFB]"
 #define IRQTag "KEEPER"
@@ -255,7 +228,7 @@ static struct Tasklet_table MFB_tasklet[MFB_IRQ_TYPE_AMOUNT] = {
 	{ISP_TaskletFunc_MFB, &Mfbtkt[MFB_IRQ_TYPE_INT_MFB_ST]},
 };
 
-struct wakeup_source MFB_wake_lock;
+struct wakeup_source *MFB_wake_lock;
 
 
 static DEFINE_MUTEX(gMfbMutex);
@@ -420,7 +393,6 @@ static struct SV_LOG_STR gSvLog[MFB_IRQ_TYPE_AMOUNT];
  *   each log must shorter than 512 bytes
  *  total log length in each irq/logtype can't over 1024 bytes
  */
-#if 1
 #define IRQ_LOG_KEEPER(irq, ppb, logT, fmt, ...) do {\
 	int err_ret; \
 	char *ptr; \
@@ -449,13 +421,7 @@ static struct SV_LOG_STR gSvLog[MFB_IRQ_TYPE_AMOUNT];
 		(*ptr2)++;\
 	}     \
 } while (0)
-#else
-#define IRQ_LOG_KEEPER(irq, ppb, logT, fmt, ...)\
-		xlog_printk(ANDROID_LOG_DEBUG,\
-		"KEEPER", "[%s] " fmt, __func__, ##__VA_ARGS__)
-#endif
 
-#if 1
 #define IRQ_LOG_PRINTER(irq, ppb_in, logT_in) do {\
 	struct SV_LOG_STR *pSrc = &gSvLog[irq];\
 	char *ptr;\
@@ -464,12 +430,12 @@ static struct SV_LOG_STR gSvLog[MFB_IRQ_TYPE_AMOUNT];
 	unsigned int logT = 0;\
 	if (ppb_in > 1) {\
 		ppb = 1;\
-	} else{\
+	} else {\
 		ppb = ppb_in;\
 	} \
 	if (logT_in > _LOG_ERR) {\
 		logT = _LOG_ERR;\
-	} else{\
+	} else {\
 		logT = logT_in;\
 	} \
 	ptr = pSrc->_str[ppb][logT];\
@@ -479,7 +445,7 @@ static struct SV_LOG_STR gSvLog[MFB_IRQ_TYPE_AMOUNT];
 				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 					log_dbg("%s", &ptr[NORMAL_STR_LEN*i]);\
-				} else{\
+				} else {\
 					log_dbg("%s", &ptr[NORMAL_STR_LEN*i]);\
 					break;\
 				} \
@@ -490,7 +456,7 @@ static struct SV_LOG_STR gSvLog[MFB_IRQ_TYPE_AMOUNT];
 			if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 				ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 				log_inf("%s", &ptr[NORMAL_STR_LEN*i]);\
-			} else{\
+			} else {\
 				log_inf("%s", &ptr[NORMAL_STR_LEN*i]);\
 				break;\
 			} \
@@ -501,7 +467,7 @@ static struct SV_LOG_STR gSvLog[MFB_IRQ_TYPE_AMOUNT];
 			if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 				ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 				log_err("%s", &ptr[NORMAL_STR_LEN*i]);\
-			} else{\
+			} else {\
 				log_err("%s", &ptr[NORMAL_STR_LEN*i]);\
 				break;\
 			} \
@@ -516,9 +482,6 @@ static struct SV_LOG_STR gSvLog[MFB_IRQ_TYPE_AMOUNT];
 } while (0)
 
 
-#else
-#define IRQ_LOG_PRINTER(irq, ppb, logT)
-#endif
 
 #define IMGSYS_REG_CG_CON             (ISP_IMGSYS_BASE + 0x0)
 #define IMGSYS_REG_CG_SET             (ISP_IMGSYS_BASE + 0x4)
@@ -885,7 +848,7 @@ static inline unsigned int MFB_GetIRQState(
 	spin_lock_irqsave(&(MFBInfo.SpinLockIrq[type]), flags);
 #ifdef MFB_USE_GCE
 
-#ifdef MFB_MULTIPROCESS_TIMEING_ISSUE
+#ifdef MFB_MULTIPROCESS_TIMING_ISSUE
 	if (stus & MFB_INT_ST) {
 		ret = ((MFBInfo.IrqInfo.MfbIrqCnt > 0)
 		       && (MFBInfo.ProcessID[MFBInfo.ReadReqIdx] == ProcessID));
@@ -1053,20 +1016,6 @@ static bool ConfigMFB(void)
 				 */
 				return MFALSE;
 			}
-			#if 0
-			else {
-				g_MFB_ReqRing.MFBReq_Struct[i]
-					.State = MFB_REQUEST_STATE_RUNNING;
-				log_err(
-					"MFB Config State is wrong! HWProcessIdx(%d), State(%d)\n",
-					g_MFB_ReqRing.HWProcessIdx,
-					g_MFB_ReqRing.MFBReq_Struct[i].State);
-				g_MFB_ReqRing.HWProcessIdx =
-					(g_MFB_ReqRing.HWProcessIdx+1)
-					%_SUPPORT_MAX_MFB_REQUEST_RING_SIZE_;
-			}
-			#endif
-
 		}
 	}
 	spin_unlock_irqrestore(
@@ -1360,7 +1309,6 @@ static signed int ConfigMFBHW(MFB_Config *pMfbConfig)
 
 	cmdqRecReset(handle);
 
-#if 1
 	/* Use command queue to write register */
 	/* BIT0 for INT_EN, BIT20 for CHROMA_INT_EN, BIT21 for WEIGHT_INT_EN */
 	cmdqRecWrite(handle, MFB_INT_CTL_HW, 0x300001, CMDQ_REG_MASK);
@@ -1563,7 +1511,6 @@ static signed int ConfigMFBHW(MFB_Config *pMfbConfig)
 	cmdqRecWrite(handle, MFB_TOP_CFG1_HW, 0x1, CMDQ_REG_MASK);
 	cmdqRecWait(handle, CMDQ_EVENT_MFB_DONE);
 	cmdqRecWrite(handle, MFB_TOP_CFG1_HW, 0x0, CMDQ_REG_MASK);
-#endif
 	/* non-blocking API, Please  use cmdqRecFlushAsync() */
 	cmdqRecFlushAsync(handle);
 	cmdqRecReset(handle);	/* if you want to re-use the handle,
@@ -1579,30 +1526,6 @@ static signed int ConfigMFBHW(MFB_Config *pMfbConfig)
 
 #ifdef __MFB_KERNEL_PERFORMANCE_MEASURE__
 	mt_kernel_trace_begin("ConfigMFBHW");
-#endif
-#if 0
-	/* MFB Interrupt enabled in read-clear mode */
-	MFB_WR32(MFB_INT_CTL_REG, 0x1);
-
-	MFB_WR32(MFB_CTRL_REG, pMfbConfig->MFB_CTRL);
-	MFB_WR32(MFB_SIZE_REG, pMfbConfig->MFB_SIZE);
-
-	MFB_WR32(MFB_APLI_C_BASE_ADDR_REG, pMfbConfig->MFB_APLI_C_BASE_ADDR);
-	MFB_WR32(MFB_APLI_P_BASE_ADDR_REG, pMfbConfig->MFB_APLI_P_BASE_ADDR);
-	MFB_WR32(MFB_IMGI_C_BASE_ADDR_REG, pMfbConfig->MFB_IMGI_C_BASE_ADDR);
-	MFB_WR32(MFB_IMGI_P_BASE_ADDR_REG, pMfbConfig->MFB_IMGI_P_BASE_ADDR);
-	MFB_WR32(MFB_IMGI_C_STRIDE_REG, pMfbConfig->MFB_IMGI_C_STRIDE);
-	MFB_WR32(MFB_IMGI_P_STRIDE_REG, pMfbConfig->MFB_IMGI_P_STRIDE);
-
-	MFB_WR32(MFB_MVI_BASE_ADDR_REG, pMfbConfig->MFB_MVI_BASE_ADDR);
-	MFB_WR32(MFB_MVI_STRIDE_REG, pMfbConfig->MFB_MVI_STRIDE);
-
-	MFB_WR32(MFB_MVO_BASE_ADDR_REG, pMfbConfig->MFB_MVO_BASE_ADDR);
-	MFB_WR32(MFB_MVO_STRIDE_REG, pMfbConfig->MFB_MVO_STRIDE);
-	MFB_WR32(MFB_BVO_BASE_ADDR_REG, pMfbConfig->MFB_BVO_BASE_ADDR);
-	MFB_WR32(MFB_BVO_STRIDE_REG, pMfbConfig->MFB_BVO_STRIDE);
-
-	MFB_WR32(MFB_START_REG, 0x1);	/* MFB Interrupt read-clear mode */
 #endif
 #ifdef __MFB_KERNEL_PERFORMANCE_MEASURE__
 	mt_kernel_trace_end();
@@ -1648,7 +1571,6 @@ static bool Check_MFB_Is_Busy(void)
  */
 static signed int MFB_DumpReg(void)
 {
-#if 1
 	signed int Ret = 0;
 	unsigned int i, j;
 
@@ -1738,7 +1660,6 @@ static signed int MFB_DumpReg(void)
 	log_inf("- X.");
 	/*  */
 	return Ret;
-#endif
 return 0;
 }
 
@@ -1987,15 +1908,6 @@ static signed int MFB_WaitIrq(MFB_WAIT_IRQ_STRUCT *WaitIrq)
 	/* 1. wait type update */
 	if (WaitIrq->Clear == MFB_IRQ_CLEAR_STATUS) {
 		spin_lock_irqsave(&(MFBInfo.SpinLockIrq[WaitIrq->Type]), flags);
-		#if 0
-		log_dbg(
-		  "WARNING: Clear(%d), Type(%d): IrqStatus(0x%08X) has been cleared",
-		  WaitIrq->EventInfo.Clear, WaitIrq->Type,
-		  MFBInfo.IrqInfo.Status[WaitIrq->Type]);
-		  MFBInfo.IrqInfo.Status[WaitIrq->Type][
-		      WaitIrq->EventInfo.UserKey] &=
-		      (~WaitIrq->EventInfo.Status);
-		#endif
 
 		MFBInfo.IrqInfo.Status[WaitIrq->Type] &= (~WaitIrq->Status);
 		spin_unlock_irqrestore(
@@ -2109,7 +2021,7 @@ static signed int MFB_WaitIrq(MFB_WAIT_IRQ_STRUCT *WaitIrq)
 				&(MFBInfo.SpinLockIrq[WaitIrq->Type]), flags);
 #ifdef MFB_USE_GCE
 
-#ifdef MFB_MULTIPROCESS_TIMEING_ISSUE
+#ifdef MFB_MULTIPROCESS_TIMING_ISSUE
 			MFBInfo.ReadReqIdx = (MFBInfo.ReadReqIdx + 1) %
 						_SUPPORT_MAX_MFB_FRAME_REQUEST_;
 			/* actually, it doesn't happen the timging issue!! */
@@ -2210,25 +2122,25 @@ static long MFB_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			break;
 		}
 	/*
-	case MFB_DUMP_ISR_LOG:
-		{
-			unsigned int currentPPB = m_CurrentPPB;
-
-			spin_lock_irqsave(
-				&(MFBInfo.SpinLockIrq[MFB_IRQ_TYPE_INT_MFB_ST]),
-				flags);
-			m_CurrentPPB = (m_CurrentPPB + 1) % LOG_PPNUM;
-			spin_unlock_irqrestore(
-				&(MFBInfo.SpinLockIrq[MFB_IRQ_TYPE_INT_MFB_ST]),
-				flags);
-
-			IRQ_LOG_PRINTER(
-				MFB_IRQ_TYPE_INT_MFB_ST, currentPPB, _LOG_INF);
-			IRQ_LOG_PRINTER(
-				MFB_IRQ_TYPE_INT_MFB_ST, currentPPB, _LOG_ERR);
-			break;
-		}
-	*/
+	 *case MFB_DUMP_ISR_LOG:
+	 *	{
+	 *		unsigned int currentPPB = m_CurrentPPB;
+	 *
+	 *		spin_lock_irqsave(
+	 *			&(MFBInfo.SpinLockIrq[MFB_IRQ_TYPE_INT_MFB_ST]),
+	 *			flags);
+	 *		m_CurrentPPB = (m_CurrentPPB + 1) % LOG_PPNUM;
+	 *		spin_unlock_irqrestore(
+	 *			&(MFBInfo.SpinLockIrq[MFB_IRQ_TYPE_INT_MFB_ST]),
+	 *			flags);
+	 *
+	 *		IRQ_LOG_PRINTER(
+	 *			MFB_IRQ_TYPE_INT_MFB_ST, currentPPB, _LOG_INF);
+	 *		IRQ_LOG_PRINTER(
+	 *			MFB_IRQ_TYPE_INT_MFB_ST, currentPPB, _LOG_ERR);
+	 *		break;
+	 *	}
+	 */
 	case MFB_WAIT_IRQ:
 		{
 			if (copy_from_user(&IrqInfo, (void *)Param,
@@ -3460,7 +3372,7 @@ static signed int MFB_probe(struct platform_device *pDev)
 		init_waitqueue_head(&MFBInfo.WaitQueueHead);
 		INIT_WORK(&MFBInfo.ScheduleMfbWork, MFB_ScheduleWork);
 
-		wakeup_source_init(&MFB_wake_lock, "mfb_lock_wakelock");
+		MFB_wake_lock = wakeup_source_register(&pDev->dev, "mfb_lock_wakelock");
 
 		for (i = 0; i < MFB_IRQ_TYPE_AMOUNT; i++)
 			tasklet_init(MFB_tasklet[i].pMFB_tkt,
@@ -3509,37 +3421,7 @@ static signed int MFB_remove(struct platform_device *pDev)
 	/* kill tasklet */
 	for (i = 0; i < MFB_IRQ_TYPE_AMOUNT; i++)
 		tasklet_kill(MFB_tasklet[i].pMFB_tkt);
-#if 0
-	/* free all registered irq(child nodes) */
-	MFB_UnRegister_AllregIrq();
-	/* free father nodes of irq user list */
-	struct my_list_head *head;
-	struct my_list_head *father;
 
-	head = ((struct my_list_head *)(&SupIrqUserListHead.list));
-	while (1) {
-		father = head;
-		if (father->nextirq != father) {
-			father = father->nextirq;
-			REG_IRQ_NODE *accessNode;
-
-			typeof(((REG_IRQ_NODE *) 0)->list) * __mptr = (father);
-			accessNode =
-			    ((REG_IRQ_NODE *) ((char *)__mptr -
-			    offsetof(REG_IRQ_NODE, list)));
-			log_inf("free father,reg_T(%d)\n", accessNode->reg_T);
-			if (father->nextirq != father) {
-				head->nextirq = father->nextirq;
-				father->nextirq = father;
-			} else {	/* last father node */
-				head->nextirq = head;
-				log_inf("break\n");
-				break;
-			}
-			kfree(accessNode);
-		}
-	}
-#endif
 	/*  */
 	device_destroy(pMFBClass, MFBDevNo);
 	/*  */
@@ -3678,232 +3560,6 @@ static struct platform_driver MFBDriver = {
 	}
 };
 
-#if 0
-static int mfb_dump_read(struct seq_file *m, void *v)
-{
-	int i, j;
-
-	seq_puts(m, "\n============ mfb dump register============\n");
-	seq_puts(m, "MFB Config Info\n");
-
-	if (MFBInfo.UserCount > 0) {
-		for (i = 0x2C; i < 0x8C; i = i + 4) {
-			seq_printf(m, "[0x%08X %08X]\n",
-				(unsigned int)(MFB_BASE_HW + i),
-				(unsigned int)MFB_RD32(ISP_MFB_BASE + i));
-		}
-		seq_puts(m, "MFB Debug Info\n");
-		for (i = 0x120; i < 0x148; i = i + 4) {
-			seq_printf(m, "[0x%08X %08X]\n",
-				(unsigned int)(MFB_BASE_HW + i),
-				(unsigned int)MFB_RD32(ISP_MFB_BASE + i));
-		}
-
-		seq_puts(m, "MFB Config Info\n");
-		for (i = 0x230; i < 0x2D8; i = i + 4) {
-			seq_printf(m, "[0x%08X %08X]\n",
-				(unsigned int)(MFB_BASE_HW + i),
-				(unsigned int)MFB_RD32(ISP_MFB_BASE + i));
-		}
-		seq_puts(m, "MFB Debug Info\n");
-		for (i = 0x2F4; i < 0x30C; i = i + 4) {
-			seq_printf(m, "[0x%08X %08X]\n",
-				(unsigned int)(MFB_BASE_HW + i),
-				(unsigned int)MFB_RD32(ISP_MFB_BASE + i));
-		}
-	}
-	seq_puts(m, "\n");
-	seq_printf(m, "Mfb Clock Count:%d\n", g_u4EnableClockCount);
-
-	seq_printf(m, "MFB:HWProcessIdx:%d, WriteIdx:%d, ReadIdx:%d\n",
-		   g_MFB_ReqRing.HWProcessIdx, g_MFB_ReqRing.WriteIdx,
-		   g_MFB_ReqRing.ReadIdx);
-
-	for (i = 0; i < _SUPPORT_MAX_MFB_REQUEST_RING_SIZE_; i++) {
-		seq_printf(m,
-			   "MFB:State:%d, processID:0x%08X, callerID:0x%08X, enqueReqNum:%d, FrameWRIdx:%d, RrameRDIdx:%d\n",
-			   g_MFB_ReqRing.MFBReq_Struct[i].State,
-			   g_MFB_ReqRing.MFBReq_Struct[i].processID,
-			   g_MFB_ReqRing.MFBReq_Struct[i].callerID,
-			   g_MFB_ReqRing.MFBReq_Struct[i].enqueReqNum,
-			   g_MFB_ReqRing.MFBReq_Struct[i].FrameWRIdx,
-			   g_MFB_ReqRing.MFBReq_Struct[i].RrameRDIdx);
-
-		for (j = 0; j < _SUPPORT_MAX_MFB_FRAME_REQUEST_;) {
-			seq_printf(m,
-				   "MFB:FrameStatus[%d]:%d, FrameStatus[%d]:%d, FrameStatus[%d]:%d, FrameStatus[%d]:%d\n",
-				   j,
-				   g_MFB_ReqRing.MFBReq_Struct[i]
-					.MfbFrameStatus[j],
-				   j + 1,
-				   g_MFB_ReqRing.MFBReq_Struct[i]
-					.MfbFrameStatus[j + 1],
-				   j + 2,
-				   g_MFB_ReqRing.MFBReq_Struct[i]
-					.MfbFrameStatus[j + 2],
-				   j + 3,
-				   g_MFB_ReqRing.MFBReq_Struct[i]
-					.MfbFrameStatus[j + 3]);
-			j = j + 4;
-		}
-	}
-
-	seq_puts(m, "\n============ mfb dump debug ============\n");
-
-	return 0;
-}
-
-static int proc_mfb_dump_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, mfb_dump_read, NULL);
-}
-
-static const struct file_operations mfb_dump_proc_fops = {
-	.owner = THIS_MODULE,
-	.open = proc_mfb_dump_open,
-	.read = seq_read,
-};
-
-static int mfb_reg_read(struct seq_file *m, void *v)
-{
-	unsigned int i;
-
-	seq_puts(m, "======== read mfb register ========\n");
-
-	if (MFBInfo.UserCount > 0) {
-		for (i = 0x0; i <= 0x308; i = i + 4) {
-			seq_printf(m, "[0x%08X 0x%08X]\n",
-				(unsigned int)(MFB_BASE_HW + i),
-				(unsigned int)MFB_RD32(ISP_MFB_BASE + i));
-		}
-	}
-	seq_printf(m, "[0x%08X 0x%08X]\n",
-		(unsigned int)(MFB_DMA_DEBUG_ADDR_HW),
-		(unsigned int)MFB_RD32(MFB_DMA_DEBUG_ADDR_REG));
-
-
-	return 0;
-}
-
-/*static int mfb_reg_write(struct file *file, const char __user *buffer, */
-/*	size_t count, loff_t *data)*/
-
-static ssize_t mfb_reg_write(
-	struct file *file, const char __user *buffer,
-	size_t count, loff_t *data)
-{
-	char desc[128];
-	unsigned int len = 0;
-	/*char *pEnd;*/
-	char addrSzBuf[24];
-	char valSzBuf[24];
-	char *pszTmp;
-	int addr = 0, val = 0;
-	long int tempval;
-
-	len = (count < (sizeof(desc) - 1)) ? count : (sizeof(desc) - 1);
-	if (copy_from_user(desc, buffer, len))
-		return 0;
-
-	if (MFBInfo.UserCount <= 0)
-		return 0;
-
-	desc[len] = '\0';
-
-	if (sscanf(desc, "%23s %23s", addrSzBuf, valSzBuf) == 2) {
-		pszTmp = strstr(addrSzBuf, "0x");
-		if (pszTmp == NULL) {
-			if (kstrtol(addrSzBuf, 10,
-			    (long int *)&tempval) != 0)
-				log_err("scan decimal addr is wrong !!:%s",
-				    addrSzBuf);
-		} else {
-			if (strlen(addrSzBuf) > 2) {
-				if (sscanf(addrSzBuf + 2, "%x", &addr) != 1)
-					log_err(
-					    "scan hexadecimal addr is wrong !!:%s",
-					    addrSzBuf);
-			} else {
-				log_inf("MFB Write Addr Error!!:%s", addrSzBuf);
-			}
-		}
-
-		pszTmp = strstr(valSzBuf, "0x");
-		if (pszTmp == NULL) {
-			if (kstrtol(valSzBuf, 10, (long int *)&tempval) != 0)
-				log_err("scan decimal value is wrong !!:%s",
-				    valSzBuf);
-		} else {
-			if (strlen(valSzBuf) > 2) {
-				if (sscanf(valSzBuf + 2, "%x", &val) != 1)
-					log_err(
-					    "scan hexadecimal value is wrong !!:%s",
-					    valSzBuf);
-			} else {
-				log_inf(
-				    "MFB Write Value Error!!:%s\n",
-				    valSzBuf);
-			}
-		}
-
-		if ((addr >= MFB_BASE_HW) && (addr <= CRSP_CROP_Y_HW)
-			&& ((addr & 0x3) == 0)) {
-			log_inf("Write Request - addr:0x%x, value:0x%x\n",
-			    addr, val);
-			MFB_WR32((ISP_MFB_BASE + (addr - MFB_BASE_HW)), val);
-		} else {
-			log_inf(
-			  "Write-Address Range exceeds the size of hw mfb!! addr:0x%x, value:0x%x\n",
-			   addr, val);
-		}
-
-	} else if (sscanf(desc, "%23s", addrSzBuf) == 1) {
-		pszTmp = strstr(addrSzBuf, "0x");
-		if (pszTmp == NULL) {
-			if (kstrtol(addrSzBuf, 10, (long int *)&tempval) != 0)
-				log_err("scan decimal addr is wrong !!:%s",
-				    addrSzBuf);
-			else
-				addr = tempval;
-		} else {
-			if (strlen(addrSzBuf) > 2) {
-				if (sscanf(addrSzBuf + 2, "%x", &addr) != 1)
-					log_err("scan hexadecimal addr is wrong !!:%s",
-					    addrSzBuf);
-			} else {
-				log_inf("MFB Read Addr Error!!:%s", addrSzBuf);
-			}
-		}
-
-		if ((addr >= MFB_BASE_HW) && (addr <= CRSP_CROP_Y_HW)
-			&& ((addr & 0x3) == 0)) {
-			val = MFB_RD32((ISP_MFB_BASE + (addr - MFB_BASE_HW)));
-			log_inf("Read Request - addr:0x%x,value:0x%x\n",
-			     addr, val);
-		} else {
-			log_inf(
-			  "Read-Address Range exceeds the size of hw mfb!! addr:0x%x, value:0x%x\n",
-			  addr, val);
-		}
-
-	}
-
-
-	return count;
-}
-
-static int proc_mfb_reg_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, mfb_reg_read, NULL);
-}
-
-static const struct file_operations mfb_reg_proc_fops = {
-	.owner = THIS_MODULE,
-	.open = proc_mfb_reg_open,
-	.read = seq_read,
-	.write = mfb_reg_write,
-};
-#endif
 
 /******************************************************************************
  *
@@ -3950,10 +3606,6 @@ static signed int __init MFB_Init(void)
 	void *tmp;
 	/* FIX-ME: linux-3.10 procfs API changed */
 	/* use proc_create */
-#if 0
-	/* struct proc_dir_entry *proc_entry; */
-	struct proc_dir_entry *isp_mfb_dir;
-#endif
 
 	int i;
 	/*  */
@@ -3965,38 +3617,6 @@ static signed int __init MFB_Init(void)
 		return Ret;
 	}
 
-#if 0
-	struct device_node *node = NULL;
-
-	node = of_find_compatible_node(NULL, NULL, "mediatek,MFB");
-	if (!node) {
-		log_err("find mediatek,MFB node failed!!!\n");
-		return -ENODEV;
-	}
-	ISP_MFB_BASE = of_iomap(node, 0);
-	if (!ISP_MFB_BASE) {
-		log_err("unable to map ISP_MFB_BASE registers!!!\n");
-		return -ENODEV;
-	}
-	log_dbg("ISP_MFB_BASE: %lx\n", ISP_MFB_BASE);
-#endif
-
-#if 0
-	isp_mfb_dir = proc_mkdir("mfb", NULL);
-	if (!isp_mfb_dir) {
-		log_err("[%s]: fail to mkdir /proc/mfb\n", __func__);
-		return 0;
-	}
-
-	/* proc_entry = proc_create("pll_test", 0644, */
-	/*	isp_mfb_dir, &pll_test_proc_fops); */
-
-	/* proc_entry = proc_create("mfb_dump", 0444, */
-	/*	isp_mfb_dir, &mfb_dump_proc_fops); */
-
-	/* proc_entry = proc_create("mfb_reg", 0644, */
-	/*	isp_mfb_dir, &mfb_reg_proc_fops); */
-#endif
 
 	/* isr log */
 	if (PAGE_SIZE <
@@ -4044,8 +3664,6 @@ static signed int __init MFB_Init(void)
 		tmp = (void *)((char *)tmp + NORMAL_STR_LEN);
 	}
 
-
-#if 1
 	/* Cmdq */
 	/* Register MFB callback */
 	log_dbg("register mfb callback for CMDQ");
@@ -4054,7 +3672,6 @@ static signed int __init MFB_Init(void)
 			   MFB_DumpCallback,
 			   MFB_ResetCallback,
 			   MFB_ClockOffCallback);
-#endif
 
 	log_dbg("- X. Ret: %d.", Ret);
 	return Ret;
@@ -4071,11 +3688,10 @@ static void __exit MFB_Exit(void)
 	/*  */
 	platform_driver_unregister(&MFBDriver);
 	/*  */
-#if 1
 	/* Cmdq */
 	/* Unregister MFB callback */
 	cmdqCoreRegisterCB(CMDQ_GROUP_MFB, NULL, NULL, NULL, NULL);
-#endif
+
 
 	kfree(pLog_kmalloc);
 
@@ -4132,7 +3748,7 @@ static irqreturn_t ISP_Irq_MFB(signed int Irq, void *DeviceId)
 			MFBInfo.WriteReqIdx =
 			    (MFBInfo.WriteReqIdx + 1) %
 			    _SUPPORT_MAX_MFB_FRAME_REQUEST_;
-#ifdef MFB_MULTIPROCESS_TIMEING_ISSUE
+#ifdef MFB_MULTIPROCESS_TIMING_ISSUE
 			/* check the write value is equal to read value ? */
 			/* actually, it doesn't happen!! */
 			if (MFBInfo.WriteReqIdx == MFBInfo.ReadReqIdx) {

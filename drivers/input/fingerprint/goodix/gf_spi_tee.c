@@ -108,7 +108,7 @@ struct TEEC_UUID uuid_ta_gf = { 0x8888c03f, 0xc30c, 0x4dd0,
 static LIST_HEAD(device_list);
 static DEFINE_MUTEX(device_list_lock);
 
-static struct wakeup_source fp_wakesrc;
+static struct wakeup_source *fp_wakelock;
 
 static unsigned int bufsiz = (25 * 1024);
 module_param(bufsiz, uint, S_IRUGO);
@@ -665,7 +665,7 @@ static irqreturn_t gf_irq(int irq, void *handle)
 	struct gf_device *gf_dev = (struct gf_device *)handle;
 	FUNC_ENTRY();
 
-	__pm_wakeup_event(&fp_wakesrc, WAKELOCK_HOLD_TIME);
+	__pm_wakeup_event(fp_wakelock, WAKELOCK_HOLD_TIME);
 	gf_netlink_send(gf_dev, GF_NETLINK_IRQ);
 	gf_dev->sig_count++;
 
@@ -792,7 +792,7 @@ static long gf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 
 	case GF_IOC_RESET:
-		printk("%s: chip reset command\n", __func__);
+		gf_debug(INFO_LOG,"%s: chip reset command\n", __func__);
 		gf_hw_reset(gf_dev, 60);
 		break;
 
@@ -807,12 +807,12 @@ static long gf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 
 	case GF_IOC_ENABLE_SPI_CLK:
-		printk("%s: GF_IOC_ENABLE_SPI_CLK ======\n", __func__);
+		gf_debug(INFO_LOG,"%s: GF_IOC_ENABLE_SPI_CLK ======\n", __func__);
 		gf_spi_clk_enable(gf_dev, 1);
 		break;
 
 	case GF_IOC_DISABLE_SPI_CLK:
-		printk("%s: GF_IOC_DISABLE_SPI_CLK ======\n", __func__);
+		gf_debug(INFO_LOG,"%s: GF_IOC_DISABLE_SPI_CLK ======\n", __func__);
 		gf_spi_clk_enable(gf_dev, 0);
 		break;
 
@@ -1147,7 +1147,7 @@ static ssize_t gf_debug_store(struct device *dev,
 	} else if (!strncmp(buf, "-13", 3)) {
 		gf_debug(INFO_LOG, "%s: parameter is -13, Vendor ID test --> 0x%x\n", __func__, g_vendor_id);
 		gf_spi_read_bytes(gf_dev, 0x0000, 4, rx_test);
-	printk("%s rx_test chip id:0x%x 0x%x 0x%x 0x%x \n", __func__,rx_test[0],rx_test[1],rx_test[2],rx_test[3]);
+	gf_debug(INFO_LOG,"%s rx_test chip id:0x%x 0x%x 0x%x 0x%x \n", __func__,rx_test[0],rx_test[1],rx_test[2],rx_test[3]);
 	} else {
 		gf_debug(ERR_LOG, "%s: wrong parameter!===============\n", __func__);
 	}
@@ -1891,7 +1891,7 @@ static int gf_probe(struct platform_device  *pdev)
 #if 0
 	mdelay(1);
 	gf_spi_read_bytes(gf_dev, 0x0000, 4, rx_test);
-	printk("%s rx_test chip id:0x%x 0x%x 0x%x 0x%x \n", __func__,rx_test[0],rx_test[1],rx_test[2],rx_test[3]);
+	gf_debug(INFO_LOG,"%s rx_test chip id:0x%x 0x%x 0x%x 0x%x \n", __func__,rx_test[0],rx_test[1],rx_test[2],rx_test[3]);
 
 	if(((rx_test[0]!=0x07) || (rx_test[3]!=0x25)) && ((rx_test[0]!=0x08) || (rx_test[3]!=0x25)) && ((rx_test[0]!=0x10) || (rx_test[3]!=0x25)) )
 	{
@@ -2047,7 +2047,7 @@ static int gf_probe(struct platform_device  *pdev)
 		goto err_input;
 	}
 
-	wakeup_source_init(&fp_wakesrc, "fp_wakesrc");
+	fp_wakelock = wakeup_source_register(NULL,"fp_wakelock");
 
 	gf_dev->probe_finish = 1;
 	gf_dev->is_sleep_mode = 0;
@@ -2121,7 +2121,7 @@ static int gf_remove(struct platform_device *pdev)
 
 	FUNC_ENTRY();
 
-	wakeup_source_trash(&fp_wakesrc);
+	wakeup_source_unregister(fp_wakelock);
 	remove_proc_entry(PROC_NAME,NULL);
 	/* make sure ops on existing fds can abort cleanly */
 	if (gf_dev->irq) {
@@ -2200,7 +2200,7 @@ static int check_hwid(struct spi_device *spi)
 	do {
 		retry ++;
 		gf_spi_read_bytes(gf_dev, 0x0000, 4, rx_test);
-		printk("%s rx_test chip id:0x%x 0x%x 0x%x 0x%x \n", __func__,rx_test[0],rx_test[1],rx_test[2],rx_test[3]);
+		gf_debug(INFO_LOG,"%s rx_test chip id:0x%x 0x%x 0x%x 0x%x \n", __func__,rx_test[0],rx_test[1],rx_test[2],rx_test[3]);
 
 		if(((rx_test[0]!=0x07) || (rx_test[3]!=0x25)) && ((rx_test[0]!=0x08) || (rx_test[3]!=0x25)) && ((rx_test[0]!=0x10) || (rx_test[3]!=0x25)) )
 		{

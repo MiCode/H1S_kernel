@@ -16,9 +16,12 @@
 #define LWTUNNEL_STATE_INPUT_REDIRECT	BIT(1)
 #define LWTUNNEL_STATE_XMIT_REDIRECT	BIT(2)
 
+/* LWTUNNEL_XMIT_CONTINUE should be distinguishable from dst_output return
+ * values (NET_XMIT_xxx and NETDEV_TX_xxx in linux/netdevice.h) for safety.
+ */
 enum {
 	LWTUNNEL_XMIT_DONE,
-	LWTUNNEL_XMIT_CONTINUE,
+	LWTUNNEL_XMIT_CONTINUE = 0x100,
 };
 
 
@@ -127,6 +130,17 @@ int lwtunnel_output(struct net *net, struct sock *sk, struct sk_buff *skb);
 int lwtunnel_input(struct sk_buff *skb);
 int lwtunnel_xmit(struct sk_buff *skb);
 
+static inline void lwtunnel_set_redirect(struct dst_entry *dst)
+{
+	if (lwtunnel_output_redirect(dst->lwtstate)) {
+		dst->lwtstate->orig_output = dst->output;
+		dst->output = lwtunnel_output;
+	}
+	if (lwtunnel_input_redirect(dst->lwtstate)) {
+		dst->lwtstate->orig_input = dst->input;
+		dst->input = lwtunnel_input;
+	}
+}
 #else
 
 static inline void lwtstate_free(struct lwtunnel_state *lws)
@@ -156,6 +170,10 @@ static inline bool lwtunnel_input_redirect(struct lwtunnel_state *lwtstate)
 static inline bool lwtunnel_xmit_redirect(struct lwtunnel_state *lwtstate)
 {
 	return false;
+}
+
+static inline void lwtunnel_set_redirect(struct dst_entry *dst)
+{
 }
 
 static inline unsigned int lwtunnel_headroom(struct lwtunnel_state *lwtstate,

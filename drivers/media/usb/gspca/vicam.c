@@ -182,7 +182,7 @@ static void vicam_dostream(struct work_struct *work)
 
 	frame_sz = gspca_dev->cam.cam_mode[gspca_dev->curr_mode].sizeimage +
 		   HEADER_SIZE;
-	buffer = kmalloc(frame_sz, GFP_KERNEL | GFP_DMA);
+	buffer = kmalloc(frame_sz, GFP_KERNEL);
 	if (!buffer) {
 		pr_err("Couldn't allocate USB buffer\n");
 		goto exit;
@@ -234,7 +234,7 @@ static int sd_init(struct gspca_dev *gspca_dev)
 {
 	int ret;
 	const struct ihex_binrec *rec;
-	const struct firmware *uninitialized_var(fw);
+	const struct firmware *fw;
 	u8 *firmware_buf;
 
 	ret = request_ihex_firmware(&fw, VICAM_FIRMWARE,

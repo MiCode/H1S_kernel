@@ -1,38 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
-
-/*
- * If TRACE_SYSTEM is defined, that will be the directory created
- * in the ftrace directory under /sys/kernel/debug/tracing/events/<system>
- *
- * The define_trace.h below will also look for a file name of
- * TRACE_SYSTEM.h where TRACE_SYSTEM is what is defined here.
- * In this case, it would look for sample.h
- *
- * If the header name will be different than the system name
- * (as in this case), then you can override the header name that
- * define_trace.h will look up by defining TRACE_INCLUDE_FILE
- *
- * This file is called trace-events-sample.h but we want the system
- * to be called "sample". Therefore we must define the name of this
- * file:
- *
- * #define TRACE_INCLUDE_FILE trace-events-sample
- *
- * As we do an the bottom of this file.
- *
- * Notice that TRACE_SYSTEM should be defined outside of #if
- * protection, just like TRACE_INCLUDE_FILE.
  */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM ccci
@@ -79,11 +47,11 @@
  * fast_assign: This is a C like function that is used to store the items
  *    into the ring buffer.
  *
- * printk: This is a way to print out the data in pretty print. This is
+ * print: This is a way to print out the data in pretty print. This is
  *    useful if the system crashes and you are logging via a serial line,
- *    the data can be printed to the console using this "printk" method.
+ *    the data can be printed to the console using this "print" method.
  *
- * Note, that for both the assign and the printk, __entry is the handler
+ * Note, that for both the assign and the print, __entry is the handler
  * to the data structure in the ring buffer, and is defined by the
  * TP_STRUCT__entry.
  */

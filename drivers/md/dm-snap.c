@@ -85,9 +85,9 @@ struct dm_snapshot {
 	 * A list of pending exceptions that completed out of order.
 	 * Protected by kcopyd single-threaded callback.
 	 */
-	struct list_head out_of_order_list;
+	struct rb_root out_of_order_tree;
 
-	mempool_t *pending_pool;
+	mempool_t pending_pool;
 
 	struct dm_exception_table pending;
 	struct dm_exception_table complete;
@@ -137,6 +137,11 @@ struct dm_snapshot {
 	 * for them to be committed.
 	 */
 	struct bio_list bios_queued_during_merge;
+
+	/*
+	 * Flush data after merge.
+	 */
+	struct bio flush_bio;
 };
 
 /*
@@ -216,7 +221,7 @@ struct dm_snap_pending_exception {
 	/* A sequence number, it is used for in-order completion. */
 	sector_t exception_sequence;
 
-	struct list_head out_of_order_entry;
+	struct rb_node out_of_order_node;
 
 	/*
 	 * For writing a complete chunk, bypassing the copy.
@@ -342,8 +347,8 @@ static int init_origin_hash(void)
 {
 	int i;
 
-	_origins = kmalloc(ORIGIN_HASH_SIZE * sizeof(struct list_head),
-			   GFP_KERNEL);
+	_origins = kmalloc_array(ORIGIN_HASH_SIZE, sizeof(struct list_head),
+				 GFP_KERNEL);
 	if (!_origins) {
 		DMERR("unable to allocate memory for _origins");
 		return -ENOMEM;
@@ -351,8 +356,9 @@ static int init_origin_hash(void)
 	for (i = 0; i < ORIGIN_HASH_SIZE; i++)
 		INIT_LIST_HEAD(_origins + i);
 
-	_dm_origins = kmalloc(ORIGIN_HASH_SIZE * sizeof(struct list_head),
-			      GFP_KERNEL);
+	_dm_origins = kmalloc_array(ORIGIN_HASH_SIZE,
+				    sizeof(struct list_head),
+				    GFP_KERNEL);
 	if (!_dm_origins) {
 		DMERR("unable to allocate memory for _dm_origins");
 		kfree(_origins);
@@ -698,7 +704,7 @@ static void free_completed_exception(struct dm_exception *e)
 
 static struct dm_snap_pending_exception *alloc_pending_exception(struct dm_snapshot *s)
 {
-	struct dm_snap_pending_exception *pe = mempool_alloc(s->pending_pool,
+	struct dm_snap_pending_exception *pe = mempool_alloc(&s->pending_pool,
 							     GFP_NOIO);
 
 	atomic_inc(&s->pending_exceptions_count);
@@ -711,7 +717,7 @@ static void free_pending_exception(struct dm_snap_pending_exception *pe)
 {
 	struct dm_snapshot *s = pe->snap;
 
-	mempool_free(pe, s->pending_pool);
+	mempool_free(pe, &s->pending_pool);
 	smp_mb__before_atomic();
 	atomic_dec(&s->pending_exceptions_count);
 }
@@ -788,7 +794,7 @@ static int dm_add_exception(void *context, chunk_t old, chunk_t new)
 static uint32_t __minimum_chunk_size(struct origin *o)
 {
 	struct dm_snapshot *snap;
-	unsigned chunk_size = 0;
+	unsigned chunk_size = rounddown_pow_of_two(UINT_MAX);
 
 	if (o)
 		list_for_each_entry(snap, &o->snapshots, list)
@@ -1060,6 +1066,17 @@ shut:
 
 static void error_bios(struct bio *bio);
 
+static int flush_data(struct dm_snapshot *s)
+{
+	struct bio *flush_bio = &s->flush_bio;
+
+	bio_reset(flush_bio);
+	bio_set_dev(flush_bio, s->origin->bdev);
+	flush_bio->bi_opf = REQ_OP_WRITE | REQ_PREFLUSH;
+
+	return submit_bio_wait(flush_bio);
+}
+
 static void merge_callback(int read_err, unsigned long write_err, void *context)
 {
 	struct dm_snapshot *s = context;
@@ -1070,6 +1087,11 @@ static void merge_callback(int read_err, unsigned long write_err, void *context)
 			DMERR("Read error: shutting down merge.");
 		else
 			DMERR("Write error: shutting down merge.");
+		goto shut;
+	}
+
+	if (flush_data(s) < 0) {
+		DMERR("Flush after merge failed: shutting down merge");
 		goto shut;
 	}
 
@@ -1188,7 +1210,7 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	atomic_set(&s->pending_exceptions_count, 0);
 	s->exception_start_sequence = 0;
 	s->exception_complete_sequence = 0;
-	INIT_LIST_HEAD(&s->out_of_order_list);
+	s->out_of_order_tree = RB_ROOT;
 	mutex_init(&s->lock);
 	INIT_LIST_HEAD(&s->list);
 	spin_lock_init(&s->pe_lock);
@@ -1197,6 +1219,7 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	s->first_merging_chunk = 0;
 	s->num_merging_chunks = 0;
 	bio_list_init(&s->bios_queued_during_merge);
+	bio_init(&s->flush_bio, NULL, 0);
 
 	/* Allocate hash table for COW data */
 	if (init_hash_tables(s)) {
@@ -1214,10 +1237,9 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad_kcopyd;
 	}
 
-	s->pending_pool = mempool_create_slab_pool(MIN_IOS, pending_cache);
-	if (!s->pending_pool) {
+	r = mempool_init_slab_pool(&s->pending_pool, MIN_IOS, pending_cache);
+	if (r) {
 		ti->error = "Could not allocate mempool for pending exceptions";
-		r = -ENOMEM;
 		goto bad_pending_pool;
 	}
 
@@ -1264,6 +1286,7 @@ static int snapshot_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	if (!s->store->chunk_size) {
 		ti->error = "Chunk size not set";
+		r = -EINVAL;
 		goto bad_read_metadata;
 	}
 
@@ -1277,7 +1300,7 @@ bad_read_metadata:
 	unregister_snapshot(s);
 
 bad_load_and_register:
-	mempool_destroy(s->pending_pool);
+	mempool_exit(&s->pending_pool);
 
 bad_pending_pool:
 	dm_kcopyd_client_destroy(s->kcopyd_client);
@@ -1373,7 +1396,7 @@ static void snapshot_dtr(struct dm_target *ti)
 	while (atomic_read(&s->pending_exceptions_count))
 		msleep(1);
 	/*
-	 * Ensure instructions in mempool_destroy aren't reordered
+	 * Ensure instructions in mempool_exit aren't reordered
 	 * before atomic_read.
 	 */
 	smp_mb();
@@ -1385,11 +1408,13 @@ static void snapshot_dtr(struct dm_target *ti)
 
 	__free_exceptions(s);
 
-	mempool_destroy(s->pending_pool);
+	mempool_exit(&s->pending_pool);
 
 	dm_exception_store_destroy(s->store);
 
 	mutex_destroy(&s->lock);
+
+	bio_uninit(&s->flush_bio);
 
 	dm_put_device(ti, s->cow);
 
@@ -1604,28 +1629,41 @@ static void copy_callback(int read_err, unsigned long write_err, void *context)
 	pe->copy_error = read_err || write_err;
 
 	if (pe->exception_sequence == s->exception_complete_sequence) {
+		struct rb_node *next;
+
 		s->exception_complete_sequence++;
 		complete_exception(pe);
 
-		while (!list_empty(&s->out_of_order_list)) {
-			pe = list_entry(s->out_of_order_list.next,
-					struct dm_snap_pending_exception, out_of_order_entry);
+		next = rb_first(&s->out_of_order_tree);
+		while (next) {
+			pe = rb_entry(next, struct dm_snap_pending_exception,
+					out_of_order_node);
 			if (pe->exception_sequence != s->exception_complete_sequence)
 				break;
+			next = rb_next(next);
 			s->exception_complete_sequence++;
-			list_del(&pe->out_of_order_entry);
+			rb_erase(&pe->out_of_order_node, &s->out_of_order_tree);
 			complete_exception(pe);
+			cond_resched();
 		}
 	} else {
-		struct list_head *lh;
+		struct rb_node *parent = NULL;
+		struct rb_node **p = &s->out_of_order_tree.rb_node;
 		struct dm_snap_pending_exception *pe2;
 
-		list_for_each_prev(lh, &s->out_of_order_list) {
-			pe2 = list_entry(lh, struct dm_snap_pending_exception, out_of_order_entry);
-			if (pe2->exception_sequence < pe->exception_sequence)
-				break;
+		while (*p) {
+			pe2 = rb_entry(*p, struct dm_snap_pending_exception, out_of_order_node);
+			parent = *p;
+
+			BUG_ON(pe->exception_sequence == pe2->exception_sequence);
+			if (pe->exception_sequence < pe2->exception_sequence)
+				p = &((*p)->rb_left);
+			else
+				p = &((*p)->rb_right);
 		}
-		list_add(&pe->out_of_order_entry, lh);
+
+		rb_link_node(&pe->out_of_order_node, parent, p);
+		rb_insert_color(&pe->out_of_order_node, &s->out_of_order_tree);
 	}
 	account_end_copy(s);
 }

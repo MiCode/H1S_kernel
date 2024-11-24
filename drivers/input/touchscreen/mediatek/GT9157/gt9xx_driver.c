@@ -1,18 +1,7 @@
-/* drivers/input/touchscreen/mediatek/gt9xx_mtk/gt9xx_driver.c
- *
- * Copyright  (C)  2010 - 2016 Goodix., Ltd.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * Version: V2.6
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include "gt9xx_config.h"
 #include "include/tpd_gt9xx_common.h"
@@ -2843,5 +2832,5 @@ static void __exit tpd_driver_exit(void)
 }
 module_init(tpd_driver_init);
 module_exit(tpd_driver_exit);
-MODULE_LICENSE(GTP v2);
+MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("GT9 Series Touch Panel Driver");

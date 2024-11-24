@@ -194,7 +194,9 @@ static int caam_rsa_count_leading_zeros(struct scatterlist *sgl,
 		if (len && *buff)
 			break;
 
-		sg_miter_next(&miter);
+		if (!sg_miter_next(&miter))
+			break;
+
 		buff = miter.addr;
 		len = miter.length;
 
@@ -783,19 +785,12 @@ static u8 *caam_read_rsa_crt(const u8 *ptr, size_t nbytes, size_t dstlen)
  */
 static inline u8 *caam_read_raw_data(const u8 *buf, size_t *nbytes)
 {
-	u8 *val;
 
 	caam_rsa_drop_leading_zeros(&buf, nbytes);
 	if (!*nbytes)
 		return NULL;
 
-	val = kzalloc(*nbytes, GFP_DMA | GFP_KERNEL);
-	if (!val)
-		return NULL;
-
-	memcpy(val, buf, *nbytes);
-
-	return val;
+	return kmemdup(buf, *nbytes, GFP_DMA | GFP_KERNEL);
 }
 
 static int caam_rsa_check_key_length(unsigned int len)

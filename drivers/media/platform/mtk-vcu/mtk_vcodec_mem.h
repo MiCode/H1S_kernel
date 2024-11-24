@@ -1,15 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2017 MediaTek Inc.
- * Author: Yunfei Dong <yunfei.dong@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef MTK_VCODEC_MEM_H
@@ -55,12 +46,18 @@ struct mtk_vcu_mem {
 	struct dma_buf *dbuf;
 	dma_addr_t iova;
 	atomic_t ref_cnt;
+	uint64_t va_id;
 };
 
 struct vcu_pa_pages {
 	unsigned long pa;
 	unsigned long kva;
 	atomic_t ref_cnt;
+	struct list_head list;
+};
+
+struct vcu_page_info {
+	struct vcu_pa_pages *page;
 	struct list_head list;
 };
 

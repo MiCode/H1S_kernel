@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __MODEM_DPMA_H__
@@ -21,9 +13,7 @@
 #include <linux/interrupt.h>
 #include <linux/hrtimer.h>
 #include <linux/skbuff.h>
-#include <mt-plat/mtk_ccci_common.h>
-
-#include "ccci_config.h"
+#include "mt-plat/mtk_ccci_common.h"
 #include "ccci_bm.h"
 #include "ccci_hif_internal.h"
 /*
@@ -309,7 +299,10 @@ struct dpmaif_drb_msg {
 	unsigned int    count_l:16;
 	unsigned int    channel_id:8;
 	unsigned int    network_type:3;
-	unsigned int    reserved2:5;
+	unsigned int    r:1;
+	unsigned int    ipv4:1; /* enable ul checksum offload for ipv4 header */
+	unsigned int    l4:1; /* enable ul checksum offload for tcp/udp */
+	unsigned int    rsv:2;
 };
 
 struct dpmaif_drb_skb {
@@ -369,8 +362,16 @@ enum hifdpmaif_state {
 	HIFDPMAIF_STATE_MAX,
 };
 
+
+struct  ccci_hif_dpmaif_val {
+	struct regmap *infra_ao_base;
+	unsigned int md_gen;
+	unsigned long offset_epof_md1;
+	void __iomem *md_plat_info;
+};
+
 struct hif_dpmaif_ctrl {
-	 enum hifdpmaif_state dpmaif_state;
+	enum hifdpmaif_state dpmaif_state;
 	struct dpmaif_tx_queue txq[DPMAIF_TXQ_NUM];
 	struct dpmaif_rx_queue rxq[DPMAIF_RXQ_NUM];
 	struct dma_pool *tx_drb_dmapool;
@@ -408,9 +409,15 @@ struct hif_dpmaif_ctrl {
 	struct timer_list traffic_monitor;
 	char traffic_started;
 #endif
+	struct clk *clk_ref0;
+	struct clk *clk_ref1;
+	struct platform_device *plat_dev; /* maybe: no need. */
+	struct ccci_hif_dpmaif_val plat_val;
 
+	atomic_t suspend_flag;
 };
 
+#ifndef CCCI_KMODULE_ENABLE
 static inline int ccci_dpma_hif_send_skb(unsigned char hif_id, int tx_qno,
 	struct sk_buff *skb, int from_pool, int blocking)
 {
@@ -449,13 +456,14 @@ static inline int ccci_dpma_hif_give_more(unsigned char hif_id, int rx_qno)
 }
 
 static inline int ccci_dpmaif_hif_dump_status(unsigned char hif_id,
-	enum MODEM_DUMP_FLAG dump_flag, int length)
+	enum MODEM_DUMP_FLAG dump_flag, void *buff, int length)
 {
 	struct hif_dpmaif_ctrl *hif_ctrl =
 		(struct hif_dpmaif_ctrl *)ccci_hif_get_by_id(hif_id);
 
 	if (hif_ctrl)
-		return hif_ctrl->ops->dump_status(hif_id, dump_flag, length);
+		return hif_ctrl->ops->dump_status(hif_id, dump_flag,
+			buff, length);
 	else
 		return -1;
 
@@ -474,30 +482,46 @@ static inline int ccci_dpmaif_hif_set_wakeup_src(unsigned char hif_id,
 
 }
 
+#else
 
-int ccci_dpmaif_hif_init(unsigned char hif_id, unsigned char md_id);
+#define ccci_write32(b, a, v)  \
+do { \
+	writel(v, (b) + (a)); \
+	mb(); /* make sure register access in order */ \
+} while (0)
+
+
+#define ccci_write16(b, a, v)  \
+do { \
+	writew(v, (b) + (a)); \
+	mb(); /* make sure register access in order */ \
+} while (0)
+
+
+#define ccci_write8(b, a, v)  \
+do { \
+	writeb(v, (b) + (a)); \
+	mb(); /* make sure register access in order */ \
+} while (0)
+
+
+#define ccci_read32(b, a)               ioread32((void __iomem *)((b)+(a)))
+#define ccci_read16(b, a)               ioread16((void __iomem *)((b)+(a)))
+#define ccci_read8(b, a)                ioread8((void __iomem *)((b)+(a)))
+#endif
+
+int ccci_dpmaif_hif_init(struct device *dev);
 int dpmaif_late_init(unsigned char hif_id);
 int dpmaif_start(unsigned char hif_id);
 int dpmaif_stop_rx(unsigned char hif_id);
 int dpmaif_stop_tx(unsigned char hif_id);
 int dpmaif_stop(unsigned char hif_id);
 void dpmaif_stop_hw(void);
-#ifdef CONFIG_MTK_GIC_V3_EXT
+extern struct regmap *syscon_regmap_lookup_by_phandle(struct device_node *np,
+	const char *property);
+extern int regmap_write(struct regmap *map, unsigned int reg, unsigned int val);
+extern int regmap_read(struct regmap *map, unsigned int reg, unsigned int *val);
 extern void mt_irq_dump_status(int irq);
-#endif
-
-/* =======================================================
- *
- * Test feature list
- *
- * ========================================================
- */
-/* #define USING_BATCHING */
-
-#ifdef USING_BATCHING
-extern int ccmni_header(int md_id, int ccmni_idx, struct sk_buff *skb);
-extern int ccmni_rx_list_push(int md_id, int ccmni_idx, struct list_head *head,
-			bool is_gro);
-#endif
-
+extern int dpmaif_suspend_noirq(struct device *dev);
+extern int dpmaif_resume_noirq(struct device *dev);
 #endif				/* __MODEM_DPMA_H__ */

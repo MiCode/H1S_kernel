@@ -5,4 +5,3 @@ config MTK_HF_LSM6DSM_SECONDARY
 	  If this option is set,
 	  it will support
 	  lsm6dsm secondary gyroscope sensor.
-

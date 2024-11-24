@@ -34,6 +34,9 @@ synproxy_parse_options(const struct sk_buff *skb, unsigned int doff,
 	int length = (th->doff * 4) - sizeof(*th);
 	u8 buf[40], *ptr;
 
+	if (unlikely(length < 0))
+		return false;
+
 	ptr = skb_header_pointer(skb, doff + sizeof(*th), length, buf);
 	if (ptr == NULL)
 		return false;
@@ -50,6 +53,8 @@ synproxy_parse_options(const struct sk_buff *skb, unsigned int doff,
 			length--;
 			continue;
 		default:
+			if (length < 2)
+				return true;
 			opsize = *ptr++;
 			if (opsize < 2)
 				return true;
@@ -273,7 +278,7 @@ static void *synproxy_cpu_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 		*pos = cpu + 1;
 		return per_cpu_ptr(snet->stats, cpu);
 	}
-
+	(*pos)++;
 	return NULL;
 }
 
@@ -310,24 +315,10 @@ static const struct seq_operations synproxy_cpu_seq_ops = {
 	.show		= synproxy_cpu_seq_show,
 };
 
-static int synproxy_cpu_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open_net(inode, file, &synproxy_cpu_seq_ops,
-			    sizeof(struct seq_net_private));
-}
-
-static const struct file_operations synproxy_cpu_seq_fops = {
-	.owner		= THIS_MODULE,
-	.open		= synproxy_cpu_seq_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release_net,
-};
-
 static int __net_init synproxy_proc_init(struct net *net)
 {
-	if (!proc_create("synproxy", S_IRUGO, net->proc_net_stat,
-			 &synproxy_cpu_seq_fops))
+	if (!proc_create_net("synproxy", 0444, net->proc_net_stat,
+			&synproxy_cpu_seq_ops, sizeof(struct seq_net_private)))
 		return -ENOMEM;
 	return 0;
 }

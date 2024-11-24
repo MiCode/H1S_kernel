@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "DSI"
@@ -34,7 +26,7 @@
 #include "ddp_mmp.h"
 #include "disp_helper.h"
 #include "ddp_reg.h"
-
+#include "lcm_drv.h"
 #ifdef CONFIG_MTK_LEGACY
 #include <mach/mt_gpio.h>
 #include <cust_gpio_usage.h>
@@ -45,12 +37,7 @@
 #include "ddp_clkmgr.h"
 #include "primary_display.h"
 
-#if defined(CONFIG_MTK_SMI_EXT)
-#include <smi_public.h>
-#endif
-
 #include <asm/arch_timer.h>
-
 /*****************************************************************************/
 enum MIPITX_PAD_VALUE {
 	PAD_D2P_V = 0,
@@ -145,10 +132,6 @@ do {	\
 } while (0)
 #endif
 
-#define DSI_MODULE_BEGIN(x)	\
-	(x == DISP_MODULE_DSIDUAL ? 0 : DSI_MODULE_to_ID(x))
-#define DSI_MODULE_END(x) \
-	(x == DISP_MODULE_DSIDUAL ? 1 : DSI_MODULE_to_ID(x))
 #define DSI_MODULE_to_ID(x)	(x == DISP_MODULE_DSI0 ? 0 : 1)
 #define DIFF_CLK_LANE_LP (0x10)
 
@@ -174,6 +157,21 @@ struct t_dsi_context {
 	struct t_condition_wq vm_cmd_done_wq; /* init dsi */
 	struct t_condition_wq sleep_out_done_wq; /* init dsi */
 	struct t_condition_wq sleep_in_done_wq; /* init dsi */
+	unsigned int vsa;
+	unsigned int vbp;
+	unsigned int vfp;
+	unsigned int hsa_byte;
+	unsigned int hbp_byte;
+	unsigned int hfp_byte;
+	unsigned int hbllp_byte;
+
+	//high frame rate
+	unsigned int data_phy_cycle;
+	unsigned int HS_TRAIL;
+
+	/*DynFPS*/
+	unsigned int disp_fps;
+	unsigned int dynfps_chg_index;
 };
 
 struct t_dsi_context _dsi_context[DSI_INTERFACE_NUM];
@@ -192,6 +190,7 @@ static struct LCM_UTIL_FUNCS lcm_utils_dsi0;
 static struct LCM_UTIL_FUNCS lcm_utils_dsi1;
 static struct LCM_UTIL_FUNCS lcm_utils_dsidual;
 static cmdqBackupSlotHandle _h_intstat;
+static int mipi_clk_change_sta;
 unsigned int impendance0[2] = { 0 }; /* MIPITX_DSI_IMPENDANCE0 */
 unsigned int impendance1[2] = { 0 }; /* MIPITX_DSI_IMPENDANCE1 */
 unsigned int impendance2[2] = { 0 }; /* MIPITX_DSI_IMPENDANCE2 */
@@ -202,9 +201,64 @@ unsigned int data_lane1[2] = { 0 }; /* MIPITX_DSI_DATA_LANE1 */
 unsigned int data_lane2[2] = { 0 }; /* MIPITX_DSI_DATA_LANE2 */
 unsigned int data_lane3[2] = { 0 }; /* MIPITX_DSI_DATA_LANE3 */
 
-unsigned int mipitx_impedance_backup[5];
+unsigned int mipitx_impedance_backup[50];
+atomic_t dsi_idle_flg = ATOMIC_INIT(0);
+
+static void refill_mipitx_impedance(void *cmdq)
+{
+	int i = 0, j = 0, cnt = 0;
+	unsigned long addr = DSI_PHY_REG[0] + 0x100;
+
+	for (i = 0; i < 5; i++) {
+		for (j = 0; j < 4; j++) {
+			DSI_OUTREG32(cmdq, addr,
+				mipitx_impedance_backup[cnt]);
+			cnt++;
+			addr += 0x4;
+		}
+		addr += 0x4; /* 0x114 - 0x110 */
+		for (j = 0; j < 4; j++) {
+			DSI_OUTREG32(cmdq, addr,
+				mipitx_impedance_backup[cnt]);
+			cnt++;
+			addr += 0x4;
+		}
+		addr += 0xA4; /* 0x1C8 - 0x124 */
+		DSI_OUTREG32(cmdq, addr,
+			mipitx_impedance_backup[cnt]);
+		cnt++;
+		addr += 0x4; /* 0x1CC - 0x1C8 */
+		DSI_OUTREG32(cmdq, addr,
+			mipitx_impedance_backup[cnt]);
+		cnt++;
+		addr += 0x34; /* 0x200 - 0x1CC */
+	}
+}
 
 atomic_t PMaster_enable = ATOMIC_INIT(0);
+static int DSI_MODULE_BEGIN(enum DISP_MODULE_ENUM module)
+{
+	if (module == DISP_MODULE_DSI0)
+		return 0;
+	else if (module == DISP_MODULE_DSI1)
+		return 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		return 0;
+
+	return 0;
+}
+
+static int DSI_MODULE_END(enum DISP_MODULE_ENUM module)
+{
+	if (module == DISP_MODULE_DSI0)
+		return 0;
+	else if (module == DISP_MODULE_DSI1)
+		return 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		return 1;
+
+	return 0;
+}
 
 static void _init_condition_wq(struct t_condition_wq *waitq)
 {
@@ -293,13 +347,22 @@ static const char *_dsi_vdo_mode_parse_state(unsigned int state)
 
 enum DSI_STATUS DSI_DumpRegisters(enum DISP_MODULE_ENUM module, int level)
 {
-	u32 i = 0;
+	u32 i = 0, module_num;
 	u32 k = 0;
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return DSI_STATUS_ERROR;
+	}
 
 	DDPDUMP("== DISP DSI REGS ==\n");
 	if (level >= 0) {
-		for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module);
-		i++) {
+		for (i = 0; i < module_num; i++) {
 			unsigned int DSI_DBG8_Status;
 			unsigned int DSI_DBG9_Status;
 			unsigned long dsi_base_addr =
@@ -332,8 +395,7 @@ enum DSI_STATUS DSI_DumpRegisters(enum DISP_MODULE_ENUM module, int level)
 		}
 	}
 	if (level >= 1) {
-		for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module);
-			i++) {
+		for (i = 0; i < module_num; i++) {
 			unsigned long dsi_base_addr =
 				(unsigned long)DSI_REG[i];
 #ifndef CONFIG_FPGA_EARLY_PORTING
@@ -488,10 +550,20 @@ static void _DSI_INTERNAL_IRQ_Handler(enum DISP_MODULE_ENUM module,
 static enum DSI_STATUS DSI_Reset(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq)
 {
-	int i = 0;
+	int i = 0, module_num;
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return DSI_STATUS_ERROR;
+	}
 
 	/* do reset */
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	for (i = 0; i < module_num; i++) {
 		DSI_OUTREGBIT(cmdq, struct DSI_COM_CTRL_REG,
 			DSI_REG[i]->DSI_COM_CTRL, DSI_RESET, 1);
 		DSI_OUTREGBIT(cmdq, struct DSI_COM_CTRL_REG,
@@ -517,15 +589,24 @@ static enum DSI_STATUS DPHY_Reset(enum DISP_MODULE_ENUM module,
 	return DSI_STATUS_OK;
 }
 
-
 static enum DSI_STATUS DSI_SetMode(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq, unsigned int mode)
 {
-	int i = 0;
+	int i = 0, module_num;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++)
+	if ((module == DISP_MODULE_DSI0) || (module == DISP_MODULE_DSI1))
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invalid dsi module %d\n", (unsigned int)module);
+		return DSI_STATUS_ERROR;
+	}
+
+	for (i = 0; i < module_num; i++) {
 		DSI_OUTREGBIT(cmdq, struct DSI_MODE_CTRL_REG,
 		DSI_REG[i]->DSI_MODE_CTRL, MODE, mode);
+	}
 
 	return DSI_STATUS_OK;
 }
@@ -533,9 +614,19 @@ static enum DSI_STATUS DSI_SetMode(enum DISP_MODULE_ENUM module,
 void DSI_clk_HS_mode(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq,
 	bool enter)
 {
-	int i = 0;
+	int i = 0, module_num;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return;
+	}
+
+	for (i = 0; i < module_num; i++) {
 		if (enter) {
 			DSI_OUTREGBIT(cmdq, struct DSI_PHY_LCCON_REG,
 				DSI_REG[i]->DSI_PHY_LCCON, LC_HS_TX_EN, 1);
@@ -557,12 +648,22 @@ void DSI_clk_HS_mode(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq,
  */
 void DSI_enter_ULPS(enum DISP_MODULE_ENUM module)
 {
-	int i = 0;
+	int i = 0, module_num;
 	int ret = 0;
 	struct t_condition_wq *waitq;
 
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return;
+	}
+
 	DSI_clk_HS_mode(module, NULL, FALSE); /* ??? should be hs disable */
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	for (i = 0; i < module_num; i++) {
 		ASSERT(DSI_REG[i]->DSI_PHY_LD0CON.L0_ULPM_EN == 0);
 		ASSERT(DSI_REG[i]->DSI_PHY_LCCON.LC_ULPM_EN == 0);
 		DSI_OUTREGBIT(NULL, struct DSI_INT_ENABLE_REG,
@@ -570,10 +671,11 @@ void DSI_enter_ULPS(enum DISP_MODULE_ENUM module)
 
 		DSI_OUTREGBIT(NULL, struct DSI_PHY_LD0CON_REG,
 			DSI_REG[i]->DSI_PHY_LD0CON, Lx_ULPM_AS_L0, 1);
-		DSI_OUTREGBIT(NULL, struct DSI_PHY_LD0CON_REG,
-			DSI_REG[i]->DSI_PHY_LD0CON, L0_ULPM_EN, 1);
 		DSI_OUTREGBIT(NULL, struct DSI_PHY_LCCON_REG,
 			DSI_REG[i]->DSI_PHY_LCCON, LC_ULPM_EN, 1);
+		udelay(1);
+		DSI_OUTREGBIT(NULL, struct DSI_PHY_LD0CON_REG,
+			DSI_REG[i]->DSI_PHY_LD0CON, L0_ULPM_EN, 1);
 
 		waitq = &(_dsi_context[i].sleep_in_done_wq);
 		ret = wait_event_timeout(waitq->wq,
@@ -588,8 +690,6 @@ void DSI_enter_ULPS(enum DISP_MODULE_ENUM module)
 		DSI_OUTREGBIT(NULL, struct DSI_INT_ENABLE_REG,
 			DSI_REG[i]->DSI_INTEN, SLEEPIN_ULPS_INT_EN, 0);
 		/* clear lane_num when enter ulps */
-		DSI_OUTREGBIT(NULL, struct DSI_TXRX_CTRL_REG,
-			DSI_REG[i]->DSI_TXRX_CTRL, LANE_NUM, 0);
 	}
 }
 
@@ -604,27 +704,48 @@ void DSI_enter_ULPS(enum DISP_MODULE_ENUM module)
  */
 void DSI_exit_ULPS(enum DISP_MODULE_ENUM module)
 {
-	int i = 0;
+	int i = 0, module_num;
 	int ret = 0;
 	unsigned int lane_num_bitvalue = 0;
+	int wake_up_prd = 0;
+	struct t_condition_wq *waitq;
 	/* wake_up_prd * 1024 * cycle time > 1ms */
 	unsigned int data_rate =
 		_dsi_context[i].dsi_params.data_rate != 0 ?
 			_dsi_context[i].dsi_params.data_rate :
 			_dsi_context[i].dsi_params.PLL_CLOCK * 2;
-	int wake_up_prd = (data_rate * 1000) / (1024 * 8) + 0x1;
-	struct t_condition_wq *waitq;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	/*for mipi hopping*/
+	if (mipi_clk_change_sta) {
+		data_rate = _dsi_context[i].dsi_params.data_rate_dyn != 0 ?
+			_dsi_context[i].dsi_params.data_rate_dyn :
+			_dsi_context[i].dsi_params.PLL_CLOCK_dyn * 2;
+
+	}
+	/*DynFPS*/
+	/*exit ulps only happen when power on
+	 * and power on need use the default fps,
+	 * because init sequence using default fps
+	 * no need check dynfps value
+	 */
+
+	wake_up_prd = (data_rate * 1000) / (1024 * 8) + 0x1;
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return;
+	}
+
+	for (i = 0; i < module_num; i++) {
 		DSI_OUTREGBIT(NULL, struct DSI_PHY_LD0CON_REG,
 			DSI_REG[i]->DSI_PHY_LD0CON, Lx_ULPM_AS_L0, 1);
 		DSI_OUTREGBIT(NULL, struct DSI_INT_ENABLE_REG,
 			DSI_REG[i]->DSI_INTEN, SLEEPOUT_DONE, 1);
-		DSI_OUTREGBIT(NULL, struct DSI_MODE_CTRL_REG,
-			DSI_REG[i]->DSI_MODE_CTRL, SLEEP_MODE, 1);
-		DSI_OUTREGBIT(NULL, struct DSI_TIME_CON0_REG,
-			DSI_REG[i]->DSI_TIME_CON0, UPLS_WAKEUP_PRD,
-			wake_up_prd);
 
 		switch (_dsi_context[i].dsi_params.LANE_NUM) {
 		case LCM_ONE_LANE:
@@ -646,6 +767,11 @@ void DSI_exit_ULPS(enum DISP_MODULE_ENUM module)
 		DSI_OUTREGBIT(NULL, struct DSI_TXRX_CTRL_REG,
 			DSI_REG[i]->DSI_TXRX_CTRL, LANE_NUM, lane_num_bitvalue);
 
+		DSI_OUTREGBIT(NULL, struct DSI_MODE_CTRL_REG,
+			DSI_REG[i]->DSI_MODE_CTRL, SLEEP_MODE, 1);
+		DSI_OUTREGBIT(NULL, struct DSI_TIME_CON0_REG,
+			DSI_REG[i]->DSI_TIME_CON0, UPLS_WAKEUP_PRD,
+			wake_up_prd);
 		DSI_OUTREGBIT(NULL, struct DSI_START_REG,
 			DSI_REG[i]->DSI_START, SLEEPOUT_START, 0);
 		DSI_OUTREGBIT(NULL, struct DSI_START_REG,
@@ -662,7 +788,7 @@ void DSI_exit_ULPS(enum DISP_MODULE_ENUM module)
 		}
 	}
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	for (i = 0; i < module_num; i++) {
 		DSI_OUTREGBIT(NULL, struct DSI_INT_ENABLE_REG,
 			DSI_REG[i]->DSI_INTEN, SLEEPOUT_DONE, 0);
 		DSI_OUTREGBIT(NULL, struct DSI_START_REG,
@@ -674,10 +800,20 @@ void DSI_exit_ULPS(enum DISP_MODULE_ENUM module)
 
 static int _check_dsi_mode(enum DISP_MODULE_ENUM module)
 {
-	int i = 0;
+	int i = 0, module_num;
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return -1;
+	}
 
 	/* check validity */
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	for (i = 0; i < module_num; i++) {
 		switch (DSI_REG[i]->DSI_MODE_CTRL.MODE) {
 		case CMD_MODE:
 		case SYNC_EVENT_VDO_MODE:
@@ -701,10 +837,20 @@ static int _check_dsi_mode(enum DISP_MODULE_ENUM module)
 
 static int _is_lcm_cmd_mode(enum DISP_MODULE_ENUM module)
 {
-	int i = 0;
+	int i = 0, module_num;
 	int ret = 0;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return -1;
+	}
+
+	for (i = 0; i < module_num; i++) {
 		if (_dsi_context[i].dsi_params.mode == CMD_MODE)
 			ret++;
 	}
@@ -713,7 +859,7 @@ static int _is_lcm_cmd_mode(enum DISP_MODULE_ENUM module)
 }
 
 static void _dsi_wait_not_busy_(enum DISP_MODULE_ENUM module,
-	struct cmdqRecStruct *cmdq)
+			      struct cmdqRecStruct *cmdq)
 {
 	unsigned int loop_cnt = 0;
 	int i = 0;
@@ -728,6 +874,19 @@ static void _dsi_wait_not_busy_(enum DISP_MODULE_ENUM module,
 		return;
 
 	if (cmdq) {
+
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+		cmdqRecWait(cmdq,
+		(i == 0) ?
+		CMDQ_EVENT_DSI0_DONE_EVENT :
+		CMDQ_EVENT_DSI1_DONE_EVENT);
+		/*avoid influence the stability already achieved
+		 * only change to wait for DynFPS
+		 */
+#else
+		DSI_POLLREG32(cmdq, &DSI_REG[i]->DSI_INTSTA, 0x80000000, 0x0);
+#endif
+
 		DSI_POLLREG32(cmdq, &DSI_REG[i]->DSI_INTSTA, 0x80000000, 0x0);
 		return;
 	}
@@ -747,7 +906,6 @@ static void dsi_wait_not_busy(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq)
 {
 	int i = 0;
-	unsigned int loop_cnt = 0;
 
 	if (module == DISP_MODULE_DSI0)
 		i = 0;
@@ -758,43 +916,28 @@ static void dsi_wait_not_busy(enum DISP_MODULE_ENUM module,
 	else
 		return;
 
-
-	if (DSI_REG[i]->DSI_MODE_CTRL.MODE)
-		/* only cmd mode can wait cmddone */
+	if (DSI_REG[i]->DSI_MODE_CTRL.MODE) /* only cmd mode can wait cmddone */
 		return;
 
-	if (cmdq) {
-		DSI_POLLREG32(cmdq, &DSI_REG[i]->DSI_INTSTA, 0x80000000, 0x0);
-		return;
-	}
-
-	if (!(DSI_REG[i]->DSI_INTSTA.BUSY))
-		return;
-
-#if 0
-	ret = wait_event_timeout(_dsi_context[i].cmddone_wq.wq,
-				 !(DSI_REG[i]->DSI_INTSTA.BUSY), HZ / 10);
-	if (ret == 0) {
-		DISPERR("dsi%d wait cmddone(not busy) timeout\n", i);
-		DSI_DumpRegisters(module, 1);
-		DSI_Reset(module, NULL);
-	}
-#else
-	while (loop_cnt < 100*1000) {
-		if (!(DSI_REG[i]->DSI_INTSTA.BUSY))
-			break;
-		loop_cnt++;
-		udelay(1);
-	}
-#endif
+	_dsi_wait_not_busy_(module, cmdq);
 }
 
 enum DSI_STATUS DSI_BIST_Pattern_Test(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq, bool enable, unsigned int color)
 {
-	int i = 0;
+	unsigned int i = 0, module_num;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return DSI_STATUS_ERROR;
+	}
+
+	for (i = 0; i < module_num; i++) {
 		if (enable) {
 			DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_BIST_PATTERN,
 				color);
@@ -833,9 +976,19 @@ enum DSI_STATUS DSI_BIST_Pattern_Test(enum DISP_MODULE_ENUM module,
 int ddp_dsi_porch_setting(enum DISP_MODULE_ENUM module, void *handle,
 	enum DSI_PORCH_TYPE type, unsigned int value)
 {
-	int i, ret = 0;
+	int i, module_num, ret = 0;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return -1;
+	}
+
+	for (i = 0; i < module_num; i++) {
 		if (type == DSI_VFP) {
 			DISPINFO("set dsi%d vfp to %d\n", i, value);
 			DSI_OUTREG32(handle, &DSI_REG[i]->DSI_VFP_NL, value);
@@ -875,7 +1028,7 @@ int ddp_dsi_porch_setting(enum DISP_MODULE_ENUM module, void *handle,
 static void DSI_Get_Porch_Addr(enum DISP_MODULE_ENUM module,
 	unsigned long *pAddr)
 {
-	int i = 0;
+	int i = 0, module_num;
 	unsigned long porch_addr = 0;
 	enum DSI_PORCH_TYPE porch_type = DSI_VFP;
 
@@ -884,8 +1037,18 @@ static void DSI_Get_Porch_Addr(enum DISP_MODULE_ENUM module,
 		return;
 	}
 
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return;
+	}
+
 	porch_type = (enum DSI_PORCH_TYPE)(*pAddr);
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	for (i = 0; i < module_num; i++) {
 		if (porch_type == DSI_VFP) {
 			porch_addr =
 				(unsigned long)(&DSI_REG[i]->DSI_VFP_NL);
@@ -898,10 +1061,216 @@ static void DSI_Get_Porch_Addr(enum DISP_MODULE_ENUM module,
 	}
 }
 
+void DSI_DPHY_Calc_VDO_Timing(enum DISP_MODULE_ENUM module,
+		struct LCM_DSI_PARAMS *dsi_params)
+{
+	int i;
+	unsigned int dsiTmpBufBpp;
+	unsigned int t_vfp, t_vbp, t_vsa;
+	unsigned int t_hfp, t_hbp, t_hsa;
+	unsigned int t_hbllp;
+
+	t_vfp = (mipi_clk_change_sta) ?
+		(dsi_params->vertical_frontporch_dyn == 0 ?
+		 dsi_params->vertical_frontporch :
+		 dsi_params->vertical_frontporch_dyn) :
+		dsi_params->vertical_frontporch;
+	t_vbp = (mipi_clk_change_sta) ?
+		(dsi_params->vertical_backporch_dyn == 0 ?
+		 dsi_params->vertical_backporch :
+		 dsi_params->vertical_backporch_dyn) :
+		dsi_params->vertical_backporch;
+	t_vsa = (mipi_clk_change_sta) ?
+		(dsi_params->vertical_sync_active_dyn == 0 ?
+		 dsi_params->vertical_sync_active :
+		 dsi_params->vertical_sync_active_dyn) :
+		dsi_params->vertical_sync_active;
+	t_hbp = (mipi_clk_change_sta) ?
+		(dsi_params->horizontal_backporch_dyn == 0 ?
+		 dsi_params->horizontal_backporch :
+		 dsi_params->horizontal_backporch_dyn) :
+		dsi_params->horizontal_backporch;
+	t_hfp = (mipi_clk_change_sta) ?
+		(dsi_params->horizontal_frontporch_dyn == 0 ?
+		 dsi_params->horizontal_frontporch :
+		 dsi_params->horizontal_frontporch_dyn) :
+		dsi_params->horizontal_frontporch;
+	t_hsa = (mipi_clk_change_sta) ?
+		(dsi_params->horizontal_sync_active_dyn == 0 ?
+		 dsi_params->horizontal_sync_active :
+		 dsi_params->horizontal_sync_active_dyn) :
+		dsi_params->horizontal_sync_active;
+	if (dsi_params->data_format.format == LCM_DSI_FORMAT_RGB565)
+		dsiTmpBufBpp = 2;
+	else
+		dsiTmpBufBpp = 3;
+	if (dsi_params->mode == SYNC_EVENT_VDO_MODE ||
+			dsi_params->mode == BURST_VDO_MODE ||
+			dsi_params->switch_mode == SYNC_EVENT_VDO_MODE ||
+			dsi_params->switch_mode == BURST_VDO_MODE) {
+		t_hsa = ALIGN_TO(t_hsa * dsiTmpBufBpp - 4, 4);
+		ASSERT((t_hbp +	t_hsa) * dsiTmpBufBpp > 9);
+		t_hbp = ALIGN_TO((t_hbp + t_hsa) * dsiTmpBufBpp - 10, 4);
+	} else {
+		ASSERT(t_hsa * dsiTmpBufBpp > 9);
+		t_hsa = ALIGN_TO(t_hsa * dsiTmpBufBpp - 10, 4);
+		ASSERT(t_hbp * dsiTmpBufBpp > 9);
+		t_hbp = ALIGN_TO(t_hbp * dsiTmpBufBpp - 10, 4);
+	}
+	ASSERT(t_hfp * dsiTmpBufBpp > 11);
+	t_hfp = ALIGN_TO(t_hfp * dsiTmpBufBpp - 12, 4);
+	t_hbllp = ALIGN_TO(dsi_params->horizontal_bllp * dsiTmpBufBpp, 4);
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		_dsi_context[i].vsa = t_vsa;
+		_dsi_context[i].vbp = t_vbp;
+		_dsi_context[i].vfp = t_vfp;
+		_dsi_context[i].hsa_byte = t_hsa;
+		_dsi_context[i].hbp_byte = t_hbp;
+		_dsi_context[i].hfp_byte = t_hfp;
+		_dsi_context[i].hbllp_byte = t_hbllp;
+	}
+}
+
+void DSI_CPHY_Calc_VDO_Timing(enum DISP_MODULE_ENUM module,
+		struct LCM_DSI_PARAMS *dsi_params)
+{
+	int i;
+	unsigned int dsiTmpBufBpp;
+	unsigned int t_vfp, t_vbp, t_vsa;
+	unsigned int t_hfp, t_hbp, t_hsa;
+	unsigned int t_hbllp;
+	unsigned int lane_num = 0;
+	unsigned int data_phy_cycle;
+
+	t_vfp = (mipi_clk_change_sta) ?
+		(dsi_params->vertical_frontporch_dyn == 0 ?
+		 dsi_params->vertical_frontporch :
+		 dsi_params->vertical_frontporch_dyn) :
+		dsi_params->vertical_frontporch;
+	t_vbp = (mipi_clk_change_sta) ?
+		(dsi_params->vertical_backporch_dyn == 0 ?
+		 dsi_params->vertical_backporch :
+		 dsi_params->vertical_backporch_dyn) :
+		dsi_params->vertical_backporch;
+	t_vsa = (mipi_clk_change_sta) ?
+		(dsi_params->vertical_sync_active_dyn == 0 ?
+		 dsi_params->vertical_sync_active :
+		 dsi_params->vertical_sync_active_dyn) :
+		dsi_params->vertical_sync_active;
+
+	t_hbp = (mipi_clk_change_sta) ?
+		(dsi_params->horizontal_backporch_dyn == 0 ?
+		 dsi_params->horizontal_backporch :
+		 dsi_params->horizontal_backporch_dyn) :
+		dsi_params->horizontal_backporch;
+	t_hfp = (mipi_clk_change_sta) ?
+		(dsi_params->horizontal_frontporch_dyn == 0 ?
+		 dsi_params->horizontal_frontporch :
+		 dsi_params->horizontal_frontporch_dyn) :
+		dsi_params->horizontal_frontporch;
+	t_hsa = (mipi_clk_change_sta) ?
+		(dsi_params->horizontal_sync_active_dyn == 0 ?
+		 dsi_params->horizontal_sync_active :
+		 dsi_params->horizontal_sync_active_dyn) :
+		dsi_params->horizontal_sync_active;
+
+	if (dsi_params->data_format.format == LCM_DSI_FORMAT_RGB565)
+		dsiTmpBufBpp = 2;
+	else
+		dsiTmpBufBpp = 3;
+
+	switch (dsi_params->LANE_NUM) {
+	case LCM_ONE_LANE:
+		lane_num = 1;
+		break;
+	case LCM_TWO_LANE:
+		lane_num = 2;
+		break;
+	case LCM_THREE_LANE:
+		lane_num = 3;
+		break;
+	case LCM_FOUR_LANE:
+		lane_num = 4;
+		break;
+	default:
+		break;
+	}
+
+	if (dsi_params->mode == SYNC_EVENT_VDO_MODE ||
+			dsi_params->mode == BURST_VDO_MODE ||
+			dsi_params->switch_mode == SYNC_EVENT_VDO_MODE ||
+			dsi_params->switch_mode == BURST_VDO_MODE) {
+		t_hsa = ALIGN_TO(t_hsa * dsiTmpBufBpp - 4, 4);
+		ASSERT((t_hbp +	t_hsa) * dsiTmpBufBpp > 9);
+
+		t_hbp = ALIGN_TO((t_hbp + t_hsa) * dsiTmpBufBpp - 10, 4);
+	} else {
+	// min:4
+		if (t_hsa * dsiTmpBufBpp < 10 * lane_num + 26 + 5)
+			t_hsa = 4;
+		else
+			t_hsa = ALIGN_TO(t_hsa * dsiTmpBufBpp -
+				10 * lane_num - 26, 2);
+
+		if (t_hbp * dsiTmpBufBpp < 12 * lane_num + 26 + 5)
+			t_hbp = 4;
+		else
+			t_hbp = ALIGN_TO(t_hbp * dsiTmpBufBpp -
+				12 * lane_num - 26, 2);
+	}
+
+	//data_phy_cycle = t_hs_zero data + t_hs_prep data +t_hs_exit dafa+5;
+
+	//t_hbllp = ALIGN_TO(dsi_params->horizontal_bllp * dsiTmpBufBpp, 4);
+	t_hbllp = ALIGN_TO(lane_num * 16, 4);
+
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		data_phy_cycle = _dsi_context[i].data_phy_cycle;
+
+		if (t_hfp * dsiTmpBufBpp < 8 * lane_num +
+			28 + 2 * data_phy_cycle * lane_num + 9)
+			t_hfp = 8;
+		else if ((t_hfp * dsiTmpBufBpp > 8 * lane_num + 28 +
+			2 * data_phy_cycle * lane_num + 8) &&
+			(t_hfp * dsiTmpBufBpp < 8 * lane_num +
+			28 + 2 * data_phy_cycle * lane_num +
+			ALIGN_TO(2 * (_dsi_context[i].HS_TRAIL + 1)*lane_num -
+			6 * lane_num - 12, 2)))
+			t_hfp = ALIGN_TO(2*(_dsi_context[i].HS_TRAIL + 1)*
+			lane_num - 6*lane_num - 12, 2);
+		else
+			t_hfp = ALIGN_TO(t_hfp * dsiTmpBufBpp - 8 * lane_num -
+				28 - 2 * data_phy_cycle * lane_num, 2);
+
+		_dsi_context[i].vsa = t_vsa;
+		_dsi_context[i].vbp = t_vbp;
+		_dsi_context[i].vfp = t_vfp;
+		_dsi_context[i].hsa_byte = t_hsa;
+		_dsi_context[i].hbp_byte = t_hbp;
+		_dsi_context[i].hfp_byte = t_hfp;
+		_dsi_context[i].hbllp_byte = t_hbllp;
+	}
+}
+
+void DSI_Calc_VDO_Timing(enum DISP_MODULE_ENUM module,
+		struct LCM_DSI_PARAMS *dsi_params)
+{
+	int i = 0;
+
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		if (_dsi_context[i].dsi_params.IsCphy)
+			DSI_CPHY_Calc_VDO_Timing(module, dsi_params);
+		else
+			DSI_DPHY_Calc_VDO_Timing(module, dsi_params);
+	}
+
+
+}
+
 void DSI_Config_VDO_Timing(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq, struct LCM_DSI_PARAMS *dsi_params)
 {
-	int i = 0;
+	int i = 0, module_num;
 	unsigned int line_byte;
 	unsigned int horizontal_sync_active_byte;
 	unsigned int horizontal_backporch_byte;
@@ -909,7 +1278,17 @@ void DSI_Config_VDO_Timing(enum DISP_MODULE_ENUM module,
 	unsigned int horizontal_bllp_byte;
 	unsigned int dsiTmpBufBpp;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return;
+	}
+
+	for (i = 0; i < module_num; i++) {
 		if (dsi_params->data_format.format ==
 			LCM_DSI_FORMAT_RGB565)
 			dsiTmpBufBpp = 2;
@@ -989,9 +1368,19 @@ void DSI_Set_LFR(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq,
 	unsigned int skip_num)
 {
 	/* LFR_MODE 0 disable,1 static mode ,2 dynamic mode 3,both */
-	unsigned int i = 0;
+	unsigned int i = 0, module_num;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return;
+	}
+
+	for (i = 0; i < module_num; i++) {
 		DSI_OUTREGBIT(cmdq, struct DSI_LFR_CON_REG,
 			DSI_REG[i]->DSI_LFR_CON, LFR_MODE, mode);
 		DSI_OUTREGBIT(cmdq, struct DSI_LFR_CON_REG,
@@ -1009,9 +1398,19 @@ void DSI_Set_LFR(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq,
 
 void DSI_LFR_UPDATE(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq)
 {
-	unsigned int i = 0;
+	unsigned int i = 0, module_num;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return;
+	}
+
+	for (i = 0; i < module_num; i++) {
 		DSI_OUTREGBIT(cmdq, struct DSI_LFR_CON_REG,
 			DSI_REG[i]->DSI_LFR_CON, LFR_UPDATE, 0);
 		DSI_OUTREGBIT(cmdq, struct DSI_LFR_CON_REG,
@@ -1048,14 +1447,23 @@ int _dsi_ps_type_to_bpp(enum LCM_PS_TYPE ps)
 }
 
 enum DSI_STATUS DSI_PS_Control(enum DISP_MODULE_ENUM module,
-	struct cmdqRecStruct *cmdq, struct LCM_DSI_PARAMS *dsi_params,
-	unsigned int w, unsigned int h)
-
+	struct cmdqRecStruct *cmdq, struct LCM_DSI_PARAMS *dsi_params, int w,
+	int h)
 {
-	int i = 0;
+	int i = 0, module_num;
 	unsigned int ps_sel_bitvalue = 0;
 	unsigned int ps_wc_adjust = 0;
 	unsigned int ps_wc = 0;
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return DSI_STATUS_ERROR;
+	}
 
 	/* TODO: parameter checking */
 	ASSERT((int)(dsi_params->PS) <= (int)PACKED_PS_18BIT_RGB666);
@@ -1068,7 +1476,7 @@ enum DSI_STATUS DSI_PS_Control(enum DISP_MODULE_ENUM module,
 	if (module == DISP_MODULE_DSIDUAL)
 		w = w / 2;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	for (i = 0; i < module_num; i++) {
 		DSI_OUTREGBIT(cmdq, struct DSI_VACT_NL_REG,
 			DSI_REG[i]->DSI_VACT_NL, VACT_NL, h);
 		if (dsi_params->ufoe_enable &&
@@ -1115,7 +1523,7 @@ enum DSI_STATUS DSI_PS_Control(enum DISP_MODULE_ENUM module,
 enum DSI_STATUS DSI_TXRX_Control(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq, struct LCM_DSI_PARAMS *dsi_params)
 {
-	int i = 0;
+	int i = 0, module_num;
 	unsigned int lane_num_bitvalue = 0;
 	int lane_num = dsi_params->LANE_NUM;
 	int vc_num = 0;
@@ -1123,6 +1531,16 @@ enum DSI_STATUS DSI_TXRX_Control(enum DISP_MODULE_ENUM module,
 	bool dis_eotp_en = FALSE;
 	bool hstx_cklp_en = dsi_params->cont_clock ? FALSE : TRUE;
 	int max_return_size = 0;
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return DSI_STATUS_ERROR;
+	}
 
 	switch (lane_num) {
 	case LCM_ONE_LANE:
@@ -1139,7 +1557,9 @@ enum DSI_STATUS DSI_TXRX_Control(enum DISP_MODULE_ENUM module,
 		break;
 	}
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	for (i = 0; i < module_num; i++) {
+		if (_dsi_context[i].dsi_params.IsCphy)
+			dis_eotp_en = TRUE;
 		DSI_OUTREGBIT(cmdq, struct DSI_TXRX_CTRL_REG,
 			DSI_REG[i]->DSI_TXRX_CTRL, VC_NUM,
 			vc_num);
@@ -1249,28 +1669,212 @@ static int _dsi_get_pcw(int data_rate, int pcw_ratio)
 	return tmp;
 }
 
-static void _DSI_PHY_clk_setting(enum DISP_MODULE_ENUM module,
-	struct cmdqRecStruct *cmdq, struct LCM_DSI_PARAMS *dsi_params)
+void DSI_CPHY_clk_setting(enum DISP_MODULE_ENUM module,
+								struct cmdqRecStruct *cmdq,
+								struct LCM_DSI_PARAMS *dsi_params)
+{
+	int i = 0;
+	unsigned int pcw_ratio = 0;
+	unsigned int pcw = 0;
+	unsigned int posdiv = 0;
+	unsigned int prediv = 0;
+	unsigned int data_Rate = 0;
+	unsigned int data_Rate_dyn = 0;
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	unsigned int j = 0;
+	struct dfps_info *dfps_params = NULL;
+#endif
+
+	/*for mipi hopping*/
+	data_Rate = dsi_params->data_rate != 0 ?
+					dsi_params->data_rate :
+					dsi_params->PLL_CLOCK * 2;
+
+	if (mipi_clk_change_sta) {
+		data_Rate_dyn = dsi_params->data_rate_dyn != 0 ?
+						dsi_params->data_rate_dyn :
+						dsi_params->PLL_CLOCK_dyn * 2;
+		if (!data_Rate_dyn)
+			data_Rate = data_Rate_dyn;
+	}
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	/*ToDo, move to a function, dphy also add this function*/
+	/*for DynFPS*/
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		/*if not power on scenario
+		 * if disp_fps !=0 means dynfps happen
+		 */
+		if (_dsi_context[i].disp_fps &&
+			(_dsi_context[i].dynfps_chg_index &
+			DYNFPS_DSI_MIPI_CLK)) {
+			for (j = 0; j < dsi_params->dfps_num; j++) {
+				if ((dsi_params->dfps_params)[j].fps ==
+					_dsi_context[i].disp_fps) {
+					dfps_params =
+						&((dsi_params->dfps_params)[j]);
+					DDPMSG("%s,_dsi_context fps:%d\n",
+					__func__, _dsi_context[i].disp_fps);
+					break;
+				}
+			}
+			if (!mipi_clk_change_sta) {
+				if (dfps_params->data_rate != 0 ||
+					dfps_params->PLL_CLOCK != 0)
+					data_Rate =
+						dfps_params->data_rate != 0 ?
+						dfps_params->data_rate :
+						dfps_params->PLL_CLOCK * 2;
+			} else {
+				if (dfps_params->data_rate_dyn != 0 ||
+					dfps_params->PLL_CLOCK_dyn != 0)
+					data_Rate =
+					dfps_params->data_rate_dyn != 0 ?
+					dfps_params->data_rate_dyn :
+					dfps_params->PLL_CLOCK_dyn * 2;
+
+			}
+		}
+	}
+#endif
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		//MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_IMPENDANCE_2, 0x00001010);
+
+		/*set volate*/
+		MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_VOLTAGE_SEL, 0x4444236A);
+
+		/*set lane swap*/
+		if (dsi_params->lane_swap_en) {
+			MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_PHY_SEL0,
+				dsi_params->PHY_SEL0);
+			MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_PHY_SEL1,
+				dsi_params->PHY_SEL1);
+			MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_PHY_SEL2,
+				dsi_params->PHY_SEL2);
+			MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_PHY_SEL3,
+				dsi_params->PHY_SEL3);
+		} else {
+			MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_PHY_SEL0,
+				0x65432101);
+			MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_PHY_SEL1,
+				0x24210987);
+			MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_PHY_SEL2,
+				0x68543102);
+			MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_PHY_SEL3,
+				0x00000007);
+		}
+	}
+
+	/* MIPI INIT */
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		/* step 0 */
+		/* BG_LPF_EN / BG_CORE_EN */
+		MIPITX_OUTREG32(DSI_PHY_REG[i] + MIPITX_PLL_CON4,
+			0x00FF12E0);
+		/* BG_LPF_EN=0 BG_CORE_EN=1 */
+		MIPITX_OUTREG32(DSI_PHY_REG[i] + MIPITX_LANE_CON,
+			0x3FFF0088);
+		mdelay(1); /* 1us */
+		/* BG_LPF_EN=1 */
+		MIPITX_OUTREG32(DSI_PHY_REG[i] + MIPITX_LANE_CON,
+			0x3FFF00C8);
+
+		/* step 1 */
+		/* SDM_RWR_ON / SDM_ISO_EN */
+		MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_PWR,
+			FLD_AD_DSI_PLL_SDM_PWR_ON, 1);
+		mdelay(1); /* 1us */
+		MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_PWR,
+			FLD_AD_DSI_PLL_SDM_ISO_EN, 0);
+
+
+		if (data_Rate != 0) {
+			unsigned int tmp = 0;
+
+			if (data_Rate > 2500) {
+				DISPCHECK("mipitx Data Rate exceed limitation(%d)\n", data_Rate);
+				ASSERT(0);
+			} else if (data_Rate >= 2000) { /* 2G ~ 2.5G */
+				pcw_ratio = 1;
+				posdiv    = 0;
+				prediv    = 0;
+			} else if (data_Rate >= 1000) { /* 1G ~ 2G */
+				pcw_ratio = 2;
+				posdiv    = 1;
+				prediv    = 0;
+			} else if (data_Rate >= 500) { /* 500M ~ 1G */
+				pcw_ratio = 4;
+				posdiv    = 2;
+				prediv    = 0;
+			} else if (data_Rate > 250) { /* 250M ~ 500M */
+				pcw_ratio = 8;
+				posdiv    = 3;
+				prediv    = 0;
+			} else if (data_Rate >= 125) { /* 125M ~ 250M */
+				pcw_ratio = 16;
+				posdiv    = 4;
+				prediv    = 0;
+			} else {
+				DISPCHECK("dataRate is too low(%d)\n", data_Rate);
+				ASSERT(0);
+			}
+
+			/* step 3 */
+			/* PLL PCW config */
+			/*
+			 * PCW bit 24~30 = floor(pcw)
+			 * PCW bit 16~23 = (pcw - floor(pcw))*256
+			 * PCW bit 8~15 = (pcw*256 - floor(pcw)*256)*256
+			 * PCW bit 8~15 = (pcw*256*256 - floor(pcw)*256*256)*256
+			 */
+			/* pcw = data_Rate*4*txdiv/(26*2);//Post DIV =4, so need data_Rate*4 */
+
+			pcw = data_Rate * pcw_ratio / 26;
+			tmp = ((pcw & 0xFF) << 24) |
+				(((256 * (data_Rate * pcw_ratio % 26) / 26) & 0xFF) << 16) |
+				(((256 * (256 * (data_Rate * pcw_ratio % 26) %
+				26) / 26) & 0xFF) << 8) |
+				((256 * (256 * (256 * (data_Rate * pcw_ratio % 26) %
+				26) % 26) / 26) & 0xFF);
+			MIPITX_OUTREG32(DSI_PHY_REG[i] + MIPITX_PLL_CON0, tmp);
+
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_CON1,
+			FLD_RG_DSI_PLL_POSDIV, posdiv);
+		}
+		/* step 4 */
+		/* PLL EN */
+		mdelay(1); /* 30ns */
+		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_PLL_CON1, FLD_RG_DSI_PLL_EN, 1);
+
+		mdelay(1); /* 20us */
+	}
+
+}
+
+static void DSI_DPHY_clk_setting(enum DISP_MODULE_ENUM module,
+								struct cmdqRecStruct *cmdq,
+								struct LCM_DSI_PARAMS *dsi_params)
 {
 	int i = 0;
 	unsigned int j = 0;
-	unsigned int data_Rate = dsi_params->data_rate != 0 ?
-		dsi_params->data_rate : dsi_params->PLL_CLOCK * 2;
+	unsigned int data_Rate;
+	unsigned int pll_clock;
 	unsigned int pcw_ratio = 0;
 	unsigned int posdiv = 0;
 	unsigned int prediv = 0;
 	unsigned int delta1 = 2; /* Delta1 is SSC range, default is 0%~-5% */
 	unsigned int pdelta1 = 0;
-	unsigned long addr = 0;
-
 	enum MIPITX_PHY_LANE_SWAP *swap_base;
 	enum MIPITX_PAD_VALUE pad_mapping[MIPITX_PHY_LANE_NUM] = {
-		PAD_D0P_V, PAD_D1P_V, PAD_D2P_V,
-		PAD_D3P_V, PAD_CKP_V, PAD_CKP_V};
+					PAD_D0P_V, PAD_D1P_V, PAD_D2P_V,
+					PAD_D3P_V, PAD_CKP_V, PAD_CKP_V};
 
 	DISPFUNC();
 
-	data_Rate = def_data_rate ? def_data_rate : data_Rate;
+	data_Rate = (mipi_clk_change_sta == 0) ?
+		dsi_params->data_rate : dsi_params->data_rate_dyn;
+	pll_clock = (mipi_clk_change_sta == 0) ?
+		dsi_params->PLL_CLOCK : dsi_params->PLL_CLOCK_dyn;
+	data_Rate = data_Rate != 0 ? data_Rate : pll_clock * 2;
 
 	/* DPHY SETTING */
 
@@ -1280,47 +1884,48 @@ static void _DSI_PHY_clk_setting(enum DISP_MODULE_ENUM module,
 		swap_base = dsi_params->lane_swap[i];
 		if (unlikely(dsi_params->lane_swap_en)) {
 			DISPINFO("MIPITX Lane Swap Enabled for DSI Port %d\n",
-				i);
-			DISPINFO("MIPITX Lane Swap mapping:%d|%d|%d|%d|%d|%d\n",
-				swap_base[MIPITX_PHY_LANE_0],
-				swap_base[MIPITX_PHY_LANE_1],
-				swap_base[MIPITX_PHY_LANE_2],
-				swap_base[MIPITX_PHY_LANE_3],
-				swap_base[MIPITX_PHY_LANE_CK],
-				swap_base[MIPITX_PHY_LANE_RX]);
+				 i);
+			DISPINFO(
+				"MIPITX Lane Swap mapping: %d|%d|%d|%d|%d|%d\n",
+				 swap_base[MIPITX_PHY_LANE_0],
+				 swap_base[MIPITX_PHY_LANE_1],
+				 swap_base[MIPITX_PHY_LANE_2],
+				 swap_base[MIPITX_PHY_LANE_3],
+				 swap_base[MIPITX_PHY_LANE_CK],
+				 swap_base[MIPITX_PHY_LANE_RX]);
 
 			/* CKMODE_EN */
 			for (j = MIPITX_PHY_LANE_0; j < MIPITX_PHY_LANE_CK;
-				j++) {
+			     j++) {
 				if (dsi_params->lane_swap[i][j] ==
-					MIPITX_PHY_LANE_CK)
+				    MIPITX_PHY_LANE_CK)
 					break;
 			}
 			switch (j) {
 			case MIPITX_PHY_LANE_0:
-				MIPITX_OUTREGBIT(
-					DSI_PHY_REG[i] + MIPITX_D0_CKMODE_EN,
-					FLD_DSI_D0_CKMODE_EN, 1);
+				MIPITX_OUTREGBIT(DSI_PHY_REG[i] +
+						 MIPITX_D0_CKMODE_EN,
+						 FLD_DSI_D0_CKMODE_EN, 1);
 				break;
 			case MIPITX_PHY_LANE_1:
-				MIPITX_OUTREGBIT(
-					DSI_PHY_REG[i] + MIPITX_D1_CKMODE_EN,
-					FLD_DSI_D1_CKMODE_EN, 1);
+				MIPITX_OUTREGBIT(DSI_PHY_REG[i] +
+						 MIPITX_D1_CKMODE_EN,
+						 FLD_DSI_D1_CKMODE_EN, 1);
 				break;
 			case MIPITX_PHY_LANE_2:
-				MIPITX_OUTREGBIT(
-					DSI_PHY_REG[i] + MIPITX_D2_CKMODE_EN,
-					FLD_DSI_D2_CKMODE_EN, 1);
+				MIPITX_OUTREGBIT(DSI_PHY_REG[i] +
+						 MIPITX_D2_CKMODE_EN,
+						 FLD_DSI_D2_CKMODE_EN, 1);
 				break;
 			case MIPITX_PHY_LANE_3:
-				MIPITX_OUTREGBIT(
-					DSI_PHY_REG[i] + MIPITX_D3_CKMODE_EN,
-					FLD_DSI_D3_CKMODE_EN, 1);
+				MIPITX_OUTREGBIT(DSI_PHY_REG[i] +
+						 MIPITX_D3_CKMODE_EN,
+						 FLD_DSI_D3_CKMODE_EN, 1);
 				break;
 			case MIPITX_PHY_LANE_CK:
-				MIPITX_OUTREGBIT(
-					DSI_PHY_REG[i] + MIPITX_CK_CKMODE_EN,
-					FLD_DSI_CK_CKMODE_EN, 1);
+				MIPITX_OUTREGBIT(DSI_PHY_REG[i] +
+						 MIPITX_CK_CKMODE_EN,
+						 FLD_DSI_CK_CKMODE_EN, 1);
 				break;
 			default:
 				break;
@@ -1392,64 +1997,55 @@ static void _DSI_PHY_clk_setting(enum DISP_MODULE_ENUM module,
 				pad_mapping[swap_base[MIPITX_PHY_LANE_3]]);
 		} else {
 			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_CK_CKMODE_EN,
-				FLD_DSI_CK_CKMODE_EN, 1);
+					 FLD_DSI_CK_CKMODE_EN, 1);
 		}
 	}
 
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
-		/* re-fill mipitx impendance */
-		addr = DSI_PHY_REG[0]+0x100;
-		for (i = 0; i < 5; i++) {
-			for (j = 0; j < 10; j++) {
-				MIPITX_OUTREG32(addr,
-					((mipitx_impedance_backup[i])>>j)&0x1);
-				addr += 0x4;
-			}
-			/* 0xD8 = 0x300 - 0x228*/
-			addr += 0xD8;
-		}
-	}
+	refill_mipitx_impedance(NULL);
 
 	/* MIPI INIT */
 	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		unsigned int tmp = 0;
+
 		/* step 0: RG_DSI0_PLL_IBIAS = 0*/
-		MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_PLL_CON4,
-		0x00FF12E0);
+		MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_PLL_CON4, 0x00FF12E0);
 		/* BG_LPF_EN / BG_CORE_EN */
-		MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_LANE_CON,
-		0x3FFF0180); /* BG_LPF_EN=0,BG_CORE_EN=1 */
-		mdelay(1);
-		MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_LANE_CON,
-			0x3FFF0080); /* BG_LPF_EN=1,TIEL_SEL=0 */
-		/* Switch OFF each Lane */
-		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_D0_SW_CTL_EN,
-			FLD_DSI_D0_SW_CTL_EN, 0);
-		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_D1_SW_CTL_EN,
-			FLD_DSI_D1_SW_CTL_EN, 0);
-		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_D2_SW_CTL_EN,
-			FLD_DSI_D2_SW_CTL_EN, 0);
-		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_D3_SW_CTL_EN,
-			FLD_DSI_D3_SW_CTL_EN, 0);
-		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_CK_SW_CTL_EN,
-			FLD_DSI_CK_SW_CTL_EN, 0);
+		MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_LANE_CON, 0x3FFF0180);
+		udelay(500);
+		/* BG_LPF_EN=1,TIEL_SEL=0 */
+		MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_LANE_CON, 0x3FFF0080);
+		if (atomic_read(&dsi_idle_flg) == 0) {
+			/* Switch OFF each Lane */
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D0_SW_CTL_EN,
+				FLD_DSI_D0_SW_CTL_EN, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D1_SW_CTL_EN,
+				FLD_DSI_D1_SW_CTL_EN, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D2_SW_CTL_EN,
+				FLD_DSI_D2_SW_CTL_EN, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D3_SW_CTL_EN,
+				FLD_DSI_D3_SW_CTL_EN, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_CK_SW_CTL_EN,
+				FLD_DSI_CK_SW_CTL_EN, 0);
+		}
 
 		/* step 1: SDM_RWR_ON / SDM_ISO_EN */
 		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_PLL_PWR,
-		FLD_AD_DSI_PLL_SDM_PWR_ON, 1);
-		mdelay(1); /* 1us */
+				 FLD_AD_DSI_PLL_SDM_PWR_ON, 1);
+		udelay(2); /* 1us */
 		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_PLL_PWR,
-			FLD_AD_DSI_PLL_SDM_ISO_EN, 0);
+				 FLD_AD_DSI_PLL_SDM_ISO_EN, 0);
 
-		if (data_Rate != 0) {
-			unsigned int tmp = 0;
+		if (!data_Rate)
+			continue;
 
-			if (data_Rate > 2500) {
-				DISPERR("mipitx Data Rate exceed limit(%d)\n",
-					data_Rate);
-				ASSERT(0);
-			} else if (data_Rate >= 2000) { /* 2G ~ 2.5G */
-				pcw_ratio = 1;
-				posdiv    = 0;
+
+		if (data_Rate > 2500) {
+			DISPERR("mipitx Data Rate exceed limitation(%d)\n",
+				    data_Rate);
+			ASSERT(0);
+		} else if (data_Rate >= 2000) { /* 2G ~ 2.5G */
+			pcw_ratio = 1;
+			posdiv    = 0;
 				prediv    = 0;
 			} else if (data_Rate >= 1000) { /* 1G ~ 2G */
 				pcw_ratio = 2;
@@ -1482,52 +2078,63 @@ static void _DSI_PHY_clk_setting(enum DISP_MODULE_ENUM module,
 
 			/* SSC config */
 			if (dsi_params->ssc_disable != 1) {
-				MIPITX_OUTREGBIT(
-					DSI_PHY_REG[i] + MIPITX_PLL_CON2,
-					FLD_RG_DSI_PLL_SDM_SSC_PH_INIT, 1);
-				MIPITX_OUTREGBIT(
-					DSI_PHY_REG[i] + MIPITX_PLL_CON2,
-					FLD_RG_DSI_PLL_SDM_SSC_PRD, 0x1B1);
+				MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_CON2,
+				FLD_RG_DSI_PLL_SDM_SSC_PH_INIT, 1);
+				MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_CON2,
+				FLD_RG_DSI_PLL_SDM_SSC_PRD, 0x1B1);
 
 				delta1 = (dsi_params->ssc_range == 0) ?
-					delta1 : dsi_params->ssc_range;
+				delta1 : dsi_params->ssc_range;
 				ASSERT(delta1 <= 8);
-				pdelta1 =
-					(delta1 * (data_Rate / 2) * pcw_ratio *
-					262144 + 281664) / 563329;
+				pdelta1 = (delta1 * (data_Rate / 2) * pcw_ratio *
+				   262144 + 281664) / 563329;
 
-				MIPITX_OUTREGBIT(
-					DSI_PHY_REG[i] + MIPITX_PLL_CON3,
-					FLD_RG_DSI_PLL_SDM_SSC_DELTA, pdelta1);
-				MIPITX_OUTREGBIT(
-					DSI_PHY_REG[i] + MIPITX_PLL_CON3,
-					FLD_RG_DSI_PLL_SDM_SSC_DELTA1, pdelta1);
-				DDPMSG("PLL config:data_rate=%d,pcw_ratio=%d\n",
-					data_Rate, pcw_ratio);
-				DDPMSG("PLL config:delta1=%d,pdelta1=0x%x\n",
-					delta1, pdelta1);
-			}
+				MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_CON3,
+				FLD_RG_DSI_PLL_SDM_SSC_DELTA, pdelta1);
+				MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_CON3,
+				FLD_RG_DSI_PLL_SDM_SSC_DELTA1,
+				pdelta1);
+				DDPMSG("PLL config:data_rate=%d,pcw_ratio=%d ",
+				data_Rate, pcw_ratio);
+				DDPMSG("delta1=%d,pdelta1=0x%x\n",
+				delta1, pdelta1);
 		}
 	}
 
 	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
-		if ((data_Rate != 0) && (dsi_params->ssc_disable != 1))
+		if (data_Rate && (dsi_params->ssc_disable != 1))
 			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_CON2,
-				FLD_RG_DSI_PLL_SDM_SSC_EN, 1);
+					 FLD_RG_DSI_PLL_SDM_SSC_EN, 1);
 		else
 			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_CON2,
-				FLD_RG_DSI_PLL_SDM_SSC_EN, 0);
+					 FLD_RG_DSI_PLL_SDM_SSC_EN, 0);
 	}
 
 	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
 		/* PLL EN */
-		mdelay(1);
 		MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_CON1,
-			FLD_RG_DSI_PLL_EN, 1);
+				 FLD_RG_DSI_PLL_EN, 1);
 
-		mdelay(1);
+		udelay(50);
+		MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_SW_CTRL_CON4,
+				 FLD_MIPI_TX_SW_ANA_CK_EN, 1);
 	}
 }
+
+static void _DSI_PHY_clk_setting(enum DISP_MODULE_ENUM module,
+	struct cmdqRecStruct *cmdq, struct LCM_DSI_PARAMS *dsi_params)
+{
+	int i = 0;
+
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		if (_dsi_context[i].dsi_params.IsCphy)
+			DSI_CPHY_clk_setting(module, cmdq, dsi_params);
+		else
+			DSI_DPHY_clk_setting(module, cmdq, dsi_params);
+	}
+
+}
+
 /* DSI_MIPI_clk_change
  */
 void DSI_MIPI_clk_change(enum DISP_MODULE_ENUM module, void *cmdq, int clk)
@@ -1608,95 +2215,212 @@ void DSI_MIPI_clk_change(enum DISP_MODULE_ENUM module, void *cmdq, int clk)
 	}
 }
 
-int mipi_clk_change(int msg, int en)
+void DSI_PHY_TIMCONFIG(enum DISP_MODULE_ENUM module,
+	struct cmdqRecStruct *cmdq, struct LCM_DSI_PARAMS *dsi_params);
+
+int mipi_clk_change(enum DISP_MODULE_ENUM module, int en)
 {
+	int i, ret;
 	struct cmdqRecStruct *handle = NULL;
-
-	DISPMSG("%s,msg=%d,en=%d\n", __func__, msg, en);
-
-	_primary_path_lock(__func__);
-
+	struct LCM_DSI_PARAMS *dsi_params;
+	bool mod_vfp, mod_vbp, mod_vsa;
+	bool mod_hfp, mod_hbp, mod_hsa;
+	unsigned int data_rate;
+	unsigned int _vfp, _vbp, _vsa;
+	unsigned int _hfp, _hbp, _hsa;
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	unsigned int j = 0;
+	/*not consider dual pipe in*/
+	struct dfps_info *dfps_params = NULL;
+#endif
+	i = DSI_MODULE_BEGIN(module);
+	dsi_params = &_dsi_context[i].dsi_params;
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	/*DynFPS get current fps info*/
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		/*if not power on scenario
+		 * if disp_fps !=0 means dynfps happen
+		 */
+		if (_dsi_context[i].disp_fps) {
+			for (j = 0; j < dsi_params->dfps_num; j++) {
+				if ((dsi_params->dfps_params)[j].fps ==
+					_dsi_context[i].disp_fps) {
+					dfps_params =
+					&((dsi_params->dfps_params)[j]);
+					DISPMSG("%s,disp_fps=%d\n",
+					__func__, _dsi_context[i].disp_fps);
+					break;
+				}
+			}
+		}
+	}
+	if (dfps_params &&
+		dfps_params->dynamic_switch_mipi == 0) {
+		DISPMSG("%s,not support mipi hopping for %d\n",
+			__func__, _dsi_context[i].disp_fps);
+		return 0;
+	}
+#endif
+	_vfp = dsi_params->vertical_frontporch_dyn;
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	if (dfps_params) {
+		if (dfps_params->vertical_frontporch_dyn)
+			_vfp = dfps_params->vertical_frontporch_dyn;
+	}
+#endif
+	_vbp = dsi_params->vertical_backporch_dyn;
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	if (dfps_params) {
+		if (dfps_params->vertical_backporch_dyn)
+			_vbp = dfps_params->vertical_backporch_dyn;
+	}
+#endif
+	_vsa = dsi_params->vertical_sync_active_dyn;
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	if (dfps_params) {
+		if (dfps_params->vertical_sync_active_dyn)
+			_vsa = dfps_params->vertical_sync_active_dyn;
+	}
+#endif
+	_hfp = dsi_params->horizontal_frontporch_dyn;
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	if (dfps_params) {
+		if (dfps_params->horizontal_frontporch_dyn)
+			_hfp = dfps_params->horizontal_frontporch_dyn;
+	}
+#endif
+	_hbp = dsi_params->horizontal_backporch_dyn;
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	if (dfps_params) {
+		if (dfps_params->horizontal_backporch_dyn)
+			_hbp = dfps_params->horizontal_backporch_dyn;
+	}
+#endif
+	_hsa = dsi_params->horizontal_sync_active_dyn;
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	if (dfps_params) {
+		if (dfps_params->horizontal_sync_active_dyn)
+			_hsa = dfps_params->horizontal_sync_active_dyn;
+	}
+#endif
+	mod_vfp = !!_vfp;
+	mod_vbp = !!_vbp;
+	mod_vsa = !!_vsa;
+	mod_hfp = !!_hfp;
+	mod_hbp = !!_hbp;
+	mod_hsa = !!_hsa;
 	if (en) {
-		if (!strcmp(mtkfb_lcm_name,
-		"nt35521_hd_dsi_vdo_truly_rt5081_drv")) {
-			def_data_rate = 460;
-			def_dsi_hbp = 0xD2; /* adaptive HBP value */
-		} else {
-			DISPERR("%s,lcm(%s) not support change mipi clock\n",
-				__func__, mtkfb_lcm_name);
-
-			_primary_path_unlock(__func__);
-			return 0;
+		data_rate = dsi_params->data_rate_dyn != 0 ?
+			dsi_params->data_rate_dyn :
+			dsi_params->PLL_CLOCK_dyn * 2;
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+		if (dfps_params) {
+			if (dfps_params->data_rate_dyn ||
+				dfps_params->PLL_CLOCK_dyn)
+				data_rate =
+				dfps_params->data_rate_dyn != 0 ?
+				dfps_params->data_rate_dyn :
+				dfps_params->PLL_CLOCK_dyn * 2;
 		}
-
-		/*TODO: for other lcm */
+#endif
+		mipi_clk_change_sta = 1;
 	} else {
-		struct LCM_DSI_PARAMS *dsi_params =
-			&(_dsi_context[0].dsi_params);
-		unsigned int data_rate = dsi_params->data_rate != 0 ?
+		data_rate = dsi_params->data_rate != 0 ?
 			dsi_params->data_rate : dsi_params->PLL_CLOCK * 2;
-		unsigned int dsiTmpBufBpp;
-		unsigned int hbp_wc;
-
-		if ((dsi_params->data_format).format == LCM_DSI_FORMAT_RGB565)
-			dsiTmpBufBpp = 2;
-		else
-			dsiTmpBufBpp = 3;
-
-		if (dsi_params->mode == SYNC_EVENT_VDO_MODE ||
-			dsi_params->mode == BURST_VDO_MODE ||
-			dsi_params->switch_mode == SYNC_EVENT_VDO_MODE ||
-			dsi_params->switch_mode == BURST_VDO_MODE) {
-
-			hbp_wc = ((dsi_params->horizontal_backporch +
-				dsi_params->horizontal_sync_active) *
-				dsiTmpBufBpp - 10);
-		} else {
-			hbp_wc =
-			(dsi_params->horizontal_backporch * dsiTmpBufBpp - 10);
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+		if (dfps_params) {
+			if (dfps_params->data_rate ||
+				dfps_params->PLL_CLOCK)
+				data_rate =
+				dfps_params->data_rate != 0 ?
+				dfps_params->data_rate :
+				dfps_params->PLL_CLOCK * 2;
 		}
-		hbp_wc = ALIGN_TO((hbp_wc), 4);
-
-		def_data_rate = data_rate;
-		def_dsi_hbp = hbp_wc; /* origin HBP value */
+#endif
+		mipi_clk_change_sta = 0;
 	}
-
-	if (_is_power_on_status(DISP_MODULE_DSI0)) {
-		int ret = 0;
-
-		ret = cmdqRecCreate(CMDQ_SCENARIO_PRIMARY_DISP, &handle);
-		if (ret < 0)
-			DISPERR("%s cmdqRecCreate fail\n", __func__);
-		ret = cmdqRecReset(handle);
-		if (ret < 0)
-			DISPERR("%s cmdqRecReset fail\n", __func__);
-
-		/* 2.wait mutex0_stream_eof: only used for video mode */
-		ret = cmdqRecWaitNoClear(handle, CMDQ_EVENT_MUTEX0_STREAM_EOF);
-		if (ret < 0)
-			DISPERR("%s cmdqRecWaitNoClear fail\n", __func__);
-		DSI_MIPI_clk_change(DISP_MODULE_DSI0, handle, def_data_rate);
-		ret = ddp_dsi_porch_setting(DISP_MODULE_DSI0,
-			 handle, DSI_HBP, def_dsi_hbp);
-		if (ret < 0)
-			DISPERR("%s ddp_dsi_porch_setting fail\n", __func__);
-		ret = cmdqRecFlushAsync(handle);
-		if (ret < 0)
-			DISPERR("%s cmdqRecFlushAsync fail\n", __func__);
-
-		cmdqRecDestroy(handle);
+	if (_is_power_on_status(module) == 0) {
+		DISPMSG("%s,suspend,skip hopping\n", __func__);
+		return 0;
 	}
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	DISPMSG("%s,mipi_clk_change_sta=%d\n",
+		__func__, mipi_clk_change_sta);
+	DISPMSG("%s,_vfp:%d,_vbp:%d,_vsa:%d\n",
+		__func__, _vfp, _vbp, _vsa);
+	DISPMSG("%s,_hfp=%d,_hbp:%d,_hsa:%d\n",
+		__func__, _hfp, _hbp, _hsa);
+	/*keep mipi hopping use the same GCE  thread as dynfps
+	 * can avoid competition between mipi hopping and dynfps in GCE
+	 * keep GCE use the same cmd params as CPU calcuated params
+	 */
+	ret = cmdqRecCreate(CMDQ_SCENARIO_DISP_ESD_CHECK, &handle);
+	if (ret) {
+		DISPMSG("%s:Fail to create cmdq handle\n", __func__);
+		return -1;
+	}
+	cmdqRecReset(handle);
+	i = DSI_MODULE_BEGIN(module);
+	/*for keep mipi hopping run after dynfps in GCE,
+	 * same as CPU sequence
+	 */
+	cmdqRecWaitNoClear(handle,
+				CMDQ_EVENT_MUTEX0_STREAM_EOF);
+#endif
+	if (DSI_REG[i]->DSI_MODE_CTRL.MODE) {
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+		/*mipi clock changed, cycle time & ui are also changed
+		 * need re-calculate the phy timing
+		 * can not change without  stop vdo mode
+		 * but for mipi hopping we shouldn't stop vdo mode
+		 * so skip this step now
+		 */
+		/*DSI_PHY_TIMCONFIG(module, handle, dsi_params);*/
+#endif
+		DISPINFO("%s,re-calc vdo timing\n", __func__);
+		DSI_Calc_VDO_Timing(module, dsi_params);
+	}
+#ifndef CONFIG_MTK_HIGH_FRAME_RATE
+	ret = cmdqRecCreate(CMDQ_SCENARIO_PRIMARY_DISP, &handle);
+	if (ret) {
+		DISPMSG("%s:Fail to create cmdq handle\n", __func__);
+		return -1;
+	}
+	cmdqRecReset(handle);
+#endif
+	if (DSI_REG[i]->DSI_MODE_CTRL.MODE) {
+		if (mod_vfp)
+			ddp_dsi_porch_setting(module, handle, DSI_VFP,
+					_dsi_context[i].vfp);
+		if (mod_vbp)
+			ddp_dsi_porch_setting(module, handle, DSI_VBP,
+					_dsi_context[i].vbp);
+		if (mod_vsa)
+			ddp_dsi_porch_setting(module, handle, DSI_VSA,
+					_dsi_context[i].vsa);
 
-	_primary_path_unlock(__func__);
-
-
+		if (mod_hbp)
+			ddp_dsi_porch_setting(module, handle, DSI_HBP,
+					_dsi_context[i].hbp_byte);
+		if (mod_hfp)
+			ddp_dsi_porch_setting(module, handle, DSI_HFP,
+					_dsi_context[i].hfp_byte);
+		if (mod_hsa)
+			ddp_dsi_porch_setting(module, handle, DSI_HSA,
+					_dsi_context[i].hsa_byte);
+	}
+	DSI_MIPI_clk_change(module, handle, data_rate);
+	cmdqRecFlush(handle);
+	cmdqRecDestroy(handle);
+	DISPMSG("%s,mipi_clk_change_sta=%d done\n",
+			__func__, mipi_clk_change_sta);
 	return 0;
 }
+
 
 int mipi_clk_change_by_data_rate(int en, int mipi_data_rate)
 {
 	struct cmdqRecStruct *handle = NULL;
-	int ret = 0;
 
 	DISPMSG("%s, mipi_data_rate=%d, en=%d\n",
 		__func__, mipi_data_rate, en);
@@ -1721,22 +2445,14 @@ int mipi_clk_change_by_data_rate(int en, int mipi_data_rate)
 	}
 
 	if (_is_power_on_status(DISP_MODULE_DSI0)) {
-		ret = cmdqRecCreate(CMDQ_SCENARIO_PRIMARY_DISP, &handle);
-		if (ret < 0)
-			DISPERR(" %s cmdqRecCreate fail\n", __func__);
-		ret = cmdqRecReset(handle);
-		if (ret < 0)
-			DISPERR(" %s cmdqRecReset fail\n", __func__);
+		cmdqRecCreate(CMDQ_SCENARIO_PRIMARY_DISP, &handle);
+		cmdqRecReset(handle);
 
 		/* 2.wait mutex0_stream_eof: only used for video mode */
-		ret = cmdqRecWaitNoClear(handle, CMDQ_EVENT_MUTEX0_STREAM_EOF);
-		if (ret < 0)
-			DISPERR(" %s cmdqRecWaitNoClear fail\n", __func__);
+		cmdqRecWaitNoClear(handle, CMDQ_EVENT_MUTEX0_STREAM_EOF);
 
 		DSI_MIPI_clk_change(DISP_MODULE_DSI0, handle, def_data_rate);
-		ret = cmdqRecFlushAsync(handle);
-		if (ret < 0)
-			DISPERR(" %s cmdqRecFlushAsync fail\n", __func__);
+		cmdqRecFlushAsync(handle);
 		cmdqRecDestroy(handle);
 	}
 
@@ -1750,8 +2466,49 @@ int mipi_clk_change_by_data_rate(int en, int mipi_data_rate)
  *
  * mipi init / deinit flow
  */
-void DSI_PHY_clk_switch(enum DISP_MODULE_ENUM module,
-	struct cmdqRecStruct *cmdq, int on)
+
+void DSI_CPHY_clk_switch(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq, int on)
+{
+	int i = 0;
+
+
+	/* can't use cmdq for this */
+	ASSERT(cmdq == NULL);
+
+	if (on) {
+		_DSI_PHY_clk_setting(module, cmdq,
+			&(_dsi_context[i].dsi_params));
+	} else {
+		for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+			/* disable mipi clock */
+			/* step 0 */
+			/* PLL DISABLE */
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_PLL_CON1,
+				FLD_RG_DSI_PLL_EN,	0);
+
+			/* step 1 */
+			/* SDM_RWR_ON / SDM_ISO_EN */
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_PLL_PWR,
+				FLD_AD_DSI_PLL_SDM_ISO_EN, 1);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_PLL_PWR,
+				FLD_AD_DSI_PLL_SDM_PWR_ON, 0);
+
+			/* step 2 */
+			/* BG_LPF_EN=0 */
+			MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_LANE_CON,
+				0x3FFF0080);
+			/* BG_CORE_EN=1 */
+			MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_LANE_CON,
+				0x3FFF0000);
+
+			/* mdelay(1); */
+		}
+	}
+
+}
+
+void DSI_DPHY_clk_switch(enum DISP_MODULE_ENUM module,
+			struct cmdqRecStruct *cmdq, int on)
 {
 	int i = 0;
 
@@ -1760,47 +2517,345 @@ void DSI_PHY_clk_switch(enum DISP_MODULE_ENUM module,
 
 	if (on) {
 		_DSI_PHY_clk_setting(module, cmdq,
-			&(_dsi_context[i].dsi_params));
+				     &(_dsi_context[i].dsi_params));
 		return;
 	}
 
-	for (i = DSI_MODULE_BEGIN(module);
-	i <= DSI_MODULE_END(module); i++) {
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
 		/* disable mipi clock */
 		/* step 0: PLL DISABLE */
 		MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_CON1,
-		FLD_RG_DSI_PLL_EN, 0);
+				 FLD_RG_DSI_PLL_EN, 0);
+		MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_SW_CTRL_CON4,
+				 FLD_MIPI_TX_SW_ANA_CK_EN, 0);
 
 		/* step 1: SDM_RWR_ON / SDM_ISO_EN */
 		MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_PWR,
-			FLD_AD_DSI_PLL_SDM_ISO_EN, 1);
+				 FLD_AD_DSI_PLL_SDM_ISO_EN, 1);
 		MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_PLL_PWR,
-			FLD_AD_DSI_PLL_SDM_PWR_ON, 0);
+				 FLD_AD_DSI_PLL_SDM_PWR_ON, 0);
 
-		/* Switch ON each Lane */
-		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_D0_SW_CTL_EN,
-			FLD_DSI_D0_SW_CTL_EN, 1);
-		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_D1_SW_CTL_EN,
-			FLD_DSI_D1_SW_CTL_EN, 1);
-		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_D2_SW_CTL_EN,
-			FLD_DSI_D2_SW_CTL_EN, 1);
-		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_D3_SW_CTL_EN,
-			FLD_DSI_D3_SW_CTL_EN, 1);
-		MIPITX_OUTREGBIT(DSI_PHY_REG[i]+MIPITX_CK_SW_CTL_EN,
-			FLD_DSI_CK_SW_CTL_EN, 1);
+		if (atomic_read(&dsi_idle_flg) == 1) {
+			/* BG_LPF_EN=0, TIEL_SEL=1 */
+			MIPITX_OUTREG32(DSI_PHY_REG[i] + MIPITX_LANE_CON,
+				0x3FFF0180);
+		} else {
+			/* keep LP00 */
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] +
+					MIPITX_D2_SW_LPTX_PRE_OE,
+					FLD_DSI_D2_SW_LPTX_PRE_OE, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D2_SW_LPTX_OE,
+					FLD_DSI_D2_SW_LPTX_OE, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D2_SW_LPTX_DP,
+					FLD_DSI_D2_SW_LPTX_DP, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D2_SW_LPTX_DN,
+					FLD_DSI_D2_SW_LPTX_DN, 0);
 
-		/* step 2 */
-		MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_LANE_CON,
-			0x3FFF0180); /* BG_LPF_EN=0, TIEL_SEL=1 */
-		MIPITX_OUTREG32(DSI_PHY_REG[i]+MIPITX_LANE_CON,
-			0x3FFF0100); /* BG_CORE_EN=0 */
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] +
+					MIPITX_D0_SW_LPTX_PRE_OE,
+					FLD_DSI_D0_SW_LPTX_PRE_OE, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D0_SW_LPTX_OE,
+					FLD_DSI_D0_SW_LPTX_OE, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D0_SW_LPTX_DP,
+					FLD_DSI_D0_SW_LPTX_DP, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D0_SW_LPTX_DN,
+					FLD_DSI_D0_SW_LPTX_DN, 0);
 
-		/* mdelay(1); */
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] +
+					MIPITX_CK_SW_LPTX_PRE_OE,
+					FLD_DSI_CK_SW_LPTX_PRE_OE, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_CK_SW_LPTX_OE,
+					FLD_DSI_CK_SW_LPTX_OE, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_CK_SW_LPTX_DP,
+					FLD_DSI_CK_SW_LPTX_DP, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_CK_SW_LPTX_DN,
+					FLD_DSI_CK_SW_LPTX_DN, 0);
+
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] +
+					MIPITX_D1_SW_LPTX_PRE_OE,
+					FLD_DSI_D1_SW_LPTX_PRE_OE, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D1_SW_LPTX_OE,
+					FLD_DSI_D1_SW_LPTX_OE, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D1_SW_LPTX_DP,
+					FLD_DSI_D1_SW_LPTX_DP, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D1_SW_LPTX_DN,
+					FLD_DSI_D1_SW_LPTX_DN, 0);
+
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] +
+					MIPITX_D3_SW_LPTX_PRE_OE,
+					FLD_DSI_D3_SW_LPTX_PRE_OE, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D3_SW_LPTX_OE,
+					FLD_DSI_D3_SW_LPTX_OE, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D3_SW_LPTX_DP,
+					FLD_DSI_D3_SW_LPTX_DP, 0);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D3_SW_LPTX_DN,
+					FLD_DSI_D3_SW_LPTX_DN, 0);
+
+			/* Switch ON each Lane */
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D0_SW_CTL_EN,
+				FLD_DSI_D0_SW_CTL_EN, 1);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D1_SW_CTL_EN,
+				FLD_DSI_D1_SW_CTL_EN, 1);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D2_SW_CTL_EN,
+				FLD_DSI_D2_SW_CTL_EN, 1);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_D3_SW_CTL_EN,
+				FLD_DSI_D3_SW_CTL_EN, 1);
+			MIPITX_OUTREGBIT(DSI_PHY_REG[i] + MIPITX_CK_SW_CTL_EN,
+				FLD_DSI_CK_SW_CTL_EN, 1);
+			/* step 2 */
+			/* BG_LPF_EN=0, TIEL_SEL=1 */
+			MIPITX_OUTREG32(DSI_PHY_REG[i] + MIPITX_LANE_CON,
+				0x3FFF0180);
+			/* BG_CORE_EN=0 */
+			MIPITX_OUTREG32(DSI_PHY_REG[i] + MIPITX_LANE_CON,
+				0x3FFF0100);
+		}
 	}
 }
 
-void DSI_PHY_TIMCONFIG(enum DISP_MODULE_ENUM module,
-	struct cmdqRecStruct *cmdq, struct LCM_DSI_PARAMS *dsi_params)
+/**
+ * DSI_PHY_clk_switch
+ *
+ * mipi init / deinit flow
+ */
+void DSI_PHY_clk_switch(enum DISP_MODULE_ENUM module,
+	struct cmdqRecStruct *cmdq, int on)
+{
+	int i = 0;
+
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		if (_dsi_context[i].dsi_params.IsCphy)
+			DSI_CPHY_clk_switch(module, cmdq, on);
+		else
+			DSI_DPHY_clk_switch(module, cmdq, on);
+	}
+}
+
+
+void DSI_CPHY_TIMCONFIG(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq,
+		       struct LCM_DSI_PARAMS *dsi_params)
+{
+	struct DSI_PHY_TIMCON0_REG timcon0;
+	struct DSI_PHY_TIMCON1_REG timcon1;
+	struct DSI_PHY_TIMCON2_REG timcon2;
+	struct DSI_PHY_TIMCON3_REG timcon3;
+	int i = 0;
+	unsigned int lane_no;
+	unsigned int cycle_time = 0;
+	unsigned int ui = 0;
+	unsigned int hs_trail;
+	unsigned int _PLL_CLOCK = 0;
+	unsigned int _data_rate = 0;
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	unsigned int j = 0;
+	struct dfps_info *dfps_params = NULL;
+#endif
+
+#ifdef CONFIG_FPGA_EARLY_PORTING
+	/* sync from cmm */
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_PHY_TIMECON0, 0x02000102);
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_PHY_TIMECON1, 0x010a0308);
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_PHY_TIMECON2, 0x02000100);
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_PHY_TIMECON3, 0x00010701);
+
+		DISPCHECK("%s, 0x%08x,0x%08x,0x%08x,0x%08x\n", __func__,
+			INREG32(&DSI_REG[i]->DSI_PHY_TIMECON0),
+			INREG32(&DSI_REG[i]->DSI_PHY_TIMECON1),
+			INREG32(&DSI_REG[i]->DSI_PHY_TIMECON2),
+			INREG32(&DSI_REG[i]->DSI_PHY_TIMECON3));
+	}
+	return;
+#endif
+	/*Dynfps, should use data_rate_dyn?
+	 *dsi params can be chagned?
+	 */
+	lane_no = dsi_params->LANE_NUM;
+	/*for mipi hopping*/
+	if (!mipi_clk_change_sta) {
+		_data_rate = dsi_params->data_rate;
+		_PLL_CLOCK = dsi_params->PLL_CLOCK;
+	} else {
+		_data_rate = dsi_params->data_rate_dyn;
+		_PLL_CLOCK = dsi_params->PLL_CLOCK_dyn;
+	}
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	/*DynFPS, ToDo move to a function */
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		/*if not power on scenario
+		 * if disp_fps !=0 means dynfps already happened
+		 * for example path switch or esd check recovery after dynfps
+		 */
+		if (_dsi_context[i].disp_fps &&
+			(_dsi_context[i].dynfps_chg_index &
+				DYNFPS_DSI_MIPI_CLK)) {
+			for (j = 0; j < dsi_params->dfps_num; j++) {
+				if ((dsi_params->dfps_params)[j].fps ==
+					_dsi_context[i].disp_fps) {
+					dfps_params =
+					&((dsi_params->dfps_params)[j]);
+					DISPMSG("%s,disp_fps=%d\n",
+					__func__, _dsi_context[i].disp_fps);
+					break;
+				}
+			}
+			if (dfps_params) {
+				if (!mipi_clk_change_sta) {
+					if (dfps_params->data_rate != 0 ||
+						dfps_params->PLL_CLOCK != 0)
+						_data_rate =
+							dfps_params->data_rate;
+						_PLL_CLOCK =
+							dfps_params->PLL_CLOCK;
+				} else {
+					if (dfps_params->data_rate_dyn != 0 ||
+						dfps_params->PLL_CLOCK_dyn != 0)
+						_data_rate =
+						dfps_params->data_rate_dyn;
+						_PLL_CLOCK =
+						dfps_params->PLL_CLOCK_dyn;
+
+				}
+			}
+		}
+	}
+#endif
+	if (_data_rate != 0) {
+		ui = 1000 / _data_rate + 0x01;
+		cycle_time = 8000 / _data_rate + 0x01;
+		DISP_LOG_PRINT(ANDROID_LOG_INFO, "DSI",
+			"%s, Cycle Time = %d, interval = %d, lane# = %d\n",
+			__func__, cycle_time, ui, lane_no);
+	} else if (_PLL_CLOCK) {
+		ui = 1000 / (_PLL_CLOCK * 2) + 0x01;
+		cycle_time = 8000 / (_PLL_CLOCK * 2) + 0x01;
+		DISP_LOG_PRINT(ANDROID_LOG_INFO, "DSI",
+			"[DISP]%s, cycle = %d(ns),ui= %d(ns)., lane# = %d\n",
+			__func__, cycle_time, ui, lane_no);
+	} else {
+		DISPCHECK("[dsi_dsi.c] PLL clock should not be 0!\n");
+		ASSERT(0);
+	}
+
+	if (cycle_time == 0) {
+		DISPCHECK("[dsi_dsi.c] cycle_time should not be 0!\n");
+		return;
+	}
+
+
+#define NS_TO_CYCLE(n, c)	((n) / (c))
+
+	hs_trail = (dsi_params->HS_TRAIL == 0) ?
+		32 : dsi_params->HS_TRAIL;
+
+	/* +3 is recommended from designer becauase of HW latency */
+	timcon0.HS_TRAIL = hs_trail;
+	//HS_PRPR=DATA_RATE*50.5/7000+1
+	timcon0.HS_PRPR = (dsi_params->HS_PRPR == 0) ?
+		(NS_TO_CYCLE(_PLL_CLOCK * 101, 7000) + 1) :
+		dsi_params->HS_PRPR;
+
+	timcon0.HS_ZERO = (dsi_params->HS_ZERO == 0) ?
+		48 : dsi_params->HS_ZERO;
+
+	timcon0.LPX = (dsi_params->LPX == 0) ?
+		(NS_TO_CYCLE(_PLL_CLOCK * 2 * 75, 7000)
+		+ 0x01) : dsi_params->LPX;
+
+	timcon1.TA_GET = (dsi_params->TA_GET == 0) ?
+		(0x5 * timcon0.LPX) : dsi_params->TA_GET;
+	timcon1.TA_SURE = (dsi_params->TA_SURE == 0) ?
+		(0x3 * timcon0.LPX / 0x2) : dsi_params->TA_SURE;
+	timcon1.TA_GO = (dsi_params->TA_GO == 0) ?
+		(0x4 * timcon0.LPX) : dsi_params->TA_GO;
+	/* --------------------------------------------------------------
+	 * NT35510 need fine tune timing
+	 * Data_hs_exit = data_rate*112.5/7000+1
+	 * Clk_post = 60 ns + 128 UI.
+	 * --------------------------------------------------------------
+	 */
+	timcon1.DA_HS_EXIT  = (dsi_params->DA_HS_EXIT == 0) ?
+		(NS_TO_CYCLE(_PLL_CLOCK * 225, 7000) + 1) :
+		dsi_params->DA_HS_EXIT;
+
+	timcon2.CLK_TRAIL = ((dsi_params->CLK_TRAIL == 0) ?
+		NS_TO_CYCLE(0x60, cycle_time) :
+		dsi_params->CLK_TRAIL) + 0x01;
+	/* CLK_TRAIL can't be 1. */
+	if (timcon2.CLK_TRAIL < 2)
+		timcon2.CLK_TRAIL = 2;
+
+	timcon2.CONT_DET = dsi_params->CONT_DET;
+	timcon2.CLK_ZERO = (dsi_params->CLK_ZERO == 0) ?
+		NS_TO_CYCLE(0x190, cycle_time) :
+		dsi_params->CLK_ZERO;
+
+	timcon3.CLK_HS_PRPR = (dsi_params->CLK_HS_PRPR == 0) ?
+		NS_TO_CYCLE(0x40, cycle_time) :
+		dsi_params->CLK_HS_PRPR;
+
+	if (timcon3.CLK_HS_PRPR < 1)
+		timcon3.CLK_HS_PRPR = 1;
+
+	timcon3.CLK_HS_EXIT = (dsi_params->CLK_HS_EXIT == 0) ?
+		(0x2 * timcon0.LPX) : dsi_params->CLK_HS_EXIT;
+	timcon3.CLK_HS_POST = (dsi_params->CLK_HS_POST == 0) ?
+		NS_TO_CYCLE((0x60 + 0x34 * ui), cycle_time) :
+		dsi_params->CLK_HS_POST;
+
+	DISP_LOG_PRINT(ANDROID_LOG_INFO, "DSI",
+		"[DISP] - kernel - %s, HS_TRAIL = %d, HS_ZERO = %d,HS_PRPR = %d, LPX = %d, TA_GET = %d, TA_SURE = %d, TA_GO = %d, CLK_TRAIL = %d, CLK_ZERO = %d, CLK_HS_PRPR = %d\n",
+		__func__, timcon0.HS_TRAIL, timcon0.HS_ZERO,
+		timcon0.HS_PRPR, timcon0.LPX,
+		timcon1.TA_GET, timcon1.TA_SURE,
+		timcon1.TA_GO, timcon2.CLK_TRAIL,
+		timcon2.CLK_ZERO, timcon3.CLK_HS_PRPR);
+
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		unsigned int value = 0;
+
+		_dsi_context[i].data_phy_cycle = timcon0.HS_PRPR +
+			timcon0.HS_ZERO + timcon1.DA_HS_EXIT +
+			timcon0.LPX + 5;
+		_dsi_context[i].HS_TRAIL = timcon0.HS_TRAIL;
+
+		value = REG_FLD_VAL(FLD_LPX, timcon0.LPX) +
+			REG_FLD_VAL(FLD_HS_PRPR, timcon0.HS_PRPR) +
+			REG_FLD_VAL(FLD_HS_ZERO, timcon0.HS_ZERO) +
+			REG_FLD_VAL(FLD_HS_TRAIL, timcon0.HS_TRAIL);
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_PHY_TIMECON0, value);
+
+		value = REG_FLD_VAL(FLD_TA_GO, timcon1.TA_GO) +
+			REG_FLD_VAL(FLD_TA_SURE, timcon1.TA_SURE) +
+			REG_FLD_VAL(FLD_TA_GET, timcon1.TA_GET) +
+			REG_FLD_VAL(FLD_DA_HS_EXIT, timcon1.DA_HS_EXIT);
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_PHY_TIMECON1, value);
+
+		value = REG_FLD_VAL(FLD_CONT_DET, timcon2.CONT_DET) +
+			REG_FLD_VAL(FLD_DA_HS_SYNC, 0x06) + /* default value */
+			REG_FLD_VAL(FLD_CLK_ZERO, timcon2.CLK_ZERO) +
+			REG_FLD_VAL(FLD_CLK_TRAIL, timcon2.CLK_TRAIL);
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_PHY_TIMECON2, value);
+
+		value = REG_FLD_VAL(FLD_CLK_HS_PRPR, timcon3.CLK_HS_PRPR) +
+			REG_FLD_VAL(FLD_CLK_HS_POST, timcon3.CLK_HS_POST) +
+			REG_FLD_VAL(FLD_CLK_HS_EXIT, timcon3.CLK_HS_EXIT);
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_PHY_TIMECON3, value);
+
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_CPHY_CON0, 0x012c0003);
+
+		DISPINFO("%s, 0x%08x,0x%08x,0x%08x,0x%08x\n",
+			__func__,
+			INREG32(&DSI_REG[i]->DSI_PHY_TIMECON0),
+			INREG32(&DSI_REG[i]->DSI_PHY_TIMECON1),
+			INREG32(&DSI_REG[i]->DSI_PHY_TIMECON2),
+			INREG32(&DSI_REG[i]->DSI_PHY_TIMECON3));
+	}
+}
+
+void DSI_DPHY_TIMCONFIG(enum DISP_MODULE_ENUM module,
+			struct cmdqRecStruct *cmdq,
+			struct LCM_DSI_PARAMS *dsi_params)
 {
 	struct DSI_PHY_TIMCON0_REG timcon0;
 	struct DSI_PHY_TIMCON1_REG timcon1;
@@ -1812,6 +2867,7 @@ void DSI_PHY_TIMCONFIG(enum DISP_MODULE_ENUM module,
 	unsigned int ui = 0;
 	unsigned int hs_trail_m, hs_trail_n;
 	unsigned char timcon_temp;
+	unsigned int temp_data_rate = 0;
 
 #ifdef CONFIG_FPGA_EARLY_PORTING
 	/* sync from cmm */
@@ -1845,98 +2901,94 @@ void DSI_PHY_TIMCONFIG(enum DISP_MODULE_ENUM module,
 		ui = 1000 / dsi_params->data_rate + 0x01;
 		cycle_time = 8000 / dsi_params->data_rate + 0x01;
 		DISP_LOG_PRINT(ANDROID_LOG_INFO, "DSI",
-			"[DISP] - kernel - %s, Cycle Time = %d(ns), Unit Interval = %d(ns). , lane# = %d\n",
+			"%s, Cycle Time = %d, interval = %d, lane# = %d\n",
 			__func__, cycle_time, ui, lane_no);
-	} else if (dsi_params->PLL_CLOCK != 0) {
+	} else if (dsi_params->PLL_CLOCK) {
 		ui = 1000 / (dsi_params->PLL_CLOCK * 2) + 0x01;
 		cycle_time = 8000 / (dsi_params->PLL_CLOCK * 2) + 0x01;
 		DISP_LOG_PRINT(ANDROID_LOG_INFO, "DSI",
-			"[DISP] - kernel - %s, Cycle Time = %d(ns), Unit Interval = %d(ns). , lane# = %d\n",
-			__func__, cycle_time, ui, lane_no);
+			       "[DISP] - kernel - %s, Cycle Time = %d(ns), Unit Interval = %d(ns)., lane# = %d\n",
+			       __func__, cycle_time, ui, lane_no);
 	} else {
-		DISPERR("[dsi_dsi.c] PLL clock should not be 0!!!\n");
+		DISPERR("[dsi_dsi.c] PLL clock should not be 0!\n");
 		ASSERT(0);
+		return;
 	}
 
 #define NS_TO_CYCLE(n, c)	((n) / (c))
 
+	if (dsi_params->data_rate != 0)
+		temp_data_rate = dsi_params->data_rate;
+	else
+		temp_data_rate = dsi_params->PLL_CLOCK * 2;
+
 	hs_trail_m = 1;
 	hs_trail_n = (dsi_params->HS_TRAIL == 0) ?
-		NS_TO_CYCLE(((hs_trail_m * 0x4 * ui) + 0x50), cycle_time) :
-		dsi_params->HS_TRAIL;
+				(NS_TO_CYCLE(((hs_trail_m * 0x4 * ui) + 0x50)
+				* temp_data_rate, 0x1F40) + 0x1) :
+				dsi_params->HS_TRAIL;
 	/* +3 is recommended from designer becauase of HW latency */
 	timcon0.HS_TRAIL = (hs_trail_m > hs_trail_n) ? hs_trail_m : hs_trail_n;
 
-	timcon0.HS_PRPR =
-		(dsi_params->HS_PRPR == 0) ?
-		NS_TO_CYCLE((0x40 + 0x5 * ui), cycle_time) :
-		dsi_params->HS_PRPR;
+	timcon0.HS_PRPR = (dsi_params->HS_PRPR == 0) ?
+			(NS_TO_CYCLE((0x40 + 0x5 * ui), cycle_time) + 0x1) :
+			dsi_params->HS_PRPR;
 	/* HS_PRPR can't be 1. */
 	if (timcon0.HS_PRPR < 1)
 		timcon0.HS_PRPR = 1;
 
-	timcon0.HS_ZERO =
-	    (dsi_params->HS_ZERO == 0) ?
-	    NS_TO_CYCLE((0xC8 + 0x0a * ui),
-		cycle_time) : dsi_params->HS_ZERO;
+	timcon0.HS_ZERO = (dsi_params->HS_ZERO == 0) ?
+				NS_TO_CYCLE((0xC8 + 0x0a * ui), cycle_time) :
+				dsi_params->HS_ZERO;
 	timcon_temp = timcon0.HS_PRPR;
 	if (timcon_temp < timcon0.HS_ZERO)
 		timcon0.HS_ZERO -= timcon0.HS_PRPR;
 
-	timcon0.LPX =
-		(dsi_params->LPX == 0) ?
-		NS_TO_CYCLE(0x55, cycle_time) : dsi_params->LPX;
+	timcon0.LPX = (dsi_params->LPX == 0) ?
+		(NS_TO_CYCLE(temp_data_rate * 0x4B, 0x1F40)  + 0x1) :
+								dsi_params->LPX;
 	if (timcon0.LPX < 1)
 		timcon0.LPX = 1;
 
-	timcon1.TA_GET =
-		(dsi_params->TA_GET == 0) ?
-		(0x5 * timcon0.LPX) : dsi_params->TA_GET;
-	timcon1.TA_SURE =
-		(dsi_params->TA_SURE == 0) ?
-		(0x3 * timcon0.LPX / 0x2) : dsi_params->TA_SURE;
-	timcon1.TA_GO =
-		(dsi_params->TA_GO == 0) ?
-		(0x4 * timcon0.LPX) : dsi_params->TA_GO;
+	timcon1.TA_GET = (dsi_params->TA_GET == 0) ?  (0x5 * timcon0.LPX) :
+							dsi_params->TA_GET;
+	timcon1.TA_SURE = (dsi_params->TA_SURE == 0) ?
+				(0x3 * timcon0.LPX / 0x2) : dsi_params->TA_SURE;
+	timcon1.TA_GO = (dsi_params->TA_GO == 0) ?  (0x4 * timcon0.LPX) :
+							dsi_params->TA_GO;
 	/* --------------------------------------------------------------
 	 * NT35510 need fine tune timing
 	 * Data_hs_exit = 60 ns + 128UI
 	 * Clk_post = 60 ns + 128 UI.
 	 * --------------------------------------------------------------
 	 */
-	timcon1.DA_HS_EXIT =
-		(dsi_params->DA_HS_EXIT == 0) ?
-		(0x2 * timcon0.LPX) : dsi_params->DA_HS_EXIT;
+	timcon1.DA_HS_EXIT = (dsi_params->DA_HS_EXIT == 0) ?
+				(0x2 * timcon0.LPX) : dsi_params->DA_HS_EXIT;
 
-	timcon2.CLK_TRAIL =
-		((dsi_params->CLK_TRAIL == 0) ?
-		NS_TO_CYCLE(0x60, cycle_time) :
-		dsi_params->CLK_TRAIL) + 0x01;
+	timcon2.CLK_TRAIL = ((dsi_params->CLK_TRAIL == 0) ?
+				NS_TO_CYCLE(0x64 * temp_data_rate,
+				0x1F40) : dsi_params->CLK_TRAIL) + 0x01;
 	/* CLK_TRAIL can't be 1. */
 	if (timcon2.CLK_TRAIL < 2)
 		timcon2.CLK_TRAIL = 2;
 
 	timcon2.CONT_DET = dsi_params->CONT_DET;
-	timcon2.CLK_ZERO =
-		(dsi_params->CLK_ZERO == 0) ?
-		NS_TO_CYCLE(0x190, cycle_time) :
-		dsi_params->CLK_ZERO;
+	timcon2.CLK_ZERO = (dsi_params->CLK_ZERO == 0) ?
+						NS_TO_CYCLE(0x190, cycle_time) :
+						dsi_params->CLK_ZERO;
 
-	timcon3.CLK_HS_PRPR =
-		(dsi_params->CLK_HS_PRPR == 0) ?
-		NS_TO_CYCLE(0x40, cycle_time) :
-		dsi_params->CLK_HS_PRPR;
+	timcon3.CLK_HS_PRPR = (dsi_params->CLK_HS_PRPR == 0) ?
+				NS_TO_CYCLE(0x50 * temp_data_rate,
+				0x1F40) : dsi_params->CLK_HS_PRPR;
 
 	if (timcon3.CLK_HS_PRPR < 1)
 		timcon3.CLK_HS_PRPR = 1;
 
-	timcon3.CLK_HS_EXIT =
-		(dsi_params->CLK_HS_EXIT == 0) ?
-		(0x2 * timcon0.LPX) : dsi_params->CLK_HS_EXIT;
-	timcon3.CLK_HS_POST =
-		(dsi_params->CLK_HS_POST == 0) ?
-		NS_TO_CYCLE((0x60 + 0x34 * ui), cycle_time) :
-		dsi_params->CLK_HS_POST;
+	timcon3.CLK_HS_EXIT = (dsi_params->CLK_HS_EXIT == 0) ?
+				(0x2 * timcon0.LPX) : dsi_params->CLK_HS_EXIT;
+	timcon3.CLK_HS_POST = (dsi_params->CLK_HS_POST == 0) ?
+				NS_TO_CYCLE((0x60 + 0x34 * ui), cycle_time) :
+				dsi_params->CLK_HS_POST;
 
 	DISP_LOG_PRINT(ANDROID_LOG_INFO, "DSI",
 			"[DISP] - kernel - %s, HS_TRAIL = %d, HS_ZERO = %d, HS_PRPR = %d, LPX = %d, TA_GET = %d, TA_SURE = %d, TA_GO = %d, CLK_TRAIL = %d, CLK_ZERO = %d, CLK_HS_PRPR = %d\n",
@@ -1947,51 +2999,31 @@ void DSI_PHY_TIMCONFIG(enum DISP_MODULE_ENUM module,
 			timcon2.CLK_ZERO, timcon3.CLK_HS_PRPR);
 
 	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON0_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON0, LPX,
-			timcon0.LPX);
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON0_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON0, HS_PRPR,
-			timcon0.HS_PRPR);
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON0_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON0, HS_ZERO,
-			timcon0.HS_ZERO);
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON0_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON0, HS_TRAIL,
-			timcon0.HS_TRAIL);
+		unsigned int value = 0;
 
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON1_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON1, TA_GO,
-			timcon1.TA_GO);
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON1_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON1, TA_SURE,
-			timcon1.TA_SURE);
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON1_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON1, TA_GET,
-			timcon1.TA_GET);
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON1_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON1, DA_HS_EXIT,
-			timcon1.DA_HS_EXIT);
+		value = REG_FLD_VAL(FLD_LPX, timcon0.LPX) +
+		    REG_FLD_VAL(FLD_HS_PRPR, timcon0.HS_PRPR) +
+		    REG_FLD_VAL(FLD_HS_ZERO, timcon0.HS_ZERO) +
+		    REG_FLD_VAL(FLD_HS_TRAIL, timcon0.HS_TRAIL);
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_PHY_TIMECON0, value);
 
-		DSI_OUTREGBIT(cmdq, struct  DSI_PHY_TIMCON2_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON2, CONT_DET,
-			timcon2.CONT_DET);
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON2_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON2, CLK_ZERO,
-			timcon2.CLK_ZERO);
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON2_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON2, CLK_TRAIL,
-			timcon2.CLK_TRAIL);
+		value = REG_FLD_VAL(FLD_TA_GO, timcon1.TA_GO) +
+		    REG_FLD_VAL(FLD_TA_SURE, timcon1.TA_SURE) +
+		    REG_FLD_VAL(FLD_TA_GET, timcon1.TA_GET) +
+		    REG_FLD_VAL(FLD_DA_HS_EXIT, timcon1.DA_HS_EXIT);
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_PHY_TIMECON1, value);
 
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON3_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON3, CLK_HS_PRPR,
-			timcon3.CLK_HS_PRPR);
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON3_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON3, CLK_HS_POST,
-			timcon3.CLK_HS_POST);
-		DSI_OUTREGBIT(cmdq, struct DSI_PHY_TIMCON3_REG,
-			DSI_REG[i]->DSI_PHY_TIMECON3, CLK_HS_EXIT,
-			timcon3.CLK_HS_EXIT);
+		value = REG_FLD_VAL(FLD_CONT_DET, timcon2.CONT_DET) +
+		    REG_FLD_VAL(FLD_DA_HS_SYNC, 1) + /* default value */
+		    REG_FLD_VAL(FLD_CLK_ZERO, timcon2.CLK_ZERO) +
+		    REG_FLD_VAL(FLD_CLK_TRAIL, timcon2.CLK_TRAIL);
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_PHY_TIMECON2, value);
+
+		value = REG_FLD_VAL(FLD_CLK_HS_PRPR, timcon3.CLK_HS_PRPR) +
+		    REG_FLD_VAL(FLD_CLK_HS_POST, timcon3.CLK_HS_POST) +
+		    REG_FLD_VAL(FLD_CLK_HS_EXIT, timcon3.CLK_HS_EXIT);
+		DSI_OUTREG32(cmdq, &DSI_REG[i]->DSI_PHY_TIMECON3, value);
+
 		DISPINFO("%s, 0x%08x,0x%08x,0x%08x,0x%08x\n",
 			__func__,
 			INREG32(&DSI_REG[i]->DSI_PHY_TIMECON0),
@@ -2001,12 +3033,38 @@ void DSI_PHY_TIMCONFIG(enum DISP_MODULE_ENUM module,
 	}
 }
 
+void DSI_PHY_TIMCONFIG(enum DISP_MODULE_ENUM module,
+	struct cmdqRecStruct *cmdq, struct LCM_DSI_PARAMS *dsi_params)
+{
+	int i = 0;
+
+	DDPDUMP("===>%s start\n", __func__);
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		if (_dsi_context[i].dsi_params.IsCphy)
+			DSI_CPHY_TIMCONFIG(module, cmdq, dsi_params);
+		else
+			DSI_DPHY_TIMCONFIG(module, cmdq, dsi_params);
+	}
+	DDPDUMP("<===%s done\n", __func__);
+}
+
+
 int DSI_enable_checksum(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq)
 {
-	int i;
+	int i, module_num;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return -1;
+	}
+
+	for (i = 0; i < module_num; i++) {
 		DSI_OUTREGBIT(cmdq, struct DSI_DEBUG_SEL_REG,
 			DSI_REG[i]->DSI_DEBUG_SEL, CHKSUM_REC_EN, 1);
 	}
@@ -2033,11 +3091,20 @@ enum DSI_STATUS DSI_Start(enum DISP_MODULE_ENUM module,
 
 void DSI_Set_VM_CMD(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq)
 {
-	int i = 0;
+	int i = 0, module_num;
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return;
+	}
 
 	if (module != DISP_MODULE_DSIDUAL) {
-		for (i = DSI_MODULE_BEGIN(module);
-			i <= DSI_MODULE_END(module); i++) {
+		for (i = 0; i < module_num; i++) {
 			DSI_OUTREGBIT(cmdq, struct DSI_VM_CMD_CON_REG,
 				DSI_REG[i]->DSI_VM_CMD_CON, TS_VFP_EN, 1);
 			DSI_OUTREGBIT(cmdq, struct DSI_VM_CMD_CON_REG,
@@ -2056,21 +3123,23 @@ void DSI_Set_VM_CMD(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq)
 enum DSI_STATUS DSI_EnableVM_CMD(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq)
 {
-	int i = 0;
+	int i = 0, module_num;
 
 	if (cmdq)
 		DSI_MASKREG32(cmdq, &DSI_REG[0]->DSI_INTSTA,
 			0x00000020, 0x00000000);
 
-	if (module != DISP_MODULE_DSIDUAL) {
-		for (i = DSI_MODULE_BEGIN(module);
-			i <= DSI_MODULE_END(module); i++) {
-			DSI_OUTREGBIT(cmdq, struct DSI_START_REG,
-				DSI_REG[i]->DSI_START, VM_CMD_START, 0);
-			DSI_OUTREGBIT(cmdq, struct DSI_START_REG,
-				DSI_REG[i]->DSI_START, VM_CMD_START, 1);
-		}
-	} else {
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return DSI_STATUS_ERROR;
+	}
+
+	for (i = 0; i < module_num; i++) {
 		DSI_OUTREGBIT(cmdq, struct DSI_START_REG,
 			DSI_REG[0]->DSI_START, VM_CMD_START, 0);
 		DSI_OUTREGBIT(cmdq, struct DSI_START_REG,
@@ -2091,21 +3160,20 @@ UINT32 DSI_dcs_read_lcm_reg_v2(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq, UINT8 cmd, UINT8 *buffer,
 	UINT8 buffer_size)
 {
-	int d = 0;
+	unsigned int d = 0;
 	UINT32 max_try_count = 5;
 	UINT32 recv_data_cnt = 0;
-	unsigned char packet_type = 0;
-	struct DSI_RX_DATA_REG read_data0 = { 0 };
-	struct DSI_RX_DATA_REG read_data1 = { 0 };
-	struct DSI_RX_DATA_REG read_data2 = { 0 };
-	struct DSI_RX_DATA_REG read_data3 = { 0 };
-	struct DSI_T0_INS t0 = { 0 };
-	struct DSI_T0_INS t1 = { 0 };
+	unsigned char packet_type;
+	struct DSI_RX_DATA_REG read_data0;
+	struct DSI_RX_DATA_REG read_data1;
+	struct DSI_RX_DATA_REG read_data2;
+	struct DSI_RX_DATA_REG read_data3;
+	struct DSI_T0_INS t0;
+	struct DSI_T0_INS t1;
 	static const long WAIT_TIMEOUT = 2 * HZ; /* 2 sec */
-	long ret = 0;
-	unsigned int i = 0;
-	struct t_condition_wq *waitq = NULL;
-
+	long ret;
+	unsigned int i;
+	struct t_condition_wq *waitq;
 
 	/* illegal parameters */
 	ASSERT(cmdq == NULL);
@@ -2123,6 +3191,13 @@ UINT32 DSI_dcs_read_lcm_reg_v2(enum DISP_MODULE_ENUM module,
 		d = 0;
 	else
 		return 0;
+
+	i = DSI_MODULE_to_ID(module);
+	if (!((unsigned long)DSI_REG[i]) ||
+		!((unsigned long)DSI_CMDQ_REG[i])) {
+		DISPERR("DSI%d register addr invalid\n", i);
+		return -1;
+	}
 
 	if (DSI_REG[d]->DSI_MODE_CTRL.MODE) {
 		/* only cmd mode can read */
@@ -2372,7 +3447,7 @@ UINT32 DSI_dcs_read_lcm_reg_v3(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq, char *out, struct dsi_cmd_desc *cmds,
 	unsigned int len)
 {
-	int d = 0;
+	unsigned int d = 0;
 	UINT32 max_try_count = 5;
 	UINT32 recv_data_cnt = 0;
 	unsigned char packet_type;
@@ -2412,6 +3487,13 @@ UINT32 DSI_dcs_read_lcm_reg_v3(enum DISP_MODULE_ENUM module,
 		d = 0;
 	else
 		return 0;
+
+	i = DSI_MODULE_to_ID(module);
+	if (!((unsigned long)DSI_REG[i]) ||
+		!((unsigned long)DSI_CMDQ_REG[i])) {
+		DISPERR("DSI%d register addr invalid\n", i);
+		return -1;
+	}
 
 	if (DSI_REG[d]->DSI_MODE_CTRL.MODE) {
 		/* only cmd mode can read */
@@ -2678,6 +3760,13 @@ void DSI_set_cmdq_V2(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq,
 	else
 		return;
 
+	i = DSI_MODULE_to_ID(module);
+	if (!((unsigned long)DSI_REG[i]) ||
+		!((unsigned long)DSI_CMDQ_REG[i])) {
+		DISPERR("DSI%d register addr invalid\n", i);
+		return;
+	}
+
 	if (DSI_REG[d]->DSI_MODE_CTRL.MODE) { /* vdo cmd */
 		struct DSI_VM_CMD_CON_REG vm_cmdq;
 		struct DSI_VM_CMDQ *vm_data;
@@ -2931,6 +4020,9 @@ void DSI_set_cmdq_V3(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq,
 	unsigned char *para_list;
 	UINT32 d;
 
+	memset(&t0, 0, sizeof(struct DSI_T0_INS));
+	memset(&t2, 0, sizeof(struct DSI_T2_INS));
+
 	if (module == DISP_MODULE_DSI0)
 		d = 0;
 	else if (module == DISP_MODULE_DSI1)
@@ -2939,6 +4031,13 @@ void DSI_set_cmdq_V3(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq,
 		d = 0;
 	else
 		return;
+
+	i = DSI_MODULE_to_ID(module);
+	if (!((unsigned long)DSI_REG[i]) ||
+		!((unsigned long)DSI_CMDQ_REG[i])) {
+		DISPERR("DSI%d register addr invalid\n", i);
+		return;
+	}
 
 	do {
 		data_id = para_tbl[index].id;
@@ -2949,8 +4048,8 @@ void DSI_set_cmdq_V3(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq,
 		if (data_id == REGFLAG_ESCAPE_ID &&
 			cmd == REGFLAG_DELAY_MS_V3) {
 			udelay(1000 * count);
-			DDPMSG("DISP/DSI %s[%d]. Delay %d (ms)\n",
-			       __func__, index, count);
+			DDPMSG("DISP/DSI DSI_set_cmdq_V3[%d]. Delay %d (ms)\n",
+			       index, count);
 
 			continue;
 		}
@@ -3073,7 +4172,7 @@ void DSI_set_cmdq_V4(enum DISP_MODULE_ENUM module,
 	struct dsi_cmd_desc *cmds)
 {
 	UINT32 i = 0;
-	int d = 0;
+	unsigned int d = 0;
 	unsigned long goto_addr, mask_para, set_para;
 	unsigned int cmd;
 	unsigned char count;
@@ -3092,6 +4191,13 @@ void DSI_set_cmdq_V4(enum DISP_MODULE_ENUM module,
 		d = 0;
 	else
 		return;
+
+	i = DSI_MODULE_to_ID(module);
+	if (!((unsigned long)DSI_REG[i]) ||
+		!((unsigned long)DSI_CMDQ_REG[i])) {
+		DISPERR("DSI%d register addr invalid\n", i);
+		return;
+	}
 
 	cmd = cmds->dtype;
 	count = (unsigned char)cmds->dlen;
@@ -3383,566 +4489,25 @@ void DSI_set_cmdq_V4(enum DISP_MODULE_ENUM module,
 
 }
 
-static void DSI_send_vm_cmd(struct cmdqRecStruct *cmdq,
-				enum DISP_MODULE_ENUM module,
-				unsigned char data_id, unsigned int cmd,
-				unsigned char count, unsigned char *para_list,
-				unsigned char force_update)
-{
-	UINT32 i = 0;
-	int dsi_i = 0;
-	unsigned long goto_addr, mask_para, set_para;
-	struct DSI_VM_CMD_CON_REG vm_cmdq;
-	struct DSI_VM_CMDQ *vm_data;
-
-	if (module == DISP_MODULE_DSI0 || module == DISP_MODULE_DSIDUAL)
-		dsi_i = 0;
-	else if (module == DISP_MODULE_DSI1)
-		dsi_i = 1;
-	else
-		return;
-
-	memset(&vm_cmdq, 0, sizeof(struct DSI_VM_CMD_CON_REG));
-	vm_data = DSI_VM_CMD_REG[dsi_i]->data;
-	DSI_READREG32(struct DSI_VM_CMD_CON_REG *, &vm_cmdq,
-		&DSI_REG[dsi_i]->DSI_VM_CMD_CON);
-
-	if (count > 1) {
-		vm_cmdq.LONG_PKT = 1;
-		if (data_id != REGFLAG_ESCAPE_ID)
-			vm_cmdq.CM_DATA_ID = data_id;
-		else if (cmd < 0xB0)
-			vm_cmdq.CM_DATA_ID = DSI_DCS_LONG_PACKET_ID;
-		else
-			vm_cmdq.CM_DATA_ID = DSI_GERNERIC_LONG_PACKET_ID;
-		vm_cmdq.CM_DATA_0 = count + 1;
-		DSI_OUTREG32(cmdq, &DSI_REG[dsi_i]->DSI_VM_CMD_CON,
-			AS_UINT32(&vm_cmdq));
-		goto_addr = (unsigned long)(&vm_data[0].byte0);
-		mask_para = (0xFF << ((goto_addr & 0x3) * 8));
-		set_para = (cmd << ((goto_addr & 0x3) * 8));
-		DSI_MASKREG32(cmdq, goto_addr & (~0x3),
-			mask_para, set_para);
-
-		for (i = 0; i < count; i++) {
-			goto_addr = (unsigned long) (&vm_data[0].byte1) + i;
-			mask_para = (0xFF << ((goto_addr & 0x3) * 8));
-			set_para = (unsigned long)(para_list[i] <<
-				((goto_addr & 0x3) * 8));
-			DSI_MASKREG32(cmdq, goto_addr & (~0x3),
-				mask_para, set_para);
-		}
-	} else {
-		vm_cmdq.LONG_PKT = 0;
-		vm_cmdq.CM_DATA_0 = cmd;
-		if (count) {
-			if (data_id != REGFLAG_ESCAPE_ID)
-				vm_cmdq.CM_DATA_ID = data_id;
-			else if (cmd < 0xB0)
-				vm_cmdq.CM_DATA_ID = DSI_DCS_SHORT_PACKET_ID_1;
-			else
-				vm_cmdq.CM_DATA_ID =
-					DSI_GERNERIC_SHORT_PACKET_ID_2;
-			vm_cmdq.CM_DATA_1 = para_list[0];
-		} else {
-			if (data_id != REGFLAG_ESCAPE_ID)
-				vm_cmdq.CM_DATA_ID = data_id;
-			else if (cmd < 0xB0)
-				vm_cmdq.CM_DATA_ID = DSI_DCS_SHORT_PACKET_ID_0;
-			else
-				vm_cmdq.CM_DATA_ID =
-					DSI_GERNERIC_SHORT_PACKET_ID_1;
-			vm_cmdq.CM_DATA_1 = 0;
-		}
-		DSI_OUTREG32(cmdq, &DSI_REG[dsi_i]->DSI_VM_CMD_CON,
-			AS_UINT32(&vm_cmdq));
-	}
-
-	if (force_update)
-		DSI_EnableVM_CMD(module, cmdq);
-}
-
-static void DSI_send_cmd_cmd(struct cmdqRecStruct *cmdq,
-			enum DISP_MODULE_ENUM module,
-			bool hs, unsigned char data_id,
-			unsigned int cmd, unsigned char count,
-			unsigned char *para_list,
-			unsigned char force_update)
-{
-	UINT32 i = 0;
-	int dsi_i = 0;
-	unsigned long goto_addr, mask_para, set_para;
-	struct DSI_T0_INS t0;
-	struct DSI_T2_INS t2;
-	struct DSI_CMDQ *cmdq_reg;
-
-	memset(&t0, 0, sizeof(struct DSI_T0_INS));
-	memset(&t2, 0, sizeof(struct DSI_T2_INS));
-
-	if (module == DISP_MODULE_DSI0 || module == DISP_MODULE_DSIDUAL)
-		dsi_i = 0;
-	else if (module == DISP_MODULE_DSI1)
-		dsi_i = 1;
-	else
-		return;
-
-	cmdq_reg = DSI_CMDQ_REG[dsi_i]->data;
-	if (count > 1) {
-		t2.CONFG = 2;
-		if (hs)
-			t2.CONFG |= 8;
-		if (data_id != REGFLAG_ESCAPE_ID)
-			t2.Data_ID = data_id;
-		else if (cmd < 0xB0)
-			t2.Data_ID = DSI_DCS_LONG_PACKET_ID;
-		else
-			t2.Data_ID = DSI_GERNERIC_LONG_PACKET_ID;
-		t2.WC16 = count + 1;
-		DSI_OUTREG32(cmdq, &cmdq_reg[0], AS_UINT32(&t2));
-
-		goto_addr = (unsigned long)(&cmdq_reg[1].byte0);
-		mask_para = (0xFFu << ((goto_addr & 0x3u) * 8));
-		set_para = (cmd << ((goto_addr & 0x3u) * 8));
-		DSI_MASKREG32(cmdq, goto_addr & (~0x3UL),
-			mask_para, set_para);
-
-		for (i = 0; i < count; i++) {
-			goto_addr = (unsigned long)
-				(&cmdq_reg[1].byte1) + i;
-			mask_para = (0xFFu << ((goto_addr & 0x3u) * 8));
-			set_para = (unsigned long)(para_list[i] <<
-					((goto_addr & 0x3u) * 8));
-			DSI_MASKREG32(cmdq, goto_addr & (~0x3UL),
-				mask_para, set_para);
-		}
-
-		DSI_OUTREG32(cmdq, &DSI_REG[dsi_i]->DSI_CMDQ_SIZE,
-			2 + (count) / 4);
-	} else {
-		t0.CONFG = 0;
-		if (hs)
-			t0.CONFG |= 8;
-		t0.Data0 = cmd;
-		if (count) {
-			if (data_id != REGFLAG_ESCAPE_ID)
-				t0.Data_ID = data_id;
-			else if (cmd < 0xB0)
-				t0.Data_ID = DSI_DCS_SHORT_PACKET_ID_1;
-			else
-				t0.Data_ID = DSI_GERNERIC_SHORT_PACKET_ID_2;
-			t0.Data1 = para_list[0];
-		} else {
-			if (data_id != REGFLAG_ESCAPE_ID)
-				t0.Data_ID = data_id;
-			else if (cmd < 0xB0)
-				t0.Data_ID = DSI_DCS_SHORT_PACKET_ID_0;
-			else
-				t0.Data_ID = DSI_GERNERIC_SHORT_PACKET_ID_1;
-			t0.Data1 = 0;
-		}
-
-		DSI_OUTREG32(cmdq, &cmdq_reg[0], AS_UINT32(&t0));
-		DSI_OUTREG32(cmdq, &DSI_REG[dsi_i]->DSI_CMDQ_SIZE, 1);
-	}
-
-	if (force_update) {
-		DSI_Start(module, cmdq);
-
-		/*
-		 * cannnot use "dsi_wait_not_busy"
-		 * (this function is use for cmd mode)
-		 * but vdo may call here
-		 */
-		_dsi_wait_not_busy_(module, cmdq);
-	}
-}
-
-static void DSI_set_cmdq_serially(enum DISP_MODULE_ENUM module,
-			struct cmdqRecStruct *cmdq, bool hs,
-			struct LCM_setting_table_V3 *para_tbl,
-			unsigned int size, unsigned char force_update)
-{
-	/* vdo LP set only support CMDQ version */
-	int dsi_i = 0;
-	UINT32 index = 0;
-	unsigned char data_id, cmd, count;
-	unsigned char *para_list;
-
-	if (module == DISP_MODULE_DSI0 || module == DISP_MODULE_DSIDUAL)
-		dsi_i = 0;
-	else if (module == DISP_MODULE_DSI1)
-		dsi_i = 1;
-	else
-		return;
-
-	if (DSI_REG[dsi_i]->DSI_MODE_CTRL.MODE && hs) {
-		do {
-			data_id = para_tbl[index].id;
-			cmd = para_tbl[index].cmd;
-			count = para_tbl[index].count;
-			para_list = para_tbl[index].para_list;
-			if (data_id == REGFLAG_ESCAPE_ID &&
-				cmd == REGFLAG_DELAY_MS_V3) {
-				udelay(1000 * count);
-				DDPMSG("DISP/DSI %s[%d]. Delay %d (ms)\n",
-				__func__, index, count);
-				continue;
-			}
-
-			DSI_send_vm_cmd(cmdq, module, data_id, cmd, count,
-				para_list, force_update);
-		} while (++index < size);
-
-	} else {
-		if (DSI_REG[dsi_i]->DSI_MODE_CTRL.MODE)
-			ddp_dsi_build_cmdq(module, cmdq, CMDQ_STOP_VDO_MODE);
-		else
-			dsi_wait_not_busy(module, cmdq);
-
-		do {
-			data_id = para_tbl[index].id;
-			cmd = para_tbl[index].cmd;
-			count = para_tbl[index].count;
-			para_list = para_tbl[index].para_list;
-
-			if (data_id == REGFLAG_ESCAPE_ID &&
-				cmd == REGFLAG_DELAY_MS_V3) {
-				udelay(1000 * count);
-				DDPMSG("DSI_set_cmdq_V3[%d]. Delay %d (ms)\n",
-					index, count);
-				continue;
-			}
-			DSI_send_cmd_cmd(cmdq, module, hs, data_id, cmd, count,
-				para_list, force_update);
-		} while (++index < size);
-
-		if (DSI_REG[dsi_i]->DSI_MODE_CTRL.MODE) {
-			ddp_dsi_build_cmdq(module, cmdq, CMDQ_START_VDO_MODE);
-			ddp_dsi_trigger(module, cmdq);
-		}
-	}
-}
-
-void DSI_dcs_set_lcm_reg_v4(enum DISP_MODULE_ENUM module,
-	bool hs, struct LCM_setting_table_V3 *para_tbl, unsigned int size,
-	unsigned char force_update)
-{
-	struct cmdqRecStruct *cmdq;
-
-	cmdqRecCreate(CMDQ_SCENARIO_DISP_ESD_CHECK, &cmdq);
-	cmdqRecReset(cmdq);
-	DSI_set_cmdq_serially(module, cmdq, hs, para_tbl, size,
-		force_update);
-	cmdqRecFlush(cmdq);
-	cmdqRecDestroy(cmdq);
-}
-
-static int check_rdrdy_cmddone_irq(struct cmdqRecStruct *cmdq,
-		enum DISP_MODULE_ENUM module)
-{
-	int dsi_i, i = 0;
-
-	if (module == DISP_MODULE_DSI0 || module == DISP_MODULE_DSIDUAL)
-		dsi_i = 0;
-	else if (module == DISP_MODULE_DSI1)
-		dsi_i = 1;
-	else
-		return 0;
-
-	if (DSI_REG[dsi_i]->DSI_INTEN.RD_RDY == 0) {
-		DSI_OUTREGBIT(cmdq, struct DSI_INT_ENABLE_REG,
-			DSI_REG[dsi_i]->DSI_INTEN, RD_RDY, 1);
-	}
-
-	if (DSI_REG[dsi_i]->DSI_INTEN.CMD_DONE == 0) {
-		DSI_OUTREGBIT(cmdq, struct DSI_INT_ENABLE_REG,
-			DSI_REG[dsi_i]->DSI_INTEN, CMD_DONE, 1);
-	}
-
-	/* dump cmdq & rxdata */
-	if (DSI_REG[dsi_i]->DSI_INTSTA.RD_RDY != 0 ||
-		DSI_REG[dsi_i]->DSI_INTSTA.CMD_DONE != 0) {
-		DISPERR("Last DSI Read Why not clear irq???\n");
-		DISPERR("DSI_CMDQ_SIZE      : %d\n",
-			AS_UINT32(&DSI_REG[dsi_i]->DSI_CMDQ_SIZE));
-		for (i = 0; i < DSI_REG[dsi_i]->DSI_CMDQ_SIZE.CMDQ_SIZE;
-			i++) {
-			DISPERR("DSI_CMDQ_DATA%d : 0x%08x\n", i,
-			AS_UINT32(&DSI_CMDQ_REG[dsi_i]->data[i]));
-		}
-		DISPERR("DSI_RX_DATA0: 0x%08x\n",
-			AS_UINT32(&DSI_REG[dsi_i]->DSI_RX_DATA0));
-		DISPERR("DSI_RX_DATA1: 0x%08x\n",
-			AS_UINT32(&DSI_REG[dsi_i]->DSI_RX_DATA1));
-		DISPERR("DSI_RX_DATA2: 0x%08x\n",
-			AS_UINT32(&DSI_REG[dsi_i]->DSI_RX_DATA2));
-		DISPERR("DSI_RX_DATA3: 0x%08x\n",
-			AS_UINT32(&DSI_REG[dsi_i]->DSI_RX_DATA3));
-
-		/* clear irq */
-		DSI_OUTREGBIT(cmdq, struct DSI_INT_STATUS_REG,
-			DSI_REG[dsi_i]->DSI_INTSTA, RD_RDY, 0);
-		DSI_OUTREGBIT(cmdq, struct DSI_INT_STATUS_REG,
-			DSI_REG[dsi_i]->DSI_INTSTA, CMD_DONE, 0);
-	}
-
-	return 1;
-}
-
-static int process_packet(int recv_data_offset,
-		struct DSI_RX_DATA_REG *read_data, UINT32 *recv_data_cnt,
-		UINT8 *buffer, UINT8 buffer_size)
-{
-	unsigned char packet_type = read_data[0].byte0;
-	/* 0x02: acknowledge & error report */
-	/* 0x11: generic short read response(1 byte return) */
-	/* 0x12: generic short read response(2 byte return) */
-	/* 0x1a: generic long read response */
-	/* 0x1c: dcs long read response */
-	/* 0x21: dcs short read response(1 byte return) */
-	/* 0x22: dcs short read response(2 byte return) */
-	if (packet_type == 0x1A || packet_type == 0x1C) {
-		*recv_data_cnt = read_data[0].byte1 + read_data[0].byte2 * 16;
-		if (*recv_data_cnt > 10) {
-			DISPCHECK("read long pkt data > 4 bytes:%d\n",
-			*recv_data_cnt);
-			*recv_data_cnt = 10;
-		}
-		if (*recv_data_cnt > buffer_size) {
-			DISPCHECK("read long pkt data > size:%d\n",
-				*recv_data_cnt);
-			*recv_data_cnt = buffer_size;
-		}
-		DISPCHECK("read long pkt size: %d\n", *recv_data_cnt);
-		if (*recv_data_cnt <= 4) {
-			memcpy((void *)(buffer + recv_data_offset),
-				(void *)&read_data[1], *recv_data_cnt);
-		} else if (*recv_data_cnt <= 8) {
-			memcpy((void *)(buffer + recv_data_offset),
-				(void *)&read_data[1], 4);
-			memcpy((void *)(buffer + recv_data_offset) + 4,
-				(void *)&read_data[2], *recv_data_cnt - 4);
-		} else {
-			memcpy((void *)(buffer + recv_data_offset),
-				(void *)&read_data[1], 4);
-			memcpy((void *)(buffer + recv_data_offset) + 4,
-				(void *)&read_data[2], 4);
-			memcpy((void *)(buffer + recv_data_offset) + 8,
-				(void *)&read_data[3], *recv_data_cnt - 8);
-		}
-	} else if (packet_type == 0x11 || packet_type == 0x12 ||
-		packet_type == 0x21 || packet_type == 0x22) {
-		if (packet_type == 0x11 || packet_type == 0x21)
-			*recv_data_cnt = 1;
-		else
-			*recv_data_cnt = 2;
-		if (*recv_data_cnt > buffer_size) {
-			DISPCHECK("read short pkt data > size:%d\n",
-				buffer_size);
-			*recv_data_cnt = buffer_size;
-			memcpy((void *)(buffer + recv_data_offset),
-				(void *)&read_data[0].byte1, *recv_data_cnt);
-		} else {
-			memcpy((void *)(buffer + recv_data_offset),
-				(void *)&read_data[0].byte1, *recv_data_cnt);
-		}
-	} else if (packet_type == 0x02) {
-		DISPCHECK("read return type is 0x02, re-read\n");
-	} else {
-		DISPCHECK("read return type is non-recognite:0x%x\n",
-			packet_type);
-		return 0;
-	}
-
-	return 1;
-}
-
-static void DSI_send_read_cmd(struct cmdqRecStruct *cmdq,
-			enum DISP_MODULE_ENUM module, bool hs,
-			UINT8 cmd, UINT8 buffer_size, int read_data_offset)
-{
-	int dsi_i = 0;
-	struct DSI_T0_INS t0;
-	struct DSI_T0_INS t1;
-	struct DSI_T0_INS t2;
-
-	if (module == DISP_MODULE_DSI0 || module == DISP_MODULE_DSIDUAL)
-		dsi_i = 0;
-	else if (module == DISP_MODULE_DSI1)
-		dsi_i = 1;
-	else
-		return;
-
-	t0.CONFG = 0x04;        /* BTA */
-	if (hs)
-		t0.CONFG |= 8;
-	t0.Data_ID = (cmd < 0xB0) ? DSI_DCS_READ_PACKET_ID
-		: DSI_GERNERIC_READ_LONG_PACKET_ID;
-	t0.Data0 = cmd;
-	t0.Data1 = 0;
-
-	t1.CONFG = 0x00;
-	if (hs)
-		t1.CONFG |= 8;
-	t1.Data_ID = 0x37; /* set max return size */
-	t1.Data0 = buffer_size <= 10 ? buffer_size : 10;
-	t1.Data1 = 0;
-
-	t2.CONFG = 0x00;
-	if (hs)
-		t2.CONFG |= 8;
-	t2.Data_ID = 0x15;
-	t2.Data0 = 0xB0; /*set offset value for some panel */
-	t2.Data1 = read_data_offset;
-
-	/* write DSI CMDQ */
-	DSI_OUTREG32(cmdq, &DSI_CMDQ_REG[dsi_i]->data[0],
-		AS_UINT32(&t2));
-	DSI_OUTREG32(cmdq, &DSI_CMDQ_REG[dsi_i]->data[1],
-		AS_UINT32(&t1));
-	DSI_OUTREG32(cmdq, &DSI_CMDQ_REG[dsi_i]->data[2],
-		AS_UINT32(&t0));
-	DSI_OUTREG32(cmdq, &DSI_REG[dsi_i]->DSI_CMDQ_SIZE,
-		3);
-	/* start DSI */
-	DSI_Start(module, cmdq);
-}
-
-UINT32 DSI_dcs_read_lcm_reg_v4(enum DISP_MODULE_ENUM module,
-	UINT8 cmd, UINT8 *user_buffer, UINT8 buffer_size, bool sendhs)
-{
-	/* Just read 10 bytes valid each time */
-	UINT32 VALID_DATA_SIZE = 10;
-	int dsi_i, i, ret = 0;
-	UINT8 buffer[30];
-	struct DSI_RX_DATA_REG read_data[4];
-	UINT32 recv_data_cnt = 0;
-	UINT32 read_data_cnt = 0;
-	UINT32 recv_data_offset = 0;
-	UINT8  read_data_offset = 0;
-	struct cmdqRecStruct *cmdq;
-	cmdqBackupSlotHandle hSlot;
-
-	/* illegal parameters */
-	if (user_buffer == NULL || buffer_size == 0) {
-		DISPERR("DSI Read Fail: usr_buffer=%p and buffer_size=%d\n",
-			user_buffer, (unsigned int)buffer_size);
-		return 0;
-	}
-
-	if (module == DISP_MODULE_DSI0 || module == DISP_MODULE_DSIDUAL)
-		dsi_i = 0;
-	else if (module == DISP_MODULE_DSI1)
-		dsi_i = 1;
-	else
-		return 0;
-	/* 0.create esd check cmdq */
-	cmdqRecCreate(CMDQ_SCENARIO_DISP_ESD_CHECK, &cmdq);
-	cmdqBackupAllocateSlot(&hSlot, 4);
-
-	/* how many times we should read to get all data */
-	read_data_cnt = (buffer_size + (VALID_DATA_SIZE - 1)) / VALID_DATA_SIZE;
-	while (read_data_cnt > 0) {
-		read_data_cnt--;
-		cmdqRecReset(cmdq);
-
-		/* 1. wait dsi not busy => can't read if dsi busy */
-		if (DSI_REG[dsi_i]->DSI_MODE_CTRL.MODE)
-			ddp_dsi_build_cmdq(module, cmdq, CMDQ_STOP_VDO_MODE);
-		else
-			dsi_wait_not_busy(module, cmdq);
-
-		/* 2. check rd_rdy & cmd_done irq */
-		check_rdrdy_cmddone_irq(cmdq, module);
-		/* 3. Send cmd */
-		DSI_send_read_cmd(cmdq, module, sendhs, cmd, buffer_size,
-			read_data_offset);
-
-		/* 4. wait DSI RD_RDY(must clear, in case of cpu
-		 * RD_RDY interrupt handler)
-		 */
-		if (dsi_i == 0) {
-			DSI_POLLREG32(cmdq, &DSI_REG[dsi_i]->DSI_INTSTA,
-				0x00000001, 0x1);
-			DSI_OUTREGBIT(cmdq, struct DSI_INT_STATUS_REG,
-				DSI_REG[dsi_i]->DSI_INTSTA, RD_RDY, 0x00000000);
-		}
-		DISPMSG(" DSI RX data: 0x%08x 0x%08x 0x%08x 0x%08x\n",
-					INREG32(DISPSYS_DSI0_BASE + 0x74),
-					INREG32(DISPSYS_DSI0_BASE + 0x78),
-					INREG32(DISPSYS_DSI0_BASE + 0x7c),
-					INREG32(DISPSYS_DSI0_BASE + 0x80));
-
-		/* 5. save RX data */
-		if (hSlot) {
-			DSI_BACKUPREG32(cmdq, hSlot, 0,
-				&DSI_REG[dsi_i]->DSI_RX_DATA0);
-			DSI_BACKUPREG32(cmdq, hSlot, 1,
-				&DSI_REG[dsi_i]->DSI_RX_DATA1);
-			DSI_BACKUPREG32(cmdq, hSlot, 2,
-				&DSI_REG[dsi_i]->DSI_RX_DATA2);
-			DSI_BACKUPREG32(cmdq, hSlot, 3,
-				&DSI_REG[dsi_i]->DSI_RX_DATA3);
-		} else {
-			DISPERR("DSI read save RX data fail\n");
-		}
-		/* 6. write RX_RACK */
-		DSI_OUTREGBIT(cmdq, struct DSI_RACK_REG,
-			DSI_REG[dsi_i]->DSI_RACK, DSI_RACK, 1);
-
-		/* 7. polling not busy(no need CLEAR) */
-		if (dsi_i == 0)
-			DSI_POLLREG32(cmdq, &DSI_REG[dsi_i]->DSI_INTSTA,
-				0x80000000, 0);
-
-		/* 8. set vdo mode back(if original is vdo mode) */
-		if (DSI_REG[dsi_i]->DSI_MODE_CTRL.MODE) {
-			ddp_dsi_build_cmdq(module, cmdq, CMDQ_START_VDO_MODE);
-			ddp_dsi_trigger(DISP_MODULE_DSI0, cmdq);
-		}
-
-		cmdqRecFlush(cmdq);
-
-		/* 9. read from slot */
-		if (hSlot) {
-			cmdqBackupReadSlot(hSlot, 0, (uint32_t *)&read_data[0]);
-			cmdqBackupReadSlot(hSlot, 1, (uint32_t *)&read_data[1]);
-			cmdqBackupReadSlot(hSlot, 2, (uint32_t *)&read_data[2]);
-			cmdqBackupReadSlot(hSlot, 3, (uint32_t *)&read_data[3]);
-		} else {
-			DISPERR("DSI read hSlot is empty\n");
-		}
-
-		/* 10. process data*/
-		ret = process_packet(recv_data_offset, read_data,
-			&recv_data_cnt, buffer, buffer_size);
-		if (!ret)
-			return ret;
-
-		/* 11. update buffer offset for next time reading */
-		recv_data_offset += recv_data_cnt;
-		read_data_offset += VALID_DATA_SIZE;
-	}
-
-	/* 12.destroy cmdq resources */
-	cmdqBackupFreeSlot(hSlot);
-	cmdqRecDestroy(cmdq);
-	for (i = 0; i < buffer_size; i++)
-		user_buffer[i] = buffer[i];
-
-	return recv_data_cnt;
-}
-
-
-
 void DSI_set_cmdq(enum DISP_MODULE_ENUM module, struct cmdqRecStruct *cmdq,
 	unsigned int *pdata, unsigned int queue_size,
 	unsigned char force_update)
 {
 	int j = 0;
-	int i = 0;
+	int i = 0, module_num;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return;
+	}
+
+	for (i = 0; i < module_num; i++) {
 		if (DSI_REG[i]->DSI_MODE_CTRL.MODE) {
 			;/* vdo mode */
 		} else { /* cmd mode */
@@ -3987,6 +4552,17 @@ int DSI_Send_ROI(enum DISP_MODULE_ENUM module, void *handle, unsigned int x,
 	unsigned char y1_LSB = (y1 & 0xFF);
 
 	unsigned int data_array[16];
+	unsigned int module_num;
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return -1;
+	}
 
 	if (!primary_display_is_video_mode()) {
 		data_array[0] = 0x00053902;
@@ -4009,7 +4585,14 @@ int DSI_Send_ROI(enum DISP_MODULE_ENUM module, void *handle, unsigned int x,
 
 static void lcm_set_reset_pin(UINT32 value)
 {
-	DSI_OUTREG32(NULL, DISP_REG_CONFIG_MMSYS_LCM_RST_B, value);
+	if (!_is_lcm_cmd_mode(DISP_MODULE_DSI0)) {
+		DSI_OUTREG32(NULL, DISP_REG_CONFIG_MMSYS_LCM_RST_B, value);
+	} else {
+		if (value)
+			disp_dts_gpio_select_state(DTS_GPIO_STATE_LCM_RST_OUT1);
+		else
+			disp_dts_gpio_select_state(DTS_GPIO_STATE_LCM_RST_OUT0);
+	}
 }
 
 static void lcm1_set_reset_pin(UINT32 value)
@@ -4037,7 +4620,7 @@ static void lcm_mdelay(UINT32 ms)
 	else if (ms <= 20)
 		usleep_range(ms*1000, (ms+1)*1000);
 	else
-		msleep(ms);
+		usleep_range(ms * 1000 - 100, ms * 1000);
 }
 
 void DSI_set_cmdq_V11_wrapper_DSI0(void *cmdq, unsigned int *pdata,
@@ -4374,11 +4957,22 @@ static void _set_power_on_status(enum DISP_MODULE_ENUM module,
 
 int ddp_dsi_init(enum DISP_MODULE_ENUM module, void *cmdq)
 {
-	int i = 0;
+	int i = 0, j = 0;
 	unsigned long addr = 0;
-	int j = 0;
+	unsigned int module_num;
 
 	DISPFUNC();
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return DSI_STATUS_ERROR;
+	}
+
 	cmdqBackupAllocateSlot(&_h_intstat, 1);
 
 	DSI_REG[0] = (struct DSI_REGS *)DISPSYS_DSI0_BASE;
@@ -4397,7 +4991,7 @@ int ddp_dsi_init(enum DISP_MODULE_ENUM module, void *cmdq)
 		(struct DSI_VM_CMDQ_REGS *)(DISPSYS_DSI1_BASE + 0x134);
 	memset(&_dsi_context, 0, sizeof(_dsi_context));
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	for (i = 0; i < module_num; i++) {
 		DISPCHECK("dsi%d initializing _dsi_context\n", i);
 		mutex_init(&(_dsi_context[i].lock));
 		_init_condition_wq(&(_dsi_context[i].cmddone_wq));
@@ -4446,18 +5040,15 @@ int ddp_dsi_init(enum DISP_MODULE_ENUM module, void *cmdq)
 	}
 #endif
 
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
-		/* backup mipitx impedance0 which is inited in LK*/
-		addr = DSI_PHY_REG[0]+0x100;
-		for (i = 0; i < 5; i++) {
-			for (j = 0; j < 10; j++) {
-				mipitx_impedance_backup[i] |=
-				((INREG32(addr))<<j);
-				addr += 0x4;
-			}
-			/* 0xD8 = 0x300 - 0x228*/
-			addr += 0xD8;
+	/* backup mipitx impedance0 which is inited in LK*/
+	addr = DSI_PHY_REG[0]+0x100;
+	for (i = 0; i < 5; i++) {
+		for (j = 0; j < 10; j++) {
+			mipitx_impedance_backup[i] |= ((INREG32(addr))<<j);
+			addr += 0x4;
 		}
+		/* 0xD8 = 0x300 - 0x228*/
+		addr += 0xD8;
 	}
 
 	return DSI_STATUS_OK;
@@ -4471,24 +5062,33 @@ int ddp_dsi_deinit(enum DISP_MODULE_ENUM module, void *cmdq_handle)
 static void DSI_PHY_CLK_LP_PerLine_config(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq, struct LCM_DSI_PARAMS *dsi_params)
 {
-	int i = 0;
+	int i, module_num;
 	/* LPX */
-	struct DSI_PHY_TIMCON0_REG timcon0 = { 0 };
+	struct DSI_PHY_TIMCON0_REG timcon0;
 	/* CLK_HS_TRAIL, CLK_HS_ZERO */
-	struct DSI_PHY_TIMCON2_REG timcon2 = { 0 };
+	struct DSI_PHY_TIMCON2_REG timcon2;
 	/* CLK_HS_EXIT, CLK_HS_POST, CLK_HS_PREP */
-	struct DSI_PHY_TIMCON3_REG timcon3 = { 0 };
-	struct DSI_HSA_WC_REG hsa = { 0 };
-	struct DSI_HBP_WC_REG hbp = { 0 };
-	struct DSI_HFP_WC_REG hfp = { 0 }, new_hfp = { 0 };
-	struct DSI_BLLP_WC_REG bllp = { 0 };
-	struct DSI_PSCTRL_REG ps = { 0 };
-	UINT32 hstx_ckl_wc = 0, new_hstx_ckl_wc = 0;
-	UINT32 v_a = 0, v_b = 0, v_c = 0, lane_num = 0;
-	enum LCM_DSI_MODE_CON dsi_mode = CMD_MODE;
+	struct DSI_PHY_TIMCON3_REG timcon3;
+	struct DSI_HSA_WC_REG hsa;
+	struct DSI_HBP_WC_REG hbp;
+	struct DSI_HFP_WC_REG hfp, new_hfp;
+	struct DSI_BLLP_WC_REG bllp;
+	struct DSI_PSCTRL_REG ps;
+	UINT32 hstx_ckl_wc, new_hstx_ckl_wc;
+	UINT32 v_a, v_b, v_c, lane_num;
+	enum LCM_DSI_MODE_CON dsi_mode;
 
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return;
+	}
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	for (i = 0; i < module_num; i++) {
 		lane_num = dsi_params->LANE_NUM;
 		dsi_mode = dsi_params->mode;
 
@@ -4753,10 +5353,20 @@ static void _dsi_basic_irq_enable(enum DISP_MODULE_ENUM module, void *cmdq)
 int ddp_dsi_config(enum DISP_MODULE_ENUM module,
 	struct disp_ddp_path_config *config, void *cmdq)
 {
-	int i = 0;
+	int i = 0, module_num;
 	struct LCM_DSI_PARAMS *dsi_config;
 
 	DISPFUNC();
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return -1;
+	}
 
 	if (!config->dst_dirty) {
 		/* will be removed */
@@ -4766,7 +5376,7 @@ int ddp_dsi_config(enum DISP_MODULE_ENUM module,
 
 	dsi_config = &(config->dispif_config.dsi);
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	for (i = 0; i < module_num; i++) {
 		memcpy(&(_dsi_context[i].dsi_params), dsi_config,
 			sizeof(struct LCM_DSI_PARAMS));
 		_dsi_context[i].lcm_width = config->dst_w;
@@ -4801,6 +5411,7 @@ int ddp_dsi_config(enum DISP_MODULE_ENUM module,
 	if (dsi_config->mode != CMD_MODE ||
 		((dsi_config->switch_mode_enable == 1) &&
 		(dsi_config->switch_mode != CMD_MODE))) {
+		DSI_Calc_VDO_Timing(module, dsi_config);
 		DSI_Config_VDO_Timing(module, cmdq, dsi_config);
 		DSI_Set_VM_CMD(module, cmdq);
 	}
@@ -4841,8 +5452,6 @@ int _ddp_dsi_start_dual(enum DISP_MODULE_ENUM module, void *cmdq)
 	int g_lcm_x = disp_helper_get_option(DISP_OPT_FAKE_LCM_X);
 	int g_lcm_y = disp_helper_get_option(DISP_OPT_FAKE_LCM_Y);
 
-	if ((-1 == g_lcm_x) || (-1 == g_lcm_y))
-		return -1;
 	DISPFUNC();
 
 	if (module != DISP_MODULE_DSIDUAL)
@@ -4868,9 +5477,6 @@ int ddp_dsi_start(enum DISP_MODULE_ENUM module, void *cmdq)
 	int i = 0;
 	int g_lcm_x = disp_helper_get_option(DISP_OPT_FAKE_LCM_X);
 	int g_lcm_y = disp_helper_get_option(DISP_OPT_FAKE_LCM_Y);
-
-	if ((-1 == g_lcm_x) || (-1 == g_lcm_y))
-		return -1;
 
 	DISPFUNC();
 
@@ -4981,6 +5587,11 @@ static int dsi_stop_vdo_mode(enum DISP_MODULE_ENUM module,
 	else
 		return 0;
 
+	i = DSI_MODULE_to_ID(module);
+	if (!((unsigned long)DSI_REG[i])) {
+		DISPERR("invalid dsi register addr%d\n", i);
+		return -1;
+	}
 	DSI_SetMode(module, cmdq_handle, CMD_MODE);
 
 	/* need do reset DSI_DUAL_EN/DSI_START */
@@ -5021,6 +5632,12 @@ int ddp_dsi_stop(enum DISP_MODULE_ENUM module, void *cmdq_handle)
 	else
 		return 0;
 
+	i = DSI_MODULE_to_ID(module);
+	if (!((unsigned long)DSI_REG[i])) {
+		DISPERR("invalid dsi register addr%d\n", i);
+		return -1;
+	}
+
 	if (DSI_REG[i]->DSI_MODE_CTRL.MODE == CMD_MODE) {
 		DISPDBG("dsi stop: command mode\n");
 		ret = wait_event_timeout(_dsi_context[i].cmddone_wq.wq,
@@ -5056,7 +5673,7 @@ int ddp_dsi_stop(enum DISP_MODULE_ENUM module, void *cmdq_handle)
 int ddp_dsi_switch_mode(enum DISP_MODULE_ENUM module, void *cmdq_handle,
 	void *params)
 {
-	int i = 0;
+	int i = 0, module_num;
 	struct LCM_DSI_MODE_SWITCH_CMD lcm_cmd =
 		*((struct LCM_DSI_MODE_SWITCH_CMD *) (params));
 	struct LCM_DSI_PARAMS *dsi_params = &_dsi_context[0].dsi_params;
@@ -5067,6 +5684,17 @@ int ddp_dsi_switch_mode(enum DISP_MODULE_ENUM module, void *cmdq_handle,
 		ASSERT(0);
 		return -1;
 	}
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return -1;
+	}
+
 	if (dsi_currect_mode == mode) {
 		DDPMSG("[%s] no switch mode, current mode = %d, switch to %d\n",
 		       __func__, dsi_currect_mode, mode);
@@ -5081,6 +5709,13 @@ int ddp_dsi_switch_mode(enum DISP_MODULE_ENUM module, void *cmdq_handle,
 		DDPMSG("dsi switch not support this cmd IF:%d\n",
 			lcm_cmd.cmd_if);
 		/* return -1; */
+	}
+
+	i = DSI_MODULE_to_ID(module);
+	if (!((unsigned long)DSI_REG[i]) ||
+		!((unsigned long)DSI_CMDQ_REG[i])) {
+		DISPERR("invalid dsi register addr%d\n", i);
+		return -1;
 	}
 
 	if (mode == 0) { /* V2C */
@@ -5246,7 +5881,7 @@ int ddp_dsi_switch_mode(enum DISP_MODULE_ENUM module, void *cmdq_handle,
 
 	dsi_currect_mode = mode;
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++)
+	for (i = 0; i < module_num; i++)
 		_dsi_context[i].dsi_params.mode = mode;
 
 	return 0;
@@ -5283,7 +5918,7 @@ int ddp_dsi_ioctl(enum DISP_MODULE_ENUM module, void *cmdq_handle,
 		unsigned int *plevel = params;
 		unsigned int level = *plevel;
 
-		DDPMSG("[%s] level = %d\n", __func__, level);
+		DDPMSG("[ddp_dsi_ioctl] level = %d\n", level);
 		DSI_set_cmdq_V2(module, cmdq_handle, cmd, count,
 			(unsigned char *)&level, 1);
 		break;
@@ -5299,13 +5934,13 @@ int ddp_dsi_ioctl(enum DISP_MODULE_ENUM module, void *cmdq_handle,
 	case DDP_DSI_PORCH_CHANGE:
 	{
 		if (params == NULL) {
-			DDPERR("[%s] input pointer is NULL\n", __func__);
+			DDPERR("[ddp_dsi_ioctl] input pointer is NULL\n");
 		} else {
 			unsigned int *p = (unsigned int *)params;
 			unsigned int vfp = p[0];
 
-			DDPMSG("[%s] DDP_DSI_PORCH_CHANGE vfp=%d\n",
-				__func__, vfp);
+			DDPMSG("[ddp_dsi_ioctl] DDP_DSI_PORCH_CHANGE vfp=%d\n",
+				vfp);
 			ddp_dsi_porch_setting(module, cmdq_handle,
 				DSI_VFP, vfp);
 		}
@@ -5314,13 +5949,13 @@ int ddp_dsi_ioctl(enum DISP_MODULE_ENUM module, void *cmdq_handle,
 	case DDP_DSI_PORCH_ADDR:
 	{
 		if (params == NULL) {
-			DDPERR("[%s] input pointer is NULL\n", __func__);
+			DDPERR("[ddp_dsi_ioctl] input pointer is NULL\n");
 		} else {
 			unsigned int *p = (unsigned int *)params;
 			unsigned int addr = p[0];
 
-			DDPMSG("[%s] DDP_DSI_PORCH_ADDR addr=0x%x\n",
-				__func__, addr);
+			DDPMSG("[ddp_dsi_ioctl] DDP_DSI_PORCH_ADDR addr=0x%x\n",
+				addr);
 			DSI_Get_Porch_Addr(module, params);
 		}
 		break;
@@ -5356,6 +5991,18 @@ int ddp_dsi_ioctl(enum DISP_MODULE_ENUM module, void *cmdq_handle,
 		DISPDBG("[DDPDSI] enable TE\n");
 		DSI_OUTREGBIT(cmdq_handle, struct DSI_INT_ENABLE_REG,
 			DSI_REG[0]->DSI_INTEN, TE_RDY, 1);
+		break;
+	}
+	case DDP_DSI_ENTER_IDLE:
+	{
+		DDPDBG("DDP_DSI_ENTER_IDLE\n");
+		atomic_set(&dsi_idle_flg, 1);
+		break;
+	}
+	case DDP_DSI_EXIT_IDLE:
+	{
+		DDPDBG("DDP_DSI_EXIT_IDLE\n");
+		atomic_set(&dsi_idle_flg, 0);
 		break;
 	}
 
@@ -5471,9 +6118,9 @@ int ddp_dsi_power_on(enum DISP_MODULE_ENUM module, void *cmdq_handle)
 	}
 
 	DPHY_Reset(module, cmdq_handle);
-
 	/* DSI_RestoreRegisters(module, NULL); */
-	DSI_exit_ULPS(module);
+	if (atomic_read(&dsi_idle_flg) == 0)
+		DSI_exit_ULPS(module);
 	DSI_Reset(module, NULL);
 	_set_power_on_status(module, 1);
 
@@ -5493,15 +6140,20 @@ int ddp_dsi_power_on(enum DISP_MODULE_ENUM module, void *cmdq_handle)
  */
 int ddp_dsi_power_off(enum DISP_MODULE_ENUM module, void *cmdq_handle)
 {
+	uint i = 0;
+
 	DISPFUNC();
 	if (!_is_power_on_status(module))
 		return DSI_STATUS_OK;
 
 	/* DSI_BackupRegisters(module, NULL); */
-	DSI_enter_ULPS(module);
+	if (atomic_read(&dsi_idle_flg) == 0)
+		DSI_enter_ULPS(module);
+
 
 #ifdef ENABLE_CLK_MGR
 	if (module == DISP_MODULE_DSI0 || module == DISP_MODULE_DSIDUAL) {
+		DISPCHECK("%s power_off\n", ddp_get_module_name(module));
 		ddp_clk_disable_unprepare(CLK_DSI0_MM_CLK);
 		ddp_clk_disable_unprepare(CLK_DSI0_IF_CLK);
 	}
@@ -5512,6 +6164,11 @@ int ddp_dsi_power_off(enum DISP_MODULE_ENUM module, void *cmdq_handle)
 #ifdef ENABLE_CLK_MGR
 	ddp_set_mipi26m(module, 0);
 #endif
+	/*DynFPS*/
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		_dsi_context[i].disp_fps = 0;
+		_dsi_context[i].dynfps_chg_index = 0;
+	}
 
 	_set_power_on_status(module, 0);
 	return DSI_STATUS_OK;
@@ -5519,13 +6176,22 @@ int ddp_dsi_power_off(enum DISP_MODULE_ENUM module, void *cmdq_handle)
 
 int ddp_dsi_is_busy(enum DISP_MODULE_ENUM module)
 {
-	int i = 0;
+	int i = 0, module_num;
 	int busy = 0;
 	struct DSI_INT_STATUS_REG status;
 
 	/* DISPFUNC(); */
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return -1;
+	}
 
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	for (i = 0; i < module_num; i++) {
 		status = DSI_REG[i]->DSI_INTSTA;
 
 		if (status.BUSY)
@@ -5560,10 +6226,26 @@ static const char *dsi_mode_spy(enum LCM_DSI_MODE_CON mode)
 
 void dsi_analysis(enum DISP_MODULE_ENUM module)
 {
-	int i = 0;
+	int i = 0, module_num;
+
+	if (module == DISP_MODULE_DSI0 ||
+		module == DISP_MODULE_DSI1)
+		module_num = 1;
+	else if (module == DISP_MODULE_DSIDUAL)
+		module_num = 2;
+	else {
+		DISPERR("invlidate dsi module %d\n", (unsigned int)module);
+		return;
+	}
+
+	i = DSI_MODULE_to_ID(module);
+	if (!((unsigned long)DSI_REG[i])) {
+		DISPERR("invalid dsi register addr%d\n", i);
+		return;
+	}
 
 	DDPDUMP("== DISP DSI ANALYSIS ==\n");
-	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+	for (i = 0; i < module_num; i++) {
 		DSI_REG[i] = (struct DSI_REGS *)DISPSYS_DSI0_BASE;
 #ifndef CONFIG_FPGA_EARLY_PORTING
 		DDPDUMP("MIPITX Clock: %d\n", dsi_phy_get_clk(module));
@@ -5636,8 +6318,8 @@ int ddp_dsi_build_cmdq(enum DISP_MODULE_ENUM module,
 	void *cmdq_trigger_handle, enum CMDQ_STATE state)
 {
 	int ret = 0;
-	int i = 0, j = 0;
-	int dsi_i = 0;
+	unsigned int i = 0, j = 0;
+	unsigned int dsi_i = 0;
 	struct LCM_DSI_PARAMS *dsi_params = NULL;
 	struct DSI_T0_INS t0, t1;
 	struct DSI_RX_DATA_REG read_data0;
@@ -5646,6 +6328,7 @@ int ddp_dsi_build_cmdq(enum DISP_MODULE_ENUM module,
 	struct DSI_RX_DATA_REG read_data3;
 	unsigned char packet_type;
 	unsigned char buffer[30];
+	memset((void *)buffer, 0, 30);
 	int recv_data_cnt = 0;
 
 	static cmdqBackupSlotHandle hSlot[4] = {0, 0, 0, 0};
@@ -5654,6 +6337,13 @@ int ddp_dsi_build_cmdq(enum DISP_MODULE_ENUM module,
 		dsi_i = 0;
 	else
 		dsi_i = DSI_MODULE_to_ID(module);
+
+	i = DSI_MODULE_to_ID(module);
+	if (!((unsigned long)DSI_REG[i]) ||
+		!((unsigned long)DSI_CMDQ_REG[i])) {
+		DISPERR("invalid dsi register addr%d\n", i);
+		return -1;
+	}
 
 	dsi_params = &_dsi_context[dsi_i].dsi_params;
 
@@ -6020,25 +6710,24 @@ int ddp_dsi_build_cmdq(enum DISP_MODULE_ENUM module,
 int ddp_dsi_read_lcm_cmdq(enum DISP_MODULE_ENUM module,
 	cmdqBackupSlotHandle *read_Slot,
 	struct cmdqRecStruct *cmdq_trigger_handle,
-	struct dsi_cmd_desc *cmd_tab, unsigned int count)
+	struct ddp_lcm_read_cmd_table *read_table)
 {
 	int ret = 0;
-	int i = 0;
-	int dsi_i = 0;
+	unsigned int i = 0;
+	unsigned int dsi_i = 0;
 
-	struct DSI_T0_INS t0, t1;
+	struct DSI_T0_INS t0;
 
 	dsi_i = DSI_MODULE_to_ID(module);
 
 	if (dsi_i != 0)
 		DISPERR("[DSI]should use dsi0\n");
 
-	if (!read_Slot[0] || !read_Slot[1] || !read_Slot[2] || !read_Slot[3]) {
+	if (*read_Slot == 0) {
 		ret = -1;
 		DISPERR("[DSI]alloc cmdq slot fail\n");
 		return ret;
 	}
-
 	/* enable dsi interrupt: RD_RDY/CMD_DONE (need do this here?) */
 	DSI_OUTREGBIT(cmdq_trigger_handle,
 		struct DSI_INT_ENABLE_REG, DSI_REG[dsi_i]->DSI_INTEN,
@@ -6047,14 +6736,12 @@ int ddp_dsi_read_lcm_cmdq(enum DISP_MODULE_ENUM module,
 		struct DSI_INT_ENABLE_REG, DSI_REG[dsi_i]->DSI_INTEN,
 			CMD_DONE, 1);
 
-	for (i = 0; i < count; i++) {
-		DISPMSG("%s,cmd_tab[%d].dtype=0x%x\n",
-			__func__, i, cmd_tab[i].dtype);
-		if (cmd_tab[i].dtype == 0)
-			continue;
+	for (i = 0; i < 3; i++) {
+		if (read_table->cmd[i] == 0)
+			break;
 		/* 0. send read lcm command(short packet) */
 		t0.CONFG = 0x04;	/* /BTA */
-		t0.Data0 = cmd_tab[i].dtype;
+		t0.Data0 = read_table->cmd[i];
 		/* / 0xB0 is used to distinguish DCS cmd */
 		/* or Gerneric cmd, is that Right??? */
 		t0.Data_ID =
@@ -6063,16 +6750,10 @@ int ddp_dsi_read_lcm_cmdq(enum DISP_MODULE_ENUM module,
 			DSI_GERNERIC_READ_LONG_PACKET_ID;
 		t0.Data1 = 0;
 
-		t1.CONFG = 0x00;
-		t1.Data_ID = 0x37;
-		t1.Data0 = RT_MAX_NUM;
-		t1.Data1 = 0;
-
-		/* write DSI CMDQ */
-		DSI_OUTREG32(cmdq_trigger_handle,
-			&DSI_CMDQ_REG[dsi_i]->data[0], AS_UINT32(&t1));
-		DSI_OUTREG32(cmdq_trigger_handle,
-			&DSI_CMDQ_REG[dsi_i]->data[1],
+			/* write DSI CMDQ */
+		DSI_OUTREG32(cmdq_trigger_handle, &DSI_CMDQ_REG[dsi_i]->data[0],
+				    0x00013700);
+		DSI_OUTREG32(cmdq_trigger_handle, &DSI_CMDQ_REG[dsi_i]->data[1],
 				     AS_UINT32(&t0));
 		DSI_OUTREG32(cmdq_trigger_handle,
 			&DSI_REG[dsi_i]->DSI_CMDQ_SIZE, 2);
@@ -6094,20 +6775,10 @@ int ddp_dsi_read_lcm_cmdq(enum DISP_MODULE_ENUM module,
 				RD_RDY, 0x00000000);
 		}
 		/* 2. save RX data */
-		if (read_Slot[0] && read_Slot[1] &&
-			read_Slot[2] && read_Slot[3] && dsi_i == 0) {
+		if (*read_Slot && dsi_i == 0) {
 			DSI_BACKUPREG32(cmdq_trigger_handle,
-					read_Slot[0], i,
-					&DSI_REG[0]->DSI_RX_DATA0);
-			DSI_BACKUPREG32(cmdq_trigger_handle,
-					read_Slot[1], i,
-					&DSI_REG[0]->DSI_RX_DATA1);
-			DSI_BACKUPREG32(cmdq_trigger_handle,
-					read_Slot[2], i,
-					&DSI_REG[0]->DSI_RX_DATA2);
-			DSI_BACKUPREG32(cmdq_trigger_handle,
-					read_Slot[3], i,
-					&DSI_REG[0]->DSI_RX_DATA3);
+				*read_Slot, i,
+				&DSI_REG[dsi_i]->DSI_RX_DATA0);
 		}
 
 		/* 3. write RX_RACK */
@@ -6126,100 +6797,6 @@ int ddp_dsi_read_lcm_cmdq(enum DISP_MODULE_ENUM module,
 	return ret;
 }
 
-int ddp_dsi_read_lcm_cmdq_v1(enum DISP_MODULE_ENUM module,
-	cmdqBackupSlotHandle *read_Slot,
-	struct cmdqRecStruct *cmdq_trigger_handle,
-	struct dsi_cmd_desc *cmd_tab)
-{
-	int ret = 0;
-	int dsi_i = 0;
-
-	struct DSI_T0_INS t0, t1;
-
-	dsi_i = DSI_MODULE_to_ID(module);
-
-	if (dsi_i != 0)
-		DISPERR("[DSI]should use dsi0\n");
-
-	/* enable dsi interrupt: RD_RDY/CMD_DONE (need do this here?) */
-	DSI_OUTREGBIT(cmdq_trigger_handle,
-		struct DSI_INT_ENABLE_REG, DSI_REG[dsi_i]->DSI_INTEN,
-			RD_RDY, 1);
-	DSI_OUTREGBIT(cmdq_trigger_handle,
-		struct DSI_INT_ENABLE_REG, DSI_REG[dsi_i]->DSI_INTEN,
-			CMD_DONE, 1);
-
-	DISPMSG("ddp_dsi_read_lcm_cmdq,cmd_tab->dtype=0x%x\n",
-			cmd_tab->dtype);
-
-	/* 0. send read lcm command(short packet) */
-	t0.CONFG = 0x04;	/* /BTA */
-	t0.Data0 = cmd_tab->dtype;
-	/* / 0xB0 is used to distinguish DCS cmd */
-	/* or Gerneric cmd, is that Right??? */
-	t0.Data_ID = cmd_tab->cmd;
-	t0.Data1 = 0;
-
-	t1.CONFG = 0x00;
-	t1.Data_ID = 0x37;
-	t1.Data0 = cmd_tab->dlen;
-	t1.Data1 = 0;
-
-	/* write DSI CMDQ */
-	DSI_OUTREG32(cmdq_trigger_handle,
-		&DSI_CMDQ_REG[dsi_i]->data[0], AS_UINT32(&t1));
-	DSI_OUTREG32(cmdq_trigger_handle,
-		&DSI_CMDQ_REG[dsi_i]->data[1], AS_UINT32(&t0));
-	DSI_OUTREG32(cmdq_trigger_handle,
-			&DSI_REG[dsi_i]->DSI_CMDQ_SIZE, 2);
-
-	/* start DSI */
-	DSI_OUTREG32(cmdq_trigger_handle,
-			&DSI_REG[dsi_i]->DSI_START, 0);
-	DSI_OUTREG32(cmdq_trigger_handle,
-			&DSI_REG[dsi_i]->DSI_START, 1);
-
-	/* 1. wait DSI RD_RDY(must clear,*/
-	/* in case of cpu RD_RDY interrupt handler) */
-	if (dsi_i == 0) {
-		DSI_POLLREG32(cmdq_trigger_handle,
-			&DSI_REG[dsi_i]->DSI_INTSTA, 0x00000001, 0x1);
-		DSI_OUTREGBIT(cmdq_trigger_handle,
-				struct DSI_INT_STATUS_REG,
-				DSI_REG[dsi_i]->DSI_INTSTA,
-				RD_RDY, 0x00000000);
-	}
-		/* 2. save RX data */
-	if (read_Slot[0] && read_Slot[1] &&
-		read_Slot[2] && read_Slot[3] && dsi_i == 0) {
-		DSI_BACKUPREG32(cmdq_trigger_handle,
-					read_Slot[0], 0,
-					&DSI_REG[0]->DSI_RX_DATA0);
-		DSI_BACKUPREG32(cmdq_trigger_handle,
-					read_Slot[1], 0,
-					&DSI_REG[0]->DSI_RX_DATA1);
-		DSI_BACKUPREG32(cmdq_trigger_handle,
-					read_Slot[2], 0,
-					&DSI_REG[0]->DSI_RX_DATA2);
-		DSI_BACKUPREG32(cmdq_trigger_handle,
-					read_Slot[3], 0,
-					&DSI_REG[0]->DSI_RX_DATA3);
-	}
-
-	/* 3. write RX_RACK */
-	DSI_OUTREGBIT(cmdq_trigger_handle,
-		struct DSI_RACK_REG, DSI_REG[dsi_i]->DSI_RACK,
-		DSI_RACK, 1);
-
-	/* 4. polling not busy(no need clear) */
-	if (dsi_i == 0) {
-		DSI_POLLREG32(cmdq_trigger_handle,
-			&DSI_REG[dsi_i]->DSI_INTSTA,
-			0x80000000, 0);
-	}
-
-	return ret;
-}
 
 int ddp_dsi_write_lcm_cmdq(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq, unsigned  char cmd_char,
@@ -6239,9 +6816,9 @@ int ddp_dsi_write_lcm_cmdq(enum DISP_MODULE_ENUM module,
 		return -1;
 
 	for (i = 0; i < count; i++)
-		DISPDBG("%s: list %x\n", __func__, para_list[i]);
+		DISPDBG("ddp_dsi_write_lcm_cmdq list %x\n", para_list[i]);
 	cmd = (unsigned int)cmd_char;
-	DISPDBG("%s cmd %x, count = %x\n", __func__, cmd, count);
+	DISPDBG("ddp_dsi_write_lcm_cmdq cmd %x, count = %x\n", cmd, count);
 
 	if (cmdq == NULL)
 		return ret;
@@ -6263,18 +6840,18 @@ int ddp_dsi_write_lcm_cmdq(enum DISP_MODULE_ENUM module,
 			set_para =
 				(cmd << ((goto_addr & 0x3u) * 8));
 			DSI_MASKREG32(cmdq,
-				goto_addr & (~(0x3ul)),
+				goto_addr & (~(0x3u)),
 				mask_para, set_para);
 
 			for (i = 0; i < count; i++) {
 				goto_addr =
-				(unsigned long)(&DSI_CMDQ_REG[d]->data[1].byte1)
-				+ i;
+				(unsigned long)(&DSI_CMDQ_REG[d]->data[1].
+							byte1) + i;
 				mask_para = (0xFFu << ((goto_addr & 0x3u) * 8));
 				set_para =
 				(para_list[i] << ((goto_addr & 0x3u) * 8));
 				DSI_MASKREG32(cmdq,
-					goto_addr & (~(0x3ul)),
+					goto_addr & (~(0x3u)),
 					mask_para, set_para);
 			}
 
@@ -6307,7 +6884,7 @@ int ddp_dsi_write_lcm_cmdq(enum DISP_MODULE_ENUM module,
 				(0xFFu << ((goto_addr & 0x3u) * 8));
 			set_para =
 				(cmd << ((goto_addr & 0x3u) * 8));
-			DSI_MASKREG32(cmdq, goto_addr & (~(0x3ul)),
+			DSI_MASKREG32(cmdq, goto_addr & (~(0x3u)),
 					mask_para, set_para);
 
 			for (i = 0; i < count; i++) {
@@ -6321,7 +6898,7 @@ int ddp_dsi_write_lcm_cmdq(enum DISP_MODULE_ENUM module,
 					(para_list[i] <<
 					((goto_addr & 0x3u) * 8));
 				DSI_MASKREG32(cmdq,
-						goto_addr & (~(0x3ul)),
+						goto_addr & (~(0x3u)),
 						mask_para, set_para);
 			}
 
@@ -6938,7 +7515,7 @@ UINT32 PanelMaster_get_dsi_timing(UINT32 dsi_index,
 		return dsi_val;
 	case HPW:
 	{
-		struct DSI_HSA_WC_REG tmp_reg = { 0 };
+		struct DSI_HSA_WC_REG tmp_reg;
 
 		DSI_READREG32((struct DSI_HSA_WC_REG *), &tmp_reg,
 			&dsi_reg->DSI_HSA_WC);
@@ -6947,8 +7524,7 @@ UINT32 PanelMaster_get_dsi_timing(UINT32 dsi_index,
 	}
 	case HFP:
 	{
-		struct DSI_HFP_WC_REG tmp_hfp = { 0 };
-
+		struct DSI_HFP_WC_REG tmp_hfp;
 
 		DSI_READREG32((struct DSI_HFP_WC_REG *), &tmp_hfp,
 			&dsi_reg->DSI_HFP_WC);
@@ -6971,7 +7547,7 @@ UINT32 PanelMaster_get_dsi_timing(UINT32 dsi_index,
 	}
 	case VPW:
 	{
-		struct DSI_VACT_NL_REG tmp_vpw = { 0 };
+		struct DSI_VACT_NL_REG tmp_vpw;
 
 		DSI_READREG32((struct DSI_VACT_NL_REG *),
 			&tmp_vpw, &dsi_reg->DSI_VACT_NL);
@@ -6980,7 +7556,7 @@ UINT32 PanelMaster_get_dsi_timing(UINT32 dsi_index,
 	}
 	case VFP:
 	{
-		struct DSI_VFP_NL_REG tmp_vfp = { 0 };
+		struct DSI_VFP_NL_REG tmp_vfp;
 
 		DSI_READREG32((struct DSI_VFP_NL_REG *),
 			&tmp_vfp, &dsi_reg->DSI_VFP_NL);
@@ -6989,7 +7565,7 @@ UINT32 PanelMaster_get_dsi_timing(UINT32 dsi_index,
 	}
 	case VBP:
 	{
-		struct DSI_VBP_NL_REG tmp_vbp = { 0 };
+		struct DSI_VBP_NL_REG tmp_vbp;
 
 		DSI_READREG32((struct DSI_VBP_NL_REG *),
 			&tmp_vbp, &dsi_reg->DSI_VBP_NL);
@@ -7104,3 +7680,186 @@ void DSI_ForceConfig(int forceconfig)
 		_dsi_context[0].dsi_params.PLL_CLOCK =
 			_dsi_context[0].dsi_params.PLL_CK_VDO;
 }
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+/*-------------------------------DynFPS start------------------------------*/
+unsigned int ddp_dsi_fps_change_index(
+	unsigned int last_dynfps, unsigned int new_dynfps)
+{
+	struct LCM_DSI_PARAMS *dsi = NULL;
+	struct dfps_info *dfps_params_last = NULL;
+	struct dfps_info *dfps_params_new = NULL;
+	unsigned int i = 0;
+	unsigned int fps_chg_index = 0;
+
+	dsi = &_dsi_context[0].dsi_params;
+
+	for (i = 0; i < dsi->dfps_num; i++) {
+		if ((dsi->dfps_params)[i].fps == last_dynfps)
+			dfps_params_last = &((dsi->dfps_params)[i]);
+		if ((dsi->dfps_params)[i].fps == new_dynfps)
+			dfps_params_new = &((dsi->dfps_params)[i]);
+	}
+
+	if (dfps_params_last == NULL ||
+		dfps_params_new == NULL)
+		return 0;
+
+	if (!mipi_clk_change_sta) {
+		if (dfps_params_last->vertical_frontporch !=
+			dfps_params_new->vertical_frontporch) {
+			fps_chg_index |= DYNFPS_DSI_VFP;
+		}
+		if (dfps_params_last->horizontal_frontporch !=
+			dfps_params_new->horizontal_frontporch) {
+			fps_chg_index |= DYNFPS_DSI_HFP;
+		}
+		if (dfps_params_last->PLL_CLOCK !=
+			dfps_params_new->PLL_CLOCK) {
+			fps_chg_index |= DYNFPS_DSI_MIPI_CLK;
+		}
+		if (dfps_params_last->data_rate !=
+			dfps_params_new->data_rate) {
+			fps_chg_index |= DYNFPS_DSI_MIPI_CLK;
+		}
+	} else {
+		if (dfps_params_last->vertical_frontporch_dyn !=
+			dfps_params_new->vertical_frontporch_dyn) {
+			fps_chg_index |= DYNFPS_DSI_VFP;
+		}
+		if (dfps_params_last->horizontal_frontporch_dyn !=
+			dfps_params_new->horizontal_frontporch_dyn) {
+			fps_chg_index |= DYNFPS_DSI_HFP;
+		}
+		if (dfps_params_last->PLL_CLOCK_dyn !=
+			dfps_params_new->PLL_CLOCK_dyn) {
+			fps_chg_index |= DYNFPS_DSI_MIPI_CLK;
+		}
+		if (dfps_params_last->data_rate_dyn !=
+			dfps_params_new->data_rate_dyn) {
+			fps_chg_index |= DYNFPS_DSI_MIPI_CLK;
+		}
+	}
+	DDPMSG("%s,chg %d->%d\n", __func__, last_dynfps, new_dynfps);
+	DDPMSG("%s,chg solution:0x%x\n", __func__, fps_chg_index);
+	return fps_chg_index;
+}
+
+void ddp_dsi_dynfps_chg_fps(
+	enum DISP_MODULE_ENUM module, void *handle,
+	unsigned int last_fps, unsigned int new_fps, unsigned int chg_index)
+{
+	struct LCM_DSI_PARAMS *dsi = NULL;
+	struct dfps_info *dfps_params_last = NULL;
+	struct dfps_info *dfps_params_new = NULL;
+	unsigned int i = 0;
+
+	dsi = &_dsi_context[0].dsi_params;
+
+	for (i = 0; i < dsi->dfps_num; i++) {
+		if ((dsi->dfps_params)[i].fps == last_fps)
+			dfps_params_last = &((dsi->dfps_params)[i]);
+		if ((dsi->dfps_params)[i].fps == new_fps)
+			dfps_params_new = &((dsi->dfps_params)[i]);
+	}
+	if (dfps_params_last == NULL ||
+		dfps_params_new == NULL)
+		return;
+
+	DDPMSG("%s,fps %d->%d\n", __func__, last_fps, new_fps);
+	DDPMSG("%s,chg_index=0x%x\n", __func__, chg_index);
+	/*we will not change dsi_params
+	 *will use this disp_fps to choose right params
+	 */
+	_dsi_context[i].disp_fps = new_fps;
+	_dsi_context[i].dynfps_chg_index = chg_index;
+
+	for (i = DSI_MODULE_BEGIN(module); i <= DSI_MODULE_END(module); i++) {
+		if (chg_index & DYNFPS_DSI_MIPI_CLK) {
+			DDPMSG("%s, change MIPI Clock\n", __func__);
+		} else if (chg_index & DYNFPS_DSI_HFP) {
+			DDPMSG("%s, change HFP\n", __func__);
+
+			DSI_PHY_TIMCONFIG(module, handle, dsi);
+			DSI_Calc_VDO_Timing(module, dsi);
+
+			ddp_dsi_porch_setting(module, handle, DSI_HFP,
+					_dsi_context[i].hfp_byte);
+
+		} else if (chg_index & DYNFPS_DSI_VFP) {
+			DDPMSG("%s, change VFP\n", __func__);
+			if (!mipi_clk_change_sta)
+				_dsi_context[i].vfp =
+				dfps_params_new->vertical_frontporch;
+			else
+				_dsi_context[i].vfp =
+				dfps_params_new->vertical_frontporch_dyn;
+
+			ddp_dsi_porch_setting(module, handle, DSI_VFP,
+						_dsi_context[i].vfp);
+		}
+
+	}
+
+}
+void ddp_dsi_dynfps_get_vfp_info(unsigned int disp_fps,
+	unsigned int *vfp, unsigned int *vfp_for_lp)
+{
+	struct LCM_DSI_PARAMS *dsi = NULL;
+	struct dfps_info *dfps_params = NULL;
+	unsigned int i = 0;
+	unsigned int _vfp = 0;
+	unsigned int _vfp_for_lp = 0;
+
+	dsi = &_dsi_context[0].dsi_params;
+	_vfp = dsi->vertical_frontporch;
+	_vfp_for_lp = dsi->vertical_frontporch_for_low_power;
+
+	for (i = 0; i < dsi->dfps_num; i++) {
+		if ((dsi->dfps_params)[i].fps == disp_fps)
+			dfps_params = &((dsi->dfps_params)[i]);
+	}
+
+	if (dfps_params == NULL) {
+		if (vfp)
+			*vfp = _vfp;
+		if (vfp_for_lp)
+			*vfp_for_lp = _vfp_for_lp;
+		return;
+	}
+
+	if (!mipi_clk_change_sta) {
+		_vfp = dfps_params->vertical_frontporch ?
+				dfps_params->vertical_frontporch :
+				dsi->vertical_frontporch;
+
+		_vfp_for_lp =
+			dfps_params->vertical_frontporch_for_low_power ?
+			dfps_params->vertical_frontporch_for_low_power :
+			dsi->vertical_frontporch_for_low_power;
+
+	} else {
+		_vfp = dfps_params->vertical_frontporch_dyn ?
+				dfps_params->vertical_frontporch_dyn :
+				dsi->vertical_frontporch_dyn;
+
+		_vfp_for_lp =
+			dfps_params->vertical_frontporch_for_low_power_dyn ?
+			dfps_params->vertical_frontporch_for_low_power_dyn :
+			dsi->vertical_frontporch_for_low_power;
+		/*ToDo, default mipi hopping
+		 *whether need add vfp_for_lp_dyn param
+		 */
+	}
+	DDPMSG("%s,fps=%d,vfp:%d,vfp_for_lp:%d]\n",
+		__func__, disp_fps, _vfp, _vfp_for_lp);
+
+	if (vfp)
+		*vfp = _vfp;
+	if (vfp_for_lp)
+		*vfp_for_lp = _vfp_for_lp;
+
+	return;
+
+}
+/*-------------------------------DynFPS end------------------------------*/
+#endif

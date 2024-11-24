@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * f_acm.c -- USB CDC serial (ACM) function driver
  *
@@ -6,10 +7,6 @@
  * Copyright (C) 2008 by Nokia Corporation
  * Copyright (C) 2009 by Samsung Electronics
  * Author: Michal Nazarewicz (mina86@mina86.com)
- *
- * This software is distributed under the terms of the GNU General
- * Public License ("GPL") as published by the Free Software Foundation,
- * either version 2 of that License or (at your option) any later version.
  */
 
 /* #define VERBOSE_DEBUG */
@@ -23,7 +20,6 @@
 #include "u_serial.h"
 
 #define ACM_LOG "USB_ACM"
-
 
 /*
  * This CDC ACM function support just wraps control functions and
@@ -731,7 +727,7 @@ acm_bind(struct usb_configuration *c, struct usb_function *f)
 	acm_ss_out_desc.bEndpointAddress = acm_fs_out_desc.bEndpointAddress;
 
 	status = usb_assign_descriptors(f, acm_fs_function, acm_hs_function,
-			acm_ss_function, NULL);
+			acm_ss_function, acm_ss_function);
 	if (status)
 		goto fail;
 
@@ -837,7 +833,7 @@ static struct configfs_attribute *acm_attrs[] = {
 	NULL,
 };
 
-static struct config_item_type acm_func_type = {
+static const struct config_item_type acm_func_type = {
 	.ct_item_ops    = &acm_item_ops,
 	.ct_attrs	= acm_attrs,
 	.ct_owner       = THIS_MODULE,

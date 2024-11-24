@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -24,7 +16,7 @@
 #include <linux/of_irq.h>
 #include <linux/of_address.h>
 #endif
-
+#include <mt-plat/mtk-clkbuf-bridge.h>
 /* #include <mach/irqs.h> */
 #if defined(CONFIG_MTK_SYS_CIRQ)
 #include <mt-plat/mtk_cirq.h>
@@ -46,7 +38,7 @@
 #endif
 
 #if defined(CONFIG_MACH_MT6739)
-#include <mtk_clkbuf_ctl.h>
+//#include <mtk_clkbuf_ctl.h>
 #include "pmic_api_buck.h"
 #include <mt-plat/mtk_rtc.h>
 #endif
@@ -63,7 +55,6 @@
 #include <mtk_power_gs_api.h>
 #endif
 
-#include <trace/events/mtk_idle_event.h>
 
 #include <mt-plat/mtk_io.h>
 
@@ -94,6 +85,28 @@
 #define	DPIDLE_LOG_DISCARD_CRITERIA			5000	/* ms */
 
 #define reg_read(addr)         __raw_readl(IOMEM(addr))
+
+void __attribute__ ((weak)) mtk8250_backup_dev(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+}
+
+void __attribute__ ((weak)) mtk8250_restore_dev(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+}
+
+int __attribute__ ((weak)) mtk8250_request_to_wakeup(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+	return 0;
+}
+
+int __attribute__ ((weak)) mtk8250_request_to_sleep(void)
+{
+	//pr_debug("NO %s !!!\n", __func__);
+	return 0;
+}
 
 enum spm_deepidle_step {
 	SPM_DEEPIDLE_ENTER = 0x00000001,
@@ -480,11 +493,9 @@ unsigned int spm_go_to_dpidle(u32 spm_flags, u32 spm_data,
 
 	spm_dpidle_footprint(SPM_DEEPIDLE_ENTER_WFI);
 
-	trace_dpidle_rcuidle(cpu, 1);
 
 	spm_trigger_wfi_for_dpidle(pwrctrl);
 
-	trace_dpidle_rcuidle(cpu, 0);
 
 	dpidle_profile_time(DPIDLE_PROFILE_AFTER_WFI);
 
@@ -658,11 +669,9 @@ unsigned int spm_go_to_sleep_dpidle(u32 spm_flags, u32 spm_data)
 	spm_dpidle_footprint(SPM_DEEPIDLE_SLEEP_DPIDLE |
 			     SPM_DEEPIDLE_ENTER_WFI);
 
-	trace_dpidle_rcuidle(cpu, 1);
 
 	spm_trigger_wfi_for_dpidle(pwrctrl);
 
-	trace_dpidle_rcuidle(cpu, 0);
 
 	spm_dpidle_footprint(SPM_DEEPIDLE_SLEEP_DPIDLE |
 			     SPM_DEEPIDLE_LEAVE_WFI);

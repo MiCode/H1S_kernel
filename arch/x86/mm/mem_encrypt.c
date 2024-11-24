@@ -15,7 +15,7 @@
 #include <linux/linkage.h>
 #include <linux/init.h>
 #include <linux/mm.h>
-#include <linux/dma-mapping.h>
+#include <linux/dma-direct.h>
 #include <linux/swiotlb.h>
 #include <linux/mem_encrypt.h>
 
@@ -25,14 +25,11 @@
 #include <asm/bootparam.h>
 #include <asm/set_memory.h>
 #include <asm/cacheflush.h>
-#include <asm/sections.h>
 #include <asm/processor-flags.h>
 #include <asm/msr.h>
 #include <asm/cmdline.h>
 
-static char sme_cmdline_arg[] __initdata = "mem_encrypt";
-static char sme_cmdline_on[]  __initdata = "on";
-static char sme_cmdline_off[] __initdata = "off";
+#include "mm_internal.h"
 
 /*
  * Since SME related variables are set early in the boot process they must
@@ -41,6 +38,10 @@ static char sme_cmdline_off[] __initdata = "off";
  */
 u64 sme_me_mask __section(.data) = 0;
 EXPORT_SYMBOL(sme_me_mask);
+DEFINE_STATIC_KEY_FALSE(sev_enable_key);
+EXPORT_SYMBOL_GPL(sev_enable_key);
+
+bool sev_enabled __section(.data);
 
 /* Buffer used for early in-place encryption by BSP, no locking needed */
 static char sme_early_buffer[PAGE_SIZE] __aligned(PAGE_SIZE);
@@ -63,7 +64,6 @@ static void __init __sme_early_enc_dec(resource_size_t paddr,
 	if (!sme_me_mask)
 		return;
 
-	local_flush_tlb();
 	wbinvd();
 
 	/*
@@ -190,9 +190,188 @@ void __init sme_early_init(void)
 	/* Update the protection map with memory encryption mask */
 	for (i = 0; i < ARRAY_SIZE(protection_map); i++)
 		protection_map[i] = pgprot_encrypted(protection_map[i]);
+
+	if (sev_active())
+		swiotlb_force = SWIOTLB_FORCE;
 }
 
+static void __init __set_clr_pte_enc(pte_t *kpte, int level, bool enc)
+{
+	pgprot_t old_prot, new_prot;
+	unsigned long pfn, pa, size;
+	pte_t new_pte;
+
+	switch (level) {
+	case PG_LEVEL_4K:
+		pfn = pte_pfn(*kpte);
+		old_prot = pte_pgprot(*kpte);
+		break;
+	case PG_LEVEL_2M:
+		pfn = pmd_pfn(*(pmd_t *)kpte);
+		old_prot = pmd_pgprot(*(pmd_t *)kpte);
+		break;
+	case PG_LEVEL_1G:
+		pfn = pud_pfn(*(pud_t *)kpte);
+		old_prot = pud_pgprot(*(pud_t *)kpte);
+		break;
+	default:
+		return;
+	}
+
+	new_prot = old_prot;
+	if (enc)
+		pgprot_val(new_prot) |= _PAGE_ENC;
+	else
+		pgprot_val(new_prot) &= ~_PAGE_ENC;
+
+	/* If prot is same then do nothing. */
+	if (pgprot_val(old_prot) == pgprot_val(new_prot))
+		return;
+
+	pa = pfn << PAGE_SHIFT;
+	size = page_level_size(level);
+
+	/*
+	 * We are going to perform in-place en-/decryption and change the
+	 * physical page attribute from C=1 to C=0 or vice versa. Flush the
+	 * caches to ensure that data gets accessed with the correct C-bit.
+	 */
+	clflush_cache_range(__va(pa), size);
+
+	/* Encrypt/decrypt the contents in-place */
+	if (enc)
+		sme_early_encrypt(pa, size);
+	else
+		sme_early_decrypt(pa, size);
+
+	/* Change the page encryption mask. */
+	new_pte = pfn_pte(pfn, new_prot);
+	set_pte_atomic(kpte, new_pte);
+}
+
+static int __init early_set_memory_enc_dec(unsigned long vaddr,
+					   unsigned long size, bool enc)
+{
+	unsigned long vaddr_end, vaddr_next;
+	unsigned long psize, pmask;
+	int split_page_size_mask;
+	int level, ret;
+	pte_t *kpte;
+
+	vaddr_next = vaddr;
+	vaddr_end = vaddr + size;
+
+	for (; vaddr < vaddr_end; vaddr = vaddr_next) {
+		kpte = lookup_address(vaddr, &level);
+		if (!kpte || pte_none(*kpte)) {
+			ret = 1;
+			goto out;
+		}
+
+		if (level == PG_LEVEL_4K) {
+			__set_clr_pte_enc(kpte, level, enc);
+			vaddr_next = (vaddr & PAGE_MASK) + PAGE_SIZE;
+			continue;
+		}
+
+		psize = page_level_size(level);
+		pmask = page_level_mask(level);
+
+		/*
+		 * Check whether we can change the large page in one go.
+		 * We request a split when the address is not aligned and
+		 * the number of pages to set/clear encryption bit is smaller
+		 * than the number of pages in the large page.
+		 */
+		if (vaddr == (vaddr & pmask) &&
+		    ((vaddr_end - vaddr) >= psize)) {
+			__set_clr_pte_enc(kpte, level, enc);
+			vaddr_next = (vaddr & pmask) + psize;
+			continue;
+		}
+
+		/*
+		 * The virtual address is part of a larger page, create the next
+		 * level page table mapping (4K or 2M). If it is part of a 2M
+		 * page then we request a split of the large page into 4K
+		 * chunks. A 1GB large page is split into 2M pages, resp.
+		 */
+		if (level == PG_LEVEL_2M)
+			split_page_size_mask = 0;
+		else
+			split_page_size_mask = 1 << PG_LEVEL_2M;
+
+		kernel_physical_mapping_init(__pa(vaddr & pmask),
+					     __pa((vaddr_end & pmask) + psize),
+					     split_page_size_mask);
+	}
+
+	ret = 0;
+
+out:
+	__flush_tlb_all();
+	return ret;
+}
+
+int __init early_set_memory_decrypted(unsigned long vaddr, unsigned long size)
+{
+	return early_set_memory_enc_dec(vaddr, size, false);
+}
+
+int __init early_set_memory_encrypted(unsigned long vaddr, unsigned long size)
+{
+	return early_set_memory_enc_dec(vaddr, size, true);
+}
+
+/*
+ * SME and SEV are very similar but they are not the same, so there are
+ * times that the kernel will need to distinguish between SME and SEV. The
+ * sme_active() and sev_active() functions are used for this.  When a
+ * distinction isn't needed, the mem_encrypt_active() function can be used.
+ *
+ * The trampoline code is a good example for this requirement.  Before
+ * paging is activated, SME will access all memory as decrypted, but SEV
+ * will access all memory as encrypted.  So, when APs are being brought
+ * up under SME the trampoline area cannot be encrypted, whereas under SEV
+ * the trampoline area must be encrypted.
+ */
+bool sme_active(void)
+{
+	return sme_me_mask && !sev_enabled;
+}
+EXPORT_SYMBOL(sme_active);
+
+bool sev_active(void)
+{
+	return sme_me_mask && sev_enabled;
+}
+EXPORT_SYMBOL(sev_active);
+
 /* Architecture __weak replacement functions */
+void __init mem_encrypt_free_decrypted_mem(void)
+{
+	unsigned long vaddr, vaddr_end, npages;
+	int r;
+
+	vaddr = (unsigned long)__start_bss_decrypted_unused;
+	vaddr_end = (unsigned long)__end_bss_decrypted;
+	npages = (vaddr_end - vaddr) >> PAGE_SHIFT;
+
+	/*
+	 * The unused memory range was mapped decrypted, change the encryption
+	 * attribute from decrypted to encrypted before freeing it.
+	 */
+	if (mem_encrypt_active()) {
+		r = set_memory_encrypted(vaddr, npages);
+		if (r) {
+			pr_warn("failed to free unused decrypted pages\n");
+			return;
+		}
+	}
+
+	free_init_pages("unused decrypted", vaddr, vaddr_end);
+}
+
 void __init mem_encrypt_init(void)
 {
 	if (!sme_me_mask)
@@ -201,559 +380,21 @@ void __init mem_encrypt_init(void)
 	/* Call into SWIOTLB to update the SWIOTLB DMA buffers */
 	swiotlb_update_mem_attributes();
 
-	pr_info("AMD Secure Memory Encryption (SME) active\n");
-}
-
-void swiotlb_set_mem_attributes(void *vaddr, unsigned long size)
-{
-	WARN(PAGE_ALIGN(size) != size,
-	     "size is not page-aligned (%#lx)\n", size);
-
-	/* Make the SWIOTLB buffer area decrypted */
-	set_memory_decrypted((unsigned long)vaddr, size >> PAGE_SHIFT);
-}
-
-struct sme_populate_pgd_data {
-	void	*pgtable_area;
-	pgd_t	*pgd;
-
-	pmdval_t pmd_flags;
-	pteval_t pte_flags;
-	unsigned long paddr;
-
-	unsigned long vaddr;
-	unsigned long vaddr_end;
-};
-
-static void __init sme_clear_pgd(struct sme_populate_pgd_data *ppd)
-{
-	unsigned long pgd_start, pgd_end, pgd_size;
-	pgd_t *pgd_p;
-
-	pgd_start = ppd->vaddr & PGDIR_MASK;
-	pgd_end = ppd->vaddr_end & PGDIR_MASK;
-
-	pgd_size = (((pgd_end - pgd_start) / PGDIR_SIZE) + 1) * sizeof(pgd_t);
-
-	pgd_p = ppd->pgd + pgd_index(ppd->vaddr);
-
-	memset(pgd_p, 0, pgd_size);
-}
-
-#define PGD_FLAGS		_KERNPG_TABLE_NOENC
-#define P4D_FLAGS		_KERNPG_TABLE_NOENC
-#define PUD_FLAGS		_KERNPG_TABLE_NOENC
-#define PMD_FLAGS		_KERNPG_TABLE_NOENC
-
-#define PMD_FLAGS_LARGE		(__PAGE_KERNEL_LARGE_EXEC & ~_PAGE_GLOBAL)
-
-#define PMD_FLAGS_DEC		PMD_FLAGS_LARGE
-#define PMD_FLAGS_DEC_WP	((PMD_FLAGS_DEC & ~_PAGE_CACHE_MASK) | \
-				 (_PAGE_PAT | _PAGE_PWT))
-
-#define PMD_FLAGS_ENC		(PMD_FLAGS_LARGE | _PAGE_ENC)
-
-#define PTE_FLAGS		(__PAGE_KERNEL_EXEC & ~_PAGE_GLOBAL)
-
-#define PTE_FLAGS_DEC		PTE_FLAGS
-#define PTE_FLAGS_DEC_WP	((PTE_FLAGS_DEC & ~_PAGE_CACHE_MASK) | \
-				 (_PAGE_PAT | _PAGE_PWT))
-
-#define PTE_FLAGS_ENC		(PTE_FLAGS | _PAGE_ENC)
-
-static pmd_t __init *sme_prepare_pgd(struct sme_populate_pgd_data *ppd)
-{
-	pgd_t *pgd_p;
-	p4d_t *p4d_p;
-	pud_t *pud_p;
-	pmd_t *pmd_p;
-
-	pgd_p = ppd->pgd + pgd_index(ppd->vaddr);
-	if (native_pgd_val(*pgd_p)) {
-		if (IS_ENABLED(CONFIG_X86_5LEVEL))
-			p4d_p = (p4d_t *)(native_pgd_val(*pgd_p) & ~PTE_FLAGS_MASK);
-		else
-			pud_p = (pud_t *)(native_pgd_val(*pgd_p) & ~PTE_FLAGS_MASK);
-	} else {
-		pgd_t pgd;
-
-		if (IS_ENABLED(CONFIG_X86_5LEVEL)) {
-			p4d_p = ppd->pgtable_area;
-			memset(p4d_p, 0, sizeof(*p4d_p) * PTRS_PER_P4D);
-			ppd->pgtable_area += sizeof(*p4d_p) * PTRS_PER_P4D;
-
-			pgd = native_make_pgd((pgdval_t)p4d_p + PGD_FLAGS);
-		} else {
-			pud_p = ppd->pgtable_area;
-			memset(pud_p, 0, sizeof(*pud_p) * PTRS_PER_PUD);
-			ppd->pgtable_area += sizeof(*pud_p) * PTRS_PER_PUD;
-
-			pgd = native_make_pgd((pgdval_t)pud_p + PGD_FLAGS);
-		}
-		native_set_pgd(pgd_p, pgd);
-	}
-
-	if (IS_ENABLED(CONFIG_X86_5LEVEL)) {
-		p4d_p += p4d_index(ppd->vaddr);
-		if (native_p4d_val(*p4d_p)) {
-			pud_p = (pud_t *)(native_p4d_val(*p4d_p) & ~PTE_FLAGS_MASK);
-		} else {
-			p4d_t p4d;
-
-			pud_p = ppd->pgtable_area;
-			memset(pud_p, 0, sizeof(*pud_p) * PTRS_PER_PUD);
-			ppd->pgtable_area += sizeof(*pud_p) * PTRS_PER_PUD;
-
-			p4d = native_make_p4d((pudval_t)pud_p + P4D_FLAGS);
-			native_set_p4d(p4d_p, p4d);
-		}
-	}
-
-	pud_p += pud_index(ppd->vaddr);
-	if (native_pud_val(*pud_p)) {
-		if (native_pud_val(*pud_p) & _PAGE_PSE)
-			return NULL;
-
-		pmd_p = (pmd_t *)(native_pud_val(*pud_p) & ~PTE_FLAGS_MASK);
-	} else {
-		pud_t pud;
-
-		pmd_p = ppd->pgtable_area;
-		memset(pmd_p, 0, sizeof(*pmd_p) * PTRS_PER_PMD);
-		ppd->pgtable_area += sizeof(*pmd_p) * PTRS_PER_PMD;
-
-		pud = native_make_pud((pmdval_t)pmd_p + PUD_FLAGS);
-		native_set_pud(pud_p, pud);
-	}
-
-	return pmd_p;
-}
-
-static void __init sme_populate_pgd_large(struct sme_populate_pgd_data *ppd)
-{
-	pmd_t *pmd_p;
-
-	pmd_p = sme_prepare_pgd(ppd);
-	if (!pmd_p)
-		return;
-
-	pmd_p += pmd_index(ppd->vaddr);
-	if (!native_pmd_val(*pmd_p) || !(native_pmd_val(*pmd_p) & _PAGE_PSE))
-		native_set_pmd(pmd_p, native_make_pmd(ppd->paddr | ppd->pmd_flags));
-}
-
-static void __init sme_populate_pgd(struct sme_populate_pgd_data *ppd)
-{
-	pmd_t *pmd_p;
-	pte_t *pte_p;
-
-	pmd_p = sme_prepare_pgd(ppd);
-	if (!pmd_p)
-		return;
-
-	pmd_p += pmd_index(ppd->vaddr);
-	if (native_pmd_val(*pmd_p)) {
-		if (native_pmd_val(*pmd_p) & _PAGE_PSE)
-			return;
-
-		pte_p = (pte_t *)(native_pmd_val(*pmd_p) & ~PTE_FLAGS_MASK);
-	} else {
-		pmd_t pmd;
-
-		pte_p = ppd->pgtable_area;
-		memset(pte_p, 0, sizeof(*pte_p) * PTRS_PER_PTE);
-		ppd->pgtable_area += sizeof(*pte_p) * PTRS_PER_PTE;
-
-		pmd = native_make_pmd((pteval_t)pte_p + PMD_FLAGS);
-		native_set_pmd(pmd_p, pmd);
-	}
-
-	pte_p += pte_index(ppd->vaddr);
-	if (!native_pte_val(*pte_p))
-		native_set_pte(pte_p, native_make_pte(ppd->paddr | ppd->pte_flags));
-}
-
-static void __init __sme_map_range_pmd(struct sme_populate_pgd_data *ppd)
-{
-	while (ppd->vaddr < ppd->vaddr_end) {
-		sme_populate_pgd_large(ppd);
-
-		ppd->vaddr += PMD_PAGE_SIZE;
-		ppd->paddr += PMD_PAGE_SIZE;
-	}
-}
-
-static void __init __sme_map_range_pte(struct sme_populate_pgd_data *ppd)
-{
-	while (ppd->vaddr < ppd->vaddr_end) {
-		sme_populate_pgd(ppd);
-
-		ppd->vaddr += PAGE_SIZE;
-		ppd->paddr += PAGE_SIZE;
-	}
-}
-
-static void __init __sme_map_range(struct sme_populate_pgd_data *ppd,
-				   pmdval_t pmd_flags, pteval_t pte_flags)
-{
-	unsigned long vaddr_end;
-
-	ppd->pmd_flags = pmd_flags;
-	ppd->pte_flags = pte_flags;
-
-	/* Save original end value since we modify the struct value */
-	vaddr_end = ppd->vaddr_end;
-
-	/* If start is not 2MB aligned, create PTE entries */
-	ppd->vaddr_end = ALIGN(ppd->vaddr, PMD_PAGE_SIZE);
-	__sme_map_range_pte(ppd);
-
-	/* Create PMD entries */
-	ppd->vaddr_end = vaddr_end & PMD_PAGE_MASK;
-	__sme_map_range_pmd(ppd);
-
-	/* If end is not 2MB aligned, create PTE entries */
-	ppd->vaddr_end = vaddr_end;
-	__sme_map_range_pte(ppd);
-}
-
-static void __init sme_map_range_encrypted(struct sme_populate_pgd_data *ppd)
-{
-	__sme_map_range(ppd, PMD_FLAGS_ENC, PTE_FLAGS_ENC);
-}
-
-static void __init sme_map_range_decrypted(struct sme_populate_pgd_data *ppd)
-{
-	__sme_map_range(ppd, PMD_FLAGS_DEC, PTE_FLAGS_DEC);
-}
-
-static void __init sme_map_range_decrypted_wp(struct sme_populate_pgd_data *ppd)
-{
-	__sme_map_range(ppd, PMD_FLAGS_DEC_WP, PTE_FLAGS_DEC_WP);
-}
-
-static unsigned long __init sme_pgtable_calc(unsigned long len)
-{
-	unsigned long p4d_size, pud_size, pmd_size, pte_size;
-	unsigned long total;
+	/*
+	 * With SEV, DMA operations cannot use encryption, we need to use
+	 * SWIOTLB to bounce buffer DMA operation.
+	 */
+	if (sev_active())
+		dma_ops = &swiotlb_dma_ops;
 
 	/*
-	 * Perform a relatively simplistic calculation of the pagetable
-	 * entries that are needed. Those mappings will be covered mostly
-	 * by 2MB PMD entries so we can conservatively calculate the required
-	 * number of P4D, PUD and PMD structures needed to perform the
-	 * mappings.  For mappings that are not 2MB aligned, PTE mappings
-	 * would be needed for the start and end portion of the address range
-	 * that fall outside of the 2MB alignment.  This results in, at most,
-	 * two extra pages to hold PTE entries for each range that is mapped.
-	 * Incrementing the count for each covers the case where the addresses
-	 * cross entries.
+	 * With SEV, we need to unroll the rep string I/O instructions.
 	 */
-	if (IS_ENABLED(CONFIG_X86_5LEVEL)) {
-		p4d_size = (ALIGN(len, PGDIR_SIZE) / PGDIR_SIZE) + 1;
-		p4d_size *= sizeof(p4d_t) * PTRS_PER_P4D;
-		pud_size = (ALIGN(len, P4D_SIZE) / P4D_SIZE) + 1;
-		pud_size *= sizeof(pud_t) * PTRS_PER_PUD;
-	} else {
-		p4d_size = 0;
-		pud_size = (ALIGN(len, PGDIR_SIZE) / PGDIR_SIZE) + 1;
-		pud_size *= sizeof(pud_t) * PTRS_PER_PUD;
-	}
-	pmd_size = (ALIGN(len, PUD_SIZE) / PUD_SIZE) + 1;
-	pmd_size *= sizeof(pmd_t) * PTRS_PER_PMD;
-	pte_size = 2 * sizeof(pte_t) * PTRS_PER_PTE;
+	if (sev_active())
+		static_branch_enable(&sev_enable_key);
 
-	total = p4d_size + pud_size + pmd_size + pte_size;
-
-	/*
-	 * Now calculate the added pagetable structures needed to populate
-	 * the new pagetables.
-	 */
-	if (IS_ENABLED(CONFIG_X86_5LEVEL)) {
-		p4d_size = ALIGN(total, PGDIR_SIZE) / PGDIR_SIZE;
-		p4d_size *= sizeof(p4d_t) * PTRS_PER_P4D;
-		pud_size = ALIGN(total, P4D_SIZE) / P4D_SIZE;
-		pud_size *= sizeof(pud_t) * PTRS_PER_PUD;
-	} else {
-		p4d_size = 0;
-		pud_size = ALIGN(total, PGDIR_SIZE) / PGDIR_SIZE;
-		pud_size *= sizeof(pud_t) * PTRS_PER_PUD;
-	}
-	pmd_size = ALIGN(total, PUD_SIZE) / PUD_SIZE;
-	pmd_size *= sizeof(pmd_t) * PTRS_PER_PMD;
-
-	total += p4d_size + pud_size + pmd_size;
-
-	return total;
+	pr_info("AMD %s active\n",
+		sev_active() ? "Secure Encrypted Virtualization (SEV)"
+			     : "Secure Memory Encryption (SME)");
 }
 
-void __init __nostackprotector sme_encrypt_kernel(struct boot_params *bp)
-{
-	unsigned long workarea_start, workarea_end, workarea_len;
-	unsigned long execute_start, execute_end, execute_len;
-	unsigned long kernel_start, kernel_end, kernel_len;
-	unsigned long initrd_start, initrd_end, initrd_len;
-	struct sme_populate_pgd_data ppd;
-	unsigned long pgtable_area_len;
-	unsigned long decrypted_base;
-
-	if (!sme_active())
-		return;
-
-	/*
-	 * Prepare for encrypting the kernel and initrd by building new
-	 * pagetables with the necessary attributes needed to encrypt the
-	 * kernel in place.
-	 *
-	 *   One range of virtual addresses will map the memory occupied
-	 *   by the kernel and initrd as encrypted.
-	 *
-	 *   Another range of virtual addresses will map the memory occupied
-	 *   by the kernel and initrd as decrypted and write-protected.
-	 *
-	 *     The use of write-protect attribute will prevent any of the
-	 *     memory from being cached.
-	 */
-
-	/* Physical addresses gives us the identity mapped virtual addresses */
-	kernel_start = __pa_symbol(_text);
-	kernel_end = ALIGN(__pa_symbol(_end), PMD_PAGE_SIZE);
-	kernel_len = kernel_end - kernel_start;
-
-	initrd_start = 0;
-	initrd_end = 0;
-	initrd_len = 0;
-#ifdef CONFIG_BLK_DEV_INITRD
-	initrd_len = (unsigned long)bp->hdr.ramdisk_size |
-		     ((unsigned long)bp->ext_ramdisk_size << 32);
-	if (initrd_len) {
-		initrd_start = (unsigned long)bp->hdr.ramdisk_image |
-			       ((unsigned long)bp->ext_ramdisk_image << 32);
-		initrd_end = PAGE_ALIGN(initrd_start + initrd_len);
-		initrd_len = initrd_end - initrd_start;
-	}
-#endif
-
-	/* Set the encryption workarea to be immediately after the kernel */
-	workarea_start = kernel_end;
-
-	/*
-	 * Calculate required number of workarea bytes needed:
-	 *   executable encryption area size:
-	 *     stack page (PAGE_SIZE)
-	 *     encryption routine page (PAGE_SIZE)
-	 *     intermediate copy buffer (PMD_PAGE_SIZE)
-	 *   pagetable structures for the encryption of the kernel
-	 *   pagetable structures for workarea (in case not currently mapped)
-	 */
-	execute_start = workarea_start;
-	execute_end = execute_start + (PAGE_SIZE * 2) + PMD_PAGE_SIZE;
-	execute_len = execute_end - execute_start;
-
-	/*
-	 * One PGD for both encrypted and decrypted mappings and a set of
-	 * PUDs and PMDs for each of the encrypted and decrypted mappings.
-	 */
-	pgtable_area_len = sizeof(pgd_t) * PTRS_PER_PGD;
-	pgtable_area_len += sme_pgtable_calc(execute_end - kernel_start) * 2;
-	if (initrd_len)
-		pgtable_area_len += sme_pgtable_calc(initrd_len) * 2;
-
-	/* PUDs and PMDs needed in the current pagetables for the workarea */
-	pgtable_area_len += sme_pgtable_calc(execute_len + pgtable_area_len);
-
-	/*
-	 * The total workarea includes the executable encryption area and
-	 * the pagetable area. The start of the workarea is already 2MB
-	 * aligned, align the end of the workarea on a 2MB boundary so that
-	 * we don't try to create/allocate PTE entries from the workarea
-	 * before it is mapped.
-	 */
-	workarea_len = execute_len + pgtable_area_len;
-	workarea_end = ALIGN(workarea_start + workarea_len, PMD_PAGE_SIZE);
-
-	/*
-	 * Set the address to the start of where newly created pagetable
-	 * structures (PGDs, PUDs and PMDs) will be allocated. New pagetable
-	 * structures are created when the workarea is added to the current
-	 * pagetables and when the new encrypted and decrypted kernel
-	 * mappings are populated.
-	 */
-	ppd.pgtable_area = (void *)execute_end;
-
-	/*
-	 * Make sure the current pagetable structure has entries for
-	 * addressing the workarea.
-	 */
-	ppd.pgd = (pgd_t *)native_read_cr3_pa();
-	ppd.paddr = workarea_start;
-	ppd.vaddr = workarea_start;
-	ppd.vaddr_end = workarea_end;
-	sme_map_range_decrypted(&ppd);
-
-	/* Flush the TLB - no globals so cr3 is enough */
-	native_write_cr3(__native_read_cr3());
-
-	/*
-	 * A new pagetable structure is being built to allow for the kernel
-	 * and initrd to be encrypted. It starts with an empty PGD that will
-	 * then be populated with new PUDs and PMDs as the encrypted and
-	 * decrypted kernel mappings are created.
-	 */
-	ppd.pgd = ppd.pgtable_area;
-	memset(ppd.pgd, 0, sizeof(pgd_t) * PTRS_PER_PGD);
-	ppd.pgtable_area += sizeof(pgd_t) * PTRS_PER_PGD;
-
-	/*
-	 * A different PGD index/entry must be used to get different
-	 * pagetable entries for the decrypted mapping. Choose the next
-	 * PGD index and convert it to a virtual address to be used as
-	 * the base of the mapping.
-	 */
-	decrypted_base = (pgd_index(workarea_end) + 1) & (PTRS_PER_PGD - 1);
-	if (initrd_len) {
-		unsigned long check_base;
-
-		check_base = (pgd_index(initrd_end) + 1) & (PTRS_PER_PGD - 1);
-		decrypted_base = max(decrypted_base, check_base);
-	}
-	decrypted_base <<= PGDIR_SHIFT;
-
-	/* Add encrypted kernel (identity) mappings */
-	ppd.paddr = kernel_start;
-	ppd.vaddr = kernel_start;
-	ppd.vaddr_end = kernel_end;
-	sme_map_range_encrypted(&ppd);
-
-	/* Add decrypted, write-protected kernel (non-identity) mappings */
-	ppd.paddr = kernel_start;
-	ppd.vaddr = kernel_start + decrypted_base;
-	ppd.vaddr_end = kernel_end + decrypted_base;
-	sme_map_range_decrypted_wp(&ppd);
-
-	if (initrd_len) {
-		/* Add encrypted initrd (identity) mappings */
-		ppd.paddr = initrd_start;
-		ppd.vaddr = initrd_start;
-		ppd.vaddr_end = initrd_end;
-		sme_map_range_encrypted(&ppd);
-		/*
-		 * Add decrypted, write-protected initrd (non-identity) mappings
-		 */
-		ppd.paddr = initrd_start;
-		ppd.vaddr = initrd_start + decrypted_base;
-		ppd.vaddr_end = initrd_end + decrypted_base;
-		sme_map_range_decrypted_wp(&ppd);
-	}
-
-	/* Add decrypted workarea mappings to both kernel mappings */
-	ppd.paddr = workarea_start;
-	ppd.vaddr = workarea_start;
-	ppd.vaddr_end = workarea_end;
-	sme_map_range_decrypted(&ppd);
-
-	ppd.paddr = workarea_start;
-	ppd.vaddr = workarea_start + decrypted_base;
-	ppd.vaddr_end = workarea_end + decrypted_base;
-	sme_map_range_decrypted(&ppd);
-
-	/* Perform the encryption */
-	sme_encrypt_execute(kernel_start, kernel_start + decrypted_base,
-			    kernel_len, workarea_start, (unsigned long)ppd.pgd);
-
-	if (initrd_len)
-		sme_encrypt_execute(initrd_start, initrd_start + decrypted_base,
-				    initrd_len, workarea_start,
-				    (unsigned long)ppd.pgd);
-
-	/*
-	 * At this point we are running encrypted.  Remove the mappings for
-	 * the decrypted areas - all that is needed for this is to remove
-	 * the PGD entry/entries.
-	 */
-	ppd.vaddr = kernel_start + decrypted_base;
-	ppd.vaddr_end = kernel_end + decrypted_base;
-	sme_clear_pgd(&ppd);
-
-	if (initrd_len) {
-		ppd.vaddr = initrd_start + decrypted_base;
-		ppd.vaddr_end = initrd_end + decrypted_base;
-		sme_clear_pgd(&ppd);
-	}
-
-	ppd.vaddr = workarea_start + decrypted_base;
-	ppd.vaddr_end = workarea_end + decrypted_base;
-	sme_clear_pgd(&ppd);
-
-	/* Flush the TLB - no globals so cr3 is enough */
-	native_write_cr3(__native_read_cr3());
-}
-
-void __init __nostackprotector sme_enable(struct boot_params *bp)
-{
-	const char *cmdline_ptr, *cmdline_arg, *cmdline_on, *cmdline_off;
-	unsigned int eax, ebx, ecx, edx;
-	bool active_by_default;
-	unsigned long me_mask;
-	char buffer[16];
-	u64 msr;
-
-	/* Check for the SME support leaf */
-	eax = 0x80000000;
-	ecx = 0;
-	native_cpuid(&eax, &ebx, &ecx, &edx);
-	if (eax < 0x8000001f)
-		return;
-
-	/*
-	 * Check for the SME feature:
-	 *   CPUID Fn8000_001F[EAX] - Bit 0
-	 *     Secure Memory Encryption support
-	 *   CPUID Fn8000_001F[EBX] - Bits 5:0
-	 *     Pagetable bit position used to indicate encryption
-	 */
-	eax = 0x8000001f;
-	ecx = 0;
-	native_cpuid(&eax, &ebx, &ecx, &edx);
-	if (!(eax & 1))
-		return;
-
-	me_mask = 1UL << (ebx & 0x3f);
-
-	/* Check if SME is enabled */
-	msr = __rdmsr(MSR_K8_SYSCFG);
-	if (!(msr & MSR_K8_SYSCFG_MEM_ENCRYPT))
-		return;
-
-	/*
-	 * Fixups have not been applied to phys_base yet and we're running
-	 * identity mapped, so we must obtain the address to the SME command
-	 * line argument data using rip-relative addressing.
-	 */
-	asm ("lea sme_cmdline_arg(%%rip), %0"
-	     : "=r" (cmdline_arg)
-	     : "p" (sme_cmdline_arg));
-	asm ("lea sme_cmdline_on(%%rip), %0"
-	     : "=r" (cmdline_on)
-	     : "p" (sme_cmdline_on));
-	asm ("lea sme_cmdline_off(%%rip), %0"
-	     : "=r" (cmdline_off)
-	     : "p" (sme_cmdline_off));
-
-	if (IS_ENABLED(CONFIG_AMD_MEM_ENCRYPT_ACTIVE_BY_DEFAULT))
-		active_by_default = true;
-	else
-		active_by_default = false;
-
-	cmdline_ptr = (const char *)((u64)bp->hdr.cmd_line_ptr |
-				     ((u64)bp->ext_cmd_line_ptr << 32));
-
-	cmdline_find_option(cmdline_ptr, cmdline_arg, buffer, sizeof(buffer));
-
-	if (!strncmp(buffer, cmdline_on, sizeof(buffer)))
-		sme_me_mask = me_mask;
-	else if (!strncmp(buffer, cmdline_off, sizeof(buffer)))
-		sme_me_mask = 0;
-	else
-		sme_me_mask = active_by_default ? me_mask : 0;
-}

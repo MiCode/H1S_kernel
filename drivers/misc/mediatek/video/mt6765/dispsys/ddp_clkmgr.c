@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/of.h>
@@ -108,14 +100,13 @@ int ddp_clk_check(void)
 		if (ddp_clks[i].refcnt != 0)
 			ret++;
 
-		DDPDBG("%s: %s is %s refcnt=%d\n",
-			__func__,
+		DDPDBG("ddp_clk_check %s is %s refcnt=%d\n",
 			ddp_clks[i].clk_name,
 			ddp_clks[i].refcnt == 0 ? "off" : "on",
 			ddp_clks[i].refcnt);
 	}
 
-	DDPDBG("%s: mipitx pll clk is %s refcnt=%d\n", __func__,
+	DDPDBG("ddp_clk_check mipitx pll clk is %s refcnt=%d\n",
 		apmixed_refcnt == 0 ? "off" : "on", apmixed_refcnt);
 	return ret;
 }
@@ -124,7 +115,7 @@ int ddp_clk_prepare_enable(enum DDP_CLK_ID id)
 {
 	int ret = 0;
 
-	DDPDBG("%s: clkid = %d\n", __func__, id);
+	DDPDBG("ddp_clk_prepare_enable, clkid = %d\n", id);
 
 	if (disp_helper_get_stage() != DISP_HELPER_STAGE_NORMAL)
 		return ret;
@@ -142,9 +133,6 @@ int ddp_clk_prepare_enable(enum DDP_CLK_ID id)
 
 	ret = clk_prepare_enable(ddp_clks[id].pclk);
 	ddp_clks[id].refcnt++;
-	if (id == 0)
-		pr_info("disp %s mtcmos refcnt 0x%x\n",
-			__func__, ddp_clks[id].refcnt);
 	if (ret)
 		DDPERR("DISPSYS CLK prepare failed: errno %d\n",
 			ret);
@@ -156,7 +144,7 @@ int ddp_clk_disable_unprepare(enum DDP_CLK_ID id)
 {
 	int ret = 0;
 
-	DDPDBG("%s, clkid = %d\n", __func__,
+	DDPDBG("ddp_clk_disable_unprepare, clkid = %d\n",
 		id);
 
 	if (disp_helper_get_stage() != DISP_HELPER_STAGE_NORMAL)
@@ -174,9 +162,6 @@ int ddp_clk_disable_unprepare(enum DDP_CLK_ID id)
 	}
 	clk_disable_unprepare(ddp_clks[id].pclk);
 	ddp_clks[id].refcnt--;
-	if (id == 0)
-		pr_info("disp %s mtcmos refcnt 0x%x\n",
-		__func__, ddp_clks[id].refcnt);
 
 	return ret;
 }
@@ -259,7 +244,14 @@ int ddp_parse_apmixed_base(void)
 	if (parsed_apmixed)
 		return ret;
 
-	node = of_find_compatible_node(NULL, NULL, "mediatek,apmixed");
+#if defined(CONFIG_MACH_MT6761)
+	node = of_find_compatible_node(NULL, NULL,
+		"mediatek,mt6761-apmixedsys");
+#elif defined(CONFIG_MACH_MT6765)
+	node = of_find_compatible_node(NULL, NULL,
+		"mediatek,mt6765-apmixedsys");
+#endif
+
 	if (!node) {
 		DDPERR("[DDP_APMIXED] DISP find apmixed node failed\n");
 		return -1;

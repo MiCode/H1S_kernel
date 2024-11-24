@@ -54,7 +54,7 @@ void dst_cache_set_ip4(struct dst_cache *dst_cache, struct dst_entry *dst,
  *	local BH must be disabled.
  */
 void dst_cache_set_ip6(struct dst_cache *dst_cache, struct dst_entry *dst,
-		       const struct in6_addr *addr);
+		       const struct in6_addr *saddr);
 
 /**
  *	dst_cache_get_ip6 - perform cache lookup and fetch ipv6 source address
@@ -71,13 +71,24 @@ struct dst_entry *dst_cache_get_ip6(struct dst_cache *dst_cache,
  *	dst_cache_reset - invalidate the cache contents
  *	@dst_cache: the cache
  *
- *	This do not free the cached dst to avoid races and contentions.
+ *	This does not free the cached dst to avoid races and contentions.
  *	the dst will be freed on later cache lookup.
  */
 static inline void dst_cache_reset(struct dst_cache *dst_cache)
 {
 	dst_cache->reset_ts = jiffies;
 }
+
+/**
+ *	dst_cache_reset_now - invalidate the cache contents immediately
+ *	@dst_cache: the cache
+ *
+ *	The caller must be sure there are no concurrent users, as this frees
+ *	all dst_cache users immediately, rather than waiting for the next
+ *	per-cpu usage like dst_cache_reset does. Most callers should use the
+ *	higher speed lazily-freed dst_cache_reset function instead.
+ */
+void dst_cache_reset_now(struct dst_cache *dst_cache);
 
 /**
  *	dst_cache_init - initialize the cache, allocating the required storage

@@ -1,18 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- *  drivers/misc/mediatek/pmic/mt6360/mt6360_pmu_irq.c
- *  Driver for MT6360 PMIC IRQ
- *
- *  Copyright (C) 2018 Mediatek Technology Inc.
- *  cy_huang <cy_huang@richtek.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- *  See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -20,15 +8,27 @@
 #include <linux/gpio.h>
 #include <linux/irqdomain.h>
 #include <linux/pm_runtime.h>
+#include <linux/ratelimit.h>
+#include<linux/ktime.h>
 #include <linux/irq.h>
+
 #include "../inc/mt6360_pmu.h"
 
+#ifdef CONFIG_MT6360_PMU_DEBUG
+static unsigned long long duration_index[8], pmu_irq_duration;
+static int count_index[8];
+#endif
 static irqreturn_t mt6360_pmu_irq_handler(int irq, void *data)
 {
 	struct mt6360_pmu_info *mpi = data;
 	u8 irq_events[MT6360_PMU_IRQ_REGNUM] = {0};
 	u8 irq_masks[MT6360_PMU_IRQ_REGNUM] = {0};
 	int i, j, ret;
+#ifdef CONFIG_MT6360_PMU_DEBUG
+	int k;
+	unsigned long long duration = 0;
+	ktime_t calltime, delta, rettime;
+#endif
 
 	mt_dbg(mpi->dev, "%s ++\n", __func__);
 	pm_runtime_get_sync(mpi->dev);
@@ -49,6 +49,9 @@ static irqreturn_t mt6360_pmu_irq_handler(int irq, void *data)
 				continue;
 			ret = irq_find_mapping(mpi->irq_domain, i * 8 + j);
 			if (ret) {
+#ifdef CONFIG_MT6360_PMU_DEBUG
+				calltime = ktime_get();
+#endif
 				/* bypass adc donei & mivr irq */
 				if ((i == 5 && j == 4) || (i == 0 && j == 6))
 					mt_dbg(mpi->dev,
@@ -57,6 +60,15 @@ static irqreturn_t mt6360_pmu_irq_handler(int irq, void *data)
 					dev_dbg(mpi->dev,
 						"handle_irq [%d,%d]\n", i, j);
 				handle_nested_irq(ret);
+#ifdef CONFIG_MT6360_PMU_DEBUG
+				rettime = ktime_get();
+				delta = ktime_sub(rettime, calltime);
+				duration = (unsigned long long)
+					    ktime_to_ns(delta) >> 10;
+				pmu_irq_duration += duration;
+				duration_index[i] += duration;
+				count_index[i]++;
+#endif
 			} else
 				dev_err(mpi->dev, "unmapped [%d,%d]\n", i, j);
 		}
@@ -71,6 +83,18 @@ static irqreturn_t mt6360_pmu_irq_handler(int irq, void *data)
 				      MT6360_PMU_IRQ_SET, MT6360_IRQ_RETRIG);
 	if (ret < 0)
 		dev_err(mpi->dev, "fail to retrig interrupt\n");
+
+#ifdef CONFIG_MT6360_PMU_DEBUG
+	dev_info_ratelimited(mpi->dev, "%s: pmu_irq_duration: %lld\n",
+			    __func__, pmu_irq_duration);
+	for (k = 0; k < 8; k++) {
+		if (k != 2)
+			dev_info_ratelimited(mpi->dev,
+				"%d index_count: %d, index_duration: %lld\n", k,
+				 count_index[k], duration_index[k]);
+	}
+#endif
+
 out_irq_handler:
 	pm_runtime_put(mpi->dev);
 	mt_dbg(mpi->dev, "%s --\n", __func__);
@@ -91,11 +115,13 @@ static void mt6360_pmu_irq_bus_lock(struct irq_data *data)
 static void mt6360_pmu_irq_bus_sync_unlock(struct irq_data *data)
 {
 	struct mt6360_pmu_info *mpi = data->chip_data;
-	int offset = data->hwirq, ret;
+	int ret;
+	unsigned long offset = data->hwirq;
+	u8 clr_curr_irq_evt = 1 << (offset % 8);
 
 	/* force clear current irq event */
-	ret = mt6360_pmu_reg_write(mpi, MT6360_PMU_CHG_IRQ1 + offset / 8,
-				   1 << (offset % 8));
+	ret = mt6360_pmu_reg_block_write(mpi, MT6360_PMU_CHG_IRQ1 + offset / 8,
+						1, &clr_curr_irq_evt);
 	if (ret < 0)
 		dev_err(mpi->dev, "%s: fail to write clr irq\n", __func__);
 	/* unmask current irq */
@@ -164,7 +190,9 @@ static int mt6360_pmu_gpio_irq_init(struct mt6360_pmu_info *mpi)
 {
 	struct mt6360_pmu_platform_data *pdata = dev_get_platdata(mpi->dev);
 	int ret;
-
+#ifdef CONFIG_MT6360_PMU_DEBUG
+	int i;
+#endif
 	ret = devm_gpio_request_one(mpi->dev, pdata->irq_gpio, GPIOF_IN,
 				    devm_kasprintf(mpi->dev, GFP_KERNEL,
 				    "%s.irq", dev_name(mpi->dev)));
@@ -194,6 +222,13 @@ static int mt6360_pmu_gpio_irq_init(struct mt6360_pmu_info *mpi)
 		dev_err(mpi->dev, "irq domain add fail\n");
 		return -EINVAL;
 	}
+#ifdef CONFIG_MT6360_PMU_DEBUG
+	pmu_irq_duration = 0;
+	for (i = 0; i < 8; i++) {
+		duration_index[i] = 0;
+		count_index[i] = 0;
+	}
+#endif
 	return 0;
 }
 

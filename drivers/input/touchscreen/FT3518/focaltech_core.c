@@ -1,25 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2012-2019, FocalTech Systems, Ltd., all rights reserved.
+ * Copyright (C) 2016 MediaTek Inc.
  */
 
-/*****************************************************************************
- *
- * File Name: focaltech_core.c
- *
- * Author: Focaltech Driver Team
- *
- * Created: 2016-08-08
- *
- * Abstract: entrance for focaltech ts driver
- *
- * Version: V1.0
- *
- *****************************************************************************/
-
-/*****************************************************************************
- * Included header files
- *****************************************************************************/
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -1032,11 +1015,11 @@ static int fts_ts_probe_entry(struct fts_ts_data *ts_data)
 	mutex_init(&ts_data->bus_lock);
 
     /* Init communication interface */
-    ret = fts_bus_init(ts_data);
-    if (ret) {
-        FTS_ERROR("bus initialize fail");
-        goto err_bus_init;
-    }
+	ret = fts_bus_init(ts_data);
+	if (ret) {
+		FTS_ERROR("bus initialize fail");
+		goto err_bus_init;
+	}
 
 	ret = fts_input_init(ts_data);
 	if (ret) {
@@ -1149,13 +1132,13 @@ err_power_init:
 	kfree_safe(ts_data->point_buf);
 	kfree_safe(ts_data->events);
 err_report_buffer:
-    input_unregister_device(ts_data->input_dev);
+   // input_unregister_device(ts_data->input_dev);
 err_input_init:
 	if (ts_data->ts_workqueue)
 		destroy_workqueue(ts_data->ts_workqueue);
 err_bus_init:
-    kfree_safe(ts_data->bus_buf);
-    kfree_safe(ts_data->pdata);
+	kfree_safe(ts_data->bus_buf);
+	kfree_safe(ts_data->pdata);
 
 	FTS_FUNC_EXIT();
 	return ret;

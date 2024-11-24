@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2016 MediaTek Inc.
  */
 
 #ifndef __MTK_LP_SYSFS__
@@ -19,6 +11,7 @@
 #define MTK_LP_SYSFS_ENTRY_NAME		"mtk_lpm"
 #define MTK_LP_SYSFS_BUF_READSZ		8192
 #define MTK_LP_SYSFS_BUF_WRITESZ	512
+
 
 typedef ssize_t (*f_mtk_idle_sysfs_show)(char *ToUserBuf
 			, size_t sz, void *priv);

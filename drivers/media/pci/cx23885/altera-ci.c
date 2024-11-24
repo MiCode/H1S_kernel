@@ -51,10 +51,10 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <dvb_demux.h>
-#include <dvb_frontend.h>
+#include <media/dvb_demux.h>
+#include <media/dvb_frontend.h>
 #include "altera-ci.h"
-#include "dvb_ca_en50221.h"
+#include <media/dvb_ca_en50221.h>
 
 /* FPGA regs */
 #define NETUP_CI_INT_CTRL	0x00
@@ -346,7 +346,7 @@ static int altera_ci_slot_reset(struct dvb_ca_en50221 *en50221, int slot)
 	mutex_unlock(&inter->fpga_mutex);
 
 	for (;;) {
-		mdelay(50);
+		msleep(50);
 
 		mutex_lock(&inter->fpga_mutex);
 

@@ -61,7 +61,7 @@ ccflags-y += -DCMDQ_SPECIAL_ESD_PRIORITY
 ccflags-y += -D_CMDQ_DISABLE_MARKER_
 #ccflags-y += -DCMDQ_PROFILE_MMP
 
-ifneq (,$(filter $(CONFIG_MTK_PLATFORM), "mt8167"))
+ifneq (,$(filter $(CONFIG_MTK_PLATFORM), "mt8167" "mt8173"))
 #ccflags-y += -DCMDQ_USE_LEGACY
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v2/inc/cmdq_sec_dr \
              -I$(srctree)/drivers/misc/mediatek/cmdq/v2/inc/cmdq_sec_tl \
@@ -82,7 +82,7 @@ obj-y += cmdq_mmp.o
 obj-y += cmdq_mdp_common.o
 obj-y += cmdq_prof.o
 obj-y += cmdq_test.o
-ifneq (,$(filter $(CONFIG_MTK_PLATFORM), "mt8167"))
+ifneq (,$(filter $(CONFIG_MTK_PLATFORM), "mt8167" "mt8173"))
 obj-y += cmdq_sec.o
 else
 obj-y += mtee/

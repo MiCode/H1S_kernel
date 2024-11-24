@@ -80,8 +80,10 @@ static void ip6_sublist_rcv_finish(struct list_head *head)
 {
 	struct sk_buff *skb, *next;
 
-	list_for_each_entry_safe(skb, next, head, list)
+	list_for_each_entry_safe(skb, next, head, list) {
+		skb_list_del_init(skb);
 		dst_input(skb);
+	}
 }
 
 static void ip6_list_rcv_finish(struct net *net, struct sock *sk,
@@ -218,16 +220,6 @@ static struct sk_buff *ip6_rcv_core(struct sk_buff *skb, struct net_device *dev,
 	 * packets or appear in any Routing header.
 	 */
 	if (ipv6_addr_is_multicast(&hdr->saddr))
-		goto err;
-
-	/* While RFC4291 is not explicit about v4mapped addresses
-	 * in IPv6 headers, it seems clear linux dual-stack
-	 * model can not deal properly with these.
-	 * Security models could be fooled by ::ffff:127.0.0.1 for example.
-	 *
-	 * https://tools.ietf.org/html/draft-itojun-v6ops-v4mapped-harmful-02
-	 */
-	if (ipv6_addr_v4mapped(&hdr->saddr))
 		goto err;
 
 	skb->transport_header = skb->network_header + sizeof(*hdr);
@@ -425,8 +417,7 @@ discard:
 	kfree_skb(skb);
 }
 
-static int ip6_input_finish(struct net *net, struct sock *sk,
-			    struct sk_buff *skb)
+static int ip6_input_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
 	rcu_read_lock();
 	ip6_protocol_deliver_rcu(net, skb, 0, false);
@@ -450,7 +441,7 @@ int ip6_mc_input(struct sk_buff *skb)
 	bool deliver;
 
 	__IP6_UPD_PO_STATS(dev_net(skb_dst(skb)->dev),
-			 ip6_dst_idev(skb_dst(skb)), IPSTATS_MIB_INMCAST,
+			 __in6_dev_get_safely(skb->dev), IPSTATS_MIB_INMCAST,
 			 skb->len);
 
 	hdr = ipv6_hdr(skb);

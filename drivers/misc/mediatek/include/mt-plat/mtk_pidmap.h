@@ -1,20 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2019 MediaTek Inc.
  */
 
 #ifndef _MTK_PIDMAP_H
 #define _MTK_PIDMAP_H
-
-#if defined(CONFIG_MTK_PID_MAP)
 
 #include <linux/types.h>
 #include <linux/sched.h>
@@ -44,13 +34,17 @@ enum PIDMAP_PROC_MODE {
 #define PIDMAP_PROC_PERM          (0440)
 #endif
 
-void mtk_pidmap_update(struct task_struct *task);
-
-#else /* !CONFIG_MTK_PID_MAP */
-
-#define mtk_pidmap_update(task)
-
-#endif /* CONFIG_MTK_PID_MAP */
+#ifdef CONFIG_MTK_PID_MAP
+extern void get_pidmap_aee_buffer(unsigned long *vaddr, unsigned long *size);
+#else
+static inline void get_pidmap_aee_buffer(unsigned long *vaddr,
+					 unsigned long *size)
+{
+	/* return valid buffer size */
+	if (size)
+		*size = 0;
+}
+#endif
 
 #endif /* _MTK_PIDMAP_H */
 

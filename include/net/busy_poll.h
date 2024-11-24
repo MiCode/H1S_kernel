@@ -43,12 +43,12 @@ extern unsigned int sysctl_net_busy_poll __read_mostly;
 
 static inline bool net_busy_loop_on(void)
 {
-	return sysctl_net_busy_poll;
+	return READ_ONCE(sysctl_net_busy_poll);
 }
 
 static inline bool sk_can_busy_loop(const struct sock *sk)
 {
-	return sk->sk_ll_usec && !signal_pending(current);
+	return READ_ONCE(sk->sk_ll_usec) && !signal_pending(current);
 }
 
 bool sk_busy_loop_end(void *p, unsigned long start_time);
@@ -73,7 +73,7 @@ static inline bool sk_can_busy_loop(struct sock *sk)
 static inline unsigned long busy_loop_current_time(void)
 {
 #ifdef CONFIG_NET_RX_BUSY_POLL
-	return (unsigned long)(local_clock() >> 10);
+	return (unsigned long)(ktime_get_ns() >> 10);
 #else
 	return 0;
 #endif
@@ -136,6 +136,7 @@ static inline void sk_mark_napi_id(struct sock *sk, const struct sk_buff *skb)
 #ifdef CONFIG_NET_RX_BUSY_POLL
 	WRITE_ONCE(sk->sk_napi_id, skb->napi_id);
 #endif
+	sk_rx_queue_set(sk, skb);
 }
 
 /* variant used for unconnected sockets */

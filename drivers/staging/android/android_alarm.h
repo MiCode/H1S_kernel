@@ -1,16 +1,6 @@
-/* drivers/staging/android/uapi/android_alarm.h
- *
- * Copyright (C) 2006-2007 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2006 Google, Inc.
  */
 
 #ifndef _UAPI_LINUX_ANDROID_ALARM_H
@@ -19,10 +9,6 @@
 #include <linux/ioctl.h>
 #include <linux/time.h>
 #include <linux/compat.h>
-
-void __attribute__((weak)) rtc_read_pwron_alarm(struct rtc_wkalrm *alm)
-{
-}
 
 int __attribute__((weak))
 rtc_set_alarm_poweron(struct rtc_device *rtc, struct rtc_wkalrm *alarm)

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/cpuidle.h>
@@ -21,7 +13,7 @@
 #include <asm/suspend.h>
 
 #define CREATE_TRACE_POINTS
-#include <trace/events/mtk_idle_event.h>
+//#include <trace/events/mtk_idle_event.h>
 
 int __attribute__((weak)) mtk_cpuidle_register_driver(void)
 {
@@ -43,11 +35,6 @@ int __init mtk_acao_cpuidle_init(void)
 	 * let the driver initialization fail accordingly since there is no
 	 * reason to initialize the idle driver if only wfi is supported.
 	 */
-#if 0
-	ret = dt_init_idle_driver(drv, mtk_idle_state_match, 1);
-	if (ret <= 0)
-		return ret ? : -ENODEV;
-#endif
 
 	ret = mtk_cpuidle_register_driver();
 	if (ret) {

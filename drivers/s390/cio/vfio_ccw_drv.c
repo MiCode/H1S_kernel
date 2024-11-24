@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * VFIO based Physical Subchannel device driver
  *
@@ -21,6 +22,7 @@
 #include "vfio_ccw_private.h"
 
 struct workqueue_struct *vfio_ccw_work_q;
+struct kmem_cache *vfio_ccw_io_region;
 
 /*
  * Helpers
@@ -86,7 +88,7 @@ static void vfio_ccw_sch_io_todo(struct work_struct *work)
 		if (is_final)
 			cp_free(&private->cp);
 	}
-	memcpy(private->io_region.irb_area, irb, sizeof(*irb));
+	memcpy(private->io_region->irb_area, irb, sizeof(*irb));
 
 	if (private->io_trigger)
 		eventfd_signal(private->io_trigger, 1);
@@ -121,6 +123,14 @@ static int vfio_ccw_sch_probe(struct subchannel *sch)
 	private = kzalloc(sizeof(*private), GFP_KERNEL | GFP_DMA);
 	if (!private)
 		return -ENOMEM;
+
+	private->io_region = kmem_cache_zalloc(vfio_ccw_io_region,
+					       GFP_KERNEL | GFP_DMA);
+	if (!private->io_region) {
+		kfree(private);
+		return -ENOMEM;
+	}
+
 	private->sch = sch;
 	dev_set_drvdata(&sch->dev, private);
 
@@ -146,6 +156,7 @@ out_disable:
 	cio_disable_subchannel(sch);
 out_free:
 	dev_set_drvdata(&sch->dev, NULL);
+	kmem_cache_free(vfio_ccw_io_region, private->io_region);
 	kfree(private);
 	return ret;
 }
@@ -160,6 +171,7 @@ static int vfio_ccw_sch_remove(struct subchannel *sch)
 
 	dev_set_drvdata(&sch->dev, NULL);
 
+	kmem_cache_free(vfio_ccw_io_region, private->io_region);
 	kfree(private);
 
 	return 0;
@@ -193,18 +205,10 @@ static int vfio_ccw_sch_event(struct subchannel *sch, int process)
 	if (work_pending(&sch->todo_work))
 		goto out_unlock;
 
-	if (cio_update_schib(sch)) {
-		vfio_ccw_fsm_event(private, VFIO_CCW_EVENT_NOT_OPER);
-		rc = 0;
-		goto out_unlock;
-	}
-
-	private = dev_get_drvdata(&sch->dev);
-	if (private->state == VFIO_CCW_STATE_NOT_OPER) {
-		private->state = private->mdev ? VFIO_CCW_STATE_IDLE :
-				 VFIO_CCW_STATE_STANDBY;
-	}
 	rc = 0;
+
+	if (cio_update_schib(sch))
+		vfio_ccw_fsm_event(private, VFIO_CCW_EVENT_NOT_OPER);
 
 out_unlock:
 	spin_unlock_irqrestore(sch->lock, flags);
@@ -239,10 +243,20 @@ static int __init vfio_ccw_sch_init(void)
 	if (!vfio_ccw_work_q)
 		return -ENOMEM;
 
+	vfio_ccw_io_region = kmem_cache_create_usercopy("vfio_ccw_io_region",
+					sizeof(struct ccw_io_region), 0,
+					SLAB_ACCOUNT, 0,
+					sizeof(struct ccw_io_region), NULL);
+	if (!vfio_ccw_io_region) {
+		destroy_workqueue(vfio_ccw_work_q);
+		return -ENOMEM;
+	}
+
 	isc_register(VFIO_CCW_ISC);
 	ret = css_driver_register(&vfio_ccw_sch_driver);
 	if (ret) {
 		isc_unregister(VFIO_CCW_ISC);
+		kmem_cache_destroy(vfio_ccw_io_region);
 		destroy_workqueue(vfio_ccw_work_q);
 	}
 
@@ -253,6 +267,7 @@ static void __exit vfio_ccw_sch_exit(void)
 {
 	css_driver_unregister(&vfio_ccw_sch_driver);
 	isc_unregister(VFIO_CCW_ISC);
+	kmem_cache_destroy(vfio_ccw_io_region);
 	destroy_workqueue(vfio_ccw_work_q);
 }
 module_init(vfio_ccw_sch_init);

@@ -1,31 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * MUSB OTG peripheral driver ep0 handling
- *
- * Copyright 2005 Mentor Graphics Corporation
- * Copyright (C) 2005-2006 by Texas Instruments
- * Copyright (C) 2006-2007 Nokia Corporation
- * Copyright (C) 2008-2009 MontaVista Software, Inc. <source@mvista.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN
- * NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
- * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
- * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * Copyright (C) 2018 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -85,10 +60,10 @@ static int service_tx_status_request(
 			result[0] = musb->g.host_request;
 		} else {
 #endif
-			result[0] = musb->is_self_powered
-				<< USB_DEVICE_SELF_POWERED;
-			result[0] |= musb->may_wakeup
-				<< USB_DEVICE_REMOTE_WAKEUP;
+			result[0] = musb->is_self_powered <<
+				USB_DEVICE_SELF_POWERED;
+			result[0] |= musb->may_wakeup <<
+				USB_DEVICE_REMOTE_WAKEUP;
 			if (musb->g.is_otg) {
 				result[0] |= musb->g.b_hnp_enable
 					<< USB_DEVICE_B_HNP_ENABLE;
@@ -97,7 +72,7 @@ static int service_tx_status_request(
 				result[0] |= musb->g.a_hnp_support
 					<< USB_DEVICE_A_HNP_SUPPORT;
 #if defined(CONFIG_USBIF_COMPLIANCE)
-			}
+		}
 #endif
 		}
 		break;
@@ -290,7 +265,7 @@ __acquires(musb->lock)
 					musb_ep = &ep->ep_out;
 
 				if (!ep) {
-					pr_err("ep %d is null, is_in=%d\n"
+					pr_notice("ep %d is null, is_in=%d\n"
 						, epnum, is_in);
 					break;
 				}
@@ -326,7 +301,7 @@ __acquires(musb->lock)
 				if (!musb_ep->busy && request) {
 					/*
 					 * limit debug mechanism
-					 *  to avoid printk too much
+					 *  to avoid log too much
 					 */
 					static DEFINE_RATELIMIT_STATE(ratelimit
 							, HZ, 10);
@@ -440,13 +415,14 @@ __acquires(musb->lock)
 						goto stall;
 					}
 
+#ifdef CONFIG_MTK_MUSB_PHY
 					if (musb->usb_rev6_setting &&
 						(musb->test_mode_nr ==
 						MUSB_TEST_K ||
 						musb->test_mode_nr ==
 						MUSB_TEST_J))
 						musb->usb_rev6_setting(0x0);
-
+#endif
 					/* enter test mode after irq */
 #if defined(CONFIG_USBIF_COMPLIANCE)
 					if (handled > 0 &&
@@ -510,7 +486,7 @@ stall:
 					musb_ep = &ep->ep_out;
 
 				if (!ep) {
-					pr_err("ep %d is null, is_in=%d\n",
+					pr_notice("ep %d is null, is_in=%d\n",
 						epnum, is_in);
 					break;
 				}
@@ -717,7 +693,7 @@ musb_read_setup(struct musb *musb, struct usb_ctrlrequest *req)
 				& MUSB_CSR0_RXPKTRDY) != 0 && time_count--)
 			mdelay(1);
 		if (time_count <= 0)
-			pr_err("%s, timeout\n", __func__);
+			pr_notice("%s, timeout\n", __func__);
 		musb->ackpend = 0;
 	} else
 		musb->ep0_state = MUSB_EP0_STAGE_RX;
@@ -801,7 +777,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *musb)
 			musb->ep0_state = MUSB_EP0_STAGE_STATUSIN;
 			break;
 		default:
-			pr_err("SetupEnd came in a wrong ep0stage %s\n"
+			pr_notice("SetupEnd came in a wrong ep0stage %s\n"
 					"SetupEnd, csr = %x\n",
 				decode_ep0stage(musb->ep0_state), csr);
 			setup_end_err = true;
@@ -809,7 +785,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *musb)
 		csr = musb_readw(regs, MUSB_CSR0);
 		/* NOTE:  request may need completion */
 		if (unlikely(setup_end_err))
-			pr_err("SetupEnd, csr2 = %x\n", csr);
+			pr_notice("SetupEnd, csr2 = %x\n", csr);
 	}
 
 	/* docs from Mentor only describe tx, rx, and idle/setup states.
@@ -865,14 +841,14 @@ irqreturn_t musb_g_ep0_irq(struct musb *musb)
 			struct musb_request	*req;
 
 			if (unlikely(setup_end_err))
-				pr_err("SetupEnd, ep0 giveback\n");
+				pr_notice("SetupEnd, ep0 giveback\n");
 
 			req = next_ep0_request(musb);
 			if (req)
 				musb_g_ep0_giveback(musb, &req->request);
 
 			if (unlikely(setup_end_err))
-				pr_err("SetupEnd, ep0 giveback done\n");
+				pr_notice("SetupEnd, ep0 giveback done\n");
 		}
 
 		/*
@@ -883,7 +859,7 @@ irqreturn_t musb_g_ep0_irq(struct musb *musb)
 			goto setup;
 
 		if (unlikely(setup_end_err))
-			pr_err("SetupEnd, ep0 idle\n");
+			pr_notice("SetupEnd, ep0 idle\n");
 
 		retval = IRQ_HANDLED;
 		musb->ep0_state = MUSB_EP0_STAGE_IDLE;
@@ -907,7 +883,7 @@ setup:
 			int			handled = 0;
 
 			if (len != 8) {
-				pr_err("SETUP packet len %d != 8 ?\n", len);
+				pr_notice("SETUP packet len %d != 8 ?\n", len);
 				break;
 			}
 			musb_read_setup(musb, &setup);

@@ -490,7 +490,7 @@ static int bfusb_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 	count = skb->len;
 
 	/* Max HCI frame size seems to be 1511 + 1 */
-	nskb = bt_skb_alloc(count + 32, GFP_ATOMIC);
+	nskb = bt_skb_alloc(count + 32, GFP_KERNEL);
 	if (!nskb) {
 		BT_ERR("Can't allocate memory for new packet");
 		return -ENOMEM;
@@ -643,6 +643,9 @@ static int bfusb_probe(struct usb_interface *intf, const struct usb_device_id *i
 	data->bulk_in_ep    = bulk_in_ep->desc.bEndpointAddress;
 	data->bulk_out_ep   = bulk_out_ep->desc.bEndpointAddress;
 	data->bulk_pkt_size = le16_to_cpu(bulk_out_ep->desc.wMaxPacketSize);
+
+	if (!data->bulk_pkt_size)
+		goto done;
 
 	rwlock_init(&data->lock);
 

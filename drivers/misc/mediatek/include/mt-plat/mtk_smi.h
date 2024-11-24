@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __MTK_SMI_H__
@@ -54,7 +46,7 @@ static char *MTK_SMI_BWC_SCEN_NAME[SMI_BWC_SCEN_CNT] = {
 
 static inline char *smi_bwc_scen_name_get(const enum MTK_SMI_BWC_SCEN scen)
 {
-	if (scen >= 0 && scen < SMI_BWC_SCEN_CNT)
+	if (scen < SMI_BWC_SCEN_CNT)
 		return MTK_SMI_BWC_SCEN_NAME[scen];
 	else
 		return "SMI_BWC_SCEN_UNKNOWN";
@@ -176,5 +168,9 @@ struct MTK_MMDVFS_QOS_CMD {
 #define MTK_IOC_MMDVFS_QOS_CMD \
 	_IOW('O', 89, struct MTK_MMDVFS_QOS_CMD)
 
-
+#ifdef CONFIG_MTK_SMI_VARIANT
+int mtk_smi_larb_clock_on(int larbid, bool pm);
+void mtk_smi_larb_clock_off(int larbid, bool pm);
+unsigned long mtk_smi_larb_get_base(int larbid);
+#endif
 #endif

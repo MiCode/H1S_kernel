@@ -28,6 +28,7 @@
 #include <linux/input/mt.h>
 #include <linux/input/touchscreen.h>
 #include <linux/pm.h>
+#include <linux/pm_runtime.h>
 #include <linux/irq.h>
 #include <linux/regulator/consumer.h>
 
@@ -56,7 +57,7 @@
 #define SILEAD_POINT_Y_MSB_OFF	0x01
 #define SILEAD_POINT_X_OFF	0x02
 #define SILEAD_POINT_X_MSB_OFF	0x03
-#define SILEAD_TOUCH_ID_MASK	0xF0
+#define SILEAD_EXTRA_DATA_MASK	0xF0
 
 #define SILEAD_CMD_SLEEP_MIN	10000
 #define SILEAD_CMD_SLEEP_MAX	20000
@@ -77,7 +78,6 @@ struct silead_ts_data {
 	struct regulator_bulk_data regulators[2];
 	char fw_name[64];
 	struct touchscreen_properties prop;
-	u32 max_fingers;
 	u32 chip_id;
 	struct input_mt_pos pos[SILEAD_MAX_FINGERS];
 	int slots[SILEAD_MAX_FINGERS];
@@ -105,9 +105,12 @@ static int silead_ts_request_input_dev(struct silead_ts_data *data)
 	input_set_abs_params(data->input, ABS_MT_POSITION_Y, 0, 4095, 0, 0);
 	touchscreen_parse_properties(data->input, true, &data->prop);
 
-	input_mt_init_slots(data->input, data->max_fingers,
+	input_mt_init_slots(data->input, SILEAD_MAX_FINGERS,
 			    INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED |
 			    INPUT_MT_TRACK);
+
+	if (device_property_read_bool(dev, "silead,home-button"))
+		input_set_capability(data->input, EV_KEY, KEY_LEFTMETA);
 
 	data->input->name = SILEAD_TS_NAME;
 	data->input->phys = "input/ts";
@@ -139,7 +142,8 @@ static void silead_ts_read_data(struct i2c_client *client)
 	struct input_dev *input = data->input;
 	struct device *dev = &client->dev;
 	u8 *bufp, buf[SILEAD_TS_DATA_LEN];
-	int touch_nr, error, i;
+	int touch_nr, softbutton, error, i;
+	bool softbutton_pressed = false;
 
 	error = i2c_smbus_read_i2c_block_data(client, SILEAD_REG_DATA,
 					      SILEAD_TS_DATA_LEN, buf);
@@ -148,21 +152,40 @@ static void silead_ts_read_data(struct i2c_client *client)
 		return;
 	}
 
-	touch_nr = buf[0];
-	if (touch_nr > data->max_fingers) {
+	if (buf[0] > SILEAD_MAX_FINGERS) {
 		dev_warn(dev, "More touches reported then supported %d > %d\n",
-			 touch_nr, data->max_fingers);
-		touch_nr = data->max_fingers;
+			 buf[0], SILEAD_MAX_FINGERS);
+		buf[0] = SILEAD_MAX_FINGERS;
 	}
 
+	touch_nr = 0;
 	bufp = buf + SILEAD_POINT_DATA_LEN;
-	for (i = 0; i < touch_nr; i++, bufp += SILEAD_POINT_DATA_LEN) {
-		/* Bits 4-7 are the touch id */
-		data->id[i] = (bufp[SILEAD_POINT_X_MSB_OFF] &
-			       SILEAD_TOUCH_ID_MASK) >> 4;
-		touchscreen_set_mt_pos(&data->pos[i], &data->prop,
+	for (i = 0; i < buf[0]; i++, bufp += SILEAD_POINT_DATA_LEN) {
+		softbutton = (bufp[SILEAD_POINT_Y_MSB_OFF] &
+			      SILEAD_EXTRA_DATA_MASK) >> 4;
+
+		if (softbutton) {
+			/*
+			 * For now only respond to softbutton == 0x01, some
+			 * tablets *without* a capacative button send 0x04
+			 * when crossing the edges of the screen.
+			 */
+			if (softbutton == 0x01)
+				softbutton_pressed = true;
+
+			continue;
+		}
+
+		/*
+		 * Bits 4-7 are the touch id, note not all models have
+		 * hardware touch ids so atm we don't use these.
+		 */
+		data->id[touch_nr] = (bufp[SILEAD_POINT_X_MSB_OFF] &
+				      SILEAD_EXTRA_DATA_MASK) >> 4;
+		touchscreen_set_mt_pos(&data->pos[touch_nr], &data->prop,
 			get_unaligned_le16(&bufp[SILEAD_POINT_X_OFF]) & 0xfff,
 			get_unaligned_le16(&bufp[SILEAD_POINT_Y_OFF]) & 0xfff);
+		touch_nr++;
 	}
 
 	input_mt_assign_slots(input, data->slots, data->pos, touch_nr, 0);
@@ -178,12 +201,12 @@ static void silead_ts_read_data(struct i2c_client *client)
 	}
 
 	input_mt_sync_frame(input);
+	input_report_key(input, KEY_LEFTMETA, softbutton_pressed);
 	input_sync(input);
 }
 
 static int silead_ts_init(struct i2c_client *client)
 {
-	struct silead_ts_data *data = i2c_get_clientdata(client);
 	int error;
 
 	error = i2c_smbus_write_byte_data(client, SILEAD_REG_RESET,
@@ -193,7 +216,7 @@ static int silead_ts_init(struct i2c_client *client)
 	usleep_range(SILEAD_CMD_SLEEP_MIN, SILEAD_CMD_SLEEP_MAX);
 
 	error = i2c_smbus_write_byte_data(client, SILEAD_REG_TOUCH_NR,
-					data->max_fingers);
+					  SILEAD_MAX_FINGERS);
 	if (error)
 		goto i2c_write_err;
 	usleep_range(SILEAD_CMD_SLEEP_MIN, SILEAD_CMD_SLEEP_MAX);
@@ -319,10 +342,8 @@ static int silead_ts_get_id(struct i2c_client *client)
 
 	error = i2c_smbus_read_i2c_block_data(client, SILEAD_REG_ID,
 					      sizeof(chip_id), (u8 *)&chip_id);
-	if (error < 0) {
-		dev_err(&client->dev, "Chip ID read error %d\n", error);
+	if (error < 0)
 		return error;
-	}
 
 	data->chip_id = le32_to_cpu(chip_id);
 	dev_info(&client->dev, "Silead chip ID: 0x%8X", data->chip_id);
@@ -335,12 +356,49 @@ static int silead_ts_setup(struct i2c_client *client)
 	int error;
 	u32 status;
 
+	/*
+	 * Some buggy BIOS-es bring up the chip in a stuck state where it
+	 * blocks the I2C bus. The following steps are necessary to
+	 * unstuck the chip / bus:
+	 * 1. Turn off the Silead chip.
+	 * 2. Try to do an I2C transfer with the chip, this will fail in
+	 *    response to which the I2C-bus-driver will call:
+	 *    i2c_recover_bus() which will unstuck the I2C-bus. Note the
+	 *    unstuck-ing of the I2C bus only works if we first drop the
+	 *    chip off the bus by turning it off.
+	 * 3. Turn the chip back on.
+	 *
+	 * On the x86/ACPI systems were this problem is seen, step 1. and
+	 * 3. require making ACPI calls and dealing with ACPI Power
+	 * Resources. The workaround below runtime-suspends the chip to
+	 * turn it off, leaving it up to the ACPI subsystem to deal with
+	 * this.
+	 */
+
+	if (device_property_read_bool(&client->dev,
+				      "silead,stuck-controller-bug")) {
+		pm_runtime_set_active(&client->dev);
+		pm_runtime_enable(&client->dev);
+		pm_runtime_allow(&client->dev);
+
+		pm_runtime_suspend(&client->dev);
+
+		dev_warn(&client->dev, FW_BUG "Stuck I2C bus: please ignore the next 'controller timed out' error\n");
+		silead_ts_get_id(client);
+
+		/* The forbid will also resume the device */
+		pm_runtime_forbid(&client->dev);
+		pm_runtime_disable(&client->dev);
+	}
+
 	silead_ts_set_power(client, SILEAD_POWER_OFF);
 	silead_ts_set_power(client, SILEAD_POWER_ON);
 
 	error = silead_ts_get_id(client);
-	if (error)
+	if (error) {
+		dev_err(&client->dev, "Chip ID read error %d\n", error);
 		return error;
+	}
 
 	error = silead_ts_init(client);
 	if (error)
@@ -384,13 +442,6 @@ static void silead_ts_read_props(struct i2c_client *client)
 	struct device *dev = &client->dev;
 	const char *str;
 	int error;
-
-	error = device_property_read_u32(dev, "silead,max-fingers",
-					 &data->max_fingers);
-	if (error) {
-		dev_dbg(dev, "Max fingers read error %d\n", error);
-		data->max_fingers = 5; /* Most devices handle up-to 5 fingers */
-	}
 
 	error = device_property_read_string(dev, "firmware-name", &str);
 	if (!error)
@@ -591,6 +642,9 @@ static const struct acpi_device_id silead_ts_acpi_match[] = {
 	{ "GSL3675", 0 },
 	{ "GSL3692", 0 },
 	{ "MSSL1680", 0 },
+	{ "MSSL0001", 0 },
+	{ "MSSL0002", 0 },
+	{ "MSSL0017", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, silead_ts_acpi_match);

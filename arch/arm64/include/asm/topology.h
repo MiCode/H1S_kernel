@@ -7,21 +7,26 @@
 struct cpu_topology {
 	int thread_id;
 	int core_id;
-	int cluster_id;
+	int package_id;
+	int llc_id;
 	cpumask_t thread_sibling;
 	cpumask_t core_sibling;
+	cpumask_t llc_sibling;
 };
 
 extern struct cpu_topology cpu_topology[NR_CPUS];
 
-#define topology_physical_package_id(cpu)	(cpu_topology[cpu].cluster_id)
+#define topology_physical_package_id(cpu)	(cpu_topology[cpu].package_id)
 #define topology_core_id(cpu)		(cpu_topology[cpu].core_id)
 #define topology_core_cpumask(cpu)	(&cpu_topology[cpu].core_sibling)
 #define topology_sibling_cpumask(cpu)	(&cpu_topology[cpu].thread_sibling)
+#define topology_llc_cpumask(cpu)	(&cpu_topology[cpu].llc_sibling)
 
 void init_cpu_topology(void);
 void store_cpu_topology(unsigned int cpuid);
+void remove_cpu_topology(unsigned int cpuid);
 const struct cpumask *cpu_coregroup_mask(int cpu);
+int topology_nr_clusters(void);
 
 #ifdef CONFIG_NUMA
 
@@ -47,19 +52,9 @@ int pcibus_to_node(struct pci_bus *bus);
 /* Enable topology flag updates */
 #define arch_update_cpu_topology topology_update_cpu_topology
 
-/* Arch max frequency */
-#define arch_max_cpu_freq topology_get_max_cpu_freq
-
-/* Ceiling/floor frequency sacle */
-#define arch_max_freq_scale topology_get_max_freq_scale
-#define arch_min_freq_scale topology_get_min_freq_scale
-
-/* Extras of CPU & Cluster functions */
-int arch_is_multi_cluster(void);
-int arch_is_smp(void);
-int arch_get_nr_clusters(void);
-int arch_get_cluster_id(unsigned int cpu);
-void arch_build_cpu_topology_domain(void);
+/* Cpu and cluster informantion */
+#define arch_cpu_cluster_id topology_physical_package_id
+#define arch_nr_clusters topology_nr_clusters
 
 #include <asm-generic/topology.h>
 

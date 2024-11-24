@@ -1,6 +1,5 @@
 config MTK_CAMERA_ISP_FD_SUPPORT
-	bool "[FD] Face Detection"
-	default n
+	tristate "[FD] Face Detection"
 	depends on MTK_CAMERA_ISP
 	help
 	  Face Detection.

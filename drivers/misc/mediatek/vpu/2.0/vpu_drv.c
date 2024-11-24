@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/types.h>
@@ -54,7 +47,7 @@
 #define VPU_DEV_NAME            "vpu"
 
 static struct vpu_device *vpu_device;
-static struct wakeup_source vpu_wake_lock;
+static struct wakeup_source *vpu_wake_lock;
 static struct list_head device_debug_list;
 static struct mutex debug_list_mutex;
 static bool sdsp_locked;
@@ -1576,7 +1569,7 @@ static int vpu_probe(struct platform_device *pdev)
 			goto out;
 		}
 
-		wakeup_source_init(&vpu_wake_lock, "vpu_lock_wakelock");
+		vpu_wake_lock = wakeup_source_register(NULL, "vpu_lock_wakelock");
 
 out:
 		if (ret < 0)

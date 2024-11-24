@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include "ddp_hal.h"
 #include "ddp_reg.h"
@@ -42,8 +34,12 @@ static struct mm_qos_request ovl0_2l_fbdc_request;
 static struct mm_qos_request rdma0_request;
 static struct mm_qos_request wdma0_request;
 
-static struct pm_qos_request ddr_opp_request;
-static struct pm_qos_request mm_freq_request;
+static struct mtk_pm_qos_request ddr_opp_request;
+static struct mtk_pm_qos_request mm_freq_request;
+
+#ifdef CONFIG_MTK_MT6382_BDG
+static struct mtk_pm_qos_request vcore_request;
+#endif
 
 static struct plist_head hrt_request_list;
 static struct mm_qos_request ovl0_hrt_request;
@@ -59,7 +55,7 @@ static unsigned int has_hrt_bw;
 #ifdef MTK_FB_MMDVFS_SUPPORT
 static enum ddr_opp __remap_to_opp(enum HRT_LEVEL hrt)
 {
-	enum ddr_opp opp = PM_QOS_DDR_OPP_DEFAULT_VALUE;
+	enum ddr_opp opp = MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE;
 
 	switch (hrt) {
 	case HRT_LEVEL_LEVEL0:
@@ -75,7 +71,7 @@ static enum ddr_opp __remap_to_opp(enum HRT_LEVEL hrt)
 		opp = DDR_OPP_0; /* LP4-3200 */
 		break;
 	case HRT_LEVEL_DEFAULT:
-		opp = PM_QOS_DDR_OPP_DEFAULT_VALUE;
+		opp = MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE;
 		break;
 	default:
 		DISP_PR_ERR("%s:unknown hrt level:%d\n", __func__, hrt);
@@ -136,10 +132,15 @@ void disp_pm_qos_init(void)
 			   SMI_DISP_RDMA0);
 	mm_qos_add_request(&bw_request_list, &wdma0_request,
 			   SMI_DISP_WDMA0);
-	pm_qos_add_request(&ddr_opp_request, PM_QOS_DDR_OPP,
-			   PM_QOS_DDR_OPP_DEFAULT_VALUE);
-	pm_qos_add_request(&mm_freq_request, PM_QOS_DISP_FREQ,
+	mtk_pm_qos_add_request(&ddr_opp_request, MTK_PM_QOS_DDR_OPP,
+			   MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE);
+	mtk_pm_qos_add_request(&mm_freq_request, PM_QOS_DISP_FREQ,
 			   PM_QOS_MM_FREQ_DEFAULT_VALUE);
+
+#ifdef CONFIG_MTK_MT6382_BDG
+	mtk_pm_qos_add_request(&vcore_request, MTK_PM_QOS_VCORE_OPP,  //add for mipi clk 1.7GHz //
+				VCORE_OPP_1);
+#endif
 
 	plist_head_init(&hrt_request_list);
 
@@ -166,20 +167,23 @@ void disp_pm_qos_deinit(void)
 {
 #ifdef MTK_FB_MMDVFS_SUPPORT
 	mm_qos_remove_all_request(&bw_request_list);
-	pm_qos_remove_request(&ddr_opp_request);
-	pm_qos_remove_request(&mm_freq_request);
+	mtk_pm_qos_remove_request(&ddr_opp_request);
+	mtk_pm_qos_remove_request(&mm_freq_request);
+#ifdef CONFIG_MTK_MT6382_BDG
+	mtk_pm_qos_remove_request(&vcore_request);
+#endif
 #endif
 }
 
 int disp_pm_qos_request_dvfs(enum HRT_LEVEL hrt)
 {
 #ifdef MTK_FB_MMDVFS_SUPPORT
-	enum ddr_opp opp = PM_QOS_DDR_OPP_DEFAULT_VALUE;
+	enum ddr_opp opp = MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE;
 
 	opp = __remap_to_opp(hrt);
 	mmprofile_log_ex(ddp_mmp_get_events()->dvfs, MMPROFILE_FLAG_START,
 			 hrt, opp);
-	pm_qos_update_request(&ddr_opp_request, opp);
+	mtk_pm_qos_update_request(&ddr_opp_request, opp);
 	mmprofile_log_ex(ddp_mmp_get_events()->dvfs, MMPROFILE_FLAG_END, 0, 0);
 #endif
 	return 0;
@@ -311,6 +315,33 @@ unsigned int get_has_hrt_bw(void)
 {
 	return has_hrt_bw;
 }
+int disp_pm_qos_update_mmclk(int mm_freq)
+{
+	enum vcore_opp vcore_value = VCORE_OPP_0;
+
+#if 0
+	mmprofile_log_ex(ddp_mmp_get_events()->primary_pm_qos,
+					MMPROFILE_FLAG_START,
+					!primary_display_is_decouple_mode(), vcore_value);
+#endif
+#ifdef MTK_FB_MMDVFS_SUPPORT
+	if (mm_freq < 559)
+		vcore_value = VCORE_OPP_1;
+	DISPMSG("%s, force set mmclk=%d, vcore=%s\n",
+		__func__, mm_freq, vcore_value == VCORE_OPP_0 ? "0.825v" : "0.725v");
+	mtk_pm_qos_update_request(&mm_freq_request, mm_freq);
+#ifdef CONFIG_MTK_MT6382_BDG
+	mtk_pm_qos_update_request(&vcore_request, vcore_value);
+#endif
+#endif
+#if 0
+	   mmprofile_log_ex(ddp_mmp_get_events()->primary_pm_qos,
+					MMPROFILE_FLAG_END,
+					!primary_display_is_decouple_mode(), 0);
+#endif
+
+	return 0;
+}
 
 int prim_disp_request_hrt_bw(int overlap_num,
 			enum DDP_SCENARIO_ENUM scenario, const char *caller,
@@ -330,6 +361,7 @@ int prim_disp_request_hrt_bw(int overlap_num,
 		has_hrt_bw = 1;
 
 	bw_base = layering_get_frame_bw(active_cfg);
+
 	bw_base /= 2;
 
 	tmp = bw_base * overlap_num;

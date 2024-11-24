@@ -11,8 +11,8 @@
 # GNU General Public License for more details.
 #
 export PTP3_ROOT_DIR ?= $(srctree)/drivers/misc/mediatek/base/power/ptp3_v1
-ifeq ($(CONFIG_MACH_MT6893),y)
-obj-y += mt6893/
+ifeq ($(CONFIG_MACH_MT6877),y)
+obj-y += mt6877/
 else ifeq ($(CONFIG_MACH_MT6833),y)
 obj-y += mt6833/
 else

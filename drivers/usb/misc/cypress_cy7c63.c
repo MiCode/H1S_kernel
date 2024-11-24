@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
 * cypress_cy7c63.c
 *
@@ -23,10 +24,6 @@
 *
 *	For up-to-date information please visit:
 *	http://www.obock.de/kernel/cypress
-*
-*	This program is free software; you can redistribute it and/or
-*	modify it under the terms of the GNU General Public License as
-*	published by the Free Software Foundation, version 2.
 */
 
 #include <linux/module.h>
@@ -91,6 +88,9 @@ static int vendor_command(struct cypress *dev, unsigned char request,
 				 USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_OTHER,
 				 address, data, iobuf, CYPRESS_MAX_REQSIZE,
 				 USB_CTRL_GET_TIMEOUT);
+	/* we must not process garbage */
+	if (retval < 2)
+		goto err_buf;
 
 	/* store returned data (more READs to be added) */
 	switch (request) {
@@ -110,6 +110,7 @@ static int vendor_command(struct cypress *dev, unsigned char request,
 			break;
 	}
 
+err_buf:
 	kfree(iobuf);
 error:
 	return retval;
@@ -147,7 +148,7 @@ error:
 }
 
 /* attribute callback handler (write) */
-static ssize_t set_port0_handler(struct device *dev,
+static ssize_t port0_store(struct device *dev,
 				 struct device_attribute *attr,
 				 const char *buf, size_t count)
 {
@@ -155,7 +156,7 @@ static ssize_t set_port0_handler(struct device *dev,
 }
 
 /* attribute callback handler (write) */
-static ssize_t set_port1_handler(struct device *dev,
+static ssize_t port1_store(struct device *dev,
 				 struct device_attribute *attr,
 				 const char *buf, size_t count)
 {
@@ -181,22 +182,22 @@ static ssize_t read_port(struct device *dev, struct device_attribute *attr,
 }
 
 /* attribute callback handler (read) */
-static ssize_t get_port0_handler(struct device *dev,
+static ssize_t port0_show(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
 	return read_port(dev, attr, buf, 0, CYPRESS_READ_PORT_ID0);
 }
 
 /* attribute callback handler (read) */
-static ssize_t get_port1_handler(struct device *dev,
+static ssize_t port1_show(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
 	return read_port(dev, attr, buf, 1, CYPRESS_READ_PORT_ID1);
 }
 
-static DEVICE_ATTR(port0, S_IRUGO | S_IWUSR, get_port0_handler, set_port0_handler);
+static DEVICE_ATTR_RW(port0);
 
-static DEVICE_ATTR(port1, S_IRUGO | S_IWUSR, get_port1_handler, set_port1_handler);
+static DEVICE_ATTR_RW(port1);
 
 
 static int cypress_probe(struct usb_interface *interface,

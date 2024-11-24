@@ -200,13 +200,13 @@ static int mmc_init_crypto_spec(struct mmc_host *host,
 	u32 count;
 	unsigned int crypto_modes_supported[BLK_ENCRYPTION_MODE_MAX] = {0};
 
+	if (host->ksm)
+		return 0;
+
 	if (!(host->caps2 & MMC_CAP2_CRYPTO)) {
 		err = -ENODEV;
 		goto out;
 	}
-
-	if (host->ksm)
-		return 0;
 
 	/*
 	 * Crypto Capabilities should never be 0, because the
@@ -272,31 +272,31 @@ out:
 }
 
 static int mmc_prepare_mqr_crypto_spec(struct mmc_host *host,
-		struct mmc_request *mrq)
+		struct mmc_queue_req *mqr)
 {
 	struct bio_crypt_ctx *bc;
-	struct request *request = mrq->req;
+	struct request *request = mmc_queue_req_to_req(mqr);
 
 	if (!request->bio ||
-	    !bio_crypt_should_process(request))
+	    !bio_crypt_should_process(request)) {
 		return 0;
-
+	}
 	bc = request->bio->bi_crypt_context;
 	if (!mmc_keyslot_valid(host, bc->bc_keyslot))
 		return -EINVAL;
 
-	mrq->crypto_key_slot = bc->bc_keyslot;
+	mqr->brq.mrq.crypto_key_slot = bc->bc_keyslot;
 	/*
 	 * OTA with ext4 (dun is 512 bytes) used LBA,
 	 * with F2FS (dun is 512 bytes), the dun[0] had
 	 * multiplied by 8.
 	 */
-	if (bc->hie_ext4)
-		mrq->data_unit_num =
+	if (bc->hie_ext4 == true)
+		mqr->brq.mrq.data_unit_num =
 			(blk_rq_pos(request) & 0xFFFFFFFF);
 	else
-		mrq->data_unit_num = bc->bc_dun[0];
-	mrq->crypto_key = bc->bc_key;
+		mqr->brq.mrq.data_unit_num = bc->bc_dun[0];
+	mqr->brq.mrq.crypto_key = bc->bc_key;
 	return 0;
 }
 
@@ -313,22 +313,25 @@ int mmc_init_crypto(struct mmc_host *host)
 int mmc_swcq_prepare_mqr_crypto(struct mmc_host *host,
 		struct mmc_request *mrq)
 {
-	int ret, ddir, slot;
+	int ret, ddir, slot, tag;
 	struct request *req;
+	struct mmc_queue_req *mqr;
 
 	req = mrq->req;
+	mqr = req_to_mmc_queue_req(req);
 
-	ret = mmc_prepare_mqr_crypto_spec(host, mrq);
-	if (ret || !mmc_request_crypto_enabled(mrq))
+	ret = mmc_prepare_mqr_crypto_spec(host, mqr);
+	if (ret || !mmc_request_crypto_enabled(&(mqr->brq.mrq)))
 		return ret;
 
 	/* non-CQE */
 	if (!(host->caps2 & (MMC_CAP2_CQE | MMC_CAP2_CQE_DCMD))) {
 		ddir = rq_data_dir(req);
 		slot = req->bio->bi_crypt_context->bc_keyslot;
+		tag = mqr->brq.mrq.tag;
 		if (host->crypto_vops && host->crypto_vops->prepare_mqr_crypto)
 			return host->crypto_vops->prepare_mqr_crypto(host,
-			mrq->data_unit_num, ddir, slot);
+			mqr->brq.mrq.data_unit_num, ddir, tag, slot);
 	}
 
 	return 0;

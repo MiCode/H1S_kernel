@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __VPU_CMN_H__
@@ -131,6 +123,9 @@ struct vpu_driver {
 	/* debugfs entry */
 	struct dentry *droot;
 
+	/* procfs entry */
+	struct proc_dir_entry *proc_root;
+
 	/* device references */
 	struct kref ref;
 
@@ -191,7 +186,8 @@ struct vpu_device {
 	uint64_t pw_off_latency;   /* ms, 0 = always on */
 	atomic_t pw_boost;         /* current boost */
 #ifdef CONFIG_PM_SLEEP
-	struct wakeup_source pw_wake_lock;
+	//struct wakeup_source pw_wake_lock;
+	struct wakeup_source *pw_wake_lock;
 #endif
 
 	/* iova settings */
@@ -225,6 +221,7 @@ struct vpu_device {
 
 	/* debug */
 	struct dentry *droot;  /* debugfs entry */
+	struct proc_dir_entry *proc_root; /* procfs entry */
 	bool ftrace_avail;     /* trace */
 	bool jtag_enabled;     /* jtag */
 	struct vpu_dmp *dmp;   /* dump */

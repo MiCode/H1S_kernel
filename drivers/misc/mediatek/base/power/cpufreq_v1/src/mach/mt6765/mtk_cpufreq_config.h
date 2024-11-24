@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #ifndef __MTK_CPUFREQ_CONFIG_H__
@@ -29,7 +21,11 @@ enum cpu_level {
 	CPU_LEVEL_3, /* 65 */
 	CPU_LEVEL_4, /* 62 */
 	CPU_LEVEL_5, /* 62LY */
-
+	CPU_LEVEL_6, /* 65R */
+	CPU_LEVEL_7, /* 62D */
+	CPU_LEVEL_8, /* 62DLY */
+	CPU_LEVEL_9, /* 65OD */
+	CPU_LEVEL_10, /* 62X/65X */
 	NUM_CPU_LEVEL,
 };
 
@@ -65,5 +61,7 @@ enum top_ckmuxsel {
 
 	NR_TOP_CKMUXSEL,
 };
+
+#define EX_DEV_OFF_FAB2 0x210	/* 7A8 */
 
 #endif	/* __MTK_CPUFREQ_CONFIG_H__ */

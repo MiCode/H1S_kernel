@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __DDP_PATH_MANAGER_H__
 #define __DDP_PATH_MANAGER_H__
@@ -454,4 +446,5 @@ int dpmgr_path_dsi_power_off(disp_path_handle dp_handle, void *cmdqhandle);
 
 /* turn on dsi */
 int dpmgr_path_dsi_power_on(disp_path_handle dp_handle, void *cmdqhandle);
+bool dpmgr_is_power_on(void);
 #endif

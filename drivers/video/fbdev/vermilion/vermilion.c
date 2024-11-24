@@ -291,8 +291,10 @@ static int vmlfb_get_gpu(struct vml_par *par)
 
 	mutex_unlock(&vml_mutex);
 
-	if (pci_enable_device(par->gpu) < 0)
+	if (pci_enable_device(par->gpu) < 0) {
+		pci_dev_put(par->gpu);
 		return -ENODEV;
+	}
 
 	return 0;
 }
@@ -651,7 +653,7 @@ static int vmlfb_check_var_locked(struct fb_var_screeninfo *var,
 	}
 
 	pitch = ALIGN((var->xres * var->bits_per_pixel) >> 3, 0x40);
-	mem = pitch * var->yres_virtual;
+	mem = (u64)pitch * var->yres_virtual;
 	if (mem > vinfo->vram_contig_size) {
 		return -ENOMEM;
 	}

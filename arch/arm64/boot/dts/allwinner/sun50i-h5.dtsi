@@ -47,7 +47,7 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		cpu@0 {
+		cpu0: cpu@0 {
 			compatible = "arm,cortex-a53", "arm,armv8";
 			device_type = "cpu";
 			reg = <0>;
@@ -96,6 +96,10 @@
 
 &ccu {
 	compatible = "allwinner,sun50i-h5-ccu";
+};
+
+&display_clocks {
+	compatible = "allwinner,sun50i-h5-de2-clk";
 };
 
 &mmc0 {

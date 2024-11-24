@@ -8,7 +8,6 @@
 #ifndef LINUX_MMC_CORE_H
 #define LINUX_MMC_CORE_H
 
-#include <linux/interrupt.h>
 #include <linux/completion.h>
 #include <linux/types.h>
 
@@ -153,17 +152,6 @@ struct mmc_request {
 	struct mmc_command	*cmd;
 	struct mmc_data		*data;
 	struct mmc_command	*stop;
-
-	struct completion	completion;
-	struct completion	cmd_completion;
-	void			(*done)(struct mmc_request *);/* completion function */
-	/*
-	 * Notify uppers layers (e.g. mmc block driver) that recovery is needed
-	 * due to an error associated with the mmc_request. Currently used only
-	 * by CQE.
-	 */
-	void			(*recovery_notifier)(struct mmc_request *);
-	struct mmc_host		*host;
 #ifdef CONFIG_MTK_EMMC_CQ_SUPPORT
 	struct mmc_async_req	*areq;
 	int			flags;
@@ -175,10 +163,16 @@ struct mmc_request {
 #if defined(CONFIG_MTK_HW_FDE) || defined(CONFIG_MMC_CRYPTO)
 	bool		is_mmc_req; /* request is from mmc layer */
 #endif
-
-#ifdef CONFIG_MTK_EMMC_HW_CQ
-	struct mmc_cmdq_req *cmdq_req;
-#endif
+	struct completion	completion;
+	struct completion	cmd_completion;
+	void			(*done)(struct mmc_request *);/* completion function */
+	/*
+	 * Notify uppers layers (e.g. mmc block driver) that recovery is needed
+	 * due to an error associated with the mmc_request. Currently used only
+	 * by CQE.
+	 */
+	void			(*recovery_notifier)(struct mmc_request *);
+	struct mmc_host		*host;
 
 	/* Allow other commands during this ongoing data transfer or busy wait */
 	bool			cap_cmd_during_tfr;
@@ -210,9 +204,7 @@ int mmc_wait_for_cmd(struct mmc_host *host, struct mmc_command *cmd,
 		int retries);
 
 int mmc_hw_reset(struct mmc_host *host);
-#ifdef CONFIG_MTK_EMMC_HW_CQ
-int mmc_cmdq_hw_reset(struct mmc_host *host);
-#endif
+int mmc_sw_reset(struct mmc_host *host);
 void mmc_set_data_timeout(struct mmc_data *data, const struct mmc_card *card);
 
 #endif /* LINUX_MMC_CORE_H */

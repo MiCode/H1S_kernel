@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _KD_CAMERA_FEATURE_ENUM_H_
@@ -408,5 +400,12 @@ enum YUV_AUTOTEST_T {
 	YUV_AUTOTEST_GET_SHUTTER,
 	YUV_AUTOTEST_GET_GAIN,
 	NUM_OF_YUV_AUTOTEST
+};
+enum SEAMLESS_SWITCH_FLAG {
+	IMAGE_SETTING_NONE = 0x0,
+	IMAGE_FULL_BIN,
+	IMAGE_FULL_SIZE,
+	IMAGE_ZOOM_IN_1_3X,
+	IMAGE_ZOOM_IN_2X,
 };
 #endif

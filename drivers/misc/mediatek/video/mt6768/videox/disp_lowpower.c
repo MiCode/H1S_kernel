@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/delay.h>
 #include <linux/sched.h>
@@ -24,7 +16,6 @@
 #include <linux/of_irq.h>
 #include <linux/slab.h>
 #include <linux/math64.h>
-#include <linux/sched/clock.h>
 #include "disp_drv_platform.h"	/* must be at the top-most */
 #if defined(MTK_FB_ION_SUPPORT)
 #include "ion_drv.h"
@@ -32,11 +23,11 @@
 #endif
 #include "mtk_boot_common.h"
 #ifdef MTK_FB_SPM_SUPPORT
-#include "spm/mtk_idle.h"
+#include "mtk_idle.h"
 #endif
 #ifdef MTK_FB_MMDVFS_SUPPORT
-#include "mt-plat/mtk_smi.h"
-#include "mtk_smi.h"
+//#include "mt-plat/mtk_smi.h"
+//#include "mtk_smi.h"
 #endif
 
 #include "debug.h"
@@ -66,14 +57,18 @@
 /* #include "mtk_dramc.h" */
 #include "disp_partial.h"
 #ifdef MTK_FB_MMDVFS_SUPPORT
-//#include "mmdvfs_mgr.h"
+#ifdef CONFIG_MTK_SMI_EXT
+#include "mmdvfs_mgr.h"
+#endif
 #endif
 
+#include "mtk_disp_mgr.h"
 /* device tree */
 #include <linux/of.h>
 #include <linux/of_irq.h>
 #include <linux/of_address.h>
 #include <linux/io.h>
+#include "ddp_disp_bdg.h"
 
 #define MMSYS_CLK_LOW (0)
 #define MMSYS_CLK_HIGH (1)
@@ -159,7 +154,17 @@ static struct golden_setting_context *_get_golden_setting_context(void)
 		g_golden_setting_context.is_wrot_sram = 0;
 		g_golden_setting_context.is_rsz_sram = 0;
 		g_golden_setting_context.mmsys_clk = MMSYS_CLK_LOW;
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+		/*DynFPS
+		 *fps is no use for ovl golden but may useful for rdma & wdma
+		 *ToDo use fps or timing fps
+		 */
+		g_golden_setting_context.fps =
+			primary_display_get_def_timing_fps(0) / 100;
 
+		DISPMSG("%s,gs_ctx.fps=%u\n",
+			__func__, g_golden_setting_context.fps);
+#endif
 		/* primary_display */
 		g_golden_setting_context.dst_width =
 			disp_helper_get_option(DISP_OPT_FAKE_LCM_WIDTH);
@@ -290,20 +295,47 @@ int _blocking_flush(void)
 		cmdqRecDestroy(handle_vfp);
 	}
 
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	/* dynfps is Asyn flush
+	 * and dynfps use esd check GCE thread
+	 * need flush this GCE thread to make sure dynfps has completed
+	 */
+	if (primary_display_is_support_DynFPS()) {
+		struct cmdqRecStruct *handle_dynfps = NULL;
+
+		ret = cmdqRecCreate(
+		CMDQ_SCENARIO_DISP_ESD_CHECK, &handle_dynfps);
+
+		if (ret) {
+			DISPERR("%s:%d, create cmdq handle fail!ret=%d\n",
+				__func__, __LINE__, ret);
+			return -1;
+		}
+		cmdqRecReset(handle_dynfps);
+		_cmdq_insert_wait_frame_done_token_mira(handle_dynfps);
+		cmdqRecFlush(handle_dynfps);
+
+		cmdqRecDestroy(handle_dynfps);
+	}
+#endif
 	return ret;
 }
 
+extern void bdg_dsi_vfp_gce(unsigned int vfp);
 int primary_display_dsi_vfp_change(int state)
 {
 	int ret = 0;
 	struct cmdqRecStruct *handle = NULL;
 	struct LCM_PARAMS *params;
+	unsigned int apply_vfp = 0;
+	ret = cmdqRecCreate(CMDQ_SCENARIO_DISP_ESD_CHECK, &handle);
+	if (ret) {
+		DISPERR("%s:%d, create cmdq handle fail!ret=%d\n",
+			__func__, __LINE__, ret);
+		return -1;
+	}
 
-	cmdqRecCreate(CMDQ_SCENARIO_PRIMARY_DISP, &handle);
 	cmdqRecReset(handle);
-
-	/* make sure token rdma_sof is clear */
-	cmdqRecClearEventToken(handle, CMDQ_EVENT_DISP_RDMA0_SOF);
 
 	/* for chips later than M17,VFP can be set at anytime
 	 * So don't need to wait-SOF here
@@ -314,14 +346,58 @@ int primary_display_dsi_vfp_change(int state)
 	if (state == 1) {
 		/* need calculate fps by vdo mode params */
 		/* set_fps(55); */
-		dpmgr_path_ioctl(primary_get_dpmgr_handle(), handle,
-			DDP_DSI_PORCH_CHANGE,
-			&params->dsi.vertical_frontporch_for_low_power);
+		apply_vfp = params->dsi.vertical_frontporch_for_low_power;
+
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+		/*DynFPS*/
+		if (primary_display_is_support_DynFPS()) {
+			primary_display_dynfps_get_vfp_info(NULL, &apply_vfp);
+			DISPMSG("%s,enter idle, apply new vfp=%d\n",
+				__func__, apply_vfp);
+		}
+#endif
 	} else if (state == 0) {
-		dpmgr_path_ioctl(primary_get_dpmgr_handle(), handle,
-			DDP_DSI_PORCH_CHANGE, &params->dsi.vertical_frontporch);
+		apply_vfp = params->dsi.vertical_frontporch;
+
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+		/*DynFPS*/
+		if (primary_display_is_support_DynFPS()) {
+			primary_display_dynfps_get_vfp_info(&apply_vfp, NULL);
+			DISPMSG("%s,leave idle, restore vfp=%d\n",
+				__func__, apply_vfp);
+		}
+#endif
 	}
-	cmdqRecFlushAsync(handle);
+
+	if (state == 1 || state == 0) {
+		if (pgc != NULL && pgc->vfp_chg_sync_bdg
+				&& bdg_is_bdg_connected() == 1) {
+			cmdqRecWait(handle, CMDQ_EVENT_MUTEX0_STREAM_EOF);
+
+			/* 2.stop dsi vdo mode */
+			dpmgr_path_build_cmdq(primary_get_dpmgr_handle(), handle,
+						CMDQ_STOP_VDO_MODE, 0);
+
+			dpmgr_path_ioctl(primary_get_dpmgr_handle(), handle,
+						DDP_DSI_PORCH_CHANGE, &apply_vfp);
+
+			dpmgr_path_build_cmdq(primary_get_dpmgr_handle(), handle,
+						CMDQ_START_VDO_MODE, 0);
+			dpmgr_path_trigger(primary_get_dpmgr_handle(), handle, CMDQ_ENABLE);
+
+			ddp_mutex_set_sof_wait(dpmgr_path_get_mutex(primary_get_dpmgr_handle()),
+						handle, 0);
+
+			cmdqRecFlush(handle);
+		} else {
+			dpmgr_path_ioctl(primary_get_dpmgr_handle(), handle,
+						DDP_DSI_PORCH_CHANGE, &apply_vfp);
+		}
+	}
+
+	if (pgc != NULL && !pgc->vfp_chg_sync_bdg)
+		cmdqRecFlushAsync(handle);
+
 	cmdqRecDestroy(handle);
 	return ret;
 }
@@ -668,25 +744,29 @@ void _primary_display_enable_mmsys_clk(void)
 		dpmgr_path_connect(primary_get_ovl2mem_handle(), CMDQ_DISABLE);
 
 	data_config = dpmgr_path_get_last_config(primary_get_dpmgr_handle());
-	data_config->dst_dirty = 1;
-	data_config->ovl_dirty = 1;
-	data_config->rdma_dirty = 1;
-	data_config->ovl_dirty = 1;
-	dpmgr_path_config(primary_get_dpmgr_handle(), data_config,
-		NULL);
-
+	if (data_config != NULL) {
+		data_config->dst_dirty = 1;
+		data_config->ovl_dirty = 1;
+		data_config->rdma_dirty = 1;
+		data_config->ovl_dirty = 1;
+		dpmgr_path_config(primary_get_dpmgr_handle(), data_config,
+			NULL);
+	}
 	if (primary_display_is_decouple_mode()) {
 		data_config =
 			dpmgr_path_get_last_config(primary_get_dpmgr_handle());
-		data_config->rdma_dirty = 1;
-		dpmgr_path_config(primary_get_dpmgr_handle(), data_config,
-			NULL);
-
+		if (data_config != NULL) {
+			data_config->rdma_dirty = 1;
+			dpmgr_path_config(primary_get_dpmgr_handle(), data_config,
+				NULL);
+		}
 		data_config = dpmgr_path_get_last_config(
-			primary_get_ovl2mem_handle());
-		data_config->dst_dirty = 1;
-		dpmgr_path_config(primary_get_ovl2mem_handle(), data_config,
-			NULL);
+		primary_get_ovl2mem_handle());
+		if (data_config != NULL) {
+			data_config->dst_dirty = 1;
+			dpmgr_path_config(primary_get_ovl2mem_handle(), data_config,
+				NULL);
+		}
 		dpmgr_path_ioctl(primary_get_ovl2mem_handle(), NULL,
 			DDP_OVL_GOLDEN_SETTING, &gset_arg);
 	} else {
@@ -727,8 +807,19 @@ void _vdo_mode_enter_idle(void)
 	unsigned long long bandwidth;
 	unsigned int out_fps = 60;
 #endif
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	unsigned int cur_cfg_id = 0;
+	unsigned int _vsyncFPS = 6000;/*real fps * 100*/
+	unsigned int _vfp_for_lp = 0;
+#endif
 
 	DISPINFO("[disp_lowpower]%s\n", __func__);
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	/*DynFPS SRT use fps not active timing fps*/
+	cur_cfg_id = primary_display_get_current_cfg_id();
+	primary_display_get_cfg_fps(cur_cfg_id, &_vsyncFPS, NULL);
+	out_fps = _vsyncFPS / 100;
+#endif
 
 	/* backup for DL <-> DC */
 	idlemgr_pgc->session_mode_before_enter_idle = primary_get_sess_mode();
@@ -776,7 +867,20 @@ void _vdo_mode_enter_idle(void)
 				params->dsi.vertical_frontporch_for_low_power =
 					get_backup_vfp();
 
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+			_vfp_for_lp =
+				params->dsi.vertical_frontporch_for_low_power;
+			if (primary_display_is_support_DynFPS())
+				primary_display_dynfps_get_vfp_info(
+					NULL, &_vfp_for_lp);
+
+			DISPMSG("%s,vfp_for_lp ==0\n",
+				__func__, _vfp_for_lp);
+			/*if _vfp_for_lp == 0 don't decrease fps*/
+			if (_vfp_for_lp) {
+#else
 			if (params->dsi.vertical_frontporch_for_low_power) {
+#endif
 				primary_display_dsi_vfp_change(1);
 				idlemgr_pgc->cur_lp_cust_mode = 1;
 			}
@@ -794,7 +898,7 @@ void _vdo_mode_enter_idle(void)
 	mmprofile_log_ex(ddp_mmp_get_events()->primary_pm_qos,
 			MMPROFILE_FLAG_START,
 			!primary_display_is_decouple_mode(), bandwidth);
-	pm_qos_update_request(&primary_display_qos_request, bandwidth);
+	mtk_pm_qos_update_request(&primary_display_qos_request, bandwidth);
 	mmprofile_log_ex(ddp_mmp_get_events()->primary_pm_qos,
 			MMPROFILE_FLAG_END,
 			!primary_display_is_decouple_mode(), bandwidth);
@@ -809,8 +913,20 @@ void _vdo_mode_leave_idle(void)
 	unsigned int in_fps = 60;
 	unsigned int out_fps = 60;
 #endif
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	unsigned int cur_cfg_id = 0;
+	unsigned int _vsyncFPS = 6000;/*real fps * 100*/
+#endif
 
 	DISPMSG("[disp_lowpower]%s\n", __func__);
+
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	/*DynFPS,SRT use fps not timing fps*/
+	cur_cfg_id = primary_display_get_current_cfg_id();
+	primary_display_get_cfg_fps(cur_cfg_id, &_vsyncFPS, NULL);
+	out_fps = _vsyncFPS / 100;
+	in_fps = out_fps;
+#endif
 
 	/* set golden setting */
 	set_is_display_idle(0);
@@ -856,7 +972,7 @@ void _vdo_mode_leave_idle(void)
 	mmprofile_log_ex(ddp_mmp_get_events()->primary_pm_qos,
 			MMPROFILE_FLAG_START,
 			!primary_display_is_decouple_mode(), bandwidth);
-	pm_qos_update_request(&primary_display_qos_request, bandwidth);
+	mtk_pm_qos_update_request(&primary_display_qos_request, bandwidth);
 	mmprofile_log_ex(ddp_mmp_get_events()->primary_pm_qos,
 			MMPROFILE_FLAG_END,
 			!primary_display_is_decouple_mode(), bandwidth);
@@ -866,7 +982,14 @@ void _vdo_mode_leave_idle(void)
 
 void _cmd_mode_enter_idle(void)
 {
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	unsigned int cfg_id = 0;
+#endif
+
 	DISPINFO("[disp_lowpower]%s\n", __func__);
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	cfg_id = primary_display_get_current_cfg_id();
+#endif
 
 	/* need leave share sram for disable mmsys clk */
 	if (disp_helper_get_option(DISP_OPT_SHARE_SRAM))
@@ -885,7 +1008,7 @@ void _cmd_mode_enter_idle(void)
 	mmprofile_log_ex(ddp_mmp_get_events()->primary_pm_qos,
 			MMPROFILE_FLAG_START,
 			!primary_display_is_decouple_mode(), 0);
-	pm_qos_update_request(&primary_display_qos_request, 0);
+	mtk_pm_qos_update_request(&primary_display_qos_request, 0);
 	mmprofile_log_ex(ddp_mmp_get_events()->primary_pm_qos,
 			MMPROFILE_FLAG_END,
 			!primary_display_is_decouple_mode(), 0);
@@ -895,11 +1018,19 @@ void _cmd_mode_enter_idle(void)
 
 void _cmd_mode_leave_idle(void)
 {
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	unsigned int cfg_id = 0;
+#endif
 #ifdef MTK_FB_MMDVFS_SUPPORT
 	unsigned long long bandwidth;
 	unsigned int in_fps = 60;
 	unsigned int out_fps = 60;
 	int stable = 0;
+
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	/*DynFPS*/
+	cfg_id = primary_display_get_current_cfg_id();
+#endif
 #endif
 
 	DISPMSG("[disp_lowpower]%s\n", __func__);
@@ -922,7 +1053,7 @@ void _cmd_mode_leave_idle(void)
 	mmprofile_log_ex(ddp_mmp_get_events()->primary_pm_qos,
 			MMPROFILE_FLAG_START,
 			!primary_display_is_decouple_mode(), bandwidth);
-	pm_qos_update_request(&primary_display_qos_request, bandwidth);
+	mtk_pm_qos_update_request(&primary_display_qos_request, bandwidth);
 	mmprofile_log_ex(ddp_mmp_get_events()->primary_pm_qos,
 			MMPROFILE_FLAG_END,
 			!primary_display_is_decouple_mode(), bandwidth);
@@ -954,6 +1085,29 @@ int primary_display_request_dvfs_perf(
 	enum HRT_OPP_LEVEL opp_level = HRT_OPP_LEVEL_DEFAULT;
 	unsigned int emi_opp, mm_freq;
 
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	if (atomic_read(&dvfs_ovl_req_status) != req) {
+		switch (req) {
+		case HRT_LEVEL_LEVEL3:
+			opp_level = HRT_OPP_LEVEL_LEVEL0;
+			break;
+		case HRT_LEVEL_LEVEL2:
+			opp_level = HRT_OPP_LEVEL_LEVEL0;
+			break;
+		case HRT_LEVEL_LEVEL1:
+			opp_level = HRT_OPP_LEVEL_LEVEL1;
+			break;
+		case HRT_LEVEL_LEVEL0:
+			opp_level = HRT_OPP_LEVEL_LEVEL1;
+			break;
+		case HRT_LEVEL_DEFAULT:
+			opp_level = HRT_OPP_LEVEL_DEFAULT;
+			break;
+		default:
+			opp_level = HRT_OPP_LEVEL_DEFAULT;
+			break;
+		}
+#else
 	if (atomic_read(&dvfs_ovl_req_status) != req) {
 		switch (req) {
 		case HRT_LEVEL_LEVEL3:
@@ -975,10 +1129,10 @@ int primary_display_request_dvfs_perf(
 			opp_level = HRT_OPP_LEVEL_DEFAULT;
 			break;
 		}
-
+#endif
 		emi_opp =
 			(opp_level >= HRT_OPP_LEVEL_DEFAULT) ?
-				PM_QOS_DDR_OPP_DEFAULT_VALUE : opp_level;
+				MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE : opp_level;
 		mm_freq =
 			(opp_level >= HRT_OPP_LEVEL_DEFAULT) ?
 				PM_QOS_MM_FREQ_DEFAULT_VALUE :
@@ -989,9 +1143,9 @@ int primary_display_request_dvfs_perf(
 			MMPROFILE_FLAG_START,
 			scenario, (req << 16) |
 			(atomic_read(&dvfs_ovl_req_status) & 0xFFFF));
-		pm_qos_update_request(&primary_display_emi_opp_request,
+		mtk_pm_qos_update_request(&primary_display_emi_opp_request,
 					emi_opp);
-		pm_qos_update_request(&primary_display_mm_freq_request,
+		mtk_pm_qos_update_request(&primary_display_mm_freq_request,
 					mm_freq);
 		mmprofile_log_ex(ddp_mmp_get_events()->dvfs, MMPROFILE_FLAG_END,
 			scenario, (mm_freq << 16) | (emi_opp & 0xFFFF));
@@ -1000,6 +1154,16 @@ int primary_display_request_dvfs_perf(
 	}
 #endif
 	return 0;
+}
+
+unsigned long long disp_lp_set_idle_check_interval(
+	unsigned long long new_interval)
+{
+	/*ToDo: ARR whether need lock*/
+	unsigned long long old_interval = idle_check_interval;
+
+	idle_check_interval = new_interval;
+	return old_interval;
 }
 
 static int _primary_path_idlemgr_monitor_thread(void *data)
@@ -1076,10 +1240,14 @@ static int _primary_path_idlemgr_monitor_thread(void *data)
 #ifdef MTK_FB_MMDVFS_SUPPORT
 		dvfs_before_idle = atomic_read(&dvfs_ovl_req_status);
 		/* when screen idle: LP4 enter ULPM; LP3 enter LPM */
-		primary_display_request_dvfs_perf(0,
-			HRT_LEVEL_LEVEL0);
+		if (primary_display_is_video_mode())
+			primary_display_request_dvfs_perf(0,
+				HRT_LEVEL_LEVEL0);
+		/* for display cmd mode 90hz */
+		else
+			primary_display_request_dvfs_perf(0,
+				HRT_LEVEL_DEFAULT);
 #endif
-
 		primary_display_manual_unlock();
 
 		wait_event_interruptible(idlemgr_pgc->idlemgr_wait_queue,
@@ -1190,8 +1358,10 @@ int primary_display_lowpower_init(void)
 		params->dsi.vertical_frontporch_for_low_power);
 
 	/* init idlemgr */
-	if (disp_helper_get_option(DISP_OPT_IDLE_MGR) &&
-		get_boot_mode() == NORMAL_BOOT)
+	if (disp_helper_get_option(DISP_OPT_IDLE_MGR)
+                //drivers/misc/mediatek/boot/  phased out
+                /*&& get_boot_mode() == NORMAL_BOOT*/
+                )
 		primary_display_idlemgr_init();
 
 	if (disp_helper_get_option(DISP_OPT_SODI_SUPPORT))

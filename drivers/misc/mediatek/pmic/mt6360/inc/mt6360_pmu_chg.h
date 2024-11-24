@@ -1,17 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- *  drivers/misc/mediatek/pmic/mt6360/inc/mt6360_pmu_chg.h
- *
- *  Copyright (C) 2018 Mediatek Technology Corp.
- *  cy_huang <cy_huang@richtek.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- *  See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __MT6360_PMU_CHG_H
@@ -26,15 +15,16 @@ struct mt6360_chg_platform_data {
 	u32 mivr;
 	u32 cv;
 	u32 ieoc;
-	u32 vrechg;
 	u32 safety_timer;
 	u32 ircmp_resistor;
 	u32 ircmp_vclamp;
 	u32 en_te;
 	u32 en_wdt;
+	u32 en_otg_wdt;
 	u32 aicc_once;
 	u32 post_aicc;
 	u32 batoc_notify;
+	u32 bc12_sel;
 	const char *chg_name;
 };
 
@@ -53,7 +43,6 @@ struct mt6360_chg_platform_data {
 #define MT6360_MASK_SHIP_MODE	BIT(7)
 #define MT6360_MASK_IINLMTSEL	(0x0C)
 #define MT6360_SHFT_IINLMTSEL	(2)
-#define MT6360_MASK_BYPASS_MODE	BIT(5)
 #define MT6360_MASK_TE_EN	BIT(4)
 #define MT6360_SHFT_TE_EN	(4)
 #define MT6360_MASK_CFO_EN	BIT(1)

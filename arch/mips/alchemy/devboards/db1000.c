@@ -22,11 +22,11 @@
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
 #include <linux/gpio.h>
+#include <linux/gpio/machine.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/leds.h>
 #include <linux/mmc/host.h>
-#include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/spi/spi.h>
@@ -173,14 +173,10 @@ static struct platform_device db1x00_audio_dev = {
 
 /******************************************************************************/
 
+#ifdef CONFIG_MMC_AU1X
 static irqreturn_t db1100_mmc_cd(int irq, void *ptr)
 {
-	void (*mmc_cd)(struct mmc_host *, unsigned long);
-	/* link against CONFIG_MMC=m */
-	mmc_cd = symbol_get(mmc_detect_change);
-	mmc_cd(ptr, msecs_to_jiffies(500));
-	symbol_put(mmc_detect_change);
-
+	mmc_detect_change(ptr, msecs_to_jiffies(500));
 	return IRQ_HANDLED;
 }
 
@@ -385,6 +381,7 @@ static struct platform_device db1100_mmc1_dev = {
 	.num_resources	= ARRAY_SIZE(au1100_mmc1_res),
 	.resource	= au1100_mmc1_res,
 };
+#endif /* CONFIG_MMC_AU1X */
 
 /******************************************************************************/
 
@@ -447,9 +444,6 @@ static struct ads7846_platform_data db1100_touch_pd = {
 };
 
 static struct spi_gpio_platform_data db1100_spictl_pd = {
-	.sck		= 209,
-	.mosi		= 208,
-	.miso		= 207,
 	.num_chipselect = 1,
 };
 
@@ -462,7 +456,6 @@ static struct spi_board_info db1100_spi_info[] __initdata = {
 		.mode		 = 0,
 		.irq		 = AU1100_GPIO21_INT,
 		.platform_data	 = &db1100_touch_pd,
-		.controller_data = (void *)210, /* for spi_gpio: CS# GPIO210 */
 	},
 };
 
@@ -474,6 +467,24 @@ static struct platform_device db1100_spi_dev = {
 	},
 };
 
+/*
+ * Alchemy GPIO 2 has its base at 200 so the GPIO lines
+ * 207 thru 210 are GPIOs at offset 7 thru 10 at this chip.
+ */
+static struct gpiod_lookup_table db1100_spi_gpiod_table = {
+	.dev_id         = "spi_gpio",
+	.table          = {
+		GPIO_LOOKUP("alchemy-gpio2", 9,
+			    "sck", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("alchemy-gpio2", 8,
+			    "mosi", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("alchemy-gpio2", 7,
+			    "miso", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("alchemy-gpio2", 10,
+			    "cs", GPIO_ACTIVE_HIGH),
+		{ },
+	},
+};
 
 static struct platform_device *db1x00_devs[] = {
 	&db1x00_codec_dev,
@@ -488,9 +499,11 @@ static struct platform_device *db1000_devs[] = {
 
 static struct platform_device *db1100_devs[] = {
 	&au1100_lcd_device,
+#ifdef CONFIG_MMC_AU1X
 	&db1100_mmc0_dev,
 	&db1100_mmc1_dev,
 	&db1000_irda_dev,
+#endif
 };
 
 int __init db1000_dev_setup(void)
@@ -541,6 +554,7 @@ int __init db1000_dev_setup(void)
 			clk_put(p);
 
 		platform_add_devices(db1100_devs, ARRAY_SIZE(db1100_devs));
+		gpiod_add_lookup_table(&db1100_spi_gpiod_table);
 		platform_device_register(&db1100_spi_dev);
 	} else if (board == BCSR_WHOAMI_DB1000) {
 		c0 = AU1000_GPIO2_INT;

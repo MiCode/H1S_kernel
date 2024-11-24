@@ -1,15 +1,7 @@
-/************************************************************************
- * Copyright (C) 2012-2019, Focaltech Systems (R)£¬All Rights Reserved.
- *
- * File Name: focaltech_flash.h
- *
- * Author: Focaltech Driver Team
- *
- * Created: 2016-08-07
- *
- * Abstract:
- *
- ************************************************************************/
+/* SPDX-License-Identifier: GPL-2.0 */	
+/*	
+ * Copyright (c) 2019 MediaTek Inc.	
+*/
 #ifndef __LINUX_FOCALTECH_FLASH_H__
 #define __LINUX_FOCALTECH_FLASH_H__
 

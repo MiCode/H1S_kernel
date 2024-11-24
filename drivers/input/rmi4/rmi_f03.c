@@ -184,14 +184,15 @@ static int rmi_f03_register_pt(struct f03_data *f03)
 	serio->close = rmi_f03_pt_close;
 	serio->port_data = f03;
 
-	strlcpy(serio->name, "Synaptics RMI4 PS/2 pass-through",
-		sizeof(serio->name));
-	strlcpy(serio->phys, "synaptics-rmi4-pt/serio1",
-		sizeof(serio->phys));
+	strlcpy(serio->name, "RMI4 PS/2 pass-through", sizeof(serio->name));
+	snprintf(serio->phys, sizeof(serio->phys), "%s/serio0",
+		 dev_name(&f03->fn->dev));
 	serio->dev.parent = &f03->fn->dev;
 
 	f03->serio = serio;
 
+	printk(KERN_INFO "serio: %s port at %s\n",
+		serio->name, dev_name(&f03->fn->dev));
 	serio_register_port(serio);
 
 	return 0;
@@ -243,8 +244,9 @@ static int rmi_f03_config(struct rmi_function *fn)
 	return 0;
 }
 
-static int rmi_f03_attention(struct rmi_function *fn, unsigned long *irq_bits)
+static irqreturn_t rmi_f03_attention(int irq, void *ctx)
 {
+	struct rmi_function *fn = ctx;
 	struct rmi_device *rmi_dev = fn->rmi_dev;
 	struct rmi_driver_data *drvdata = dev_get_drvdata(&rmi_dev->dev);
 	struct f03_data *f03 = dev_get_drvdata(&fn->dev);
@@ -261,7 +263,7 @@ static int rmi_f03_attention(struct rmi_function *fn, unsigned long *irq_bits)
 		/* First grab the data passed by the transport device */
 		if (drvdata->attn_data.size < ob_len) {
 			dev_warn(&fn->dev, "F03 interrupted, but data is missing!\n");
-			return 0;
+			return IRQ_HANDLED;
 		}
 
 		memcpy(obs, drvdata->attn_data.data, ob_len);
@@ -276,7 +278,7 @@ static int rmi_f03_attention(struct rmi_function *fn, unsigned long *irq_bits)
 				"%s: Failed to read F03 output buffers: %d\n",
 				__func__, error);
 			serio_interrupt(f03->serio, 0, SERIO_TIMEOUT);
-			return error;
+			return IRQ_RETVAL(error);
 		}
 	}
 
@@ -302,7 +304,7 @@ static int rmi_f03_attention(struct rmi_function *fn, unsigned long *irq_bits)
 		serio_interrupt(f03->serio, ob_data, serio_flags);
 	}
 
-	return 0;
+	return IRQ_HANDLED;
 }
 
 static void rmi_f03_remove(struct rmi_function *fn)

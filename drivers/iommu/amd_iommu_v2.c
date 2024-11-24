@@ -427,6 +427,7 @@ static void mn_release(struct mmu_notifier *mn, struct mm_struct *mm)
 }
 
 static const struct mmu_notifier_ops iommu_mn = {
+	.flags			= MMU_INVALIDATE_DOES_NOT_BLOCK,
 	.release		= mn_release,
 	.clear_flush_young      = mn_clear_flush_young,
 	.invalidate_range       = mn_invalidate_range,
@@ -507,7 +508,7 @@ static void do_fault(struct work_struct *work)
 {
 	struct fault *fault = container_of(work, struct fault, work);
 	struct vm_area_struct *vma;
-	int ret = VM_FAULT_ERROR;
+	vm_fault_t ret = VM_FAULT_ERROR;
 	unsigned int flags = 0;
 	struct mm_struct *mm;
 	u64 address;
@@ -564,7 +565,8 @@ static int ppr_notifier(struct notifier_block *nb, unsigned long e, void *data)
 	finish      = (iommu_fault->tag >> 9) & 1;
 
 	devid = iommu_fault->device_id;
-	pdev = pci_get_bus_and_slot(PCI_BUS_NUM(devid), devid & 0xff);
+	pdev = pci_get_domain_bus_and_slot(0, PCI_BUS_NUM(devid),
+					   devid & 0xff);
 	if (!pdev)
 		return -ENODEV;
 	dev_data = get_dev_data(&pdev->dev);
@@ -624,6 +626,7 @@ out_drop_state:
 	put_device_state(dev_state);
 
 out:
+	pci_dev_put(pdev);
 	return ret;
 }
 
@@ -773,6 +776,13 @@ int amd_iommu_init_device(struct pci_dev *pdev, int pasids)
 	u16 devid;
 
 	might_sleep();
+
+	/*
+	 * When memory encryption is active the device is likely not in a
+	 * direct-mapped domain. Forbid using IOMMUv2 functionality for now.
+	 */
+	if (mem_encrypt_active())
+		return -ENODEV;
 
 	if (!amd_iommu_v2_supported())
 		return -ENODEV;

@@ -20,11 +20,14 @@ COMP_TOP = $(FPSGO_TOP)/composer
 MTK_TOP = $(srctree)/drivers/misc/mediatek
 BASE_TOP = $(FPSGO_TOP)/base
 FSTB_TOP = $(FPSGO_TOP)/fstb
-EARA_TOP = $(FPSGO_TOP)/eara_job
 
 ccflags-y += -DNR_FREQ_CPU=16
 
-ifeq ($(CONFIG_MACH_MT6893),y)
+ifeq ($(CONFIG_MACH_MT6781),y)
+obj-y += platform/mt6781/fbt_cpu_platform.o
+else ifeq ($(CONFIG_MACH_MT6877),y)
+obj-y += platform/mt6877/fbt_cpu_platform.o
+else ifeq ($(CONFIG_MACH_MT6893),y)
 obj-y += platform/mt6893/fbt_cpu_platform.o
 else
 obj-y += platform/$(MTK_PLATFORM)/fbt_cpu_platform.o
@@ -45,5 +48,5 @@ ccflags-y += \
 	-I$(MTK_TOP)/base/power/include/ \
 	-I$(MTK_TOP)/base/power/$(MTK_PLATFORM)/ \
 	-I$(FSTB_TOP)/ \
-	-I$(EARA_TOP)/include/ \
+	-I$(MTK_TOP)/cm_mgr/ \
 	-I$(srctree)/kernel/

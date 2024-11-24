@@ -21,24 +21,20 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/flashchip.h>
 #include <linux/mtd/bbm.h>
+#include <linux/of.h>
+#include <linux/types.h>
 
 struct nand_chip;
-struct mtd_info;
 struct nand_flash_dev;
-struct device_node;
 
 /* Scan and identify a NAND device */
-int nand_scan(struct mtd_info *mtd, int max_chips);
-/*
- * Separate phases of nand_scan(), allowing board driver to intervene
- * and override command or ECC setup according to flash type.
- */
-int nand_scan_ident(struct mtd_info *mtd, int max_chips,
-			   struct nand_flash_dev *table);
-int nand_scan_tail(struct mtd_info *mtd);
+int nand_scan_with_ids(struct nand_chip *chip, int max_chips,
+		       struct nand_flash_dev *ids);
 
-/* Unregister the MTD device and free resources held by the NAND device */
-void nand_release(struct nand_chip *chip);
+static inline int nand_scan(struct nand_chip *chip, int max_chips)
+{
+	return nand_scan_with_ids(chip, max_chips, NULL);
+}
 
 /* Internal helper for board drivers which need to override command function */
 void nand_wait_ready(struct mtd_info *mtd);
@@ -114,6 +110,7 @@ enum nand_ecc_algo {
 	NAND_ECC_UNKNOWN,
 	NAND_ECC_HAMMING,
 	NAND_ECC_BCH,
+	NAND_ECC_RS,
 };
 
 /*
@@ -134,12 +131,6 @@ enum nand_ecc_algo {
  */
 #define NAND_ECC_GENERIC_ERASED_CHECK	BIT(0)
 #define NAND_ECC_MAXIMIZE		BIT(1)
-/*
- * If your controller already sends the required NAND commands when
- * reading or writing a page, then the framework is not supposed to
- * send READ0 and SEQIN/PAGEPROG respectively.
- */
-#define NAND_ECC_CUSTOM_PAGE_ACCESS	BIT(2)
 
 /* Bit mask for flags passed to do_nand_read_ecc */
 #define NAND_GET_DEVICE		0x80
@@ -178,6 +169,9 @@ enum nand_ecc_algo {
  */
 #define NAND_NEED_SCRAMBLING	0x00002000
 
+/* Device needs 3rd row address cycle */
+#define NAND_ROW_ADDR_3		0x00004000
+
 /* Options valid for Samsung large page devices */
 #define NAND_SAMSUNG_LP_OPTIONS NAND_CACHEPRG
 
@@ -189,11 +183,6 @@ enum nand_ecc_algo {
 /* Non chip related options */
 /* This option skips the bbt scan during initialization. */
 #define NAND_SKIP_BBTSCAN	0x00010000
-/*
- * This option is defined if the board driver allocates its own buffers
- * (e.g. because it needs them DMA-coherent).
- */
-#define NAND_OWN_BUFFERS	0x00020000
 /* Chip may not exist, so silence any errors in scan */
 #define NAND_SCAN_SILENT_NODEV	0x00040000
 /*
@@ -219,6 +208,12 @@ enum nand_ecc_algo {
  */
 #define NAND_WAIT_TCCS		0x00200000
 
+/*
+ * Whether the NAND chip is a boot medium. Drivers might use this information
+ * to select ECC algorithms supported by the boot ROM or similar restrictions.
+ */
+#define NAND_IS_BOOT_MEDIUM	0x00400000
+
 /* Options set by nand scan */
 /* Nand scan has allocated controller struct */
 #define NAND_CONTROLLER_ALLOC	0x80000000
@@ -227,6 +222,20 @@ enum nand_ecc_algo {
 #define NAND_CI_CHIPNR_MSK	0x03
 #define NAND_CI_CELLTYPE_MSK	0x0C
 #define NAND_CI_CELLTYPE_SHIFT	2
+
+/* Keep gcc happy */
+struct nand_chip;
+
+/* ONFI version bits */
+#define ONFI_VERSION_1_0		BIT(1)
+#define ONFI_VERSION_2_0		BIT(2)
+#define ONFI_VERSION_2_1		BIT(3)
+#define ONFI_VERSION_2_2		BIT(4)
+#define ONFI_VERSION_2_3		BIT(5)
+#define ONFI_VERSION_3_0		BIT(6)
+#define ONFI_VERSION_3_1		BIT(7)
+#define ONFI_VERSION_3_2		BIT(8)
+#define ONFI_VERSION_4_0		BIT(9)
 
 /* ONFI features */
 #define ONFI_FEATURE_16_BIT_BUS		(1 << 0)
@@ -241,7 +250,8 @@ enum nand_ecc_algo {
 #define ONFI_TIMING_MODE_5		(1 << 5)
 #define ONFI_TIMING_MODE_UNKNOWN	(1 << 6)
 
-/* ONFI feature address */
+/* ONFI feature number/address */
+#define ONFI_FEATURE_NUMBER		256
 #define ONFI_FEATURE_ADDR_TIMING_MODE	0x1
 
 /* Vendor-specific feature address (Micron) */
@@ -435,6 +445,47 @@ struct nand_jedec_params {
 	__le16 crc;
 } __packed;
 
+/**
+ * struct onfi_params - ONFI specific parameters that will be reused
+ * @version: ONFI version (BCD encoded), 0 if ONFI is not supported
+ * @tPROG: Page program time
+ * @tBERS: Block erase time
+ * @tR: Page read time
+ * @tCCS: Change column setup time
+ * @async_timing_mode: Supported asynchronous timing mode
+ * @vendor_revision: Vendor specific revision number
+ * @vendor: Vendor specific data
+ */
+struct onfi_params {
+	int version;
+	u16 tPROG;
+	u16 tBERS;
+	u16 tR;
+	u16 tCCS;
+	u16 async_timing_mode;
+	u16 vendor_revision;
+	u8 vendor[88];
+};
+
+/**
+ * struct nand_parameters - NAND generic parameters from the parameter page
+ * @model: Model name
+ * @supports_set_get_features: The NAND chip supports setting/getting features
+ * @set_feature_list: Bitmap of features that can be set
+ * @get_feature_list: Bitmap of features that can be get
+ * @onfi: ONFI specific parameters
+ */
+struct nand_parameters {
+	/* Generic parameters */
+	const char *model;
+	bool supports_set_get_features;
+	DECLARE_BITMAP(set_feature_list, ONFI_FEATURE_NUMBER);
+	DECLARE_BITMAP(get_feature_list, ONFI_FEATURE_NUMBER);
+
+	/* ONFI parameters */
+	struct onfi_params *onfi;
+};
+
 /* The maximum expected count of bytes in the NAND ID sequence */
 #define NAND_MAX_ID_LEN 8
 
@@ -449,20 +500,42 @@ struct nand_id {
 };
 
 /**
- * struct nand_hw_control - Control structure for hardware controller (e.g ECC generator) shared among independent devices
+ * struct nand_controller_ops - Controller operations
+ *
+ * @attach_chip: this method is called after the NAND detection phase after
+ *		 flash ID and MTD fields such as erase size, page size and OOB
+ *		 size have been set up. ECC requirements are available if
+ *		 provided by the NAND chip or device tree. Typically used to
+ *		 choose the appropriate ECC configuration and allocate
+ *		 associated resources.
+ *		 This hook is optional.
+ * @detach_chip: free all resources allocated/claimed in
+ *		 nand_controller_ops->attach_chip().
+ *		 This hook is optional.
+ */
+struct nand_controller_ops {
+	int (*attach_chip)(struct nand_chip *chip);
+	void (*detach_chip)(struct nand_chip *chip);
+};
+
+/**
+ * struct nand_controller - Structure used to describe a NAND controller
+ *
  * @lock:               protection lock
  * @active:		the mtd device which holds the controller currently
  * @wq:			wait queue to sleep on if a NAND operation is in
  *			progress used instead of the per chip wait queue
  *			when a hw controller is available.
+ * @ops:		NAND controller operations.
  */
-struct nand_hw_control {
+struct nand_controller {
 	spinlock_t lock;
 	struct nand_chip *active;
 	wait_queue_head_t wq;
+	const struct nand_controller_ops *ops;
 };
 
-static inline void nand_hw_control_init(struct nand_hw_control *nfc)
+static inline void nand_controller_init(struct nand_controller *nfc)
 {
 	nfc->active = NULL;
 	spin_lock_init(&nfc->lock);
@@ -520,6 +593,8 @@ static const struct nand_ecc_caps __name = {			\
  * @postpad:	padding information for syndrome based ECC generators
  * @options:	ECC specific options (see NAND_ECC_XXX flags defined above)
  * @priv:	pointer to private ECC control data
+ * @calc_buf:	buffer for calculated ECC, size is oobsize.
+ * @code_buf:	buffer for ECC read from flash, size is oobsize.
  * @hwctl:	function to control hardware ECC generator. Must only
  *		be provided if an hardware ECC is available
  * @calculate:	function for ECC calculation or readback from ECC hardware
@@ -570,6 +645,8 @@ struct nand_ecc_ctrl {
 	int postpad;
 	unsigned int options;
 	void *priv;
+	u8 *calc_buf;
+	u8 *code_buf;
 	void (*hwctl)(struct mtd_info *mtd, int mode);
 	int (*calculate)(struct mtd_info *mtd, const uint8_t *dat,
 			uint8_t *ecc_code);
@@ -595,26 +672,6 @@ struct nand_ecc_ctrl {
 	int (*read_oob)(struct mtd_info *mtd, struct nand_chip *chip, int page);
 	int (*write_oob)(struct mtd_info *mtd, struct nand_chip *chip,
 			int page);
-};
-
-static inline int nand_standard_page_accessors(struct nand_ecc_ctrl *ecc)
-{
-	return !(ecc->options & NAND_ECC_CUSTOM_PAGE_ACCESS);
-}
-
-/**
- * struct nand_buffers - buffer structure for read/write
- * @ecccalc:	buffer pointer for calculated ECC, size is oobsize.
- * @ecccode:	buffer pointer for ECC read from flash, size is oobsize.
- * @databuf:	buffer pointer for data, size is (page size + oobsize).
- *
- * Do not change the order of buffers. databuf and oobrbuf must be in
- * consecutive order.
- */
-struct nand_buffers {
-	uint8_t	*ecccalc;
-	uint8_t	*ecccode;
-	uint8_t *databuf;
 };
 
 /**
@@ -719,8 +776,9 @@ enum nand_data_interface_type {
 
 /**
  * struct nand_data_interface - NAND interface timing
- * @type:	type of the timing
- * @timings:	The timing, type according to @type
+ * @type:	 type of the timing
+ * @timings:	 The timing, type according to @type
+ * @timings.sdr: Use it when @type is %NAND_SDR_IFACE.
  */
 struct nand_data_interface {
 	enum nand_data_interface_type type;
@@ -749,12 +807,373 @@ nand_get_sdr_timings(const struct nand_data_interface *conf)
  *	  implementation) if any.
  * @cleanup: the ->init() function may have allocated resources, ->cleanup()
  *	     is here to let vendor specific code release those resources.
+ * @fixup_onfi_param_page: apply vendor specific fixups to the ONFI parameter
+ *			   page. This is called after the checksum is verified.
  */
 struct nand_manufacturer_ops {
 	void (*detect)(struct nand_chip *chip);
 	int (*init)(struct nand_chip *chip);
 	void (*cleanup)(struct nand_chip *chip);
+	void (*fixup_onfi_param_page)(struct nand_chip *chip,
+				      struct nand_onfi_params *p);
 };
+
+/**
+ * struct nand_op_cmd_instr - Definition of a command instruction
+ * @opcode: the command to issue in one cycle
+ */
+struct nand_op_cmd_instr {
+	u8 opcode;
+};
+
+/**
+ * struct nand_op_addr_instr - Definition of an address instruction
+ * @naddrs: length of the @addrs array
+ * @addrs: array containing the address cycles to issue
+ */
+struct nand_op_addr_instr {
+	unsigned int naddrs;
+	const u8 *addrs;
+};
+
+/**
+ * struct nand_op_data_instr - Definition of a data instruction
+ * @len: number of data bytes to move
+ * @buf: buffer to fill
+ * @buf.in: buffer to fill when reading from the NAND chip
+ * @buf.out: buffer to read from when writing to the NAND chip
+ * @force_8bit: force 8-bit access
+ *
+ * Please note that "in" and "out" are inverted from the ONFI specification
+ * and are from the controller perspective, so a "in" is a read from the NAND
+ * chip while a "out" is a write to the NAND chip.
+ */
+struct nand_op_data_instr {
+	unsigned int len;
+	union {
+		void *in;
+		const void *out;
+	} buf;
+	bool force_8bit;
+};
+
+/**
+ * struct nand_op_waitrdy_instr - Definition of a wait ready instruction
+ * @timeout_ms: maximum delay while waiting for the ready/busy pin in ms
+ */
+struct nand_op_waitrdy_instr {
+	unsigned int timeout_ms;
+};
+
+/**
+ * enum nand_op_instr_type - Definition of all instruction types
+ * @NAND_OP_CMD_INSTR: command instruction
+ * @NAND_OP_ADDR_INSTR: address instruction
+ * @NAND_OP_DATA_IN_INSTR: data in instruction
+ * @NAND_OP_DATA_OUT_INSTR: data out instruction
+ * @NAND_OP_WAITRDY_INSTR: wait ready instruction
+ */
+enum nand_op_instr_type {
+	NAND_OP_CMD_INSTR,
+	NAND_OP_ADDR_INSTR,
+	NAND_OP_DATA_IN_INSTR,
+	NAND_OP_DATA_OUT_INSTR,
+	NAND_OP_WAITRDY_INSTR,
+};
+
+/**
+ * struct nand_op_instr - Instruction object
+ * @type: the instruction type
+ * @ctx:  extra data associated to the instruction. You'll have to use the
+ *        appropriate element depending on @type
+ * @ctx.cmd: use it if @type is %NAND_OP_CMD_INSTR
+ * @ctx.addr: use it if @type is %NAND_OP_ADDR_INSTR
+ * @ctx.data: use it if @type is %NAND_OP_DATA_IN_INSTR
+ *	      or %NAND_OP_DATA_OUT_INSTR
+ * @ctx.waitrdy: use it if @type is %NAND_OP_WAITRDY_INSTR
+ * @delay_ns: delay the controller should apply after the instruction has been
+ *	      issued on the bus. Most modern controllers have internal timings
+ *	      control logic, and in this case, the controller driver can ignore
+ *	      this field.
+ */
+struct nand_op_instr {
+	enum nand_op_instr_type type;
+	union {
+		struct nand_op_cmd_instr cmd;
+		struct nand_op_addr_instr addr;
+		struct nand_op_data_instr data;
+		struct nand_op_waitrdy_instr waitrdy;
+	} ctx;
+	unsigned int delay_ns;
+};
+
+/*
+ * Special handling must be done for the WAITRDY timeout parameter as it usually
+ * is either tPROG (after a prog), tR (before a read), tRST (during a reset) or
+ * tBERS (during an erase) which all of them are u64 values that cannot be
+ * divided by usual kernel macros and must be handled with the special
+ * DIV_ROUND_UP_ULL() macro.
+ *
+ * Cast to type of dividend is needed here to guarantee that the result won't
+ * be an unsigned long long when the dividend is an unsigned long (or smaller),
+ * which is what the compiler does when it sees ternary operator with 2
+ * different return types (picks the largest type to make sure there's no
+ * loss).
+ */
+#define __DIVIDE(dividend, divisor) ({						\
+	(__typeof__(dividend))(sizeof(dividend) <= sizeof(unsigned long) ?	\
+			       DIV_ROUND_UP(dividend, divisor) :		\
+			       DIV_ROUND_UP_ULL(dividend, divisor)); 		\
+	})
+#define PSEC_TO_NSEC(x) __DIVIDE(x, 1000)
+#define PSEC_TO_MSEC(x) __DIVIDE(x, 1000000000)
+
+#define NAND_OP_CMD(id, ns)						\
+	{								\
+		.type = NAND_OP_CMD_INSTR,				\
+		.ctx.cmd.opcode = id,					\
+		.delay_ns = ns,						\
+	}
+
+#define NAND_OP_ADDR(ncycles, cycles, ns)				\
+	{								\
+		.type = NAND_OP_ADDR_INSTR,				\
+		.ctx.addr = {						\
+			.naddrs = ncycles,				\
+			.addrs = cycles,				\
+		},							\
+		.delay_ns = ns,						\
+	}
+
+#define NAND_OP_DATA_IN(l, b, ns)					\
+	{								\
+		.type = NAND_OP_DATA_IN_INSTR,				\
+		.ctx.data = {						\
+			.len = l,					\
+			.buf.in = b,					\
+			.force_8bit = false,				\
+		},							\
+		.delay_ns = ns,						\
+	}
+
+#define NAND_OP_DATA_OUT(l, b, ns)					\
+	{								\
+		.type = NAND_OP_DATA_OUT_INSTR,				\
+		.ctx.data = {						\
+			.len = l,					\
+			.buf.out = b,					\
+			.force_8bit = false,				\
+		},							\
+		.delay_ns = ns,						\
+	}
+
+#define NAND_OP_8BIT_DATA_IN(l, b, ns)					\
+	{								\
+		.type = NAND_OP_DATA_IN_INSTR,				\
+		.ctx.data = {						\
+			.len = l,					\
+			.buf.in = b,					\
+			.force_8bit = true,				\
+		},							\
+		.delay_ns = ns,						\
+	}
+
+#define NAND_OP_8BIT_DATA_OUT(l, b, ns)					\
+	{								\
+		.type = NAND_OP_DATA_OUT_INSTR,				\
+		.ctx.data = {						\
+			.len = l,					\
+			.buf.out = b,					\
+			.force_8bit = true,				\
+		},							\
+		.delay_ns = ns,						\
+	}
+
+#define NAND_OP_WAIT_RDY(tout_ms, ns)					\
+	{								\
+		.type = NAND_OP_WAITRDY_INSTR,				\
+		.ctx.waitrdy.timeout_ms = tout_ms,			\
+		.delay_ns = ns,						\
+	}
+
+/**
+ * struct nand_subop - a sub operation
+ * @instrs: array of instructions
+ * @ninstrs: length of the @instrs array
+ * @first_instr_start_off: offset to start from for the first instruction
+ *			   of the sub-operation
+ * @last_instr_end_off: offset to end at (excluded) for the last instruction
+ *			of the sub-operation
+ *
+ * Both @first_instr_start_off and @last_instr_end_off only apply to data or
+ * address instructions.
+ *
+ * When an operation cannot be handled as is by the NAND controller, it will
+ * be split by the parser into sub-operations which will be passed to the
+ * controller driver.
+ */
+struct nand_subop {
+	const struct nand_op_instr *instrs;
+	unsigned int ninstrs;
+	unsigned int first_instr_start_off;
+	unsigned int last_instr_end_off;
+};
+
+unsigned int nand_subop_get_addr_start_off(const struct nand_subop *subop,
+					   unsigned int op_id);
+unsigned int nand_subop_get_num_addr_cyc(const struct nand_subop *subop,
+					 unsigned int op_id);
+unsigned int nand_subop_get_data_start_off(const struct nand_subop *subop,
+					   unsigned int op_id);
+unsigned int nand_subop_get_data_len(const struct nand_subop *subop,
+				     unsigned int op_id);
+
+/**
+ * struct nand_op_parser_addr_constraints - Constraints for address instructions
+ * @maxcycles: maximum number of address cycles the controller can issue in a
+ *	       single step
+ */
+struct nand_op_parser_addr_constraints {
+	unsigned int maxcycles;
+};
+
+/**
+ * struct nand_op_parser_data_constraints - Constraints for data instructions
+ * @maxlen: maximum data length that the controller can handle in a single step
+ */
+struct nand_op_parser_data_constraints {
+	unsigned int maxlen;
+};
+
+/**
+ * struct nand_op_parser_pattern_elem - One element of a pattern
+ * @type: the instructuction type
+ * @optional: whether this element of the pattern is optional or mandatory
+ * @ctx: address or data constraint
+ * @ctx.addr: address constraint (number of cycles)
+ * @ctx.data: data constraint (data length)
+ */
+struct nand_op_parser_pattern_elem {
+	enum nand_op_instr_type type;
+	bool optional;
+	union {
+		struct nand_op_parser_addr_constraints addr;
+		struct nand_op_parser_data_constraints data;
+	} ctx;
+};
+
+#define NAND_OP_PARSER_PAT_CMD_ELEM(_opt)			\
+	{							\
+		.type = NAND_OP_CMD_INSTR,			\
+		.optional = _opt,				\
+	}
+
+#define NAND_OP_PARSER_PAT_ADDR_ELEM(_opt, _maxcycles)		\
+	{							\
+		.type = NAND_OP_ADDR_INSTR,			\
+		.optional = _opt,				\
+		.ctx.addr.maxcycles = _maxcycles,		\
+	}
+
+#define NAND_OP_PARSER_PAT_DATA_IN_ELEM(_opt, _maxlen)		\
+	{							\
+		.type = NAND_OP_DATA_IN_INSTR,			\
+		.optional = _opt,				\
+		.ctx.data.maxlen = _maxlen,			\
+	}
+
+#define NAND_OP_PARSER_PAT_DATA_OUT_ELEM(_opt, _maxlen)		\
+	{							\
+		.type = NAND_OP_DATA_OUT_INSTR,			\
+		.optional = _opt,				\
+		.ctx.data.maxlen = _maxlen,			\
+	}
+
+#define NAND_OP_PARSER_PAT_WAITRDY_ELEM(_opt)			\
+	{							\
+		.type = NAND_OP_WAITRDY_INSTR,			\
+		.optional = _opt,				\
+	}
+
+/**
+ * struct nand_op_parser_pattern - NAND sub-operation pattern descriptor
+ * @elems: array of pattern elements
+ * @nelems: number of pattern elements in @elems array
+ * @exec: the function that will issue a sub-operation
+ *
+ * A pattern is a list of elements, each element reprensenting one instruction
+ * with its constraints. The pattern itself is used by the core to match NAND
+ * chip operation with NAND controller operations.
+ * Once a match between a NAND controller operation pattern and a NAND chip
+ * operation (or a sub-set of a NAND operation) is found, the pattern ->exec()
+ * hook is called so that the controller driver can issue the operation on the
+ * bus.
+ *
+ * Controller drivers should declare as many patterns as they support and pass
+ * this list of patterns (created with the help of the following macro) to
+ * the nand_op_parser_exec_op() helper.
+ */
+struct nand_op_parser_pattern {
+	const struct nand_op_parser_pattern_elem *elems;
+	unsigned int nelems;
+	int (*exec)(struct nand_chip *chip, const struct nand_subop *subop);
+};
+
+#define NAND_OP_PARSER_PATTERN(_exec, ...)							\
+	{											\
+		.exec = _exec,									\
+		.elems = (struct nand_op_parser_pattern_elem[]) { __VA_ARGS__ },		\
+		.nelems = sizeof((struct nand_op_parser_pattern_elem[]) { __VA_ARGS__ }) /	\
+			  sizeof(struct nand_op_parser_pattern_elem),				\
+	}
+
+/**
+ * struct nand_op_parser - NAND controller operation parser descriptor
+ * @patterns: array of supported patterns
+ * @npatterns: length of the @patterns array
+ *
+ * The parser descriptor is just an array of supported patterns which will be
+ * iterated by nand_op_parser_exec_op() everytime it tries to execute an
+ * NAND operation (or tries to determine if a specific operation is supported).
+ *
+ * It is worth mentioning that patterns will be tested in their declaration
+ * order, and the first match will be taken, so it's important to order patterns
+ * appropriately so that simple/inefficient patterns are placed at the end of
+ * the list. Usually, this is where you put single instruction patterns.
+ */
+struct nand_op_parser {
+	const struct nand_op_parser_pattern *patterns;
+	unsigned int npatterns;
+};
+
+#define NAND_OP_PARSER(...)									\
+	{											\
+		.patterns = (struct nand_op_parser_pattern[]) { __VA_ARGS__ },			\
+		.npatterns = sizeof((struct nand_op_parser_pattern[]) { __VA_ARGS__ }) /	\
+			     sizeof(struct nand_op_parser_pattern),				\
+	}
+
+/**
+ * struct nand_operation - NAND operation descriptor
+ * @instrs: array of instructions to execute
+ * @ninstrs: length of the @instrs array
+ *
+ * The actual operation structure that will be passed to chip->exec_op().
+ */
+struct nand_operation {
+	const struct nand_op_instr *instrs;
+	unsigned int ninstrs;
+};
+
+#define NAND_OPERATION(_instrs)					\
+	{							\
+		.instrs = _instrs,				\
+		.ninstrs = ARRAY_SIZE(_instrs),			\
+	}
+
+int nand_op_parser_exec_op(struct nand_chip *chip,
+			   const struct nand_op_parser *parser,
+			   const struct nand_operation *op, bool check_only);
 
 /**
  * struct nand_chip - NAND Private Flash Chip Data
@@ -782,14 +1201,17 @@ struct nand_manufacturer_ops {
  *			commands to the chip.
  * @waitfunc:		[REPLACEABLE] hardwarespecific function for wait on
  *			ready.
+ * @exec_op:		controller specific method to execute NAND operations.
+ *			This method replaces ->cmdfunc(),
+ *			->{read,write}_{buf,byte,word}(), ->dev_ready() and
+ *			->waifunc().
  * @setup_read_retry:	[FLASHSPECIFIC] flash (vendor) specific function for
  *			setting the read-retry mode. Mostly needed for MLC NAND.
  * @ecc:		[BOARDSPECIFIC] ECC control structure
- * @buffers:		buffer structure for read/write
  * @buf_align:		minimum buffer alignment required by a platform
- * @hwcontrol:		platform-specific hardware control structure
+ * @dummy_controller:	dummy controller implementation for drivers that can
+ *			only control a single chip
  * @erase:		[REPLACEABLE] erase function
- * @scan_bbt:		[REPLACEABLE] function to scan bad block table
  * @chip_delay:		[BOARDSPECIFIC] chip dependent delay for transferring
  *			data from array to read regs (tR).
  * @state:		[INTERN] the current state of the NAND device
@@ -825,27 +1247,22 @@ struct nand_manufacturer_ops {
  * @numchips:		[INTERN] number of physical chips
  * @chipsize:		[INTERN] the size of one chip for multichip arrays
  * @pagemask:		[INTERN] page number mask = number of (pages / chip) - 1
+ * @data_buf:		[INTERN] buffer for data, size is (page size + oobsize).
  * @pagebuf:		[INTERN] holds the pagenumber which is currently in
  *			data_buf.
  * @pagebuf_bitflips:	[INTERN] holds the bitflip count for the page which is
  *			currently in data_buf.
  * @subpagesize:	[INTERN] holds the subpagesize
  * @id:			[INTERN] holds NAND ID
- * @onfi_version:	[INTERN] holds the chip ONFI version (BCD encoded),
- *			non 0 if ONFI supported.
- * @jedec_version:	[INTERN] holds the chip JEDEC version (BCD encoded),
- *			non 0 if JEDEC supported.
- * @onfi_params:	[INTERN] holds the ONFI page parameter when ONFI is
- *			supported, 0 otherwise.
- * @jedec_params:	[INTERN] holds the JEDEC parameter page when JEDEC is
- *			supported, 0 otherwise.
+ * @parameters:		[INTERN] holds generic parameters under an easily
+ *			readable form.
  * @max_bb_per_die:	[INTERN] the max number of bad blocks each die of a
  *			this nand device will encounter their life times.
  * @blocks_per_die:	[INTERN] The number of PEBs in a die
  * @data_interface:	[INTERN] NAND interface timing information
  * @read_retries:	[INTERN] the number of read retry modes supported
- * @onfi_set_features:	[REPLACEABLE] set the features for ONFI nand
- * @onfi_get_features:	[REPLACEABLE] get the features for ONFI nand
+ * @set_features:	[REPLACEABLE] set the NAND chip features
+ * @get_features:	[REPLACEABLE] get the NAND chip features
  * @setup_data_interface: [OPTIONAL] setup the data interface and timing. If
  *			  chipnr is set to %NAND_DATA_IFACE_CHECK_ONLY this
  *			  means the configuration should not be applied but
@@ -861,6 +1278,8 @@ struct nand_manufacturer_ops {
  *			devices.
  * @priv:		[OPTIONAL] pointer to private chip data
  * @manufacturer:	[INTERN] Contains manufacturer information
+ * @manufacturer.desc:	[INTERN] Contains manufacturer's description
+ * @manufacturer.priv:	[INTERN] Contains manufacturer private information
  */
 
 struct nand_chip {
@@ -881,16 +1300,17 @@ struct nand_chip {
 	void (*cmdfunc)(struct mtd_info *mtd, unsigned command, int column,
 			int page_addr);
 	int(*waitfunc)(struct mtd_info *mtd, struct nand_chip *this);
+	int (*exec_op)(struct nand_chip *chip,
+		       const struct nand_operation *op,
+		       bool check_only);
 	int (*erase)(struct mtd_info *mtd, int page);
-	int (*scan_bbt)(struct mtd_info *mtd);
-	int (*onfi_set_features)(struct mtd_info *mtd, struct nand_chip *chip,
-			int feature_addr, uint8_t *subfeature_para);
-	int (*onfi_get_features)(struct mtd_info *mtd, struct nand_chip *chip,
-			int feature_addr, uint8_t *subfeature_para);
+	int (*set_features)(struct mtd_info *mtd, struct nand_chip *chip,
+			    int feature_addr, uint8_t *subfeature_para);
+	int (*get_features)(struct mtd_info *mtd, struct nand_chip *chip,
+			    int feature_addr, uint8_t *subfeature_para);
 	int (*setup_read_retry)(struct mtd_info *mtd, int retry_mode);
 	int (*setup_data_interface)(struct mtd_info *mtd, int chipnr,
 				    const struct nand_data_interface *conf);
-
 
 	int chip_delay;
 	unsigned int options;
@@ -903,6 +1323,7 @@ struct nand_chip {
 	int numchips;
 	uint64_t chipsize;
 	int pagemask;
+	u8 *data_buf;
 	int pagebuf;
 	unsigned int pagebuf_bitflips;
 	int subpagesize;
@@ -914,28 +1335,22 @@ struct nand_chip {
 	int badblockbits;
 
 	struct nand_id id;
-	int onfi_version;
-	int jedec_version;
-	union {
-		struct nand_onfi_params	onfi_params;
-		struct nand_jedec_params jedec_params;
-	};
+	struct nand_parameters parameters;
 	u16 max_bb_per_die;
 	u32 blocks_per_die;
 
-	struct nand_data_interface *data_interface;
+	struct nand_data_interface data_interface;
 
 	int read_retries;
 
 	flstate_t state;
 
 	uint8_t *oob_poi;
-	struct nand_hw_control *controller;
+	struct nand_controller *controller;
 
 	struct nand_ecc_ctrl ecc;
-	struct nand_buffers *buffers;
 	unsigned long buf_align;
-	struct nand_hw_control hwcontrol;
+	struct nand_controller dummy_controller;
 
 	uint8_t *bbt;
 	struct nand_bbt_descr *bbt_td;
@@ -950,6 +1365,15 @@ struct nand_chip {
 		void *priv;
 	} manufacturer;
 };
+
+static inline int nand_exec_op(struct nand_chip *chip,
+			       const struct nand_operation *op)
+{
+	if (!chip->exec_op)
+		return -ENOTSUPP;
+
+	return chip->exec_op(chip, op, false);
+}
 
 extern const struct mtd_ooblayout_ops nand_ooblayout_sp_ops;
 extern const struct mtd_ooblayout_ops nand_ooblayout_lp_ops;
@@ -1125,14 +1549,12 @@ extern const struct nand_manufacturer_ops micron_nand_manuf_ops;
 extern const struct nand_manufacturer_ops amd_nand_manuf_ops;
 extern const struct nand_manufacturer_ops macronix_nand_manuf_ops;
 
-int nand_default_bbt(struct mtd_info *mtd);
+int nand_create_bbt(struct nand_chip *chip);
 int nand_markbad_bbt(struct mtd_info *mtd, loff_t offs);
 int nand_isreserved_bbt(struct mtd_info *mtd, loff_t offs);
 int nand_isbad_bbt(struct mtd_info *mtd, loff_t offs, int allowbbt);
 int nand_erase_nand(struct mtd_info *mtd, struct erase_info *instr,
 		    int allowbbt);
-int nand_do_read(struct mtd_info *mtd, loff_t from, size_t len,
-		 size_t *retlen, uint8_t *buf);
 
 /**
  * struct platform_nand_chip - chip level device structure
@@ -1163,14 +1585,12 @@ struct platform_device;
  * struct platform_nand_ctrl - controller level device structure
  * @probe:		platform specific function to probe/setup hardware
  * @remove:		platform specific function to remove/teardown hardware
- * @hwcontrol:		platform specific hardware control structure
  * @dev_ready:		platform specific function to read ready/busy pin
  * @select_chip:	platform specific chip select function
  * @cmd_ctrl:		platform specific function for controlling
  *			ALE/CLE/nCE. Also used to write command and address
  * @write_buf:		platform specific function for write buffer
  * @read_buf:		platform specific function for read buffer
- * @read_byte:		platform specific function to read one byte from chip
  * @priv:		private data to transport driver specific settings
  *
  * All fields are optional and depend on the hardware driver requirements
@@ -1178,13 +1598,11 @@ struct platform_device;
 struct platform_nand_ctrl {
 	int (*probe)(struct platform_device *pdev);
 	void (*remove)(struct platform_device *pdev);
-	void (*hwcontrol)(struct mtd_info *mtd, int cmd);
 	int (*dev_ready)(struct mtd_info *mtd);
 	void (*select_chip)(struct mtd_info *mtd, int chip);
 	void (*cmd_ctrl)(struct mtd_info *mtd, int dat, unsigned int ctrl);
 	void (*write_buf)(struct mtd_info *mtd, const uint8_t *buf, int len);
 	void (*read_buf)(struct mtd_info *mtd, uint8_t *buf, int len);
-	unsigned char (*read_byte)(struct mtd_info *mtd);
 	void *priv;
 };
 
@@ -1198,30 +1616,16 @@ struct platform_nand_data {
 	struct platform_nand_ctrl ctrl;
 };
 
-/* return the supported features. */
-static inline int onfi_feature(struct nand_chip *chip)
-{
-	return chip->onfi_version ? le16_to_cpu(chip->onfi_params.features) : 0;
-}
-
 /* return the supported asynchronous timing mode. */
 static inline int onfi_get_async_timing_mode(struct nand_chip *chip)
 {
-	if (!chip->onfi_version)
+	if (!chip->parameters.onfi)
 		return ONFI_TIMING_MODE_UNKNOWN;
-	return le16_to_cpu(chip->onfi_params.async_timing_mode);
+
+	return chip->parameters.onfi->async_timing_mode;
 }
 
-/* return the supported synchronous timing mode. */
-static inline int onfi_get_sync_timing_mode(struct nand_chip *chip)
-{
-	if (!chip->onfi_version)
-		return ONFI_TIMING_MODE_UNKNOWN;
-	return le16_to_cpu(chip->onfi_params.src_sync_timing_mode);
-}
-
-int onfi_init_data_interface(struct nand_chip *chip,
-			     struct nand_data_interface *iface,
+int onfi_fill_data_interface(struct nand_chip *chip,
 			     enum nand_data_interface_type type,
 			     int timing_mode);
 
@@ -1255,31 +1659,16 @@ static inline int nand_opcode_8bits(unsigned int command)
 	return 0;
 }
 
-/* return the supported JEDEC features. */
-static inline int jedec_feature(struct nand_chip *chip)
-{
-	return chip->jedec_version ? le16_to_cpu(chip->jedec_params.features)
-		: 0;
-}
-
 /* get timing characteristics from ONFI timing mode. */
 const struct nand_sdr_timings *onfi_async_timing_mode_to_sdr_timings(int mode);
-/* get data interface from ONFI timing mode 0, used after reset. */
-const struct nand_data_interface *nand_get_default_data_interface(void);
 
 int nand_check_erased_ecc_chunk(void *data, int datalen,
 				void *ecc, int ecclen,
 				void *extraoob, int extraooblen,
 				int threshold);
 
-int nand_check_ecc_caps(struct nand_chip *chip,
-			const struct nand_ecc_caps *caps, int oobavail);
-
-int nand_match_ecc_req(struct nand_chip *chip,
-		       const struct nand_ecc_caps *caps,  int oobavail);
-
-int nand_maximize_ecc(struct nand_chip *chip,
-		      const struct nand_ecc_caps *caps, int oobavail);
+int nand_ecc_choose_conf(struct nand_chip *chip,
+			 const struct nand_ecc_caps *caps, int oobavail);
 
 /* Default write_oob implementation */
 int nand_write_oob_std(struct mtd_info *mtd, struct nand_chip *chip, int page);
@@ -1295,25 +1684,72 @@ int nand_read_oob_std(struct mtd_info *mtd, struct nand_chip *chip, int page);
 int nand_read_oob_syndrome(struct mtd_info *mtd, struct nand_chip *chip,
 			   int page);
 
+/* Wrapper to use in order for controllers/vendors to GET/SET FEATURES */
+int nand_get_features(struct nand_chip *chip, int addr, u8 *subfeature_param);
+int nand_set_features(struct nand_chip *chip, int addr, u8 *subfeature_param);
 /* Stub used by drivers that do not support GET/SET FEATURES operations */
-int nand_onfi_get_set_features_notsupp(struct mtd_info *mtd,
-				       struct nand_chip *chip, int addr,
-				       u8 *subfeature_param);
+int nand_get_set_features_notsupp(struct mtd_info *mtd, struct nand_chip *chip,
+				  int addr, u8 *subfeature_param);
 
 /* Default read_page_raw implementation */
 int nand_read_page_raw(struct mtd_info *mtd, struct nand_chip *chip,
 		       uint8_t *buf, int oob_required, int page);
+int nand_read_page_raw_notsupp(struct mtd_info *mtd, struct nand_chip *chip,
+			       u8 *buf, int oob_required, int page);
 
 /* Default write_page_raw implementation */
 int nand_write_page_raw(struct mtd_info *mtd, struct nand_chip *chip,
 			const uint8_t *buf, int oob_required, int page);
+int nand_write_page_raw_notsupp(struct mtd_info *mtd, struct nand_chip *chip,
+				const u8 *buf, int oob_required, int page);
 
 /* Reset and initialize a NAND device */
 int nand_reset(struct nand_chip *chip, int chipnr);
 
-/* Free resources held by the NAND device */
+/* NAND operation helpers */
+int nand_reset_op(struct nand_chip *chip);
+int nand_readid_op(struct nand_chip *chip, u8 addr, void *buf,
+		   unsigned int len);
+int nand_status_op(struct nand_chip *chip, u8 *status);
+int nand_exit_status_op(struct nand_chip *chip);
+int nand_erase_op(struct nand_chip *chip, unsigned int eraseblock);
+int nand_read_page_op(struct nand_chip *chip, unsigned int page,
+		      unsigned int offset_in_page, void *buf, unsigned int len);
+int nand_change_read_column_op(struct nand_chip *chip,
+			       unsigned int offset_in_page, void *buf,
+			       unsigned int len, bool force_8bit);
+int nand_read_oob_op(struct nand_chip *chip, unsigned int page,
+		     unsigned int offset_in_page, void *buf, unsigned int len);
+int nand_prog_page_begin_op(struct nand_chip *chip, unsigned int page,
+			    unsigned int offset_in_page, const void *buf,
+			    unsigned int len);
+int nand_prog_page_end_op(struct nand_chip *chip);
+int nand_prog_page_op(struct nand_chip *chip, unsigned int page,
+		      unsigned int offset_in_page, const void *buf,
+		      unsigned int len);
+int nand_change_write_column_op(struct nand_chip *chip,
+				unsigned int offset_in_page, const void *buf,
+				unsigned int len, bool force_8bit);
+int nand_read_data_op(struct nand_chip *chip, void *buf, unsigned int len,
+		      bool force_8bit);
+int nand_write_data_op(struct nand_chip *chip, const void *buf,
+		       unsigned int len, bool force_8bit);
+
+/*
+ * Free resources held by the NAND device, must be called on error after a
+ * sucessful nand_scan().
+ */
 void nand_cleanup(struct nand_chip *chip);
+/* Unregister the MTD device and calls nand_cleanup() */
+void nand_release(struct nand_chip *chip);
 
 /* Default extended ID decoding function */
 void nand_decode_ext_id(struct nand_chip *chip);
+
+/*
+ * External helper for controller drivers that have to implement the WAITRDY
+ * instruction and have no physical pin to check it.
+ */
+int nand_soft_waitrdy(struct nand_chip *chip, unsigned long timeout_ms);
+
 #endif /* __LINUX_MTD_RAWNAND_H */

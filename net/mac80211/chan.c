@@ -1186,7 +1186,7 @@ static int ieee80211_chsw_switch_vifs(struct ieee80211_local *local,
 	lockdep_assert_held(&local->mtx);
 	lockdep_assert_held(&local->chanctx_mtx);
 
-	vif_chsw = kzalloc(sizeof(vif_chsw[0]) * n_vifs, GFP_KERNEL);
+	vif_chsw = kcalloc(n_vifs, sizeof(vif_chsw[0]), GFP_KERNEL);
 	if (!vif_chsw)
 		return -ENOMEM;
 
@@ -1638,12 +1638,9 @@ int ieee80211_vif_use_reserved_context(struct ieee80211_sub_if_data *sdata)
 
 	if (new_ctx->replace_state == IEEE80211_CHANCTX_REPLACE_NONE) {
 		if (old_ctx)
-			err = ieee80211_vif_use_reserved_reassign(sdata);
-		else
-			err = ieee80211_vif_use_reserved_assign(sdata);
+			return ieee80211_vif_use_reserved_reassign(sdata);
 
-		if (err)
-			return err;
+		return ieee80211_vif_use_reserved_assign(sdata);
 	}
 
 	/*

@@ -629,21 +629,21 @@ static inline void debugfs_init(struct cfv_info *cfv)
 	if (IS_ERR(cfv->debugfs))
 		return;
 
-	debugfs_create_u32("rx-napi-complete", S_IRUSR, cfv->debugfs,
+	debugfs_create_u32("rx-napi-complete", 0400, cfv->debugfs,
 			   &cfv->stats.rx_napi_complete);
-	debugfs_create_u32("rx-napi-resched", S_IRUSR, cfv->debugfs,
+	debugfs_create_u32("rx-napi-resched", 0400, cfv->debugfs,
 			   &cfv->stats.rx_napi_resched);
-	debugfs_create_u32("rx-nomem", S_IRUSR, cfv->debugfs,
+	debugfs_create_u32("rx-nomem", 0400, cfv->debugfs,
 			   &cfv->stats.rx_nomem);
-	debugfs_create_u32("rx-kicks", S_IRUSR, cfv->debugfs,
+	debugfs_create_u32("rx-kicks", 0400, cfv->debugfs,
 			   &cfv->stats.rx_kicks);
-	debugfs_create_u32("tx-full-ring", S_IRUSR, cfv->debugfs,
+	debugfs_create_u32("tx-full-ring", 0400, cfv->debugfs,
 			   &cfv->stats.tx_full_ring);
-	debugfs_create_u32("tx-no-mem", S_IRUSR, cfv->debugfs,
+	debugfs_create_u32("tx-no-mem", 0400, cfv->debugfs,
 			   &cfv->stats.tx_no_mem);
-	debugfs_create_u32("tx-kicks", S_IRUSR, cfv->debugfs,
+	debugfs_create_u32("tx-kicks", 0400, cfv->debugfs,
 			   &cfv->stats.tx_kicks);
-	debugfs_create_u32("tx-flow-on", S_IRUSR, cfv->debugfs,
+	debugfs_create_u32("tx-flow-on", 0400, cfv->debugfs,
 			   &cfv->stats.tx_flow_on);
 }
 
@@ -727,12 +727,20 @@ static int cfv_probe(struct virtio_device *vdev)
 	/* Carrier is off until netdevice is opened */
 	netif_carrier_off(netdev);
 
+	/* serialize netdev register + virtio_device_ready() with ndo_open() */
+	rtnl_lock();
+
 	/* register Netdev */
-	err = register_netdev(netdev);
+	err = register_netdevice(netdev);
 	if (err) {
+		rtnl_unlock();
 		dev_err(&vdev->dev, "Unable to register netdev (%d)\n", err);
 		goto err;
 	}
+
+	virtio_device_ready(vdev);
+
+	rtnl_unlock();
 
 	debugfs_init(cfv);
 

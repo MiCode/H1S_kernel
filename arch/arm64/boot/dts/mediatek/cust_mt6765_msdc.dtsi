@@ -1,15 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * Copyright (c) 2017 MediaTek Inc.
- * Author: Shi.Ma <shi.ma@mediatek.com>
+ * Copyright (c) 2019 MediaTek Inc.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 &msdc0 {
@@ -31,6 +23,8 @@
 	host_function = /bits/ 8 <MSDC_EMMC>;
 	bootable;
 	status = "okay";
+	infracfg = <&infracfg_ao>;
+	topckgen = <&topckgen>;
 
 #ifndef CONFIG_FPGA_EARLY_PORTING
 	vmmc-supply = <&mt_pmic_vemc_ldo_reg>;
@@ -72,7 +66,7 @@
 #ifndef CONFIG_FPGA_EARLY_PORTING
 	vmmc-supply = <&mt_pmic_vmch_ldo_reg>;
 	vqmmc-supply = <&mt_pmic_vmc_ldo_reg>;
-
+	mediatek,pwrap-regmap = <&pwrap>;
 	clocks = <&infracfg_ao CLK_IFR_MSDC1_SRC>, <&infracfg_ao CLK_IFR_MSDC1>;
 	clock-names = "msdc1-clock", "msdc1-hclock";
 #endif

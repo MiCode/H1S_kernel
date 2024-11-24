@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/debugfs.h>
@@ -20,7 +12,7 @@
 #include <mtk_spm_resource_req_internal.h>
 #include <mtk_idle_fs/mtk_idle_sysfs.h>
 #include <mtk_lp_dts.h>
-
+#include <mtk_idle_internal.h>
 #define NF_SPM_USER_USAGE_STRUCT	2
 
 DEFINE_SPINLOCK(spm_resource_desc_update_lock);
@@ -43,8 +35,40 @@ static const char * const spm_resource_name[] = {
 };
 
 static struct mtk_idle_sysfs_handle spm_resource_req_file;
-static unsigned int spm_console_req_status;
 
+/* Compulsory method for spm resource requirement.
+ * This function's implementation depend on platform
+ */
+int __attribute__((weak))
+	spm_resource_parse_req_console(struct device_node *np)
+{
+	return -1;
+}
+
+int __attribute__((weak))
+	spm_resource_req_console(unsigned int req, unsigned int res_bitmask)
+{
+	return -1;
+}
+
+int __attribute__((weak)) spm_resource_req_console_by_id(
+			int id, unsigned int req, unsigned int res_bitmask)
+{
+	return -1;
+}
+
+/* Method for spm resource requirement status.
+ * This function's implementation depend on platform
+ */
+int __attribute__((weak))
+	spm_get_resource_req_console_status(unsigned int *res_bitmask)
+{
+	if (!res_bitmask)
+		return -1;
+
+	*res_bitmask = 0;
+	return 0;
+}
 static int spm_resource_in_use(int resource)
 {
 	int i;
@@ -160,9 +184,32 @@ static ssize_t resource_req_read(char *ToUserBuf, size_t sz, void *priv)
 
 	p[0] = '\0';
 
-	p += scnprintf(p, sz - strlen(ToUserBuf),
-		"resource conole require = 0x%x\n", spm_console_req_status);
+	if (spm_get_resource_req_console_status(&len) == 0) {
+		char line_spe = ' ';
 
+		const char *spm_resource_console[MTK_SPM_RES_EX_MAX] = {
+			"DRAM s0",
+			"DRAM s1",
+			"Main Pll",
+			"Axi Bus",
+			"26M",
+		};
+
+		p += scnprintf(p, sz - strlen(ToUserBuf)
+					, "spm_resource_req_console_status:\n");
+
+		for (i = 0; i < MTK_SPM_RES_EX_MAX; ++i) {
+
+			if (i == (MTK_SPM_RES_EX_MAX-1))
+				line_spe = '\n';
+
+			p += scnprintf(p, sz - strlen(ToUserBuf)
+					, "[%s]:%d%c"
+					, spm_resource_console[i]
+					, !!(_RES_MASK(i) & len)
+					, line_spe);
+		}
+	}
 	for (i = 0; i < NF_SPM_RESOURCE; i++) {
 		p += scnprintf(p, sz - strlen(ToUserBuf),
 					"resource_req_bypass_stat[%s] = %x %x, usage %x %x\n",
@@ -175,11 +222,11 @@ static ssize_t resource_req_read(char *ToUserBuf, size_t sz, void *priv)
 
 	p += scnprintf(p, sz - strlen(ToUserBuf), "enable:\n");
 	p += scnprintf(p, sz - strlen(ToUserBuf),
-			"echo enable [bit] > /d/cpuidle/spm_resource_req\n");
+			"echo enable [bit] > %s\n", MTK_PROCFS_RESOURCE);
 	p += scnprintf(p, sz - strlen(ToUserBuf),
 			"bypass:\n");
 	p += scnprintf(p, sz - strlen(ToUserBuf),
-			"echo bypass [bit] > /d/cpuidle/spm_resource_req\n");
+			"echo bypass [bit] > %s\n", MTK_PROCFS_RESOURCE);
 	p += scnprintf(p, sz - strlen(ToUserBuf), "\n");
 	p += scnprintf(p, sz - strlen(ToUserBuf),
 			"[0]SPM, [1] UFS, [2] SSUSB, [3] AUDIO, [4] UART, ");
@@ -240,6 +287,7 @@ void spm_resource_req_debugfs_init(void)
 bool spm_resource_req_init(void)
 {
 	int i, k;
+	struct device_node *spm_node = NULL;
 
 	for (i = 0; i < NF_SPM_RESOURCE; i++) {
 		resc_desc[i].id = i;
@@ -249,6 +297,10 @@ bool spm_resource_req_init(void)
 			resc_desc[i].user_usage_mask[k] = 0xFFFFFFFF;
 		}
 	}
+	spm_node = GET_MTK_SPM_DTS_NODE();
+
+	if (spm_node)
+		spm_resource_parse_req_console(spm_node);
 
 	return true;
 }
@@ -288,41 +340,4 @@ void spm_resource_req_block_dump(void)
 
 	spin_unlock_irqrestore(&spm_resource_desc_update_lock, flags);
 }
-
-unsigned int spm_resource_console_dts_required(
-	struct spm_resource_console_req *req, int count)
-{
-	struct device_node *spm_node = NULL;
-	int res_req_bits = 0;
-
-	do {
-		if (!req || (count <= 0))
-			break;
-
-		spm_node = GET_MTK_SPM_DTS_NODE();
-
-		if (spm_node) {
-			u32 PropValue;
-			int prop_result;
-			int index = 0;
-
-			for (index = 0; (index < count) && req
-				&& req[index].name; index++) {
-
-				prop_result = of_property_read_u32(
-					spm_node, req[index].name, &PropValue);
-
-				if ((prop_result == 0) && (PropValue > 0))
-					res_req_bits |=
-						(1<<req[index].bit_number);
-			}
-
-			of_node_put(spm_node);
-		}
-		spm_console_req_status = res_req_bits;
-	} while (0);
-
-	return res_req_bits;
-}
-EXPORT_SYMBOL(spm_resource_console_dts_required);
 

@@ -1,7 +1,5 @@
 config MTK_SYSTRACKER_V2
 	bool "Enable MTK System Tracker Debugger V2"
-	select MTK_SYSTRACKER
-	default n
 	help
 	  SYSTRACKER driver is a debugging feature.
 	  SYSTRACKER is a hardware debugger to record timeout transaction

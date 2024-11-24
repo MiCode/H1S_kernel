@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _MTK_BTIF_EXP_H_
@@ -39,6 +31,7 @@ enum _ENUM_BTIF_DBG_ID_ {
 	BTIF_ENABLE_RT_LOG = BTIF_DUMP_BTIF_REG + 1,
 	BTIF_DISABLE_RT_LOG = BTIF_ENABLE_RT_LOG + 1,
 	BTIF_DUMP_BTIF_IRQ = BTIF_DISABLE_RT_LOG + 1,
+	BTIF_DUMP_DMA_VFIFO = BTIF_DUMP_BTIF_IRQ + 1,
 	BTIF_DBG_MAX,
 };
 
@@ -289,6 +282,20 @@ int mtk_btif_exp_rx_has_pending_data(unsigned long u_id);
  *  negative means fail
  *****************************************************************************/
 int mtk_btif_exp_tx_has_pending_data(unsigned long u_id);
+
+/*****************************************************************************
+ * FUNCTION
+ *  mtk_btif_is_tx_complete
+ * DESCRIPTION
+ *  Check if tx is complete
+ * PARAMETERS
+ *  u_id      [IN] btif index
+ * RETURNS
+ *  positive means tx is complete
+ *  zeor means tx is ongoing
+ *  negative means fail
+ *****************************************************************************/
+int mtk_btif_is_tx_complete(unsigned long u_id);
 
 /*****************************************************************************
  * FUNCTION

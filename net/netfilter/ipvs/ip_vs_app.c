@@ -363,7 +363,8 @@ static inline void vs_seq_update(struct ip_vs_conn *cp, struct ip_vs_seq *vseq,
 }
 
 static inline int app_tcp_pkt_out(struct ip_vs_conn *cp, struct sk_buff *skb,
-				  struct ip_vs_app *app)
+				  struct ip_vs_app *app,
+				  struct ip_vs_iphdr *ipvsh)
 {
 	int diff;
 	const unsigned int tcp_offset = ip_hdrlen(skb);
@@ -394,7 +395,7 @@ static inline int app_tcp_pkt_out(struct ip_vs_conn *cp, struct sk_buff *skb,
 	if (app->pkt_out == NULL)
 		return 1;
 
-	if (!app->pkt_out(app, cp, skb, &diff))
+	if (!app->pkt_out(app, cp, skb, &diff, ipvsh))
 		return 0;
 
 	/*
@@ -412,7 +413,8 @@ static inline int app_tcp_pkt_out(struct ip_vs_conn *cp, struct sk_buff *skb,
  *	called by ipvs packet handler, assumes previously checked cp!=NULL
  *	returns false if it can't handle packet (oom)
  */
-int ip_vs_app_pkt_out(struct ip_vs_conn *cp, struct sk_buff *skb)
+int ip_vs_app_pkt_out(struct ip_vs_conn *cp, struct sk_buff *skb,
+		      struct ip_vs_iphdr *ipvsh)
 {
 	struct ip_vs_app *app;
 
@@ -425,7 +427,7 @@ int ip_vs_app_pkt_out(struct ip_vs_conn *cp, struct sk_buff *skb)
 
 	/* TCP is complicated */
 	if (cp->protocol == IPPROTO_TCP)
-		return app_tcp_pkt_out(cp, skb, app);
+		return app_tcp_pkt_out(cp, skb, app, ipvsh);
 
 	/*
 	 *	Call private output hook function
@@ -433,12 +435,13 @@ int ip_vs_app_pkt_out(struct ip_vs_conn *cp, struct sk_buff *skb)
 	if (app->pkt_out == NULL)
 		return 1;
 
-	return app->pkt_out(app, cp, skb, NULL);
+	return app->pkt_out(app, cp, skb, NULL, ipvsh);
 }
 
 
 static inline int app_tcp_pkt_in(struct ip_vs_conn *cp, struct sk_buff *skb,
-				 struct ip_vs_app *app)
+				 struct ip_vs_app *app,
+				 struct ip_vs_iphdr *ipvsh)
 {
 	int diff;
 	const unsigned int tcp_offset = ip_hdrlen(skb);
@@ -469,7 +472,7 @@ static inline int app_tcp_pkt_in(struct ip_vs_conn *cp, struct sk_buff *skb,
 	if (app->pkt_in == NULL)
 		return 1;
 
-	if (!app->pkt_in(app, cp, skb, &diff))
+	if (!app->pkt_in(app, cp, skb, &diff, ipvsh))
 		return 0;
 
 	/*
@@ -487,7 +490,8 @@ static inline int app_tcp_pkt_in(struct ip_vs_conn *cp, struct sk_buff *skb,
  *	called by ipvs packet handler, assumes previously checked cp!=NULL.
  *	returns false if can't handle packet (oom).
  */
-int ip_vs_app_pkt_in(struct ip_vs_conn *cp, struct sk_buff *skb)
+int ip_vs_app_pkt_in(struct ip_vs_conn *cp, struct sk_buff *skb,
+		     struct ip_vs_iphdr *ipvsh)
 {
 	struct ip_vs_app *app;
 
@@ -500,7 +504,7 @@ int ip_vs_app_pkt_in(struct ip_vs_conn *cp, struct sk_buff *skb)
 
 	/* TCP is complicated */
 	if (cp->protocol == IPPROTO_TCP)
-		return app_tcp_pkt_in(cp, skb, app);
+		return app_tcp_pkt_in(cp, skb, app, ipvsh);
 
 	/*
 	 *	Call private input hook function
@@ -508,7 +512,7 @@ int ip_vs_app_pkt_in(struct ip_vs_conn *cp, struct sk_buff *skb)
 	if (app->pkt_in == NULL)
 		return 1;
 
-	return app->pkt_in(app, cp, skb, NULL);
+	return app->pkt_in(app, cp, skb, NULL, ipvsh);
 }
 
 
@@ -595,31 +599,24 @@ static const struct seq_operations ip_vs_app_seq_ops = {
 	.stop  = ip_vs_app_seq_stop,
 	.show  = ip_vs_app_seq_show,
 };
-
-static int ip_vs_app_open(struct inode *inode, struct file *file)
-{
-	return seq_open_net(inode, file, &ip_vs_app_seq_ops,
-			    sizeof(struct seq_net_private));
-}
-
-static const struct file_operations ip_vs_app_fops = {
-	.owner	 = THIS_MODULE,
-	.open	 = ip_vs_app_open,
-	.read	 = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release_net,
-};
 #endif
 
 int __net_init ip_vs_app_net_init(struct netns_ipvs *ipvs)
 {
 	INIT_LIST_HEAD(&ipvs->app_list);
-	proc_create("ip_vs_app", 0, ipvs->net->proc_net, &ip_vs_app_fops);
+#ifdef CONFIG_PROC_FS
+	if (!proc_create_net("ip_vs_app", 0, ipvs->net->proc_net,
+			     &ip_vs_app_seq_ops,
+			     sizeof(struct seq_net_private)))
+		return -ENOMEM;
+#endif
 	return 0;
 }
 
 void __net_exit ip_vs_app_net_cleanup(struct netns_ipvs *ipvs)
 {
 	unregister_ip_vs_app(ipvs, NULL /* all */);
+#ifdef CONFIG_PROC_FS
 	remove_proc_entry("ip_vs_app", ipvs->net->proc_net);
+#endif
 }

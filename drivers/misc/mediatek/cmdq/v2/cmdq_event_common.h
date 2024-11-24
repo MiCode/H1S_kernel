@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
-
 /* MDP start frame */
 DECLARE_CMDQ_EVENT(CMDQ_EVENT_MDP_RDMA0_SOF, 0, mdp_rdma0_sof)
 DECLARE_CMDQ_EVENT(CMDQ_EVENT_MDP_RDMA1_SOF, 1, mdp_rdma1_sof)
@@ -453,7 +444,7 @@ DECLARE_CMDQ_EVENT(CMDQ_SYNC_TOKEN_APPEND_THR13, 445, sw_token)
 DECLARE_CMDQ_EVENT(CMDQ_SYNC_TOKEN_APPEND_THR14, 446, sw_token)
 DECLARE_CMDQ_EVENT(CMDQ_SYNC_TOKEN_APPEND_THR15, 447, sw_token)
 
-/* GPR access tokens (for HW register backup) */
+/* GPR access tokens (for hardware register backup) */
 /* There are 15 32-bit GPR, 3 GPR form a */
 /* set (64-bit for address, 32-bit for value) */
 DECLARE_CMDQ_EVENT(CMDQ_SYNC_TOKEN_GPR_SET_0, 450, sw_token)

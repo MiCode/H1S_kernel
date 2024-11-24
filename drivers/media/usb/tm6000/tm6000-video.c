@@ -1,20 +1,10 @@
-/*
- *   tm6000-video.c - driver for TM5600/TM6000/TM6010 USB video capture devices
- *
- *  Copyright (C) 2006-2007 Mauro Carvalho Chehab <mchehab@infradead.org>
- *
- *  Copyright (C) 2007 Michel Ludwig <michel.ludwig@gmail.com>
- *	- Fixed module load/unload
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation version 2
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0
+// tm6000-video.c - driver for TM5600/TM6000/TM6010 USB video capture devices
+//
+// Copyright (c) 2006-2007 Mauro Carvalho Chehab <mchehab@kernel.org>
+//
+// Copyright (c) 2007 Michel Ludwig <michel.ludwig@gmail.com>
+//	- Fixed module load/unload
 
 #include <linux/module.h>
 #include <linux/delay.h>
@@ -342,10 +332,10 @@ static inline void print_err_status(struct tm6000_core *dev,
 
 	switch (status) {
 	case -ENOENT:
-		errmsg = "unlinked synchronuously";
+		errmsg = "unlinked synchronously";
 		break;
 	case -ECONNRESET:
-		errmsg = "unlinked asynchronuously";
+		errmsg = "unlinked asynchronously";
 		break;
 	case -ENOSR:
 		errmsg = "Buffer error (overrun)";
@@ -470,20 +460,18 @@ static int tm6000_alloc_urb_buffers(struct tm6000_core *dev)
 	int num_bufs = TM6000_NUM_URB_BUF;
 	int i;
 
-	if (dev->urb_buffer != NULL)
+	if (dev->urb_buffer)
 		return 0;
 
-	dev->urb_buffer = kmalloc(sizeof(void *)*num_bufs, GFP_KERNEL);
-	if (!dev->urb_buffer) {
-		tm6000_err("cannot allocate memory for urb buffers\n");
+	dev->urb_buffer = kmalloc_array(num_bufs, sizeof(*dev->urb_buffer),
+					GFP_KERNEL);
+	if (!dev->urb_buffer)
 		return -ENOMEM;
-	}
 
-	dev->urb_dma = kmalloc(sizeof(dma_addr_t *)*num_bufs, GFP_KERNEL);
-	if (!dev->urb_dma) {
-		tm6000_err("cannot allocate memory for urb dma pointers\n");
+	dev->urb_dma = kmalloc_array(num_bufs, sizeof(*dev->urb_dma),
+				     GFP_KERNEL);
+	if (!dev->urb_dma)
 		return -ENOMEM;
-	}
 
 	for (i = 0; i < num_bufs; i++) {
 		dev->urb_buffer[i] = usb_alloc_coherent(
@@ -507,7 +495,7 @@ static int tm6000_free_urb_buffers(struct tm6000_core *dev)
 {
 	int i;
 
-	if (dev->urb_buffer == NULL)
+	if (!dev->urb_buffer)
 		return 0;
 
 	for (i = 0; i < TM6000_NUM_URB_BUF; i++) {
@@ -597,16 +585,15 @@ static int tm6000_prepare_isoc(struct tm6000_core *dev)
 
 	dev->isoc_ctl.num_bufs = num_bufs;
 
-	dev->isoc_ctl.urb = kmalloc(sizeof(void *)*num_bufs, GFP_KERNEL);
-	if (!dev->isoc_ctl.urb) {
-		tm6000_err("cannot alloc memory for usb buffers\n");
+	dev->isoc_ctl.urb = kmalloc_array(num_bufs, sizeof(void *),
+					  GFP_KERNEL);
+	if (!dev->isoc_ctl.urb)
 		return -ENOMEM;
-	}
 
-	dev->isoc_ctl.transfer_buffer = kmalloc(sizeof(void *)*num_bufs,
-				   GFP_KERNEL);
+	dev->isoc_ctl.transfer_buffer = kmalloc_array(num_bufs,
+						      sizeof(void *),
+						      GFP_KERNEL);
 	if (!dev->isoc_ctl.transfer_buffer) {
-		tm6000_err("cannot allocate memory for usbtransfer\n");
 		kfree(dev->isoc_ctl.urb);
 		return -ENOMEM;
 	}
@@ -1330,6 +1317,8 @@ static int __tm6000_open(struct file *file)
 	case VFL_TYPE_RADIO:
 		radio = 1;
 		break;
+	default:
+		return -EINVAL;
 	}
 
 	/* If more than one user, mutex should be added */
@@ -1361,9 +1350,8 @@ static int __tm6000_open(struct file *file)
 	fh->width = dev->width;
 	fh->height = dev->height;
 
-	dprintk(dev, V4L2_DEBUG_OPEN, "Open: fh=0x%08lx, dev=0x%08lx, dev->vidq=0x%08lx\n",
-			(unsigned long)fh, (unsigned long)dev,
-			(unsigned long)&dev->vidq);
+	dprintk(dev, V4L2_DEBUG_OPEN, "Open: fh=%p, dev=%p, dev->vidq=%p\n",
+		fh, dev, &dev->vidq);
 	dprintk(dev, V4L2_DEBUG_OPEN, "Open: list_empty queued=%d\n",
 		list_empty(&dev->vidq.queued));
 	dprintk(dev, V4L2_DEBUG_OPEN, "Open: list_empty active=%d\n",
@@ -1430,45 +1418,45 @@ tm6000_read(struct file *file, char __user *data, size_t count, loff_t *pos)
 	return 0;
 }
 
-static unsigned int
+static __poll_t
 __tm6000_poll(struct file *file, struct poll_table_struct *wait)
 {
-	unsigned long req_events = poll_requested_events(wait);
+	__poll_t req_events = poll_requested_events(wait);
 	struct tm6000_fh        *fh = file->private_data;
 	struct tm6000_buffer    *buf;
-	int res = 0;
+	__poll_t res = 0;
 
 	if (v4l2_event_pending(&fh->fh))
-		res = POLLPRI;
-	else if (req_events & POLLPRI)
+		res = EPOLLPRI;
+	else if (req_events & EPOLLPRI)
 		poll_wait(file, &fh->fh.wait, wait);
 	if (V4L2_BUF_TYPE_VIDEO_CAPTURE != fh->type)
-		return res | POLLERR;
+		return res | EPOLLERR;
 
 	if (!!is_res_streaming(fh->dev, fh))
-		return res | POLLERR;
+		return res | EPOLLERR;
 
 	if (!is_res_read(fh->dev, fh)) {
 		/* streaming capture */
 		if (list_empty(&fh->vb_vidq.stream))
-			return res | POLLERR;
+			return res | EPOLLERR;
 		buf = list_entry(fh->vb_vidq.stream.next, struct tm6000_buffer, vb.stream);
 		poll_wait(file, &buf->vb.done, wait);
 		if (buf->vb.state == VIDEOBUF_DONE ||
 		    buf->vb.state == VIDEOBUF_ERROR)
-			return res | POLLIN | POLLRDNORM;
-	} else if (req_events & (POLLIN | POLLRDNORM)) {
+			return res | EPOLLIN | EPOLLRDNORM;
+	} else if (req_events & (EPOLLIN | EPOLLRDNORM)) {
 		/* read() capture */
 		return res | videobuf_poll_stream(file, &fh->vb_vidq, wait);
 	}
 	return res;
 }
 
-static unsigned int tm6000_poll(struct file *file, struct poll_table_struct *wait)
+static __poll_t tm6000_poll(struct file *file, struct poll_table_struct *wait)
 {
 	struct tm6000_fh *fh = file->private_data;
 	struct tm6000_core *dev = fh->dev;
-	unsigned int res;
+	__poll_t res;
 
 	mutex_lock(&dev->lock);
 	res = __tm6000_poll(file, wait);
@@ -1638,7 +1626,7 @@ int tm6000_v4l2_register(struct tm6000_core *dev)
 	v4l2_ctrl_new_std(&dev->ctrl_handler, &tm6000_ctrl_ops,
 			V4L2_CID_HUE, -128, 127, 1, 0);
 	v4l2_ctrl_add_handler(&dev->ctrl_handler,
-			&dev->radio_ctrl_handler, NULL);
+			&dev->radio_ctrl_handler, NULL, false);
 
 	if (dev->radio_ctrl_handler.error)
 		ret = dev->radio_ctrl_handler.error;

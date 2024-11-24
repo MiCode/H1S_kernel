@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -124,6 +116,46 @@ struct upower_tbl_info upower_tbl_list[NR_UPOWER_TBL_LIST][NR_UPOWER_BANK] = {
 	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CLS_LL, upower_tbl_cluster_ll_C62),
 	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CCI, upower_tbl_cci_C62),
 	},
+	/* C65R */
+	[6] = {
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_L, upower_tbl_l_C65R),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_LL, upower_tbl_ll_C65R),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CLS_L, upower_tbl_cluster_l_C65R),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CLS_LL, upower_tbl_cluster_ll_C65R),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CCI, upower_tbl_cci_C65R),
+	},
+	/* C62D */
+	[7] = {
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_L, upower_tbl_l_C62D),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_LL, upower_tbl_ll_C62D),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CLS_L, upower_tbl_cluster_l_C62D),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CLS_LL, upower_tbl_cluster_ll_C62D),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CCI, upower_tbl_cci_C62D),
+	},
+	/* C62DLY */
+	[8] = {
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_L, upower_tbl_l_C62DLY),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_LL, upower_tbl_ll_C62DLY),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CLS_L, upower_tbl_cluster_l_C62DLY),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CLS_LL, upower_tbl_cluster_ll_C62DLY),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CCI, upower_tbl_cci_C62DLY),
+	},
+	/* C65OD */
+	[9] = {
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_L, upower_tbl_l_C65OD),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_LL, upower_tbl_ll_C65OD),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CLS_L, upower_tbl_cluster_l_C65OD),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CLS_LL, upower_tbl_cluster_ll_C65OD),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CCI, upower_tbl_cci_C65OD),
+	},
+	/* C65X */
+	[10] = {
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_L, upower_tbl_l_C65X),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_LL, upower_tbl_ll_C65X),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CLS_L, upower_tbl_cluster_l_C65X),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CLS_LL, upower_tbl_cluster_ll_C65X),
+	INIT_UPOWER_TBL_INFOS(UPOWER_BANK_CCI, upower_tbl_cci_C65X),
+	},
 };
 /* Upower will know how to apply voltage that comes from EEM */
 unsigned char upower_recognize_by_eem[NR_UPOWER_BANK] = {
@@ -166,47 +198,13 @@ int upower_bank_to_spower_bank(int upower_bank)
 }
 #endif
 
-#if 0
-static void upower_scale_l_cap(void)
-{
-	unsigned int ratio;
-	unsigned int temp;
-	unsigned int max_cap = 1024;
-	int i, j;
-	struct upower_tbl *tbl;
-
-	/* get L opp0's cap and calculate scaling ratio */
-	/* ratio = round_up(1024 * 1000 / opp0 cap) */
-	/* new cap = orig cap * ratio / 1000 */
-	tbl = upower_tbl_infos[UPOWER_BANK_L].p_upower_tbl;
-	temp = tbl->row[UPOWER_OPP_NUM - 1].cap;
-	ratio = ((max_cap * 1000) + (temp - 1)) / temp;
-	upower_debug("scale ratio = %d, orig cap = %d\n", ratio, temp);
-
-	/* if L opp0's cap is 1024, no need to scale cap anymore */
-	if (temp == 1024)
-		return;
-
-	/* scaling L and cluster L cap value */
-	for (i = 0; i < NR_UPOWER_BANK; i++) {
-		if ((i == UPOWER_BANK_L) || (i == UPOWER_BANK_CLS_L)) {
-			tbl = upower_tbl_infos[i].p_upower_tbl;
-			for (j = 0; j < UPOWER_OPP_NUM; j++) {
-				temp = tbl->row[j].cap;
-				tbl->row[j].cap = temp * ratio / 1000;
-			}
-		}
-	}
-
-	/* check opp0's cap after scaling */
-	tbl = upower_tbl_infos[UPOWER_BANK_L].p_upower_tbl;
-	temp = tbl->row[UPOWER_OPP_NUM - 1].cap;
-	if (temp != 1024) {
-		upower_debug("new cap is not 1024 after scaling (%d)\n", ratio);
-		tbl->row[UPOWER_OPP_NUM - 1].cap = 1024;
-	}
-}
-#endif
+/****************************************************
+ * According to chip version get the raw upower tbl *
+ * and let upower_tbl_infos points to it.           *
+ * Choose a non used upower tbl location and let    *
+ * upower_tbl_ref points to it to store target      *
+ * power tbl.                                       *
+ ***************************************************/
 
 int cpu_cluster_mapping(unsigned int cpu)
 {
@@ -219,14 +217,6 @@ int cpu_cluster_mapping(unsigned int cpu)
 
 	return bank;
 }
-
-/****************************************************
- * According to chip version get the raw upower tbl *
- * and let upower_tbl_infos points to it.           *
- * Choose a non used upower tbl location and let    *
- * upower_tbl_ref points to it to store target      *
- * power tbl.                                       *
- ***************************************************/
 
 void get_original_table(void)
 {
@@ -263,10 +253,6 @@ void get_original_table(void)
 			upower_tbl_ref[i].row[0].dyn_pwr,
 			upower_tbl_ref[i].row[0].volt);
 
-#if 0
-	/* Not support L+ now, scale L and cluster L cap to 1024 */
-	upower_scale_l_cap();
-#endif
 }
 
 MODULE_DESCRIPTION("MediaTek Unified Power Driver v0.0");

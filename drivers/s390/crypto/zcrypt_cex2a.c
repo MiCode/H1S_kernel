@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *  zcrypt 2.1.0
  *
@@ -9,20 +10,6 @@
  *  Major cleanup & driver split: Martin Schwidefsky <schwidefsky@de.ibm.com>
  *				  Ralph Wuerthner <rwuerthn@de.ibm.com>
  *  MSGTYPE restruct:		  Holger Dengler <hd@linux.vnet.ibm.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/module.h>
@@ -158,6 +145,7 @@ static struct ap_driver zcrypt_cex2a_card_driver = {
 	.probe = zcrypt_cex2a_card_probe,
 	.remove = zcrypt_cex2a_card_remove,
 	.ids = zcrypt_cex2a_card_ids,
+	.flags = AP_DRIVER_FLAG_DEFAULT,
 };
 
 /**
@@ -210,7 +198,6 @@ static void zcrypt_cex2a_queue_remove(struct ap_device *ap_dev)
 	struct ap_queue *aq = to_ap_queue(&ap_dev->device);
 	struct zcrypt_queue *zq = aq->private;
 
-	ap_queue_remove(aq);
 	if (zq)
 		zcrypt_queue_unregister(zq);
 }
@@ -221,6 +208,7 @@ static struct ap_driver zcrypt_cex2a_queue_driver = {
 	.suspend = ap_queue_suspend,
 	.resume = ap_queue_resume,
 	.ids = zcrypt_cex2a_queue_ids,
+	.flags = AP_DRIVER_FLAG_DEFAULT,
 };
 
 int __init zcrypt_cex2a_init(void)

@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -64,7 +53,7 @@ static bool mModDaiUseSram;
 
 static int mtk_mod_dai_probe(struct platform_device *pdev);
 static int mtk_mod_dai_pcm_close(struct snd_pcm_substream *substream);
-static int mtk_afe_mod_dai_probe(struct snd_soc_platform *platform);
+static int mtk_afe_mod_dai_component_probe(struct snd_soc_component *component);
 
 static struct snd_pcm_hardware mtk_mod_dai_hardware = {
 	.info = (SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_RESUME |
@@ -84,6 +73,8 @@ static struct snd_pcm_hardware mtk_mod_dai_hardware = {
 
 static void StopAudioModDaiCaptureHardware(struct snd_pcm_substream *substream)
 {
+	pr_debug("StopAudioModDaiCaptureHardware\n");
+
 	/*
 	 * legacy usagebk97
 	 * SetIrqEnable(Soc_Aud_IRQ_MCU_MODE_IRQ2_MCU_MODE, false);
@@ -123,6 +114,8 @@ static void StopAudioModDaiCaptureHardware(struct snd_pcm_substream *substream)
 
 static void StartAudioModDaiCaptureHardware(struct snd_pcm_substream *substream)
 {
+	pr_debug("StartAudioModDaiCaptureHardware\n");
+
 	if (substream->runtime->format == SNDRV_PCM_FORMAT_S32_LE ||
 	    substream->runtime->format == SNDRV_PCM_FORMAT_U32_LE) {
 		SetMemIfFetchFormatPerSample(
@@ -195,7 +188,7 @@ static int mtk_mod_dai_alsa_stop(struct snd_pcm_substream *substream)
 {
 	struct afe_block_t *pModDai_Block = &(MOD_DAI_Control_context->rBlock);
 
-	pr_debug("mod_dai_alsa_stop\n");
+	pr_debug("mtk_mod_dai_alsa_stop\n");
 	StopAudioModDaiCaptureHardware(substream);
 	pModDai_Block->u4DMAReadIdx = 0;
 	pModDai_Block->u4WriteIdx = 0;
@@ -231,7 +224,8 @@ static int mtk_mod_dai_pcm_hw_params(struct snd_pcm_substream *substream,
 		mModDaiUseSram = true;
 		AudDrv_Emi_Clk_On();
 	}
-	pr_debug("mod_dai_pcm_hw_params dma_bytes = %zu dma_area = %p dma_addr = 0x%x\n",
+	pr_debug(
+		"mtk_mod_dai_pcm_hw_params dma_bytes = %zu dma_area = %p dma_addr = 0x%x\n",
 		runtime->dma_bytes, runtime->dma_area,
 		(unsigned int)runtime->dma_addr);
 	set_mem_block(substream, hw_params, MOD_DAI_Control_context,
@@ -242,7 +236,7 @@ static int mtk_mod_dai_pcm_hw_params(struct snd_pcm_substream *substream,
 
 static int mtk_mod_dai_pcm_hw_free(struct snd_pcm_substream *substream)
 {
-	pr_debug("i2s2_adc2_capture_pcm_hw_free\n");
+	pr_debug("mtk_i2s2_adc2_capture_pcm_hw_free\n");
 	if (mModDaiUseSram == true) {
 		AudDrv_Emi_Clk_Off();
 		mModDaiUseSram = false;
@@ -273,16 +267,16 @@ static int mtk_mod_dai_pcm_open(struct snd_pcm_substream *substream)
 	ret = snd_pcm_hw_constraint_integer(runtime,
 					    SNDRV_PCM_HW_PARAM_PERIODS);
 
-	pr_debug("mod_dai_pcm_open runtime rate = %d channels = %d\n",
+	pr_debug("mtk_mod_dai_pcm_open runtime rate = %d channels = %d\n",
 		 runtime->rate, runtime->channels);
 
 	if (ret < 0) {
-		pr_debug("mod_dai_pcm_close\n");
+		pr_debug("mtk_mod_dai_pcm_close\n");
 		mtk_mod_dai_pcm_close(substream);
 		return ret;
 	}
 
-	pr_debug("mod_dai_pcm_open return\n");
+	pr_debug("mtk_mod_dai_pcm_open return\n");
 	return 0;
 }
 
@@ -302,7 +296,7 @@ static int mtk_mod_dai_alsa_start(struct snd_pcm_substream *substream)
 
 static int mtk_mod_dai_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 {
-	pr_debug("mod_dai_pcm_trigger cmd = %d\n", cmd);
+	pr_debug("mtk_mod_dai_pcm_trigger cmd = %d\n", cmd);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -316,12 +310,22 @@ static int mtk_mod_dai_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 }
 
 static int mtk_mod_dai_pcm_copy(struct snd_pcm_substream *substream,
-				int channel, unsigned long pos,
-				void __user *dst, unsigned long count)
+				int channel,
+				unsigned long pos,
+				void __user *buf,
+				unsigned long bytes)
 {
-	return mtk_memblk_copy(substream, channel, pos, dst, count,
+	return mtk_memblk_copy(substream, channel, pos, buf, bytes,
 			       MOD_DAI_Control_context,
 			       Soc_Aud_Digital_Block_MEM_DAI);
+}
+
+static int mtk_mod_dai_pcm_silence(struct snd_pcm_substream *substream,
+				   int channel,
+				   unsigned long pos,
+				   unsigned long bytes)
+{
+	return 0; /* do nothing */
 }
 
 static void *dummy_page[2];
@@ -342,32 +346,39 @@ static struct snd_pcm_ops mtk_afe_mod_dai_ops = {
 	.trigger = mtk_mod_dai_pcm_trigger,
 	.pointer = mtk_mod_dai_pcm_pointer,
 	.copy_user = mtk_mod_dai_pcm_copy,
+	.fill_silence = mtk_mod_dai_pcm_silence,
 	.page = mtk_mod_dai_pcm_page,
 };
 
-static struct snd_soc_platform_driver mtk_soc_platform = {
-	.ops = &mtk_afe_mod_dai_ops, .probe = mtk_afe_mod_dai_probe,
+static struct snd_soc_component_driver mtk_soc_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_afe_mod_dai_ops,
+	.probe = mtk_afe_mod_dai_component_probe,
 };
 
 static int mtk_mod_dai_probe(struct platform_device *pdev)
 {
-	pr_debug("mod_dai_probe\n");
+	pr_debug("%s\n", __func__);
 
-	if (pdev->dev.of_node) {
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_MOD_DAI_PCM);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
-	return snd_soc_register_platform(&pdev->dev, &mtk_soc_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_soc_component,
+					  NULL,
+					  0);
 }
 
-static int mtk_afe_mod_dai_probe(struct snd_soc_platform *platform)
+static int mtk_afe_mod_dai_component_probe(struct snd_soc_component *component)
 {
-	pr_debug("afe_mod_dai_probe\n");
-	AudDrv_Allocate_mem_Buffer(platform->dev,
+	pr_debug("%s\n", __func__);
+	AudDrv_Allocate_mem_Buffer(component->dev,
 				   Soc_Aud_Digital_Block_MEM_MOD_DAI,
 				   MOD_DAI_MAX_BUFFER_SIZE);
 	Capture_dma_buf = Get_Mem_Buffer(Soc_Aud_Digital_Block_MEM_MOD_DAI);
@@ -377,7 +388,7 @@ static int mtk_afe_mod_dai_probe(struct snd_soc_platform *platform)
 static int mtk_mod_dai_remove(struct platform_device *pdev)
 {
 	pr_debug("%s\n", __func__);
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

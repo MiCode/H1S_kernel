@@ -33,20 +33,6 @@
 #include <string.h>
 #include <unistd.h>
 
-/*
- * glibc synced up and added the metag number but didn't add the relocations.
- * Work around this in a crude manner for now.
- */
-#ifndef EM_METAG
-#define EM_METAG      174
-#endif
-#ifndef R_METAG_ADDR32
-#define R_METAG_ADDR32                   2
-#endif
-#ifndef R_METAG_NONE
-#define R_METAG_NONE                     3
-#endif
-
 #ifndef EM_AARCH64
 #define EM_AARCH64	183
 #define R_AARCH64_NONE		0
@@ -146,6 +132,7 @@ uwrite(int const fd, void const *const buf, size_t const count)
 {
 	size_t cnt = count;
 	off_t idx = 0;
+	void *p = NULL;
 
 	file_updated = 1;
 
@@ -153,7 +140,10 @@ uwrite(int const fd, void const *const buf, size_t const count)
 		off_t aoffset = (file_ptr + count) - file_end;
 
 		if (aoffset > file_append_size) {
-			file_append = realloc(file_append, aoffset);
+			p = realloc(file_append, aoffset);
+			if (!p)
+				free(file_append);
+			file_append = p;
 			file_append_size = aoffset;
 		}
 		if (!file_append) {
@@ -415,7 +405,7 @@ static uint32_t (*w2)(uint16_t);
 static int
 is_mcounted_section_name(char const *const txtname)
 {
-	return strcmp(".text",           txtname) == 0 ||
+	return strncmp(".text",          txtname, 5) == 0 ||
 		strcmp(".init.text",     txtname) == 0 ||
 		strcmp(".ref.text",      txtname) == 0 ||
 		strcmp(".sched.text",    txtname) == 0 ||
@@ -531,7 +521,7 @@ do_file(char const *const fname)
 	gpfx = 0;
 	switch (w2(ehdr->e_machine)) {
 	default:
-		fprintf(stderr, "unrecognized e_machine %d %s\n",
+		fprintf(stderr, "unrecognized e_machine %u %s\n",
 			w2(ehdr->e_machine), fname);
 		fail_file();
 		break;
@@ -556,12 +546,6 @@ do_file(char const *const fname)
 			gpfx = '_';
 			break;
 	case EM_IA_64:	 reltype = R_IA64_IMM64;   gpfx = '_'; break;
-	case EM_METAG:	 reltype = R_METAG_ADDR32;
-			 altmcount = "_mcount_wrapper";
-			 rel_type_nop = R_METAG_NONE;
-			 /* We happen to have the same requirement as MIPS */
-			 is_fake_mcount32 = MIPS32_is_fake_mcount;
-			 break;
 	case EM_MIPS:	 /* reltype: e_class    */ gpfx = '_'; break;
 	case EM_PPC:	 reltype = R_PPC_ADDR32;   gpfx = '_'; break;
 	case EM_PPC64:	 reltype = R_PPC64_ADDR64; gpfx = '_'; break;

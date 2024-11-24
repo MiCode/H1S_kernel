@@ -1,16 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 #include "imgsensor_common.h"
 
 #include <linux/atomic.h>
@@ -23,10 +15,6 @@
 
 #define IMGSENSOR_HW_POWER_INFO_MAX	12
 #define IMGSENSOR_HW_SENSOR_MAX_NUM	8
-
-#ifndef MIPI_SWITCH
-#define MIPI_SWITCH
-#endif
 
 enum IMGSENSOR_HW_PIN {
 	IMGSENSOR_HW_PIN_NONE = 0,
@@ -74,10 +62,6 @@ enum IMGSENSOR_HW_PIN_STATE {
 	/* For backward compatible */
 #define	SensorMCLK  IMGSENSOR_HW_PIN_MCLK
 
-//mipi switch
-#define SWITCH_SEL IMGSENSOR_HW_PIN_MIPI_SWITCH_SEL
-#define SWITCH_EN IMGSENSOR_HW_PIN_MIPI_SWITCH_EN
-
 
 #define	Vol_Low   IMGSENSOR_HW_PIN_STATE_LEVEL_0
 #define Vol_High  IMGSENSOR_HW_PIN_STATE_LEVEL_HIGH
@@ -105,21 +89,15 @@ enum IMGSENSOR_HW_ID {
 #define IMGSENSOR_I2C_DRV_NAME_0  "kd_camera_hw"
 #define IMGSENSOR_I2C_DRV_NAME_1  "kd_camera_hw_bus2"
 #define IMGSENSOR_I2C_DRV_NAME_2  "kd_camera_hw_bus3"
-#define IMGSENSOR_I2C_DRV_NAME_3  "kd_camera_hw_bus4"
-#define IMGSENSOR_I2C_DRV_NAME_4  "kd_camera_hw_bus5"
 
 #define IMGSENSOR_I2C_OF_DRV_NAME_0 "mediatek,camera_main"
 #define IMGSENSOR_I2C_OF_DRV_NAME_1 "mediatek,camera_sub"
 #define IMGSENSOR_I2C_OF_DRV_NAME_2 "mediatek,camera_main_two"
-#define IMGSENSOR_I2C_OF_DRV_NAME_3 "mediatek,camera_sub_two"
-#define IMGSENSOR_I2C_OF_DRV_NAME_4 "mediatek,camera_main_three"
 
 enum IMGSENSOR_I2C_DEV {
 	IMGSENSOR_I2C_DEV_0,
 	IMGSENSOR_I2C_DEV_1,
 	IMGSENSOR_I2C_DEV_2,
-	IMGSENSOR_I2C_DEV_3,
-	IMGSENSOR_I2C_DEV_4,
 	IMGSENSOR_I2C_DEV_MAX_NUM,
 };
 

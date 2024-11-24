@@ -36,6 +36,7 @@ struct vdso_data {
 	__u32 tk_shift;			/* Shift used for xtime_nsec	0x60 */
 	__u32 ts_dir;			/* TOD steering direction	0x64 */
 	__u64 ts_end;			/* TOD steering end		0x68 */
+	__u32 hrtimer_res;		/* hrtimer resolution		0x70 */
 };
 
 struct vdso_per_cpu_data {
@@ -46,7 +47,9 @@ struct vdso_per_cpu_data {
 };
 
 extern struct vdso_data *vdso_data;
+extern struct vdso_data boot_vdso_data;
 
+void vdso_alloc_boot_cpu(struct lowcore *lowcore);
 int vdso_alloc_per_cpu(struct lowcore *lowcore);
 void vdso_free_per_cpu(struct lowcore *lowcore);
 

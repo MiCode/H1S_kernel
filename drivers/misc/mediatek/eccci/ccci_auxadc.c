@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include <linux/device.h>
@@ -19,11 +11,13 @@
 #include <linux/iio/iio.h>
 
 #include "ccci_config.h"
+#include "ccci_common_config.h"
 #include "ccci_core.h"
 #include "ccci_debug.h"
 
 #define TAG "ccci_adc"
 
+static struct platform_device *md_adc_pdev;
 static int adc_num;
 static int adc_val;
 
@@ -36,41 +30,52 @@ static int ccci_get_adc_info(struct device *dev)
 
 	ret = IS_ERR(md_channel);
 	if (ret) {
+		if (PTR_ERR(md_channel) == -EPROBE_DEFER) {
+			CCCI_ERROR_LOG(-1, TAG, "%s EPROBE_DEFER\r\n",
+					__func__);
+			return -EPROBE_DEFER;
+		}
 		CCCI_ERROR_LOG(-1, TAG, "fail to get iio channel (%d)", ret);
 		goto Fail;
 	}
 	adc_num = md_channel->channel->channel;
-	ret = iio_read_channel_processed(md_channel, &val);
+	ret = iio_read_channel_raw(md_channel, &val);
 	iio_channel_release(md_channel);
 	if (ret < 0) {
-		CCCI_ERROR_LOG(-1, TAG, "iio_read_channel_processed fail");
+		CCCI_ERROR_LOG(-1, TAG, "iio_read_channel_raw fail");
 		goto Fail;
 	}
 
 	adc_val = val;
-	CCCI_NORMAL_LOG(0, TAG, "md_ch = %d, val = %d", adc_num, adc_val);
+	CCCI_NORMAL_LOG(0, TAG, "md_ch = %d, val = %d\n", adc_num, adc_val);
 	return ret;
 Fail:
 	return -1;
+
 }
 
 int ccci_get_adc_num(void)
 {
 	return adc_num;
 }
+EXPORT_SYMBOL(ccci_get_adc_num);
 
 int ccci_get_adc_val(void)
 {
 	return adc_val;
 }
+EXPORT_SYMBOL(ccci_get_adc_val);
 
 int get_auxadc_probe(struct platform_device *pdev)
 {
 	int ret;
 
 	ret = ccci_get_adc_info(&pdev->dev);
-	if (ret < 0)
+	if (ret < 0) {
 		CCCI_ERROR_LOG(-1, TAG, "ccci get adc info fail");
+		return ret;
+	}
+	md_adc_pdev = pdev;
 	return 0;
 }
 

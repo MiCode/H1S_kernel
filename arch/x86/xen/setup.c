@@ -862,7 +862,7 @@ char * __init xen_memory_setup(void)
 	 * to relocating (and even reusing) pages with kernel text or data.
 	 */
 	if (xen_is_e820_reserved(__pa_symbol(_text),
-			__pa_symbol(__bss_stop) - __pa_symbol(_text))) {
+				 __pa_symbol(_end) - __pa_symbol(_text))) {
 		xen_raw_console_write("Xen hypervisor allocated kernel memory conflicts with E820 map\n");
 		BUG();
 	}
@@ -903,37 +903,6 @@ char * __init xen_memory_setup(void)
 	xen_foreach_remap_area(max_pfn, xen_set_identity_and_remap_chunk);
 
 	pr_info("Released %ld page(s)\n", xen_released_pages);
-
-	return "Xen";
-}
-
-/*
- * Machine specific memory setup for auto-translated guests.
- */
-char * __init xen_auto_xlated_memory_setup(void)
-{
-	struct xen_memory_map memmap;
-	int i;
-	int rc;
-
-	memmap.nr_entries = ARRAY_SIZE(xen_e820_table.entries);
-	set_xen_guest_handle(memmap.buffer, xen_e820_table.entries);
-
-	rc = HYPERVISOR_memory_op(XENMEM_memory_map, &memmap);
-	if (rc < 0)
-		panic("No memory map (%d)\n", rc);
-
-	xen_e820_table.nr_entries = memmap.nr_entries;
-
-	e820__update_table(&xen_e820_table);
-
-	for (i = 0; i < xen_e820_table.nr_entries; i++)
-		e820__range_add(xen_e820_table.entries[i].addr, xen_e820_table.entries[i].size, xen_e820_table.entries[i].type);
-
-	/* Remove p2m info, it is not needed. */
-	xen_start_info->mfn_list = 0;
-	xen_start_info->first_p2m_pfn = 0;
-	xen_start_info->nr_p2m_frames = 0;
 
 	return "Xen";
 }

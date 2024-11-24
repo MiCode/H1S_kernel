@@ -1,6 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0
-//
-// Copyright (c) 2020 MediaTek Inc.
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2021 MediaTek Inc.
+*/
 
 #include <linux/interrupt.h>
 #include <linux/mfd/mt6358/core.h>
@@ -14,6 +15,7 @@
 #include <linux/suspend.h>
 
 static struct regmap *g_regmap;
+struct mutex pm_mutex;
 
 static irqreturn_t ot_int_handler(int irq, void *data)
 {

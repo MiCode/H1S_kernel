@@ -1,14 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ */
+
+/*
+ * GenieZone (hypervisor-based seucrity platform) enables hardware protected
+ * and isolated security execution environment, includes
+ * 1. GZ hypervisor
+ * 2. Hypervisor-TEE OS (built-in Trusty OS)
+ * 3. Drivers (ex: debug, communication and interrupt) for GZ and
+ *    hypervisor-TEE OS
+ * 4. GZ and hypervisor-TEE and GZ framework (supporting multiple TEE
+ *    ecosystem, ex: M-TEE, Trusty, GlobalPlatform, ...)
  */
 
 
@@ -49,6 +53,8 @@ static const uint32_t gz_smcnr_table[SMCF_END][TEE_ID_END] = {
 		SMC_FC_GZ_API_VERSION, SMC_FC_GZ_API_VERSION },
 	[SMCF_FC_GET_CMASK] = {
 		SMC_FC_GZ_GET_CMASK, SMC_FC_GZ_GET_CMASK },
+	[SMCF_FC_GET_CPU_REQUEST] = {
+		SMC_FC_GZ_GET_CPU_REQUEST, SMC_FC_GZ_GET_CPU_REQUEST },
 	[SMCF_SC_NS_RETURN] = {
 		SMC_SC_GZ_NS_RETURN, SMC_SC_GZ_NS_RETURN },
 
@@ -78,6 +84,9 @@ static const uint32_t gz_smcnr_table[SMCF_END][TEE_ID_END] = {
 		MT_SMC_SC_GZ_SET_RAMCONSOLE, SMC_UNDEFINED },
 	[MT_SMCF_SC_VPU] = {
 		MT_SMC_SC_GZ_VPU, SMC_UNDEFINED },
+	[MT_SMCF_FC_KTIME_ALIGN] = {
+		MT_SMC_FC_GZ_KTIME, SMC_UNDEFINED },
+
 	[SMCF_FC_TEST_ADD] = {
 		SMC_UNDEFINED, SMC_FC_NBL_TEST_ADD },
 	[SMCF_FC_TEST_MULTIPLY] = {
@@ -147,7 +156,7 @@ inline uint32_t get_smcnr_teeid(enum smc_functions fid, enum tee_id_t tee_id)
 {
 	uint32_t smcnr;
 
-	if (unlikely(fid < 0 || fid >= SMCF_END || !is_tee_id(tee_id))) {
+	if (unlikely(fid >= SMCF_END || !is_tee_id(tee_id))) {
 		WARN(1, "ERROR parameters %d, %d\n", fid, tee_id);
 		return SMC_UNDEFINED;
 	}

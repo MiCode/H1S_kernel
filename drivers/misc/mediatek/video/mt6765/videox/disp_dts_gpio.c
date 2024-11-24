@@ -1,20 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "disp_dts_gpio.h"
 #include "disp_helper.h"
 #include "disp_drv_log.h"
 #include <linux/kernel.h> /* printk */
+#include <linux/pinctrl/consumer.h>
 
 #ifndef CONFIG_FPGA_EARLY_PORTING
 static struct pinctrl *this_pctrl; /* static pinctrl instance */
@@ -29,10 +22,12 @@ static const char *this_state_name[DTS_GPIO_STATE_MAX] = {
 	"lcm_rst_out1_gpio",
 	"lcm1_rst_out0_gpio",
 	"lcm1_rst_out1_gpio",
+	"lcd_bias_enn_gpio",
+	"lcd_bias_enp_gpio",
 	"lcd_bias_enp0_gpio",
 	"lcd_bias_enp1_gpio",
-	"tp_rst_out1_gpio",
-	"tp_rst_out0_gpio"
+	"lcd_bias_enn0_gpio",
+	"lcd_bias_enn1_gpio"
 };
 
 /* pinctrl implementation */

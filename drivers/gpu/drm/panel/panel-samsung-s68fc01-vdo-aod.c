@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/backlight.h>
 #include <drm/drmP.h>
@@ -304,13 +296,17 @@ static int lcm_unprepare(struct drm_panel *panel)
 	usleep_range(10 * 1000, 15 * 1000);
 	devm_gpiod_put(ctx->dev, ctx->reset_gpio);
 	usleep_range(10 * 1000, 15 * 1000);
-
+#if defined(CONFIG_RT5081_PMU_DSV) || defined(CONFIG_MT6370_PMU_DSV)
+	lcm_panel_bias_disable();
+#else
+#ifndef CONFIG_RT4831A_I2C
 	ctx->bias_gpio =
 	devm_gpiod_get(ctx->dev, "bias", GPIOD_OUT_HIGH);
 	gpiod_set_value(ctx->bias_gpio, 0);
 	usleep_range(10 * 1000, 15 * 1000);
 	devm_gpiod_put(ctx->dev, ctx->bias_gpio);
-
+#endif
+#endif
 	ctx->hbm_en = false;
 
 	return 0;
@@ -323,12 +319,17 @@ static int lcm_panel_poweron(struct drm_panel *panel)
 
 	if (ctx->prepared)
 		return 0;
-
+#if defined(CONFIG_RT5081_PMU_DSV) || defined(CONFIG_MT6370_PMU_DSV)
+	lcm_panel_bias_enable();
+#else
+#ifndef CONFIG_RT4831A_I2C
 	usleep_range(10 * 1000, 10 * 1000);
 	ctx->bias_gpio = devm_gpiod_get(ctx->dev,
 		"bias", GPIOD_OUT_HIGH);
 	gpiod_set_value(ctx->bias_gpio, 1);
 	devm_gpiod_put(ctx->dev, ctx->bias_gpio);
+#endif
+#endif
 	usleep_range(10 * 1000, 10 * 1000);
 	ctx->reset_gpio = devm_gpiod_get(ctx->dev, "reset", GPIOD_OUT_HIGH);
 	gpiod_set_value(ctx->reset_gpio, 1);
@@ -752,6 +753,12 @@ static struct mtk_panel_params ext_params = {
 	.hbm_en_time = 2,
 	.hbm_dis_time = 1,
 	.doze_delay = 3,
+	.dyn = {
+		.switch_en = 1,
+		.data_rate = 1110,
+		.hfp = 50,
+		.vfp = 35,
+	},
 };
 
 static int panel_doze_post_disp_on(struct drm_panel *panel,
@@ -952,6 +959,10 @@ static int lcm_probe(struct mipi_dsi_device *dsi)
 		return PTR_ERR(ctx->reset_gpio);
 	}
 	devm_gpiod_put(dev, ctx->reset_gpio);
+#if defined(CONFIG_RT5081_PMU_DSV) || defined(CONFIG_MT6370_PMU_DSV)
+	lcm_panel_bias_enable();
+#else
+#ifndef CONFIG_RT4831A_I2C
 	ctx->bias_gpio = devm_gpiod_get(dev, "bias", GPIOD_OUT_HIGH);
 	if (IS_ERR(ctx->bias_gpio)) {
 		dev_info(dev, "cannot get bias-gpios 0 %ld\n",
@@ -959,7 +970,8 @@ static int lcm_probe(struct mipi_dsi_device *dsi)
 		return PTR_ERR(ctx->bias_gpio);
 	}
 	devm_gpiod_put(dev, ctx->bias_gpio);
-
+#endif
+#endif
 	ctx->prepared = true;
 	ctx->enabled = true;
 

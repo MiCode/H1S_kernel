@@ -5,7 +5,7 @@
  *    (c) 2004 Jelle Foks <jelle@foks.us>
  *    (c) 2004 Gerd Knorr <kraxel@bytesex.org>
  *
- *    (c) 2005-2006 Mauro Carvalho Chehab <mchehab@infradead.org>
+ *    (c) 2005-2006 Mauro Carvalho Chehab <mchehab@kernel.org>
  *        - video_ioctl2 conversion
  *
  *  Includes parts from the ivtv driver <http://sourceforge.net/projects/ivtv/>
@@ -805,8 +805,7 @@ static int vidioc_querycap(struct file *file, void  *priv,
 
 	strcpy(cap->driver, "cx88_blackbird");
 	sprintf(cap->bus_info, "PCI:%s", pci_name(dev->pci));
-	cx88_querycap(file, core, cap);
-	return 0;
+	return cx88_querycap(file, core, cap);
 }
 
 static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
@@ -1184,7 +1183,7 @@ static int cx8802_blackbird_probe(struct cx8802_driver *drv)
 	err = cx2341x_handler_init(&dev->cxhdl, 36);
 	if (err)
 		goto fail_core;
-	v4l2_ctrl_add_handler(&dev->cxhdl.hdl, &core->video_hdl, NULL);
+	v4l2_ctrl_add_handler(&dev->cxhdl.hdl, &core->video_hdl, NULL, false);
 
 	/* blackbird stuff */
 	pr_info("cx23416 based mpeg encoder (blackbird reference design)\n");

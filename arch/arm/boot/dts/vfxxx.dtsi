@@ -84,6 +84,11 @@
 		mask = <0x1000>;
 	};
 
+	tempsensor: iio-hwmon {
+		compatible = "iio-hwmon";
+		io-channels = <&adc0 16>, <&adc1 16>;
+	};
+
 	soc {
 		#address-cells = <1>;
 		#size-cells = <1>;
@@ -527,7 +532,7 @@
 			};
 
 			ocotp: ocotp@400a5000 {
-				compatible = "fsl,vf610-ocotp";
+				compatible = "fsl,vf610-ocotp", "syscon";
 				reg = <0x400a5000 0x1000>;
 				clocks = <&clks VF610_CLK_OCOTP>;
 			};
@@ -761,11 +766,6 @@
 				dma-names = "rx","tx";
 				status = "disabled";
 			};
-		};
-
-		iio-hwmon {
-			compatible = "iio-hwmon";
-			io-channels = <&adc0 16>, <&adc1 16>;
 		};
 	};
 };

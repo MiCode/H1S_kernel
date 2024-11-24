@@ -27,7 +27,7 @@
 #include <linux/string.h>
 
 #include <linux/dvb/frontend.h>
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 
 #include "stb0899_drv.h"
 #include "stb0899_priv.h"
@@ -1583,15 +1583,13 @@ static enum dvbfe_algo stb0899_frontend_algo(struct dvb_frontend *fe)
 static const struct dvb_frontend_ops stb0899_ops = {
 	.delsys = { SYS_DVBS, SYS_DVBS2, SYS_DSS },
 	.info = {
-		.name 			= "STB0899 Multistandard",
-		.frequency_min		= 950000,
-		.frequency_max 		= 2150000,
-		.frequency_stepsize	= 0,
-		.frequency_tolerance	= 0,
-		.symbol_rate_min 	=  5000000,
-		.symbol_rate_max 	= 45000000,
+		.name			= "STB0899 Multistandard",
+		.frequency_min_hz	=  950 * MHz,
+		.frequency_max_hz	= 2150 * MHz,
+		.symbol_rate_min	=  5000000,
+		.symbol_rate_max	= 45000000,
 
-		.caps 			= FE_CAN_INVERSION_AUTO	|
+		.caps			= FE_CAN_INVERSION_AUTO	|
 					  FE_CAN_FEC_AUTO	|
 					  FE_CAN_2G_MODULATION	|
 					  FE_CAN_QPSK
@@ -1652,7 +1650,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(stb0899_attach);
+EXPORT_SYMBOL_GPL(stb0899_attach);
 MODULE_PARM_DESC(verbose, "Set Verbosity level");
 MODULE_AUTHOR("Manu Abraham");
 MODULE_DESCRIPTION("STB0899 Multi-Std frontend");

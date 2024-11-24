@@ -1,20 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
-
 
 /******************************************************************************
  *
@@ -40,7 +28,8 @@
 
 #ifndef _AUDIO_CODEC_63xx_H
 #define _AUDIO_CODEC_63xx_H
-#include <linux/types.h>
+
+#define CODEC_MT6357_NAME "mtk-codec-mt6357"
 
 struct mtk_codec_ops {
 	int (*enable_dc_compensation)(bool enable);
@@ -61,5 +50,14 @@ int set_codec_ops(struct mtk_codec_ops *ops);
 #ifdef CONFIG_MTK_ACCDET
 extern void accdet_late_init(unsigned long a);
 #endif
+
+/*AKITA-5 M8 audio bring up begin */
+#ifdef SND_SOC_AW87519
+extern unsigned char aw87519_amp_lch_on(void);
+extern unsigned char aw87519_amp_lch_off(void);
+extern unsigned char aw87519_amp_rch_on(void);
+extern unsigned char aw87519_amp_rch_off(void);
+#endif
+/*AKITA-5 - end */
 
 #endif

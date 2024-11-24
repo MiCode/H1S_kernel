@@ -2,7 +2,7 @@
 #ifndef __LINUX_EXTCON_INTERNAL_H__
 #define __LINUX_EXTCON_INTERNAL_H__
 
-#include <linux/extcon.h>
+#include <linux/extcon-provider.h>
 
 /**
  * struct extcon_dev - An extcon device represents one external connector.
@@ -48,6 +48,7 @@ struct extcon_dev {
 	struct device dev;
 	struct raw_notifier_head nh_all;
 	struct raw_notifier_head *nh;
+	struct blocking_notifier_head *bnh;
 	struct list_head entry;
 	int max_supported;
 	spinlock_t lock;	/* could be called by irq handler */

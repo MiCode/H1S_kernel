@@ -6,8 +6,6 @@
 #include <linux/blk-crypto.h>
 #include <linux/keyslot-manager.h>
 #include <linux/mmc/host.h>
-#include <mtk_sd.h>
-#include <msdc_io.h>
 
 #include "cqhci-crypto.h"
 
@@ -25,30 +23,27 @@ static const struct cqhci_crypto_alg_entry {
 	},
 };
 
-static void cqhci_crypto_program_key(struct cmdq_host *host,
+static void cqhci_crypto_program_key(struct cqhci_host *host,
 				     const union cqhci_crypto_cfg_entry *cfg,
 				     int slot)
 {
 	u32 slot_offset = host->crypto_cfg_register + slot * sizeof(*cfg);
 	int i;
-	struct msdc_host *msdc_host = mmc_priv(host->mmc);
 
-	msdc_clk_prepare_enable(msdc_host);
-
+	msdc_ungate_clock(host->mmc);
 	/* Ensure that CFGE is cleared before programming the key */
-	cmdq_writel(host, 0, slot_offset + 16 * sizeof(cfg->reg_val[0]));
+	cqhci_writel(host, 0, slot_offset + 16 * sizeof(cfg->reg_val[0]));
 	for (i = 0; i < 16; i++) {
-		cmdq_writel(host, le32_to_cpu(cfg->reg_val[i]),
+		cqhci_writel(host, le32_to_cpu(cfg->reg_val[i]),
 			     slot_offset + i * sizeof(cfg->reg_val[0]));
 	}
 	/* Write dword 17 */
-	cmdq_writel(host, le32_to_cpu(cfg->reg_val[17]),
+	cqhci_writel(host, le32_to_cpu(cfg->reg_val[17]),
 		     slot_offset + 17 * sizeof(cfg->reg_val[0]));
 	/* Write dword 16 */
-	cmdq_writel(host, le32_to_cpu(cfg->reg_val[16]),
+	cqhci_writel(host, le32_to_cpu(cfg->reg_val[16]),
 		     slot_offset + 16 * sizeof(cfg->reg_val[0]));
-
-	msdc_clk_disable_unprepare(msdc_host);
+	msdc_gate_clock(host->mmc);
 }
 
 static int cqhci_crypto_keyslot_program(struct keyslot_manager *ksm,
@@ -56,14 +51,14 @@ static int cqhci_crypto_keyslot_program(struct keyslot_manager *ksm,
 					unsigned int slot)
 
 {
-	struct cmdq_host *host = keyslot_manager_private(ksm);
+	struct cqhci_host *host = keyslot_manager_private(ksm);
 	const union cqhci_crypto_cap_entry *ccap_array = host->crypto_cap_array;
 	const struct cqhci_crypto_alg_entry *alg =
 				&cqhci_crypto_algs[key->crypto_mode];
 	u8 data_unit_mask = key->data_unit_size / 512;
 	int i;
 	int cap_idx = -1;
-	union cqhci_crypto_cfg_entry cfg = { {0} };
+	union cqhci_crypto_cfg_entry cfg = { { 0 } };
 
 	BUILD_BUG_ON(CQHCI_CRYPTO_KEY_SIZE_INVALID != 0);
 	for (i = 0; i < host->crypto_capabilities.num_crypto_cap; i++) {
@@ -103,13 +98,13 @@ static int cqhci_crypto_keyslot_program(struct keyslot_manager *ksm,
 	return 0;
 }
 
-static void cqhci_crypto_clear_keyslot(struct cmdq_host *host, int slot)
+static void cqhci_crypto_clear_keyslot(struct cqhci_host *host, int slot)
 {
 	/*
 	 * Clear the crypto cfg on the device. Clearing CFGE
 	 * might not be sufficient, so just clear the entire cfg.
 	 */
-	union cqhci_crypto_cfg_entry cfg = { {0} };
+	union cqhci_crypto_cfg_entry cfg = { { 0 } };
 
 	cqhci_crypto_program_key(host, &cfg, slot);
 }
@@ -127,7 +122,7 @@ static const struct keyslot_mgmt_ll_ops cqhci_ksm_ops = {
 	.keyslot_evict		= cqhci_crypto_keyslot_evict,
 };
 
-bool cqhci_crypto_enable(struct cmdq_host *host)
+bool cqhci_crypto_enable(struct cqhci_host *host)
 {
 	if (!(host->mmc->caps2 & MMC_CAP2_CRYPTO))
 		return false;
@@ -159,7 +154,7 @@ cqhci_find_blk_crypto_mode(union cqhci_crypto_cap_entry cap)
  *
  * Return: 0 if crypto was initialized, or is not supported, else a -errno value
  */
-int cqhci_host_init_crypto(struct cmdq_host *host)
+int cqhci_host_init_crypto(struct cqhci_host *host)
 {
 	int cap_idx = 0;
 	int err = 0;
@@ -179,11 +174,11 @@ int cqhci_host_init_crypto(struct cmdq_host *host)
 	 * that crypto is supported.
 	 */
 	if (!(host->mmc->caps2 & MMC_CAP2_CRYPTO) ||
-	    !(cmdq_readl(host, CQHCI_CAP) & CQHCI_CAP_CS))
-		return -EINVAL;
+	    !(cqhci_readl(host, CQHCI_CAP) & CQHCI_CAP_CS))
+		return 0;
 
 	host->crypto_capabilities.reg_val =
-			cpu_to_le32(cmdq_readl(host, CQHCI_CCAP));
+			cpu_to_le32(cqhci_readl(host, CQHCI_CCAP));
 
 	host->crypto_cfg_register =
 		(u32)host->crypto_capabilities.config_array_ptr * 0x100;
@@ -199,7 +194,7 @@ int cqhci_host_init_crypto(struct cmdq_host *host)
 	for (cap_idx = 0; cap_idx < host->crypto_capabilities.num_crypto_cap;
 	     cap_idx++) {
 		host->crypto_cap_array[cap_idx].reg_val =
-			cpu_to_le32(cmdq_readl(host, CQHCI_CRYPTOCAP +
+			cpu_to_le32(cqhci_readl(host, CQHCI_CRYPTOCAP +
 						cap_idx * sizeof(__le32)));
 		blk_mode_num = cqhci_find_blk_crypto_mode(
 					host->crypto_cap_array[cap_idx]);
@@ -254,7 +249,6 @@ int cqhci_prep_crypto_desc(struct mmc_request *mrq, __le64 *task_desc)
 			      CQHCI_CRYPTO_CONFIG_INDEX(mrq->crypto_key_slot) |
 			      CQHCI_CRYPTO_ENABLE_BIT;
 	}
-
 	/*
 	 *  Assign upper 64bits data of 128 bits task descriptor
 	 *  with the crypto context
@@ -263,7 +257,7 @@ int cqhci_prep_crypto_desc(struct mmc_request *mrq, __le64 *task_desc)
 	return 0;
 }
 
-void cqhci_crypto_recovery_finish(struct cmdq_host *host)
+void cqhci_crypto_recovery_finish(struct cqhci_host *host)
 {
 	/* Reset/Recovery might clear all keys, so reprogram all the keys. */
 	keyslot_manager_reprogram_all_keys(host->mmc->ksm);

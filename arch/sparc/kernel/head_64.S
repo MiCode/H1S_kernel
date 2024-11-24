@@ -641,6 +641,8 @@ niagara4_patch:
 	 nop
 	call	niagara4_patch_pageops
 	 nop
+	call	niagara4_patch_fls
+	 nop
 
 	ba,a,pt	%xcc, 80f
 	 nop
@@ -895,6 +897,7 @@ sparc64_boot_end:
 #include "syscalls.S"
 #include "helpers.S"
 #include "sun4v_tlb_miss.S"
+#include "sun4v_mcd.S"
 #include "sun4v_ivec.S"
 #include "ktlb.S"
 #include "tsb.S"

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #define LOG_TAG "dump"
 
@@ -25,6 +17,7 @@
 #include "ddp_rsz.h"
 #include "smi_public.h"
 #include "disp_helper.h"
+#include "ddp_manager.h"
 
 static char *ddp_signal_0(int bit)
 {
@@ -1535,6 +1528,10 @@ static void dsi_dump_reg(enum DISP_MODULE_ENUM module)
 
 int ddp_dump_reg(enum DISP_MODULE_ENUM module)
 {
+	if (!dpmgr_is_power_on()) {
+		DDPDUMP("%s, dpmsr is power off!\n", __func__);
+		return 0;
+	}
 	switch (module) {
 	case DISP_MODULE_WDMA0:
 		wdma_dump_reg(module);
@@ -1589,6 +1586,10 @@ int ddp_dump_reg(enum DISP_MODULE_ENUM module)
 
 int ddp_dump_analysis(enum DISP_MODULE_ENUM module)
 {
+	if (!dpmgr_is_power_on()) {
+		DDPDUMP("%s, dpmsr is power off!\n", __func__);
+		return 0;
+	}
 	switch (module) {
 	case DISP_MODULE_WDMA0:
 		wdma_dump_analysis(module);

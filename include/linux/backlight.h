@@ -13,6 +13,7 @@
 #include <linux/fb.h>
 #include <linux/mutex.h>
 #include <linux/notifier.h>
+#include <linux/thermal.h>
 
 /* Notes on locking:
  *
@@ -79,15 +80,10 @@ struct backlight_properties {
 	/* Backlight type */
 	enum backlight_type type;
 	/* Flags used to signal drivers of state changes */
-	/* Upper 4 bits are reserved for driver internal use */
 	unsigned int state;
 
 #define BL_CORE_SUSPENDED	(1 << 0)	/* backlight is suspended */
 #define BL_CORE_FBBLANK		(1 << 1)	/* backlight is under an fb blank event */
-#define BL_CORE_DRIVER4		(1 << 28)	/* reserved for driver specific use */
-#define BL_CORE_DRIVER3		(1 << 29)	/* reserved for driver specific use */
-#define BL_CORE_DRIVER2		(1 << 30)	/* reserved for driver specific use */
-#define BL_CORE_DRIVER1		(1 << 31)	/* reserved for driver specific use */
 
 };
 
@@ -111,6 +107,12 @@ struct backlight_device {
 	struct list_head entry;
 
 	struct device dev;
+	/* Backlight cooling device */
+	struct thermal_cooling_device *cdev;
+	/* Thermally limited max brightness */
+	int thermal_brightness_limit;
+	/* User brightness request */
+	int usr_brightness_req;
 
 	/* Multiple framebuffers may share one backlight device */
 	bool fb_bl_on[FB_MAX];
@@ -128,6 +130,48 @@ static inline int backlight_update_status(struct backlight_device *bd)
 	mutex_unlock(&bd->update_lock);
 
 	return ret;
+}
+
+/**
+ * backlight_enable - Enable backlight
+ * @bd: the backlight device to enable
+ */
+static inline int backlight_enable(struct backlight_device *bd)
+{
+	if (!bd)
+		return 0;
+
+	bd->props.power = FB_BLANK_UNBLANK;
+	bd->props.fb_blank = FB_BLANK_UNBLANK;
+	bd->props.state &= ~BL_CORE_FBBLANK;
+
+	return backlight_update_status(bd);
+}
+
+/**
+ * backlight_disable - Disable backlight
+ * @bd: the backlight device to disable
+ */
+static inline int backlight_disable(struct backlight_device *bd)
+{
+	if (!bd)
+		return 0;
+
+	bd->props.power = FB_BLANK_POWERDOWN;
+	bd->props.fb_blank = FB_BLANK_POWERDOWN;
+	bd->props.state |= BL_CORE_FBBLANK;
+
+	return backlight_update_status(bd);
+}
+
+/**
+ * backlight_put - Drop backlight reference
+ * @bd: the backlight device to put
+ */
+static inline void backlight_put(struct backlight_device *bd)
+{
+	if (bd)
+		put_device(&bd->dev);
 }
 
 extern struct backlight_device *backlight_device_register(const char *name,
@@ -168,6 +212,22 @@ struct backlight_device *of_find_backlight_by_node(struct device_node *node);
 #else
 static inline struct backlight_device *
 of_find_backlight_by_node(struct device_node *node)
+{
+	return NULL;
+}
+#endif
+
+#if IS_ENABLED(CONFIG_BACKLIGHT_CLASS_DEVICE)
+struct backlight_device *of_find_backlight(struct device *dev);
+struct backlight_device *devm_of_find_backlight(struct device *dev);
+#else
+static inline struct backlight_device *of_find_backlight(struct device *dev)
+{
+	return NULL;
+}
+
+static inline struct backlight_device *
+devm_of_find_backlight(struct device *dev)
 {
 	return NULL;
 }

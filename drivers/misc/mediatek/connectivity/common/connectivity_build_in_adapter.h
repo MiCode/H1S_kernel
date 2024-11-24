@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef CONNECTIVITY_BUILD_IN_ADAPTER_H
@@ -19,6 +11,9 @@
 #include <linux/mm.h>
 #include <linux/dma-mapping.h>
 #include <linux/sched/clock.h>
+#include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
+#include <mtk-clkbuf-bridge.h>
 
 /*******************************************************************************
  * Clock Buffer Control
@@ -52,8 +47,9 @@
 	defined(CONFIG_MACH_MT6797) || \
 	defined(CONFIG_MACH_MT6799) || \
 	defined(CONFIG_MACH_MT6580) || \
-	defined(CONFIG_MACH_MT6765) || \
 	defined(CONFIG_MACH_MT6761) || \
+	defined(CONFIG_MACH_MT6765) || \
+	defined(CONFIG_MACH_MT6781) || \
 	defined(CONFIG_MACH_MT3967) || \
 	defined(CONFIG_MACH_MT6771) || \
 	defined(CONFIG_MACH_MT6768) || \
@@ -63,7 +59,8 @@
 	defined(CONFIG_MACH_MT6853) || \
 	defined(CONFIG_MACH_MT6873) || \
 	defined(CONFIG_MACH_ELBRUS) || \
-	defined(CONFIG_MACH_MT6893)
+	defined(CONFIG_MACH_MT6893) || \
+	defined(CONFIG_MACH_MT6877)
 #define CONNADP_HAS_CLOCK_BUF_CTRL
 #define KERNEL_CLK_BUF_CHIP_NOT_SUPPORT -7788
 #define KERNEL_clk_buf_ctrl connectivity_export_clk_buf_ctrl
@@ -221,9 +218,26 @@ extern void mt_ppm_sysboost_set_freq_limit(enum ppm_sysboost_user user,
 extern bool spm_resource_req(unsigned int user, unsigned int req_mask);
 #endif
 
+#ifdef CONFIG_ARM64
+extern void __flush_dcache_area(void *addr, size_t len);
+#else
+extern void v7_flush_kern_dcache_area(void *addr, size_t len);
+#endif
+
 void connectivity_export_show_stack(struct task_struct *tsk, unsigned long *sp);
 void connectivity_export_dump_thread_state(const char *name);
 void connectivity_export_tracing_record_cmdline(struct task_struct *tsk);
+
+
+struct connsys_state_info {
+	unsigned int chip_info;
+	phys_addr_t emi_phy_addr;
+};
+void connectivity_export_conap_scp_init(unsigned int chip_info, phys_addr_t emi_phy_addr);
+void connectivity_export_conap_scp_deinit(void);
+void connectivity_register_state_notifier(struct notifier_block *nb);
+void connectivity_unregister_state_notifier(struct notifier_block *nb);
+
 #ifdef CPU_BOOST
 void connectivity_export_mt_ppm_sysboost_freq(enum ppm_sysboost_user user,
 					      unsigned int freq);
@@ -272,13 +286,5 @@ void connectivity_export_dump_gpio_info(int start, int end);
 #endif
 
 int connectivity_export_gpio_get_tristate_input(unsigned int pin);
-
-#if defined(CONFIG_MACH_MT8167)
-#define CONNADP_HAS_UPMU_VCN_CTRL
-#define KERNEL_upmu_set_vcn35_on_ctrl_bt conn_upmu_set_vcn35_on_ctrl_bt
-#define KERNEL_upmu_set_vcn35_on_ctrl_wifi conn_upmu_set_vcn35_on_ctrl_wifi
-void conn_upmu_set_vcn35_on_ctrl_bt(unsigned int val);
-void conn_upmu_set_vcn35_on_ctrl_wifi(unsigned int val);
-#endif
 
 #endif /* CONNECTIVITY_BUILD_IN_ADAPTER_H */

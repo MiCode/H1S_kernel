@@ -48,7 +48,8 @@
 	model = "UDOO Neo Extended";
 	compatible = "udoo,neoextended", "fsl,imx6sx";
 
-	memory {
+	memory@80000000 {
+		device_type = "memory";
 		reg = <0x80000000 0x40000000>;
 	};
 };

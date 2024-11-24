@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Joey Pan <joey.pan@mediatek.com>
  */
 
 #ifndef __LAYERING_RULE_BASE__
@@ -20,6 +13,7 @@
 #include "primary_display.h"
 #include "disp_drv_platform.h"
 #include "display_recorder.h"
+#include "ddp_mmp.h"
 
 #define PRIMARY_OVL_LAYER_NUM PRIMARY_SESSION_INPUT_LAYER_COUNT
 #define SECONDARY_OVL_LAYER_NUM EXTERNAL_SESSION_INPUT_LAYER_COUNT
@@ -138,10 +132,8 @@ struct layering_rule_ops {
 		int param);
 	int (*get_hrt_bound)(int is_larb, int hrt_level);
 	void (*rsz_by_gpu_info_change)(void);
-	bool (*rollback_to_gpu_by_hw_limitation)(
-		struct disp_layer_info	*disp_info);
-	bool (*adaptive_dc_enabled)(void);
-	bool (*has_hrt_limit)(struct disp_layer_info *disp_info, int disp_idx);
+	bool (*rollback_to_gpu_by_hw_limitation)(struct disp_layer_info
+						 *disp_info);
 };
 
 #define HRT_GET_DVFS_LEVEL(hrt_num) (hrt_num & 0xF)
@@ -153,10 +145,6 @@ struct layering_rule_ops {
 #define HRT_GET_AEE_FLAG(hrt_num) ((hrt_num & 0x100) >> 8)
 #define HRT_SET_AEE_FLAG(hrt_num, value) \
 	(hrt_num = ((hrt_num & ~(0x100)) | ((value & 0x1) << 8)))
-#define HRT_GET_DC_FLAG(hrt_num) ((hrt_num & 0x200) >> 9)
-#define HRT_SET_DC_FLAG(hrt_num, value) \
-	(hrt_num = ((hrt_num & ~(0x200)) | (((value) & 0x1) << 9)))
-
 #define HRT_GET_PATH_SCENARIO(hrt_num) ((hrt_num & 0xFFFF0000) >> 16)
 #define HRT_SET_PATH_SCENARIO(hrt_num, value) \
 	(hrt_num = ((hrt_num & ~(0xFFFF0000)) | ((value & 0xFFFF) << 16)))
@@ -183,8 +171,9 @@ int rollback_all_resize_layer_to_GPU(struct disp_layer_info *disp_info,
 	int disp_idx);
 bool is_yuv(enum DISP_FORMAT format);
 bool is_argb_fmt(enum DISP_FORMAT format);
-bool is_gles_layer(struct disp_layer_info *disp_info,
-	int disp_idx, int layer_idx);
-bool has_layer_cap(struct layer_config *layer_info, enum LAYERING_CAPS l_caps);
+bool is_gles_layer(struct disp_layer_info *disp_info, int disp_idx,
+	int layer_idx);
+bool has_layer_cap(struct layer_config *layer_info,
+	enum LAYERING_CAPS l_caps);
 
 #endif

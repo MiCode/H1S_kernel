@@ -93,6 +93,15 @@ static unsigned int local_entry_offset(const Elf64_Sym *sym)
 {
 	return 0;
 }
+
+void *dereference_module_function_descriptor(struct module *mod, void *ptr)
+{
+	if (ptr < (void *)mod->arch.start_opd ||
+			ptr >= (void *)mod->arch.end_opd)
+		return ptr;
+
+	return dereference_function_descriptor(ptr);
+}
 #endif
 
 #define STUB_MAGIC 0x73747562 /* stub */
@@ -271,6 +280,10 @@ static unsigned long get_stubs_size(const Elf64_Ehdr *hdr,
 #ifdef CONFIG_DYNAMIC_FTRACE
 	/* make the trampoline to the ftrace_caller */
 	relocs++;
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
+	/* an additional one for ftrace_regs_caller */
+	relocs++;
+#endif
 #endif
 
 	pr_debug("Looks like a total of %lu stubs, max\n", relocs);
@@ -339,8 +352,11 @@ int module_frob_arch_sections(Elf64_Ehdr *hdr,
 		char *p;
 		if (strcmp(secstrings + sechdrs[i].sh_name, ".stubs") == 0)
 			me->arch.stubs_section = i;
-		else if (strcmp(secstrings + sechdrs[i].sh_name, ".toc") == 0)
+		else if (strcmp(secstrings + sechdrs[i].sh_name, ".toc") == 0) {
 			me->arch.toc_section = i;
+			if (sechdrs[i].sh_addralign < 8)
+				sechdrs[i].sh_addralign = 8;
+		}
 		else if (strcmp(secstrings+sechdrs[i].sh_name,"__versions")==0)
 			dedotify_versions((void *)hdr + sechdrs[i].sh_offset,
 					  sechdrs[i].sh_size);
@@ -373,12 +389,15 @@ int module_frob_arch_sections(Elf64_Ehdr *hdr,
 	return 0;
 }
 
-/* r2 is the TOC pointer: it actually points 0x8000 into the TOC (this
-   gives the value maximum span in an instruction which uses a signed
-   offset) */
+/*
+ * r2 is the TOC pointer: it actually points 0x8000 into the TOC (this gives the
+ * value maximum span in an instruction which uses a signed offset). Round down
+ * to a 256 byte boundary for the odd case where we are setting up r2 without a
+ * .toc section.
+ */
 static inline unsigned long my_r2(const Elf64_Shdr *sechdrs, struct module *me)
 {
-	return sechdrs[me->arch.toc_section].sh_addr + 0x8000;
+	return (sechdrs[me->arch.toc_section].sh_addr & ~0xfful) + 0x8000;
 }
 
 /* Both low and high 16 bits are added as SIGNED additions, so if low
@@ -429,7 +448,8 @@ static unsigned long stub_for_addr(const Elf64_Shdr *sechdrs,
 	/* Find this stub, or if that fails, the next avail. entry */
 	stubs = (void *)sechdrs[me->arch.stubs_section].sh_addr;
 	for (i = 0; stub_func_addr(stubs[i].funcdata); i++) {
-		BUG_ON(i >= num_stubs);
+		if (WARN_ON(i >= num_stubs))
+			return 0;
 
 		if (stub_func_addr(stubs[i].funcdata) == func_addr(addr))
 			return (unsigned long)&stubs[i];
@@ -441,9 +461,12 @@ static unsigned long stub_for_addr(const Elf64_Shdr *sechdrs,
 	return (unsigned long)&stubs[i];
 }
 
-#ifdef CC_USING_MPROFILE_KERNEL
-static bool is_early_mcount_callsite(u32 *instruction)
+#ifdef CONFIG_MPROFILE_KERNEL
+static bool is_mprofile_mcount_callsite(const char *name, u32 *instruction)
 {
+	if (strcmp("_mcount", name))
+		return false;
+
 	/*
 	 * Check if this is one of the -mprofile-kernel sequences.
 	 */
@@ -475,8 +498,7 @@ static void squash_toc_save_inst(const char *name, unsigned long addr)
 #else
 static void squash_toc_save_inst(const char *name, unsigned long addr) { }
 
-/* without -mprofile-kernel, mcount calls are never early */
-static bool is_early_mcount_callsite(u32 *instruction)
+static bool is_mprofile_mcount_callsite(const char *name, u32 *instruction)
 {
 	return false;
 }
@@ -484,11 +506,11 @@ static bool is_early_mcount_callsite(u32 *instruction)
 
 /* We expect a noop next: if it is, replace it with instruction to
    restore r2. */
-static int restore_r2(u32 *instruction, struct module *me)
+static int restore_r2(const char *name, u32 *instruction, struct module *me)
 {
 	u32 *prev_insn = instruction - 1;
 
-	if (is_early_mcount_callsite(prev_insn))
+	if (is_mprofile_mcount_callsite(name, prev_insn))
 		return 1;
 
 	/*
@@ -500,8 +522,8 @@ static int restore_r2(u32 *instruction, struct module *me)
 		return 1;
 
 	if (*instruction != PPC_INST_NOP) {
-		pr_err("%s: Expect noop after relocate, got %08x\n",
-		       me->name, *instruction);
+		pr_err("%s: Expected nop after call, got %08x at %pS\n",
+			me->name, *instruction, instruction);
 		return 0;
 	}
 	/* ld r2,R2_STACK_OFFSET(r1) */
@@ -623,12 +645,14 @@ int apply_relocate_add(Elf64_Shdr *sechdrs,
 
 		case R_PPC_REL24:
 			/* FIXME: Handle weak symbols here --RR */
-			if (sym->st_shndx == SHN_UNDEF) {
+			if (sym->st_shndx == SHN_UNDEF ||
+			    sym->st_shndx == SHN_LIVEPATCH) {
 				/* External: go via stub */
 				value = stub_for_addr(sechdrs, value, me);
 				if (!value)
 					return -ENOENT;
-				if (!restore_r2((u32 *)location + 1, me))
+				if (!restore_r2(strtab + sym->st_name,
+							(u32 *)location + 1, me))
 					return -ENOEXEC;
 
 				squash_toc_save_inst(strtab + sym->st_name, value);
@@ -695,7 +719,7 @@ int apply_relocate_add(Elf64_Shdr *sechdrs,
 			/*
 			 * If found, replace it with:
 			 *	addis r2, r12, (.TOC.-func)@ha
-			 *	addi r2, r12, (.TOC.-func)@l
+			 *	addi  r2,  r2, (.TOC.-func)@l
 			 */
 			((uint32_t *)location)[0] = 0x3c4c0000 + PPC_HA(value);
 			((uint32_t *)location)[1] = 0x38420000 + PPC_LO(value);
@@ -731,7 +755,7 @@ int apply_relocate_add(Elf64_Shdr *sechdrs,
 
 #ifdef CONFIG_DYNAMIC_FTRACE
 
-#ifdef CC_USING_MPROFILE_KERNEL
+#ifdef CONFIG_MPROFILE_KERNEL
 
 #define PACATOC offsetof(struct paca_struct, kernel_toc)
 
@@ -747,7 +771,8 @@ int apply_relocate_add(Elf64_Shdr *sechdrs,
  * via the paca (in r13). The target (ftrace_caller()) is responsible for
  * saving and restoring the toc before returning.
  */
-static unsigned long create_ftrace_stub(const Elf64_Shdr *sechdrs, struct module *me)
+static unsigned long create_ftrace_stub(const Elf64_Shdr *sechdrs,
+				struct module *me, unsigned long addr)
 {
 	struct ppc64_stub_entry *entry;
 	unsigned int i, num_stubs;
@@ -774,9 +799,10 @@ static unsigned long create_ftrace_stub(const Elf64_Shdr *sechdrs, struct module
 	memcpy(entry->jump, stub_insns, sizeof(stub_insns));
 
 	/* Stub uses address relative to kernel toc (from the paca) */
-	reladdr = (unsigned long)ftrace_caller - kernel_toc_addr();
+	reladdr = addr - kernel_toc_addr();
 	if (reladdr > 0x7FFFFFFF || reladdr < -(0x80000000L)) {
-		pr_err("%s: Address of ftrace_caller out of range of kernel_toc.\n", me->name);
+		pr_err("%s: Address of %ps out of range of kernel_toc.\n",
+							me->name, (void *)addr);
 		return 0;
 	}
 
@@ -784,22 +810,29 @@ static unsigned long create_ftrace_stub(const Elf64_Shdr *sechdrs, struct module
 	entry->jump[2] |= PPC_LO(reladdr);
 
 	/* Eventhough we don't use funcdata in the stub, it's needed elsewhere. */
-	entry->funcdata = func_desc((unsigned long)ftrace_caller);
+	entry->funcdata = func_desc(addr);
 	entry->magic = STUB_MAGIC;
 
 	return (unsigned long)entry;
 }
 #else
-static unsigned long create_ftrace_stub(const Elf64_Shdr *sechdrs, struct module *me)
+static unsigned long create_ftrace_stub(const Elf64_Shdr *sechdrs,
+				struct module *me, unsigned long addr)
 {
-	return stub_for_addr(sechdrs, (unsigned long)ftrace_caller, me);
+	return stub_for_addr(sechdrs, addr, me);
 }
 #endif
 
 int module_finalize_ftrace(struct module *mod, const Elf_Shdr *sechdrs)
 {
-	mod->arch.toc = my_r2(sechdrs, mod);
-	mod->arch.tramp = create_ftrace_stub(sechdrs, mod);
+	mod->arch.tramp = create_ftrace_stub(sechdrs, mod,
+					(unsigned long)ftrace_caller);
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
+	mod->arch.tramp_regs = create_ftrace_stub(sechdrs, mod,
+					(unsigned long)ftrace_regs_caller);
+	if (!mod->arch.tramp_regs)
+		return -ENOENT;
+#endif
 
 	if (!mod->arch.tramp)
 		return -ENOENT;

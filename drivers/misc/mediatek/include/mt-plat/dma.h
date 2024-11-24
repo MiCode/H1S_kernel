@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __ASM_ARCH_DMA_H
@@ -103,7 +95,6 @@ struct mt_gdma_conf {
 	unsigned int wplen;
 	unsigned int wpto;
 	/* unsigned int cohen; */
-	unsigned int sec;
 	unsigned int domain;
 	void (*isr_cb)(void *param);
 	void *data;
@@ -133,16 +124,16 @@ extern void mt_reset_dma(const unsigned int iChannel);
 extern void mt65xx_dma_running_status(void);
 extern void mt_reset_gdma_conf(const unsigned int iChannel);
 
-extern int mt_config_gdma(unsigned int channel, struct mt_gdma_conf *config, int flag);
-extern int mt_free_gdma(unsigned int channel);
-extern int mt_req_gdma(unsigned int chan);
-extern int mt_start_gdma(unsigned int channel);
-extern int mt_polling_gdma(unsigned int channel, unsigned long timeout);
-extern int mt_stop_gdma(unsigned int channel);
-extern int mt_dump_gdma(unsigned int channel);
-extern int mt_warm_reset_gdma(unsigned int channel);
-extern int mt_hard_reset_gdma(unsigned int channel);
-extern int mt_reset_gdma(unsigned int channel);
+extern int mt_config_gdma(int channel, struct mt_gdma_conf *config, int flag);
+extern int mt_free_gdma(int channel);
+extern int mt_req_gdma(int chan);
+extern int mt_start_gdma(int channel);
+extern int mt_polling_gdma(int channel, unsigned long timeout);
+extern int mt_stop_gdma(int channel);
+extern int mt_dump_gdma(int channel);
+extern int mt_warm_reset_gdma(int channel);
+extern int mt_hard_reset_gdma(int channel);
+extern int mt_reset_gdma(int channel);
 extern void mt_dma_running_status(void);
 /* This channel is used for APDMA Dummy READ.
  * in MT6592 this channel will be used by Frequency hopping all the time

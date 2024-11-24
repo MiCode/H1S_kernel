@@ -1744,7 +1744,11 @@ static void testcase_write_with_mask(void)
 	/* use CMDQ to set to PATTERN */
 	cmdq_task_create(CMDQ_SCENARIO_DEBUG, &handle);
 	cmdq_task_reset(handle);
+#ifdef CMDQ_SECURE_PATH_SUPPORT
 	cmdq_task_set_secure(handle, gCmdqTestSecure);
+	if (!~gCmdqTestSecure)
+		cmdq_task_set_mtee(handle, true);
+#endif
 	cmdq_op_write_reg(handle, dummy_pa, PATTERN, MASK);
 	cmdq_task_flush(handle);
 	cmdq_pkt_dump_command(handle);
@@ -1827,7 +1831,11 @@ static void testcase_write(void)
 	/* use CMDQ to set to PATTERN */
 	cmdq_task_create(CMDQ_SCENARIO_DEBUG, &handle);
 	cmdq_task_reset(handle);
+#ifdef CMDQ_SECURE_PATH_SUPPORT
 	cmdq_task_set_secure(handle, gCmdqTestSecure);
+	if (!~gCmdqTestSecure)
+		cmdq_task_set_mtee(handle, true);
+#endif
 	cmdq_op_write_reg(handle, dummy_pa, PATTERN, ~0);
 	cmdq_task_flush(handle);
 	cmdq_task_destroy(handle);
@@ -2080,7 +2088,6 @@ static void testcase_thread_dispatch(void)
 	if (len >= 20)
 		pr_debug("%s:%d len:%d threadName:%s\n",
 			__func__, __LINE__, len, threadName);
-
 	pKThread1 = kthread_run(_testcase_thread_dispatch,
 		(void *)(&engineFlag1), threadName);
 	if (IS_ERR(pKThread1)) {
@@ -2092,7 +2099,6 @@ static void testcase_thread_dispatch(void)
 	if (len >= 20)
 		pr_debug("%s:%d len:%d threadName:%s\n",
 			__func__, __LINE__, len, threadName);
-
 	pKThread2 = kthread_run(_testcase_thread_dispatch,
 		(void *)(&engineFlag2), threadName);
 	if (IS_ERR(pKThread2)) {
@@ -2169,7 +2175,6 @@ static void testcase_full_thread_array(void)
 	if (len >= 20)
 		pr_debug("%s:%d len:%d threadName:%s\n",
 			__func__, __LINE__, len, threadName);
-
 	pKThread = kthread_run(_testcase_full_thread_array, NULL, threadName);
 	if (IS_ERR(pKThread)) {
 		/* create thread failed */
@@ -4990,7 +4995,7 @@ s32 _testcase_secure_handle(u32 secHandle, enum CMDQ_SCENARIO_ENUM scenario)
 	/* record command */
 	cmdq_op_write_reg(hReqMDP, CMDQ_TEST_MMSYS_DUMMY_PA, PATTERN_MDP, ~0);
 	cmdq_op_write_reg_secure(hReqMDP, CMDQ_TEST_MMSYS_DUMMY_PA,
-		CMDQ_SAM_H_2_MVA, secHandle, 0xf000, 0x100, 0);
+		CMDQ_SAM_H_2_MVA, secHandle, 0xf000, 0x100, 0, 0);
 	cmdq_append_command(hReqMDP, CMDQ_CODE_EOC, 0, 1, 0, 0);
 	cmdq_append_command(hReqMDP, CMDQ_CODE_JUMP, 0, 8, 0, 0);
 
@@ -8084,7 +8089,7 @@ static ssize_t cmdq_write_test_proc_config(struct file *file,
 		len = (count < (sizeof(desc) - 1)) ?
 			count : (sizeof(desc) - 1);
 		if (copy_from_user(desc, userBuf, len)) {
-			CMDQ_MSG("TEST_CONFIG: data fail, length:%d\n", len);
+			CMDQ_MSG("TEST_CONFIG: data fail, length:%llu\n", len);
 			break;
 		}
 		desc[len] = '\0';

@@ -31,6 +31,9 @@
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
 #include <asm/switch_to.h>
+#include <asm/runtime_instr.h>
+#include <asm/facility.h>
+
 #include "entry.h"
 
 #ifdef CONFIG_COMPAT
@@ -45,42 +48,42 @@ void update_cr_regs(struct task_struct *task)
 	struct pt_regs *regs = task_pt_regs(task);
 	struct thread_struct *thread = &task->thread;
 	struct per_regs old, new;
-	unsigned long cr0_old, cr0_new;
-	unsigned long cr2_old, cr2_new;
+	union ctlreg0 cr0_old, cr0_new;
+	union ctlreg2 cr2_old, cr2_new;
 	int cr0_changed, cr2_changed;
 
-	__ctl_store(cr0_old, 0, 0);
-	__ctl_store(cr2_old, 2, 2);
+	__ctl_store(cr0_old.val, 0, 0);
+	__ctl_store(cr2_old.val, 2, 2);
 	cr0_new = cr0_old;
 	cr2_new = cr2_old;
 	/* Take care of the enable/disable of transactional execution. */
 	if (MACHINE_HAS_TE) {
 		/* Set or clear transaction execution TXC bit 8. */
-		cr0_new |= (1UL << 55);
+		cr0_new.tcx = 1;
 		if (task->thread.per_flags & PER_FLAG_NO_TE)
-			cr0_new &= ~(1UL << 55);
+			cr0_new.tcx = 0;
 		/* Set or clear transaction execution TDC bits 62 and 63. */
-		cr2_new &= ~3UL;
+		cr2_new.tdc = 0;
 		if (task->thread.per_flags & PER_FLAG_TE_ABORT_RAND) {
 			if (task->thread.per_flags & PER_FLAG_TE_ABORT_RAND_TEND)
-				cr2_new |= 1UL;
+				cr2_new.tdc = 1;
 			else
-				cr2_new |= 2UL;
+				cr2_new.tdc = 2;
 		}
 	}
 	/* Take care of enable/disable of guarded storage. */
 	if (MACHINE_HAS_GS) {
-		cr2_new &= ~(1UL << 4);
+		cr2_new.gse = 0;
 		if (task->thread.gs_cb)
-			cr2_new |= (1UL << 4);
+			cr2_new.gse = 1;
 	}
 	/* Load control register 0/2 iff changed */
-	cr0_changed = cr0_new != cr0_old;
-	cr2_changed = cr2_new != cr2_old;
+	cr0_changed = cr0_new.val != cr0_old.val;
+	cr2_changed = cr2_new.val != cr2_old.val;
 	if (cr0_changed)
-		__ctl_load(cr0_new, 0, 0);
+		__ctl_load(cr0_new.val, 0, 0);
 	if (cr2_changed)
-		__ctl_load(cr2_new, 2, 2);
+		__ctl_load(cr2_new.val, 2, 2);
 	/* Copy user specified PER registers */
 	new.control = thread->per_user.control;
 	new.start = thread->per_user.start;
@@ -322,6 +325,25 @@ static inline void __poke_user_per(struct task_struct *child,
 		child->thread.per_user.end = data;
 }
 
+static void fixup_int_code(struct task_struct *child, addr_t data)
+{
+	struct pt_regs *regs = task_pt_regs(child);
+	int ilc = regs->int_code >> 16;
+	u16 insn;
+
+	if (ilc > 6)
+		return;
+
+	if (ptrace_access_vm(child, regs->psw.addr - (regs->int_code >> 16),
+			&insn, sizeof(insn), FOLL_FORCE) != sizeof(insn))
+		return;
+
+	/* double check that tracee stopped on svc instruction */
+	if ((insn >> 8) != 0xa)
+		return;
+
+	regs->int_code = 0x20000 | (data & 0xffff);
+}
 /*
  * Write a word to the user area of a process at location addr. This
  * operation does have an additional problem compared to peek_user.
@@ -333,7 +355,9 @@ static int __poke_user(struct task_struct *child, addr_t addr, addr_t data)
 	struct user *dummy = NULL;
 	addr_t offset;
 
+
 	if (addr < (addr_t) &dummy->regs.acrs) {
+		struct pt_regs *regs = task_pt_regs(child);
 		/*
 		 * psw and gprs are stored on the stack
 		 */
@@ -351,7 +375,11 @@ static int __poke_user(struct task_struct *child, addr_t addr, addr_t data)
 				/* Invalid addressing mode bits */
 				return -EINVAL;
 		}
-		*(addr_t *)((addr_t) &task_pt_regs(child)->psw + addr) = data;
+
+		if (test_pt_regs_flag(regs, PIF_SYSCALL) &&
+			addr == offsetof(struct user, regs.gprs[2]))
+			fixup_int_code(child, data);
+		*(addr_t *)((addr_t) &regs->psw + addr) = data;
 
 	} else if (addr < (addr_t) (&dummy->regs.orig_gpr2)) {
 		/*
@@ -386,6 +414,7 @@ static int __poke_user(struct task_struct *child, addr_t addr, addr_t data)
 		/*
 		 * floating point control reg. is in the thread structure
 		 */
+		save_fpu_regs();
 		if ((unsigned int) data != 0 ||
 		    test_fp_ctl(data >> (BITS_PER_LONG - 32)))
 			return -EINVAL;
@@ -475,9 +504,7 @@ long arch_ptrace(struct task_struct *child, long request,
 		}
 		return 0;
 	case PTRACE_GET_LAST_BREAK:
-		put_user(child->thread.last_break,
-			 (unsigned long __user *) data);
-		return 0;
+		return put_user(child->thread.last_break, (unsigned long __user *)data);
 	case PTRACE_ENABLE_TE:
 		if (!MACHINE_HAS_TE)
 			return -EIO;
@@ -717,6 +744,10 @@ static int __poke_user_compat(struct task_struct *child,
 			regs->psw.mask = (regs->psw.mask & ~PSW_MASK_BA) |
 				(__u64)(tmp & PSW32_ADDR_AMODE);
 		} else {
+
+			if (test_pt_regs_flag(regs, PIF_SYSCALL) &&
+				addr == offsetof(struct compat_user, regs.gprs[2]))
+				fixup_int_code(child, data);
 			/* gpr 0-15 */
 			*(__u32*)((addr_t) &regs->psw + addr*2 + 4) = tmp;
 		}
@@ -744,6 +775,7 @@ static int __poke_user_compat(struct task_struct *child,
 		/*
 		 * floating point control reg. is in the thread structure
 		 */
+		save_fpu_regs();
 		if (test_fp_ctl(tmp))
 			return -EINVAL;
 		child->thread.fpu.fpc = data;
@@ -825,9 +857,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 		}
 		return 0;
 	case PTRACE_GET_LAST_BREAK:
-		put_user(child->thread.last_break,
-			 (unsigned int __user *) data);
-		return 0;
+		return put_user(child->thread.last_break, (unsigned int __user *)data);
 	}
 	return compat_ptrace_request(child, request, addr, data);
 }
@@ -974,9 +1004,7 @@ static int s390_fpregs_set(struct task_struct *target,
 	int rc = 0;
 	freg_t fprs[__NUM_FPRS];
 
-	if (target == current)
-		save_fpu_regs();
-
+	save_fpu_regs();
 	if (MACHINE_HAS_VX)
 		convert_vx_to_fp(fprs, target->thread.fpu.vxrs);
 	else
@@ -1240,6 +1268,99 @@ static int s390_gs_bc_set(struct task_struct *target,
 				  data, 0, sizeof(struct gs_cb));
 }
 
+static bool is_ri_cb_valid(struct runtime_instr_cb *cb)
+{
+	return (cb->rca & 0x1f) == 0 &&
+		(cb->roa & 0xfff) == 0 &&
+		(cb->rla & 0xfff) == 0xfff &&
+		cb->s == 1 &&
+		cb->k == 1 &&
+		cb->h == 0 &&
+		cb->reserved1 == 0 &&
+		cb->ps == 1 &&
+		cb->qs == 0 &&
+		cb->pc == 1 &&
+		cb->qc == 0 &&
+		cb->reserved2 == 0 &&
+		cb->reserved3 == 0 &&
+		cb->reserved4 == 0 &&
+		cb->reserved5 == 0 &&
+		cb->reserved6 == 0 &&
+		cb->reserved7 == 0 &&
+		cb->reserved8 == 0 &&
+		cb->rla >= cb->roa &&
+		cb->rca >= cb->roa &&
+		cb->rca <= cb->rla+1 &&
+		cb->m < 3;
+}
+
+static int s390_runtime_instr_get(struct task_struct *target,
+				const struct user_regset *regset,
+				unsigned int pos, unsigned int count,
+				void *kbuf, void __user *ubuf)
+{
+	struct runtime_instr_cb *data = target->thread.ri_cb;
+
+	if (!test_facility(64))
+		return -ENODEV;
+	if (!data)
+		return -ENODATA;
+
+	return user_regset_copyout(&pos, &count, &kbuf, &ubuf,
+				   data, 0, sizeof(struct runtime_instr_cb));
+}
+
+static int s390_runtime_instr_set(struct task_struct *target,
+				  const struct user_regset *regset,
+				  unsigned int pos, unsigned int count,
+				  const void *kbuf, const void __user *ubuf)
+{
+	struct runtime_instr_cb ri_cb = { }, *data = NULL;
+	int rc;
+
+	if (!test_facility(64))
+		return -ENODEV;
+
+	if (!target->thread.ri_cb) {
+		data = kzalloc(sizeof(*data), GFP_KERNEL);
+		if (!data)
+			return -ENOMEM;
+	}
+
+	if (target->thread.ri_cb) {
+		if (target == current)
+			store_runtime_instr_cb(&ri_cb);
+		else
+			ri_cb = *target->thread.ri_cb;
+	}
+
+	rc = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
+				&ri_cb, 0, sizeof(struct runtime_instr_cb));
+	if (rc) {
+		kfree(data);
+		return -EFAULT;
+	}
+
+	if (!is_ri_cb_valid(&ri_cb)) {
+		kfree(data);
+		return -EINVAL;
+	}
+	/*
+	 * Override access key in any case, since user space should
+	 * not be able to set it, nor should it care about it.
+	 */
+	ri_cb.key = PAGE_DEFAULT_KEY >> 4;
+	preempt_disable();
+	if (!target->thread.ri_cb)
+		target->thread.ri_cb = data;
+	*target->thread.ri_cb = ri_cb;
+	if (target == current)
+		load_runtime_instr_cb(target->thread.ri_cb);
+	preempt_enable();
+
+	return 0;
+}
+
 static const struct user_regset s390_regsets[] = {
 	{
 		.core_note_type = NT_PRSTATUS,
@@ -1312,6 +1433,14 @@ static const struct user_regset s390_regsets[] = {
 		.align = sizeof(__u64),
 		.get = s390_gs_bc_get,
 		.set = s390_gs_bc_set,
+	},
+	{
+		.core_note_type = NT_S390_RI_CB,
+		.n = sizeof(struct runtime_instr_cb) / sizeof(__u64),
+		.size = sizeof(__u64),
+		.align = sizeof(__u64),
+		.get = s390_runtime_instr_get,
+		.set = s390_runtime_instr_set,
 	},
 };
 
@@ -1548,6 +1677,22 @@ static const struct user_regset s390_compat_regsets[] = {
 		.align = sizeof(__u64),
 		.get = s390_gs_cb_get,
 		.set = s390_gs_cb_set,
+	},
+	{
+		.core_note_type = NT_S390_GS_BC,
+		.n = sizeof(struct gs_cb) / sizeof(__u64),
+		.size = sizeof(__u64),
+		.align = sizeof(__u64),
+		.get = s390_gs_bc_get,
+		.set = s390_gs_bc_set,
+	},
+	{
+		.core_note_type = NT_S390_RI_CB,
+		.n = sizeof(struct runtime_instr_cb) / sizeof(__u64),
+		.size = sizeof(__u64),
+		.align = sizeof(__u64),
+		.get = s390_runtime_instr_get,
+		.set = s390_runtime_instr_set,
 	},
 };
 

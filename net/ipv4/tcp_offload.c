@@ -262,6 +262,9 @@ found:
 
 	flush |= (len - 1) >= mss;
 	flush |= (ntohl(th2->seq) + skb_gro_len(p)) ^ ntohl(th->seq);
+#ifdef CONFIG_TLS_DEVICE
+	flush |= p->decrypted ^ skb->decrypted;
+#endif
 
 	if (flush || skb_gro_receive(p, skb)) {
 		mss = 1;
@@ -302,8 +305,7 @@ int tcp_gro_complete(struct sk_buff *skb)
 }
 EXPORT_SYMBOL(tcp_gro_complete);
 
-static struct sk_buff *tcp4_gro_receive(struct list_head *head,
-					struct sk_buff *skb)
+static struct sk_buff *tcp4_gro_receive(struct list_head *head, struct sk_buff *skb)
 {
 	/* Don't bother verifying checksum if we're going to flush anyway. */
 	if (!NAPI_GRO_CB(skb)->flush &&

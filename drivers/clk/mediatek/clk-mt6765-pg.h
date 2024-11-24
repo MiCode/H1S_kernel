@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
+ * Author: Owen Chen <owen.chen@mediatek.com>
  */
 
 #ifndef __DRV_CLK_MT6765_PG_H
@@ -43,26 +36,14 @@ struct pg_callbacks {
 
 /* register new pg_callbacks and return previous pg_callbacks. */
 extern struct pg_callbacks *register_pg_callback(struct pg_callbacks *pgcb);
-extern int spm_topaxi_protect(unsigned int mask_value, int en);
 
-#if 0
-extern void switch_mfg_clk(int src);
-#endif
-extern void subsys_if_on(void);
-extern void mtcmos_force_off(void);
-
-/*new arch*/
-extern void check_ven_clk_sts(void);
-extern void set_ven_bus_protect(void);
-extern void mm_clk_restore(void);
-extern void mfg_sts_check(void);
-extern void ven_clk_check(void);
-extern unsigned int mt_get_ckgen_freq(unsigned int ID);
-/*extern void aee_sram_printk(const char *fmt, ...);*/
 /*ram console api*/
 #ifdef CONFIG_MTK_RAM_CONSOLE
 extern void aee_rr_rec_clk(int id, u32 val);
 #endif
 
+#ifdef CONFIG_DEBUG_FS
 extern void print_enabled_clks_once(void);
+#endif
+extern int mtk_is_mtcmos_enable(void);
 #endif/* __DRV_CLK_MT6758_PG_H */

@@ -108,6 +108,8 @@
 
 /* book3s_hv */
 
+#define BOOK3S_INTERRUPT_HV_SOFTPATCH	0x1500
+
 /*
  * Special trap used to indicate to host that this is a
  * passthrough interrupt that could not be handled
@@ -160,5 +162,8 @@
 #define KVM_GUEST_MODE_HOST_HV	4
 
 #define KVM_INST_FETCH_FAILED	-1
+
+/* Extract PO and XOP opcode fields */
+#define PO_XOP_OPCODE_MASK 0xfc0007fe
 
 #endif /* __POWERPC_KVM_ASM_H__ */

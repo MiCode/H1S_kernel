@@ -20,6 +20,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <video/imx-ipu-v3.h>
 
@@ -99,7 +100,8 @@ ipu_prg_lookup_by_phandle(struct device *dev, const char *name, int ipu_id)
 	list_for_each_entry(prg, &ipu_prg_list, list) {
 		if (prg_node == prg->dev->of_node) {
 			mutex_unlock(&ipu_prg_list_mutex);
-			device_link_add(dev, prg->dev, DL_FLAG_AUTOREMOVE);
+			device_link_add(dev, prg->dev,
+					DL_FLAG_AUTOREMOVE_CONSUMER);
 			prg->id = ipu_id;
 			of_node_put(prg_node);
 			return prg;
@@ -135,28 +137,25 @@ bool ipu_prg_format_supported(struct ipu_soc *ipu, uint32_t format,
 	if (info->num_planes != 1)
 		return false;
 
-	return true;
+	switch (modifier) {
+	case DRM_FORMAT_MOD_LINEAR:
+	case DRM_FORMAT_MOD_VIVANTE_TILED:
+	case DRM_FORMAT_MOD_VIVANTE_SUPER_TILED:
+		return true;
+	default:
+		return false;
+	}
 }
 EXPORT_SYMBOL_GPL(ipu_prg_format_supported);
 
 int ipu_prg_enable(struct ipu_soc *ipu)
 {
 	struct ipu_prg *prg = ipu->prg_priv;
-	int ret;
 
 	if (!prg)
 		return 0;
 
-	ret = clk_prepare_enable(prg->clk_axi);
-	if (ret)
-		goto fail_disable_ipg;
-
-	return 0;
-
-fail_disable_ipg:
-	clk_disable_unprepare(prg->clk_ipg);
-
-	return ret;
+	return pm_runtime_get_sync(prg->dev);
 }
 EXPORT_SYMBOL_GPL(ipu_prg_enable);
 
@@ -167,7 +166,7 @@ void ipu_prg_disable(struct ipu_soc *ipu)
 	if (!prg)
 		return;
 
-	clk_disable_unprepare(prg->clk_axi);
+	pm_runtime_put(prg->dev);
 }
 EXPORT_SYMBOL_GPL(ipu_prg_disable);
 
@@ -262,7 +261,7 @@ void ipu_prg_channel_disable(struct ipuv3_channel *ipu_chan)
 	if (!chan->enabled)
 		return;
 
-	clk_prepare_enable(prg->clk_ipg);
+	pm_runtime_get_sync(prg->dev);
 
 	val = readl(prg->regs + IPU_PRG_CTL);
 	val |= IPU_PRG_CTL_BYPASS(prg_chan);
@@ -271,7 +270,7 @@ void ipu_prg_channel_disable(struct ipuv3_channel *ipu_chan)
 	val = IPU_PRG_REG_UPDATE_REG_UPDATE;
 	writel(val, prg->regs + IPU_PRG_REG_UPDATE);
 
-	clk_disable_unprepare(prg->clk_ipg);
+	pm_runtime_put(prg->dev);
 
 	ipu_prg_put_pre(prg, prg_chan);
 
@@ -282,7 +281,7 @@ EXPORT_SYMBOL_GPL(ipu_prg_channel_disable);
 int ipu_prg_channel_configure(struct ipuv3_channel *ipu_chan,
 			      unsigned int axi_id, unsigned int width,
 			      unsigned int height, unsigned int stride,
-			      u32 format, unsigned long *eba)
+			      u32 format, uint64_t modifier, unsigned long *eba)
 {
 	int prg_chan = ipu_prg_ipu_to_prg_chan(ipu_chan->num);
 	struct ipu_prg *prg = ipu_chan->ipu->prg_priv;
@@ -305,14 +304,10 @@ int ipu_prg_channel_configure(struct ipuv3_channel *ipu_chan,
 		return ret;
 
 	ipu_pre_configure(prg->pres[chan->used_pre],
-			  width, height, stride, format, *eba);
+			  width, height, stride, format, modifier, *eba);
 
 
-	ret = clk_prepare_enable(prg->clk_ipg);
-	if (ret) {
-		ipu_prg_put_pre(prg, prg_chan);
-		return ret;
-	}
+	pm_runtime_get_sync(prg->dev);
 
 	val = (stride - 1) & IPU_PRG_STRIDE_STRIDE_MASK;
 	writel(val, prg->regs + IPU_PRG_STRIDE(prg_chan));
@@ -345,7 +340,7 @@ int ipu_prg_channel_configure(struct ipuv3_channel *ipu_chan,
 			   (val & IPU_PRG_STATUS_BUFFER1_READY(prg_chan)),
 			   5, 1000);
 
-	clk_disable_unprepare(prg->clk_ipg);
+	pm_runtime_put(prg->dev);
 
 	chan->enabled = true;
 	return 0;
@@ -393,6 +388,12 @@ static int ipu_prg_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	ret = clk_prepare_enable(prg->clk_axi);
+	if (ret) {
+		clk_disable_unprepare(prg->clk_ipg);
+		return ret;
+	}
+
 	/* init to free running mode */
 	val = readl(prg->regs + IPU_PRG_CTL);
 	val |= IPU_PRG_CTL_SHADOW_EN;
@@ -401,7 +402,8 @@ static int ipu_prg_probe(struct platform_device *pdev)
 	/* disable address threshold */
 	writel(0xffffffff, prg->regs + IPU_PRG_THD);
 
-	clk_disable_unprepare(prg->clk_ipg);
+	pm_runtime_set_active(dev);
+	pm_runtime_enable(dev);
 
 	prg->dev = dev;
 	platform_set_drvdata(pdev, prg);
@@ -423,6 +425,40 @@ static int ipu_prg_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM
+static int prg_suspend(struct device *dev)
+{
+	struct ipu_prg *prg = dev_get_drvdata(dev);
+
+	clk_disable_unprepare(prg->clk_axi);
+	clk_disable_unprepare(prg->clk_ipg);
+
+	return 0;
+}
+
+static int prg_resume(struct device *dev)
+{
+	struct ipu_prg *prg = dev_get_drvdata(dev);
+	int ret;
+
+	ret = clk_prepare_enable(prg->clk_ipg);
+	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(prg->clk_axi);
+	if (ret) {
+		clk_disable_unprepare(prg->clk_ipg);
+		return ret;
+	}
+
+	return 0;
+}
+#endif
+
+static const struct dev_pm_ops prg_pm_ops = {
+	SET_RUNTIME_PM_OPS(prg_suspend, prg_resume, NULL)
+};
+
 static const struct of_device_id ipu_prg_dt_ids[] = {
 	{ .compatible = "fsl,imx6qp-prg", },
 	{ /* sentinel */ },
@@ -433,6 +469,7 @@ struct platform_driver ipu_prg_drv = {
 	.remove		= ipu_prg_remove,
 	.driver		= {
 		.name	= "imx-ipu-prg",
+		.pm	= &prg_pm_ops,
 		.of_match_table = ipu_prg_dt_ids,
 	},
 };

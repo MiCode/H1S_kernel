@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _MTK_DRM_HELPER_H_
 #define _MTK_DRM_HELPER_H_
@@ -57,7 +49,12 @@ enum MTK_DRM_HELPER_OPT {
 	MTK_DRM_OPT_LAYER_REC,
 	MTK_DRM_OPT_CLEAR_LAYER,
 	MTK_DRM_OPT_VDS_PATH_SWITCH,
+	/*ARR4*/
+	MTK_DRM_OPT_LFR,
 	MTK_DRM_OPT_SF_PF,
+	MTK_DRM_OPT_PRIM_DUAL_PIPE,
+	MTK_DRM_OPT_DYN_MIPI_CHANGE,
+	MTK_DRM_OPT_PQ_34_COLOR_MATRIX,
 	MTK_DRM_OPT_NUM
 };
 

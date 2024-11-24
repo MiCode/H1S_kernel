@@ -114,7 +114,10 @@ static bool cpts_match_tx_ts(struct cpts *cpts, struct cpts_event *event)
 			dev_consume_skb_any(skb);
 			dev_dbg(cpts->dev, "match tx timestamp mtype %u seqid %04x\n",
 				mtype, seqid);
-		} else if (time_after(jiffies, skb_cb->tmo)) {
+			break;
+		}
+
+		if (time_after(jiffies, skb_cb->tmo)) {
 			/* timeout any expired skbs over 1s */
 			dev_dbg(cpts->dev, "expiring tx timestamp from txq\n");
 			__skb_unlink(skb, &cpts->txq);
@@ -156,6 +159,7 @@ static int cpts_fifo_read(struct cpts *cpts, int match)
 				 */
 				break;
 			}
+			/* fall through */
 		case CPTS_EV_PUSH:
 		case CPTS_EV_RX:
 			list_del_init(&event->list);
@@ -292,7 +296,8 @@ static long cpts_overflow_check(struct ptp_clock_info *ptp)
 		delay = CPTS_SKB_TX_WORK_TIMEOUT;
 	spin_unlock_irqrestore(&cpts->lock, flags);
 
-	pr_debug("cpts overflow check at %lld.%09lu\n", ts.tv_sec, ts.tv_nsec);
+	pr_debug("cpts overflow check at %lld.%09ld\n",
+		 (long long)ts.tv_sec, ts.tv_nsec);
 	return (long)delay;
 }
 
@@ -440,7 +445,9 @@ int cpts_register(struct cpts *cpts)
 	for (i = 0; i < CPTS_MAX_EVENTS; i++)
 		list_add(&cpts->pool_data[i].list, &cpts->pool);
 
-	clk_enable(cpts->refclk);
+	err = clk_enable(cpts->refclk);
+	if (err)
+		return err;
 
 	cpts_write32(cpts, CPTS_EN, control);
 	cpts_write32(cpts, TS_PEND_EN, int_enable);
@@ -471,6 +478,7 @@ void cpts_unregister(struct cpts *cpts)
 
 	ptp_clock_unregister(cpts->clock);
 	cpts->clock = NULL;
+	cpts->phc_index = -1;
 
 	cpts_write32(cpts, 0, int_enable);
 	cpts_write32(cpts, 0, control);
@@ -562,7 +570,7 @@ struct cpts *cpts_create(struct device *dev, void __iomem *regs,
 	cpts->refclk = devm_clk_get(dev, "cpts");
 	if (IS_ERR(cpts->refclk)) {
 		dev_err(dev, "Failed to get cpts refclk\n");
-		return ERR_PTR(PTR_ERR(cpts->refclk));
+		return ERR_CAST(cpts->refclk);
 	}
 
 	ret = clk_prepare(cpts->refclk);
@@ -572,6 +580,7 @@ struct cpts *cpts_create(struct device *dev, void __iomem *regs,
 	cpts->cc.read = cpts_systim_read;
 	cpts->cc.mask = CLOCKSOURCE_MASK(32);
 	cpts->info = cpts_info;
+	cpts->phc_index = -1;
 
 	cpts_calc_mult_shift(cpts);
 	/* save cc.mult original value as it can be modified

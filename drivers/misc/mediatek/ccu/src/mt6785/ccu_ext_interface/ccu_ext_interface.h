@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __CCU_INTERFACE__
 #define __CCU_INTERFACE__
@@ -134,17 +126,53 @@ enum ccu_msg_id {
 
 enum ccu_tg_info {
 	CCU_CAM_TG_NONE = 0x0,
+	CCU_CAM_TG_MIN  = 0x1,
 	CCU_CAM_TG_1    = 0x1,
 	CCU_CAM_TG_2    = 0x2,
 	CCU_CAM_TG_MAX
 };
+#define CCU_CAM_TG_CNT (CCU_CAM_TG_MAX - CCU_CAM_TG_MIN)
 
 struct ccu_msg { /*16bytes*/
-		enum ccu_msg_id msg_id;
-		 MUINT32 in_data_ptr;
-		 MUINT32 out_data_ptr;
-		enum ccu_tg_info tg_info;
+	enum ccu_msg_id msg_id;
+	MUINT32 in_data_ptr;
+	MUINT32 out_data_ptr;
+	enum ccu_tg_info tg_info;
 };
+
+struct ccu_control_info {
+	enum ccu_tg_info tg_info; //new
+	uint32_t msg_id;
+	uint64_t inDataPtr;
+	uint32_t inDataSize;
+	uint64_t outDataPtr;
+	uint32_t outDataSize;
+};
+
+struct ap2ccu_ipc_t {
+	MUINT32 write_cnt;
+	MUINT32 read_cnt;
+	struct ccu_msg msg;
+	MBOOL ack;
+};
+
+struct exif_data_addrs_s {
+	MUINT32 ae_algo_data_addr;
+	MUINT32 ae_init_data_addr;
+	MUINT32 ae_vsync_info_addr;
+	MUINT32 aesync_algo_in_addr;
+	MUINT32 aesync_algo_out_addr;
+};
+
+struct shared_buf_map {
+	MUINT32 ipc_in_data_addr_ccu;
+	MUINT32 ipc_out_data_addr_ccu;
+	MUINT32 ipc_in_data_base_offset;
+	MUINT32 ipc_out_data_base_offset;
+	MUINT32 ipc_base_offset;
+	struct exif_data_addrs_s exif_data_addrs[CCU_CAM_TG_CNT];
+};
+
 
 /*****************************************************************************/
 /* Special isr task (execute in isr) */

@@ -1,17 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (C) 2021 MediaTek Inc.
  */
 #include <linux/sched/clock.h>
 #include <linux/sched/mm.h>
@@ -143,8 +132,13 @@ static int check_dep_run_and_update(struct gbe_boost_unit *iter)
 			put_task_struct(p);
 
 			iter->dep[i].loading =
+#if BITS_PER_LONG == 32
+				div_u64((new_runtime - iter->dep[i].runtime) * 100,
+				(cur_ts_ns - iter->runtime_ts_ns));
+#else
 				(new_runtime - iter->dep[i].runtime) * 100
 				/ (cur_ts_ns - iter->runtime_ts_ns);
+#endif
 			iter->dep[i].runtime = new_runtime;
 		}
 	}
@@ -171,7 +165,7 @@ static int check_dep_run_and_update(struct gbe_boost_unit *iter)
 	}
 
 	gbe_trace_printk(iter->pid, "gbe", dep_str);
-	gbe_trace_count(iter->pid, ret, "gbe_dep_run_0x%llx", iter->bufID);
+	gbe_trace_count(iter->pid, iter->bufID, ret, "gbe_dep_run");
 
 	return ret;
 }
@@ -191,10 +185,10 @@ static void gbe_do_timer2(struct work_struct *work)
 	} else if (iter->boost_cnt > MAX_BOOST_CNT) {
 		iter->state = FREE;
 		iter->boost_cnt = 0;
-		gbe_trace_count(iter->pid,
-			iter->boost_cnt, "gbe_boost_cnt_0x%llx", iter->bufID);
-		gbe_trace_count(iter->pid,
-			iter->state, "gbe_state_0x%llx", iter->bufID);
+		gbe_trace_count(iter->pid, iter->bufID,
+			iter->boost_cnt, "gbe_boost_cnt");
+		gbe_trace_count(iter->pid, iter->bufID,
+			iter->state, "gbe_state");
 		gbe_boost_cpu();
 		hrtimer_cancel(&iter->timer2);
 		hrtimer_start(&iter->timer2,
@@ -202,8 +196,8 @@ static void gbe_do_timer2(struct work_struct *work)
 	} else if (check_dep_run_and_update(iter)) {
 		if (cur_ts_ms - iter->q_ts_ms > TIMER1_MS) {
 			iter->boost_cnt++;
-			gbe_trace_count(iter->pid, iter->boost_cnt,
-				"gbe_boost_cnt_0x%llx", iter->bufID);
+			gbe_trace_count(iter->pid, iter->bufID,
+				iter->boost_cnt, "gbe_boost_cnt");
 			hrtimer_cancel(&iter->timer2);
 			hrtimer_start(&iter->timer2,
 				ms_to_ktime(TIMER2_MS), HRTIMER_MODE_REL);
@@ -211,10 +205,10 @@ static void gbe_do_timer2(struct work_struct *work)
 			iter->state = FPS_UPDATE;
 			iter->boost_cnt = 0;
 			gbe_boost_cpu();
-			gbe_trace_count(iter->pid, iter->boost_cnt,
-				"gbe_boost_cnt_0x%llx", iter->bufID);
-			gbe_trace_count(iter->pid,
-				iter->state, "gbe_state_0x%llx", iter->bufID);
+			gbe_trace_count(iter->pid, iter->bufID,
+				iter->boost_cnt, "gbe_boost_cnt");
+			gbe_trace_count(iter->pid, iter->bufID,
+				iter->state, "gbe_state");
 			hrtimer_cancel(&iter->timer1);
 			hrtimer_start(&iter->timer1,
 				ms_to_ktime(TIMER1_MS), HRTIMER_MODE_REL);
@@ -222,10 +216,10 @@ static void gbe_do_timer2(struct work_struct *work)
 	} else {
 		iter->state = FREE;
 		iter->boost_cnt = 0;
-		gbe_trace_count(iter->pid,
-			iter->boost_cnt, "gbe_boost_cnt_0x%llx", iter->bufID);
-		gbe_trace_count(iter->pid,
-			iter->state, "gbe_state_0x%llx", iter->bufID);
+		gbe_trace_count(iter->pid, iter->bufID,
+			iter->boost_cnt, "gbe_boost_cnt");
+		gbe_trace_count(iter->pid, iter->bufID,
+			iter->state, "gbe_state");
 		gbe_boost_cpu();
 		hrtimer_cancel(&iter->timer2);
 		hrtimer_start(&iter->timer2,
@@ -266,16 +260,16 @@ static void gbe_do_timer1(struct work_struct *work)
 		iter->state = BOOSTING;
 		iter->boost_cnt = 1;
 		gbe_boost_cpu();
-		gbe_trace_count(iter->pid,
-			iter->boost_cnt, "gbe_boost_cnt_0x%llx", iter->bufID);
-		gbe_trace_count(iter->pid,
-			iter->state, "gbe_state_0x%llx", iter->bufID);
+		gbe_trace_count(iter->pid, iter->bufID,
+			iter->boost_cnt, "gbe_boost_cnt");
+		gbe_trace_count(iter->pid, iter->bufID,
+			iter->state, "gbe_state");
 		hrtimer_start(&iter->timer2, ms_to_ktime(TIMER2_MS),
 			HRTIMER_MODE_REL);
 	} else {
 		iter->state = FREE;
-		gbe_trace_count(iter->pid,
-			iter->state, "gbe_state_0x%llx", iter->bufID);
+		gbe_trace_count(iter->pid, iter->bufID,
+			iter->state, "gbe_state");
 		hrtimer_start(&iter->timer2, ms_to_ktime(TIMER2_MS),
 			HRTIMER_MODE_REL);
 	}
@@ -363,13 +357,13 @@ void fpsgo_comp2gbe_frame_update(int pid, unsigned long long bufID)
 		gbe2xgf_get_dep_list(pid, iter->dep_num, iter->dep, bufID);
 		update_runtime(iter);
 
-		gbe_trace_count(iter->pid,
-			iter->state, "gbe_state_0x%llx", iter->bufID);
+		gbe_trace_count(iter->pid, iter->bufID,
+			iter->state, "gbe_state");
 		iter->state = FPS_UPDATE;
-		gbe_trace_count(iter->pid,
-			iter->boost_cnt, "gbe_boost_cnt_0x%llx", iter->bufID);
-		gbe_trace_count(iter->pid,
-			iter->state, "gbe_state_0x%llx", iter->bufID);
+		gbe_trace_count(iter->pid, iter->bufID,
+			iter->boost_cnt, "gbe_boost_cnt");
+		gbe_trace_count(iter->pid, iter->bufID,
+			iter->state, "gbe_state");
 
 		gbe_init_timer1(iter);
 		gbe_init_timer2(iter);

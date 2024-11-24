@@ -16,7 +16,7 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/uart/include/
 # Include teei header teei_client_main.h
 ifeq ($(CONFIG_MICROTRUST_TEE_SUPPORT), y)
-include $(srctree)/drivers/misc/mediatek/teei/Makefile.include
+include $(srctree)/drivers/tee/teei/Makefile.include
 endif
 # Include pwm header ddp_pwm.h
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/video/include/
@@ -26,7 +26,11 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/mcdi/include/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/include/clkbuf_v1/
 # Include soc header mtk-soc-afe-control.h
 ifeq ($(CONFIG_MTK_SND_SOC_NEW_ARCH), y)
+ifeq ($(CONFIG_MACH_MT6761),y)
+ccflags-y += -I$(srctree)/sound/soc/mediatek/mt6765/
+else
 ccflags-y += -I$(srctree)/sound/soc/mediatek/$(MTK_PLATFORM)/
+endif
 ccflags-y += -I$(srctree)/sound/soc/mediatek/common_int/
 endif
 # Include soc header mtk-sp-afe-external.h
@@ -37,6 +41,7 @@ endif
 # Include thermal header mtk_thermal.h
 ifeq ($(CONFIG_THERMAL), y)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/thermal/$(MTK_PLATFORM)/inc/mach/
+ccflags-y += -I$(srctree)/drivers/gpu/mediatek/gpufreq/include/
 endif
 
 
@@ -47,9 +52,9 @@ obj-y += mtk_idle_select.o
 obj-y += mtk_idle_internal.o
 obj-y += mtk_idle_profile.o
 obj-y += mtk_idle_twam.o
+obj-y += mtk_dpidle.o
+obj-y += mtk_sodi.o
 obj-y += mtk_spm_resource_req.o
 obj-y += mtk_sleep.o
 obj-y += mtk_sleep_init.o
 obj-y += mtk_vcore_dvfs.o
-obj-y += mtk_idle_module.o
-obj-y += mtk_idle_export_legacy.o

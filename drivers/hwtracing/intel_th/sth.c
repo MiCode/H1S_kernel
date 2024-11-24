@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Intel(R) Trace Hub Software Trace Hub support
  *
  * Copyright (C) 2014-2015 Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
@@ -165,9 +157,7 @@ static int sth_stm_link(struct stm_data *stm_data, unsigned int master,
 {
 	struct sth_device *sth = container_of(stm_data, struct sth_device, stm);
 
-	intel_th_set_output(to_intel_th_device(sth->dev), master);
-
-	return 0;
+	return intel_th_set_output(to_intel_th_device(sth->dev), master);
 }
 
 static int intel_th_sw_init(struct sth_device *sth)

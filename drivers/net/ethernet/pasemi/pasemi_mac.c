@@ -212,9 +212,7 @@ static int pasemi_get_mac_addr(struct pasemi_mac *mac)
 		return -ENOENT;
 	}
 
-	if (sscanf(maddr, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-		   &addr[0], &addr[1], &addr[2], &addr[3], &addr[4], &addr[5])
-	    != ETH_ALEN) {
+	if (!mac_pton(maddr, addr)) {
 		dev_warn(&pdev->dev,
 			 "can't parse mac address, not configuring\n");
 		return -EINVAL;
@@ -392,8 +390,9 @@ static int pasemi_mac_setup_rx_resources(const struct net_device *dev)
 	spin_lock_init(&ring->lock);
 
 	ring->size = RX_RING_SIZE;
-	ring->ring_info = kzalloc(sizeof(struct pasemi_mac_buffer) *
-				  RX_RING_SIZE, GFP_KERNEL);
+	ring->ring_info = kcalloc(RX_RING_SIZE,
+				  sizeof(struct pasemi_mac_buffer),
+				  GFP_KERNEL);
 
 	if (!ring->ring_info)
 		goto out_ring_info;
@@ -475,8 +474,9 @@ pasemi_mac_setup_tx_resources(const struct net_device *dev)
 	spin_lock_init(&ring->lock);
 
 	ring->size = TX_RING_SIZE;
-	ring->ring_info = kzalloc(sizeof(struct pasemi_mac_buffer) *
-				  TX_RING_SIZE, GFP_KERNEL);
+	ring->ring_info = kcalloc(TX_RING_SIZE,
+				  sizeof(struct pasemi_mac_buffer),
+				  GFP_KERNEL);
 	if (!ring->ring_info)
 		goto out_ring_info;
 
@@ -943,9 +943,9 @@ static irqreturn_t pasemi_mac_rx_intr(int irq, void *data)
 
 #define TX_CLEAN_INTERVAL HZ
 
-static void pasemi_mac_tx_timer(unsigned long data)
+static void pasemi_mac_tx_timer(struct timer_list *t)
 {
-	struct pasemi_mac_txring *txring = (struct pasemi_mac_txring *)data;
+	struct pasemi_mac_txring *txring = from_timer(txring, t, clean_timer);
 	struct pasemi_mac *mac = txring->mac;
 
 	pasemi_mac_clean_tx(txring);
@@ -1089,16 +1089,20 @@ static int pasemi_mac_open(struct net_device *dev)
 
 	mac->tx = pasemi_mac_setup_tx_resources(dev);
 
-	if (!mac->tx)
+	if (!mac->tx) {
+		ret = -ENOMEM;
 		goto out_tx_ring;
+	}
 
 	/* We might already have allocated rings in case mtu was changed
 	 * before interface was brought up.
 	 */
 	if (dev->mtu > 1500 && !mac->num_cs) {
 		pasemi_mac_setup_csrings(mac);
-		if (!mac->num_cs)
+		if (!mac->num_cs) {
+			ret = -ENOMEM;
 			goto out_tx_ring;
+		}
 	}
 
 	/* Zero out rmon counters */
@@ -1199,8 +1203,7 @@ static int pasemi_mac_open(struct net_device *dev)
 	if (dev->phydev)
 		phy_start(dev->phydev);
 
-	setup_timer(&mac->tx->clean_timer, pasemi_mac_tx_timer,
-		    (unsigned long)mac->tx);
+	timer_setup(&mac->tx->clean_timer, pasemi_mac_tx_timer, 0);
 	mod_timer(&mac->tx->clean_timer, jiffies + HZ);
 
 	return 0;
@@ -1432,7 +1435,7 @@ static void pasemi_mac_queue_csdesc(const struct sk_buff *skb,
 	write_dma_reg(PAS_DMA_TXCHAN_INCR(txring->chan.chno), 2);
 }
 
-static int pasemi_mac_start_tx(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t pasemi_mac_start_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	struct pasemi_mac * const mac = netdev_priv(dev);
 	struct pasemi_mac_txring * const txring = tx_ring(mac);

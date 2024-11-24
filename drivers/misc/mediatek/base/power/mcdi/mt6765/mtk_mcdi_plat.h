@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #ifndef __MTK_MCDI_PLAT_H__
@@ -18,12 +10,6 @@
 #define NF_CLUSTER              2
 #define CPU_PWR_STAT_MASK       0x000000FF
 #define CLUSTER_PWR_STAT_MASK   0x00030000
-
-/* mcdi governor policy parameters */
-#define DEFAULT_CHK_RES_EACH_CORE (false)
-#define DEFAULT_TMR_EN            (false)
-#define DEFAULT_PRE_LOCK          (true)
-#define DEFAULT_MTK_IDLE_SEL_ONLY (1)
 
 #define cpu_is_invalid(id)      (!(id >= 0 && id < NF_CPU))
 #define cluster_is_invalid(id)  (!(id >= 0 && id < NF_CLUSTER))

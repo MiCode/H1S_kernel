@@ -126,7 +126,7 @@ struct fb_cursor_user {
 
 /*	The resolution of the passed in fb_info about to change */ 
 #define FB_EVENT_MODE_CHANGE		0x01
-/*	The display on this fb_info is beeing suspended, no access to the
+/*	The display on this fb_info is being suspended, no access to the
  *	framebuffer is allowed any more after that call returns
  */
 #define FB_EVENT_SUSPEND		0x02
@@ -159,9 +159,9 @@ struct fb_cursor_user {
 #define FB_EVENT_FB_UNBIND              0x0E
 /*      CONSOLE-SPECIFIC: remap all consoles to new fb - for vga_switcheroo */
 #define FB_EVENT_REMAP_ALL_CONSOLE      0x0F
-/*      A hardware display blank early change occured */
+/*      A hardware display blank early change occurred */
 #define FB_EARLY_EVENT_BLANK		0x10
-/*      A hardware display blank revert early change occured */
+/*      A hardware display blank revert early change occurred */
 #define FB_R_EARLY_EVENT_BLANK		0x11
 
 struct fb_event {
@@ -465,6 +465,11 @@ struct fb_info {
 	atomic_t count;
 	int node;
 	int flags;
+	/*
+	 * -1 by default, set to a FB_ROTATE_* value by the driver, if it knows
+	 * a lcd is not mounted upright and fbcon should rotate to compensate.
+	 */
+	int fbcon_rotate_hint;
 	struct mutex lock;		/* Lock for open/release/ioctl funcs */
 	struct mutex mm_lock;		/* Lock for fb_mmap and smem_* fields */
 	struct fb_var_screeninfo var;	/* Current var */
@@ -565,7 +570,9 @@ static inline struct apertures_struct *alloc_apertures(unsigned int max_num) {
 #define fb_memcpy_fromfb sbus_memcpy_fromio
 #define fb_memcpy_tofb sbus_memcpy_toio
 
-#elif defined(__i386__) || defined(__alpha__) || defined(__x86_64__) || defined(__hppa__) || defined(__sh__) || defined(__powerpc__) || defined(__avr32__) || defined(__bfin__) || defined(__arm__)
+#elif defined(__i386__) || defined(__alpha__) || defined(__x86_64__) ||	\
+	defined(__hppa__) || defined(__sh__) || defined(__powerpc__) ||	\
+	defined(__arm__) || defined(__aarch64__)
 
 #define fb_readb __raw_readb
 #define fb_readw __raw_readw
@@ -643,6 +650,10 @@ extern int fb_new_modelist(struct fb_info *info);
 extern struct fb_info *registered_fb[FB_MAX];
 extern int num_registered_fb;
 extern struct class *fb_class;
+
+#define for_each_registered_fb(i)		\
+	for (i = 0; i < FB_MAX; i++)		\
+		if (!registered_fb[i]) {} else
 
 extern int lock_fb_info(struct fb_info *info);
 

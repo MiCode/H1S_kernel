@@ -28,7 +28,12 @@ typedef void (*alternative_cb_t)(struct alt_instr *alt,
 				 __le32 *origptr, __le32 *updptr, int nr_inst);
 
 void __init apply_alternatives_all(void);
-void apply_alternatives(void *start, size_t length);
+
+#ifdef CONFIG_MODULES
+void apply_alternatives_module(void *start, size_t length);
+#else
+static inline void apply_alternatives_module(void *start, size_t length) { }
+#endif
 
 #define ALTINSTR_ENTRY(feature)					              \
 	" .word 661b - .\n"				/* label           */ \
@@ -114,9 +119,9 @@ void apply_alternatives(void *start, size_t length);
 	.popsection
 	.pushsection .altinstr_replacement, "ax"
 663:	\insn2
-664:	.popsection
-	.org	. - (664b-663b) + (662b-661b)
+664:	.org	. - (664b-663b) + (662b-661b)
 	.org	. - (662b-661b) + (664b-663b)
+	.popsection
 	.endif
 .endm
 
@@ -186,11 +191,11 @@ void apply_alternatives(void *start, size_t length);
  */
 .macro alternative_endif
 664:
+	.org	. - (664b-663b) + (662b-661b)
+	.org	. - (662b-661b) + (664b-663b)
 	.if .Lasm_alt_mode==0
 	.popsection
 	.endif
-	.org	. - (664b-663b) + (662b-661b)
-	.org	. - (662b-661b) + (664b-663b)
 .endm
 
 /*

@@ -11,21 +11,23 @@
 # GNU General Public License for more details.
 #
 
-
-
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/$(MTK_PLATFORM)/include
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat
 
 ifeq ($(CONFIG_MTK_TINYSYS_SSPM_SUPPORT), y)
-ifeq (y, $(filter y, $(CONFIG_MACH_MT6853) $(CONFIG_MACH_MT6885) $(CONFIG_MACH_MT6873) $(CONFIG_MACH_MT6893)))
+ifeq (y, $(filter y, $(CONFIG_MACH_MT6877) $(CONFIG_MACH_MT6833) $(CONFIG_MACH_MT6853) $(CONFIG_MACH_MT6885) $(CONFIG_MACH_MT6873) $(CONFIG_MACH_MT6893) $(CONFIG_MACH_MT6781)))
 ccflags-y += -DSSPM_V2
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/v2
 else
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/v1
 endif
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/
+ifeq (y, $(filter y, $(CONFIG_MACH_MT6781)))
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/mt6781/
+else
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/$(MTK_PLATFORM)/
+endif
 endif
 
 ifeq ($(CONFIG_MTK_TINYSYS_MCUPM_SUPPORT), y)
@@ -42,4 +44,4 @@ endif
 
 
 obj-$(CONFIG_MTK_TIMER_TIMESYNC)	+= mtk_sys_timer.o
-obj-$(CONFIG_MTK_ARCHCOUNTER_TIMESYNC)	+= archcounter_timesync.o
+obj-y += archcounter_timesync.o

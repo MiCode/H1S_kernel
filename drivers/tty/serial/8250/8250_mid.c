@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * 8250_mid.c - Driver for UART on Intel Penwell and various other Intel SOCs
  *
  * Copyright (C) 2015 Intel Corporation
  * Author: Heikki Krogerus <heikki.krogerus@linux.intel.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/bitops.h>
@@ -23,10 +20,11 @@
 #define PCI_DEVICE_ID_INTEL_PNW_UART2	0x081c
 #define PCI_DEVICE_ID_INTEL_PNW_UART3	0x081d
 #define PCI_DEVICE_ID_INTEL_TNG_UART	0x1191
+#define PCI_DEVICE_ID_INTEL_CDF_UART	0x18d8
 #define PCI_DEVICE_ID_INTEL_DNV_UART	0x19d8
 
 /* Intel MID Specific registers */
-#define INTEL_MID_UART_DNV_FISR		0x08
+#define INTEL_MID_UART_FISR		0x08
 #define INTEL_MID_UART_PS		0x30
 #define INTEL_MID_UART_MUL		0x34
 #define INTEL_MID_UART_DIV		0x38
@@ -73,6 +71,11 @@ static int pnw_setup(struct mid8250 *mid, struct uart_port *p)
 	mid->dma_dev = pci_get_slot(pdev->bus,
 				    PCI_DEVFN(PCI_SLOT(pdev->devfn), 3));
 	return 0;
+}
+
+static void pnw_exit(struct mid8250 *mid)
+{
+	pci_dev_put(mid->dma_dev);
 }
 
 static int tng_handle_irq(struct uart_port *p)
@@ -126,11 +129,16 @@ static int tng_setup(struct mid8250 *mid, struct uart_port *p)
 	return 0;
 }
 
+static void tng_exit(struct mid8250 *mid)
+{
+	pci_dev_put(mid->dma_dev);
+}
+
 static int dnv_handle_irq(struct uart_port *p)
 {
 	struct mid8250 *mid = p->private_data;
 	struct uart_8250_port *up = up_to_u8250p(p);
-	unsigned int fisr = serial_port_in(p, INTEL_MID_UART_DNV_FISR);
+	unsigned int fisr = serial_port_in(p, INTEL_MID_UART_FISR);
 	u32 status;
 	int ret = 0;
 	int err;
@@ -332,9 +340,9 @@ static int mid8250_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	pci_set_drvdata(pdev, mid);
 	return 0;
+
 err:
-	if (mid->board->exit)
-		mid->board->exit(mid);
+	mid->board->exit(mid);
 	return ret;
 }
 
@@ -344,8 +352,7 @@ static void mid8250_remove(struct pci_dev *pdev)
 
 	serial8250_unregister_port(mid->line);
 
-	if (mid->board->exit)
-		mid->board->exit(mid);
+	mid->board->exit(mid);
 }
 
 static const struct mid8250_board pnw_board = {
@@ -353,6 +360,7 @@ static const struct mid8250_board pnw_board = {
 	.freq = 50000000,
 	.base_baud = 115200,
 	.setup = pnw_setup,
+	.exit = pnw_exit,
 };
 
 static const struct mid8250_board tng_board = {
@@ -360,6 +368,7 @@ static const struct mid8250_board tng_board = {
 	.freq = 38400000,
 	.base_baud = 1843200,
 	.setup = tng_setup,
+	.exit = tng_exit,
 };
 
 static const struct mid8250_board dnv_board = {
@@ -377,6 +386,7 @@ static const struct pci_device_id pci_ids[] = {
 	MID_DEVICE(PCI_DEVICE_ID_INTEL_PNW_UART2, pnw_board),
 	MID_DEVICE(PCI_DEVICE_ID_INTEL_PNW_UART3, pnw_board),
 	MID_DEVICE(PCI_DEVICE_ID_INTEL_TNG_UART, tng_board),
+	MID_DEVICE(PCI_DEVICE_ID_INTEL_CDF_UART, dnv_board),
 	MID_DEVICE(PCI_DEVICE_ID_INTEL_DNV_UART, dnv_board),
 	{ },
 };

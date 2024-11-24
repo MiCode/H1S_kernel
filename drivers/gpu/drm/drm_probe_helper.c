@@ -33,6 +33,7 @@
 #include <linux/moduleparam.h>
 
 #include <drm/drmP.h>
+#include <drm/drm_client.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_crtc_helper.h>
@@ -88,9 +89,9 @@ drm_mode_validate_pipeline(struct drm_display_mode *mode,
 			    struct drm_connector *connector)
 {
 	struct drm_device *dev = connector->dev;
-	uint32_t *ids = connector->encoder_ids;
 	enum drm_mode_status ret = MODE_OK;
-	unsigned int i;
+	struct drm_encoder *encoder;
+	int i;
 
 	/* Step 1: Validate against connector */
 	ret = drm_connector_mode_valid(connector, mode);
@@ -98,13 +99,8 @@ drm_mode_validate_pipeline(struct drm_display_mode *mode,
 		return ret;
 
 	/* Step 2: Validate against encoders and crtcs */
-	for (i = 0; i < DRM_CONNECTOR_MAX_ENCODER; i++) {
-		struct drm_encoder *encoder = drm_encoder_find(dev,
-						NULL, ids[i]);
+	drm_connector_for_each_possible_encoder(connector, encoder, i) {
 		struct drm_crtc *crtc;
-
-		if (!encoder)
-			continue;
 
 		ret = drm_encoder_mode_valid(encoder, mode);
 		if (ret != MODE_OK) {
@@ -217,8 +213,7 @@ enum drm_mode_status drm_connector_mode_valid(struct drm_connector *connector,
  * suspend/resume.
  *
  * Drivers can call this helper from their device resume implementation. It is
- * an error to call this when the output polling support has not yet been set
- * up.
+ * not an error to call this even when output polling isn't enabled.
  *
  * Note that calls to enable and disable polling must be strictly ordered, which
  * is automatically the case when they're only call from suspend/resume
@@ -354,8 +349,6 @@ EXPORT_SYMBOL(drm_helper_probe_detect);
  *    drm_mode_probed_add(). New modes start their life with status as OK.
  *    Modes are added from a single source using the following priority order.
  *
- *    - debugfs 'override_edid' (used for testing only)
- *    - firmware EDID (drm_load_edid_firmware())
  *    - &drm_connector_helper_funcs.get_modes vfunc
  *    - if the connector status is connector_status_connected, standard
  *      VESA DMT modes up to 1024x768 are automatically added
@@ -367,7 +360,7 @@ EXPORT_SYMBOL(drm_helper_probe_detect);
  *    using the VESA GTF/CVT formulas.
  *
  * 3. Modes are moved from the probed_modes list to the modes list. Potential
- *    duplicates are merged together (see drm_mode_connector_list_update()).
+ *    duplicates are merged together (see drm_connector_list_update()).
  *    After this step the probed_modes list will be empty again.
  *
  * 4. Any non-stale mode on the modes list then undergoes validation
@@ -466,8 +459,9 @@ retry:
 		 */
 		dev->mode_config.delayed_event = true;
 		if (dev->mode_config.poll_enabled)
-			schedule_delayed_work(&dev->mode_config.output_poll_work,
-					      0);
+			mod_delayed_work(system_wq,
+					 &dev->mode_config.output_poll_work,
+					 0);
 	}
 
 	/* Re-enable polling in case the global poll config changed. */
@@ -479,27 +473,19 @@ retry:
 	if (connector->status == connector_status_disconnected) {
 		DRM_DEBUG_KMS("[CONNECTOR:%d:%s] disconnected\n",
 			connector->base.id, connector->name);
-		drm_mode_connector_update_edid_property(connector, NULL);
+		drm_connector_update_edid_property(connector, NULL);
 		verbose_prune = false;
 		goto prune;
 	}
 
-	if (connector->override_edid) {
-		struct edid *edid = (struct edid *) connector->edid_blob_ptr->data;
+	count = (*connector_funcs->get_modes)(connector);
 
-		count = drm_add_edid_modes(connector, edid);
-		drm_edid_to_eld(connector, edid);
-	} else {
-		struct edid *edid = drm_load_edid_firmware(connector);
-		if (!IS_ERR_OR_NULL(edid)) {
-			drm_mode_connector_update_edid_property(connector, edid);
-			count = drm_add_edid_modes(connector, edid);
-			drm_edid_to_eld(connector, edid);
-			kfree(edid);
-		}
-		if (count == 0)
-			count = (*connector_funcs->get_modes)(connector);
-	}
+	/*
+	 * Fallback for when DDC probe failed in drm_get_edid() and thus skipped
+	 * override/firmware EDID.
+	 */
+	if (count == 0 && connector->status == connector_status_connected)
+		count = drm_add_override_edid_modes(connector);
 
 	if (count == 0 && connector->status == connector_status_connected)
 		count = drm_add_modes_noedid(connector, 1024, 768);
@@ -507,7 +493,7 @@ retry:
 	if (count == 0)
 		goto prune;
 
-	drm_mode_connector_list_update(connector);
+	drm_connector_list_update(connector);
 
 	if (connector->interlace_allowed)
 		mode_flags |= DRM_MODE_FLAG_INTERLACE;
@@ -518,7 +504,7 @@ retry:
 
 	list_for_each_entry(mode, &connector->modes, head) {
 		if (mode->status == MODE_OK)
-			mode->status = drm_mode_validate_basic(mode);
+			mode->status = drm_mode_validate_driver(dev, mode);
 
 		if (mode->status == MODE_OK)
 			mode->status = drm_mode_validate_size(mode, maxX, maxY);
@@ -582,6 +568,8 @@ void drm_kms_helper_hotplug_event(struct drm_device *dev)
 	drm_sysfs_hotplug_event(dev);
 	if (dev->mode_config.funcs->output_poll_changed)
 		dev->mode_config.funcs->output_poll_changed(dev);
+
+	drm_client_dev_hotplug(dev);
 }
 EXPORT_SYMBOL(drm_kms_helper_hotplug_event);
 

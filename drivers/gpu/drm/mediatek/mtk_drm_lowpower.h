@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+*/
 
 #ifndef _MTK_DRM_LOWPOWER_H_
 #define _MTK_DRM_LOWPOWER_H_
@@ -18,6 +10,7 @@
 
 struct mtk_drm_idlemgr_context {
 	unsigned long long idle_check_interval;
+	unsigned long long idle_vblank_check_internal;
 	unsigned long long idlemgr_last_kick_time;
 	unsigned int enterulps;
 	int session_mode_before_enter_idle;

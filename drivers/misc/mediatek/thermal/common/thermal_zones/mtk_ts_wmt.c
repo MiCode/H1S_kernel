@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/version.h>
@@ -472,10 +463,9 @@ int tswmt_get_WiFi_tx_tput(void)
 {
 	return tx_throughput;
 }
-
-static void wmt_cal_stats(unsigned long data)
+static void wmt_cal_stats(struct timer_list *t)
 {
-	struct wmt_stats *stats_info = (struct wmt_stats *)data;
+	struct wmt_stats *stats_info = &wmt_stats_info;
 	struct timeval cur_time;
 
 	wmt_tm_dprintk("[%s] pre_time=%lu, pre_data=%lu\n", __func__, pre_time,
@@ -526,6 +516,7 @@ static void wmt_cal_stats(unsigned long data)
 
 	wmt_stats_timer.expires = jiffies + 1 * HZ;
 	add_timer(&wmt_stats_timer);
+	//return 0;
 }
 
 static int wmt_thz_bind(struct thermal_zone_device *thz_dev,
@@ -665,7 +656,9 @@ static int wmt_thz_get_temp(struct thermal_zone_device *thz_dev, int *pv)
 	if (sensor_select < 0 || sensor_select >= NR_TS_SENSORS) {
 		#ifdef CONFIG_MTK_AEE_FEATURE
 		aee_kernel_warning_api(__FILE__, __LINE__, DB_OPT_DEFAULT,
-					"%s ", __func__);
+					"%s ",
+					"sensor_select: %d\n",
+					__func__, sensor_select);
 		#endif
 		sensor_select = 0;
 	}
@@ -1359,10 +1352,12 @@ struct file *filp, const char __user *buf, size_t len, loff_t *data)
 		min_wifi_tput, tt_wifi_high,
 		tt_wifi_low, tp_wifi_rise, tp_wifi_fall);
 
-	if (ret != 14 || sensor_select < 0 || sensor_select >= NR_TS_SENSORS) {
+	if (sensor_select < 0 || sensor_select >= NR_TS_SENSORS) {
 		#ifdef CONFIG_MTK_AEE_FEATURE
 		aee_kernel_warning_api(__FILE__, __LINE__, DB_OPT_DEFAULT,
-					"%s ",	__func__);
+					"%s ",
+					"sensor_select: %d\n",
+					__func__, sensor_select);
 		#endif
 		sensor_select = 0;
 	}
@@ -1886,7 +1881,7 @@ static int wmt_tm_proc_register(void)
 		if (entry)
 			proc_set_user(entry, uid, gid);
 
-		entry = proc_create("clwmtx_pid", 0660, wmt_tm_proc_dir,
+		entry = proc_create("clwmt_pid", 0660, wmt_tm_proc_dir,
 								&_tm_pid_fops);
 
 		if (entry)
@@ -1960,16 +1955,14 @@ static int __init wmt_tm_init(void)
 	err = wmt_tm_proc_register();
 	if (err)
 		return err;
-
-	/* init a timer for stats tx bytes */
+/* init a timer for stats tx bytes */
 	wmt_stats_info.pre_time = 0;
 	wmt_stats_info.pre_tx_bytes = 0;
 
-	init_timer_deferrable(&wmt_stats_timer);
-	wmt_stats_timer.function = &wmt_cal_stats;
-	wmt_stats_timer.data = (unsigned long)&wmt_stats_info;
+	timer_setup(&wmt_stats_timer, wmt_cal_stats, TIMER_DEFERRABLE);
 	wmt_stats_timer.expires = jiffies + 1 * HZ;
 	add_timer(&wmt_stats_timer);
+
 
 	err = wmt_tm_thz_cl_register();
 	if (err)

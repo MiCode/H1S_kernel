@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef BUILD_LK
@@ -264,19 +256,6 @@ static struct LCM_setting_table lcm_initialization_setting[] = {
 	{REGFLAG_END_OF_TABLE, 0x00, {} }
 };
 
-#if 0
-static struct LCM_setting_table lcm_resume_setting[] = {
-	/* Exit sleep mode */
-	{0x11, 0, {} },
-	{REGFLAG_DELAY, 150, {} },
-
-	/* DISPLAY ON */
-	{0x29, 0, {} },
-	{REGFLAG_DELAY, 50, {} },
-	{REGFLAG_END_OF_TABLE, 0x00, {} }
-};
-#endif
-
 static struct LCM_setting_table lcm_suspend_setting[] = {
 	/* DISPLAY OFF */
 	{0x28, 0, {} },
@@ -418,44 +397,6 @@ static void lcm_resume_power(void)
 	lcm_set_gpio_output(GPIO_LCD_RST, GPIO_OUT_ONE);
 	MDELAY(20);
 }
-
-#if 0
-static unsigned int lcm_compare_id(void)
-{
-	int   array[4];
-	char  buffer[5];
-	char  id0 = 0;
-	char  id1 = 0;
-	char  id2 = 0;
-	char  id3 = 0;
-	char  id4 = 0;
-
-	lcm_set_gpio_output(GPIO_LCD_RST, GPIO_OUT_ONE);
-	MDELAY(2);
-	lcm_set_gpio_output(GPIO_LCD_RST, GPIO_OUT_ZERO);
-	UDELAY(11);
-	lcm_set_gpio_output(GPIO_LCD_RST, GPIO_OUT_ONE);
-	MDELAY(6);
-
-	array[0] = 0x00053700;
-	dsi_set_cmdq(array, 1, 1);
-	read_reg_v2(0xBF, buffer, 5);
-
-	id0 = buffer[0]; /* should be 0x02 */
-	id1 = buffer[1]; /* should be 0x3C */
-	id2 = buffer[2]; /* should be 0x33 */
-	id3 = buffer[3]; /* should be 0x50 */
-	id4 = buffer[4]; /* should be 0x00 */
-
-	pr_notice("%s, id0 = 0x%08x\n", __func__, id0);
-	pr_notice("%s, id1 = 0x%08x\n", __func__, id1);
-	pr_notice("%s, id2 = 0x%08x\n", __func__, id2);
-	pr_notice("%s, id3 = 0x%08x\n", __func__, id3);
-	pr_notice("%s, id4 = 0x%08x\n", __func__, id4);
-
-	return (id2 == 0x33 && id3 == 0x50) ? 1 : 0;
-}
-#endif
 
 static void lcm_init_lcm(void)
 {

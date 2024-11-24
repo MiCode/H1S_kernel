@@ -13,19 +13,6 @@
 struct kobject *thrm_kobj;
 static unsigned long __read_mostly mark_addr;
 
-static int eara_thrm_update_tracemark(void)
-{
-	if (mark_addr)
-		return 1;
-
-	mark_addr = kallsyms_lookup_name("tracing_mark_write");
-
-	if (unlikely(!mark_addr))
-		return 0;
-
-	return 1;
-}
-
 void eara_thrm_systrace(pid_t pid, int val, const char *fmt, ...)
 {
 	char log[256];
@@ -35,15 +22,13 @@ void eara_thrm_systrace(pid_t pid, int val, const char *fmt, ...)
 	if (pid <= 1)
 		return;
 
-	if (unlikely(!eara_thrm_update_tracemark()))
-		return;
-
 	memset(log, ' ', sizeof(log));
 	va_start(args, fmt);
 	len = vsnprintf(log, sizeof(log), fmt, args);
-	if (unlikely(len == 256))
-		log[255] = '\0';
 	va_end(args);
+
+	if (len == 256)
+		log[255] = '\0';
 
 	preempt_disable();
 	event_trace_printk(mark_addr, "C|%d|%s|%d\n", pid, log, val);
@@ -61,7 +46,6 @@ void eara_thrm_tracelog(const char *fmt, ...)
 	if (unlikely(len == 256))
 		log[255] = '\0';
 	va_end(args);
-
 	trace_eara_thrm_log(log);
 }
 
@@ -87,7 +71,7 @@ void eara_thrm_sysfs_remove_file(struct kobj_attribute *kobj_attr)
 
 int eara_thrm_base_init(void)
 {
-	eara_thrm_update_tracemark();
+	mark_addr = kallsyms_lookup_name("tracing_mark_write");
 
 	if (kernel_kobj == NULL)
 		return -1;

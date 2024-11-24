@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015	MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/uaccess.h>
@@ -28,6 +20,8 @@
 #include "mmdvfs_config_mt6758.h"
 #elif defined(SMI_ZIO)
 #include "mmdvfs_config_mt6739.h"
+#elif defined(SMI_MER)
+#include "mmdvfs_config_mt6761.h"
 #elif defined(SMI_SYL)
 #include "mmdvfs_config_mt6771.h"
 #elif defined(SMI_CAN)
@@ -197,6 +191,24 @@ struct mmdvfs_step_util mmdvfs_step_util_obj_mt6739 = {
 	mmdvfs_get_clients_clk_opp
 };
 
+#elif defined(SMI_MER)
+struct mmdvfs_step_util mmdvfs_step_util_obj_mt6761 = {
+	{0},
+	MMDVFS_SCEN_COUNT,
+	{0},
+	MT6761_MMDVFS_OPP_MAX,
+	NULL,
+	MMDVFS_VOLTAGE_COUNT,
+	NULL,
+	MT6761_MMDVFS_OPP_MAX,
+	MMDVFS_FINE_STEP_OPP0,
+	mmdvfs_step_util_init,
+	mmdvfs_get_legacy_mmclk_step_from_mmclk_opp,
+	mmdvfs_get_opp_from_legacy_step,
+	mmdvfs_step_util_set_step,
+	mmdvfs_get_clients_clk_opp
+};
+
 #elif defined(SMI_SYL)
 struct mmdvfs_step_util mmdvfs_step_util_obj_mt6771 = {
 	{0},
@@ -268,6 +280,24 @@ struct mmdvfs_adaptor mmdvfs_adaptor_obj_mt6739 = {
 	mt6739_mmdvfs_clk_hw_map, MMDVFS_CLK_MUX_NUM,
 	mt6739_step_profile, MT6739_MMDVFS_OPP_MAX,
 	MT6739_MMDVFS_SMI_USER_CONTROL_SCEN_MASK,
+	mmdvfs_profile_dump,
+	mmdvfs_single_hw_configuration_dump,
+	mmdvfs_hw_configuration_dump,
+	mmdvfs_determine_step,
+	mmdvfs_apply_hw_configurtion_by_step,
+	mmdvfs_apply_vcore_hw_configurtion_by_step,
+	mmdvfs_apply_clk_hw_configurtion_by_step,
+	mmdvfs_get_cam_sys_clk,
+	mmdvfs_single_profile_dump,
+};
+
+#elif defined(SMI_MER)
+struct mmdvfs_adaptor mmdvfs_adaptor_obj_mt6761 = {
+	0, 0, 0, 0,
+	NULL, 0,
+	NULL, 0,
+	mt6761_step_profile, MT6761_MMDVFS_OPP_MAX,
+	0,
 	mmdvfs_profile_dump,
 	mmdvfs_single_hw_configuration_dump,
 	mmdvfs_hw_configuration_dump,
@@ -353,7 +383,6 @@ struct mmdvfs_thresholds_dvfs_handler dvfs_handler_mt6739 = {
 	MMDVFS_PMQOS_NUM,
 	get_step_by_threshold
 };
-
 #elif defined(SMI_SYL)
 struct mmdvfs_thresholds_dvfs_handler dvfs_handler_mt6771 = {
 	mt6771_mmdvfs_threshold_settings,
@@ -445,6 +474,7 @@ static int mmdvfs_apply_hw_configurtion_by_step(struct mmdvfs_adaptor *self,
 static int mmdvfs_apply_vcore_hw_configurtion_by_step(
 	struct mmdvfs_adaptor *self, int mmdvfs_step)
 {
+ #ifdef VCORE_READY
 	struct mmdvfs_hw_configurtion *hw_config_ptr = NULL;
 	int vcore_step = 0;
 
@@ -485,7 +515,10 @@ static int mmdvfs_apply_vcore_hw_configurtion_by_step(
 	MMDVFSDEBUG(3, "Set vcore step: %d\n", vcore_step);
 
 	return 0;
-
+#else
+	MMDVFSMSG("VCore is not ready\n");
+	return -1;
+#endif
 }
 
 static void mmdvfs_configure_clk_hw(struct mmdvfs_adaptor *self,
@@ -771,6 +804,11 @@ static void mmdvfs_single_hw_configuration_dump(struct mmdvfs_adaptor *self,
 
 		struct mmdvfs_clk_hw_map *map_item = clk_hw_map + i;
 
+		if (map_item == NULL) {
+			MMDVFSMSG(
+			"mmdvfs_map_item can't be NULL, i:%d\n", i);
+			return;
+		}
 		clk_step = hw_configuration->clk_steps[i];
 
 		if (map_item != NULL && map_item->clk_mux.ccf_name != NULL) {
@@ -1159,7 +1197,7 @@ struct mmdvfs_step_util *g_mmdvfs_step_util;
 struct mmdvfs_step_util *g_non_force_step_util;
 struct mmdvfs_thresholds_dvfs_handler *g_dvfs_handler;
 
-#ifdef CONFIG_MTK_QOS_SUPPORT
+#ifdef MMDVFS_QOS_SUPPORT
 static int mask_concur[MMDVFS_OPP_NUM_LIMITATION];
 static void update_qos_scenario(void);
 #endif
@@ -1174,6 +1212,13 @@ void mmdvfs_config_util_init(void)
 		g_mmdvfs_adaptor = &mmdvfs_adaptor_obj_mt6739;
 		g_mmdvfs_step_util = &mmdvfs_step_util_obj_mt6739;
 		g_dvfs_handler = &dvfs_handler_mt6739;
+#endif
+		break;
+	case MMDVFS_PROFILE_MER:
+#if defined(SMI_MER)
+		g_mmdvfs_adaptor = &mmdvfs_adaptor_obj_mt6761;
+		g_mmdvfs_step_util = &mmdvfs_step_util_obj_mt6761;
+		g_dvfs_handler = &mmdvfs_thresholds_dvfs_handler_obj;
 #endif
 		break;
 	case MMDVFS_PROFILE_SYL:
@@ -1195,7 +1240,7 @@ void mmdvfs_config_util_init(void)
 			disp_hrt_decrease_default = 0;
 			MMDVFSMSG(
 			"g_mmdvfs_step_util init with lp4 2-ch (3600)\n");
-		} else{
+		} else {
 			g_mmdvfs_adaptor = &mmdvfs_adaptor_obj_mt6771;
 			cam_sensor_threshold = 1;
 			disp_hrt_decrease_level1 = 150;
@@ -1223,7 +1268,7 @@ void mmdvfs_config_util_init(void)
 	if (g_non_force_step_util)
 		g_non_force_step_util->init(g_non_force_step_util);
 
-#ifdef CONFIG_MTK_QOS_SUPPORT
+#ifdef MMDVFS_QOS_SUPPORT
 	update_qos_scenario();
 #endif
 }
@@ -1344,7 +1389,7 @@ u32 mmdvfs_qos_get_cur_thres(struct mmdvfs_pm_qos_request *req,
 	return clk_rate_mhz;
 }
 
-#ifdef CONFIG_MTK_QOS_SUPPORT
+#ifdef MMDVFS_QOS_SUPPORT
 static int get_qos_step(s32 opp)
 {
 	if (opp < 0 || opp >= ARRAY_SIZE(legacy_to_qos_step))
@@ -1422,20 +1467,18 @@ int set_qos_scenario(const char *val, const struct kernel_param *kp)
 	return 0;
 }
 
-#define MAX_DUMP (PAGE_SIZE - 1)
 int get_qos_scenario(char *buf, const struct kernel_param *kp)
 {
 	int i, off = 0;
 
 	for (i = 0; i < ARRAY_SIZE(qos_apply_profiles); i++) {
-		off += snprintf(buf + off, MAX_DUMP - off,
+		off += snprintf(buf + off, PAGE_SIZE - off,
 			"[%d]%s: %d / %d\n", i,
 			qos_apply_profiles[i].profile_name,
 			qos_apply_profiles[i].smi_scenario_id,
 			qos_apply_profiles[i].mask_opp);
 	}
-	if (off >= MAX_DUMP)
-		off = MAX_DUMP - 1;
+	buf[off] = '\0';
 	return off;
 }
 #endif

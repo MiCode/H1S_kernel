@@ -2272,10 +2272,10 @@ static void aty_bl_exit(struct backlight_device *bd)
 
 static void aty_calc_mem_refresh(struct atyfb_par *par, int xclk)
 {
-	const int ragepro_tbl[] = {
+	static const int ragepro_tbl[] = {
 		44, 50, 55, 66, 75, 80, 100
 	};
-	const int ragexl_tbl[] = {
+	static const int ragexl_tbl[] = {
 		50, 66, 75, 83, 90, 95, 100, 105,
 		110, 115, 120, 125, 133, 143, 166
 	};
@@ -3435,11 +3435,15 @@ static int atyfb_setup_generic(struct pci_dev *pdev, struct fb_info *info,
 	}
 
 	info->fix.mmio_start = raddr;
+#if defined(__i386__) || defined(__ia64__)
 	/*
 	 * By using strong UC we force the MTRR to never have an
 	 * effect on the MMIO region on both non-PAT and PAT systems.
 	 */
 	par->ati_regbase = ioremap_uc(info->fix.mmio_start, 0x1000);
+#else
+	par->ati_regbase = ioremap(info->fix.mmio_start, 0x1000);
+#endif
 	if (par->ati_regbase == NULL)
 		return -ENOMEM;
 

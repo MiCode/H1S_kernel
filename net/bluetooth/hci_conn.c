@@ -125,13 +125,11 @@ static void hci_conn_cleanup(struct hci_conn *conn)
 	if (hdev->notify)
 		hdev->notify(hdev, HCI_NOTIFY_CONN_DEL);
 
-	hci_conn_del_sysfs(conn);
-
 	debugfs_remove_recursive(conn->debugfs);
 
-	hci_dev_put(hdev);
+	hci_conn_del_sysfs(conn);
 
-	hci_conn_put(conn);
+	hci_dev_put(hdev);
 }
 
 static void le_scan_cleanup(struct work_struct *work)
@@ -729,8 +727,8 @@ static void create_le_conn_complete(struct hci_dev *hdev, u8 status, u16 opcode)
 		goto done;
 	}
 
-	BT_ERR("HCI request failed to create LE connection: status 0x%2.2x",
-	       status);
+	bt_dev_err(hdev, "request failed to create LE connection: "
+		   "status 0x%2.2x", status);
 
 	if (!conn)
 		goto done;
@@ -748,11 +746,30 @@ static bool conn_use_rpa(struct hci_conn *conn)
 	return hci_dev_test_flag(hdev, HCI_PRIVACY);
 }
 
+static void set_ext_conn_params(struct hci_conn *conn,
+				struct hci_cp_le_ext_conn_param *p)
+{
+	struct hci_dev *hdev = conn->hdev;
+
+	memset(p, 0, sizeof(*p));
+
+	/* Set window to be the same value as the interval to
+	 * enable continuous scanning.
+	 */
+	p->scan_interval = cpu_to_le16(hdev->le_scan_interval);
+	p->scan_window = p->scan_interval;
+	p->conn_interval_min = cpu_to_le16(conn->le_conn_min_interval);
+	p->conn_interval_max = cpu_to_le16(conn->le_conn_max_interval);
+	p->conn_latency = cpu_to_le16(conn->le_conn_latency);
+	p->supervision_timeout = cpu_to_le16(conn->le_supv_timeout);
+	p->min_ce_len = cpu_to_le16(0x0000);
+	p->max_ce_len = cpu_to_le16(0x0000);
+}
+
 static void hci_req_add_le_create_conn(struct hci_request *req,
 				       struct hci_conn *conn,
 				       bdaddr_t *direct_rpa)
 {
-	struct hci_cp_le_create_conn cp;
 	struct hci_dev *hdev = conn->hdev;
 	u8 own_addr_type;
 
@@ -775,25 +792,71 @@ static void hci_req_add_le_create_conn(struct hci_request *req,
 			return;
 	}
 
-	memset(&cp, 0, sizeof(cp));
+	if (use_ext_conn(hdev)) {
+		struct hci_cp_le_ext_create_conn *cp;
+		struct hci_cp_le_ext_conn_param *p;
+		u8 data[sizeof(*cp) + sizeof(*p) * 3];
+		u32 plen;
 
-	/* Set window to be the same value as the interval to enable
-	 * continuous scanning.
-	 */
-	cp.scan_interval = cpu_to_le16(hdev->le_scan_interval);
-	cp.scan_window = cp.scan_interval;
+		cp = (void *) data;
+		p = (void *) cp->data;
 
-	bacpy(&cp.peer_addr, &conn->dst);
-	cp.peer_addr_type = conn->dst_type;
-	cp.own_address_type = own_addr_type;
-	cp.conn_interval_min = cpu_to_le16(conn->le_conn_min_interval);
-	cp.conn_interval_max = cpu_to_le16(conn->le_conn_max_interval);
-	cp.conn_latency = cpu_to_le16(conn->le_conn_latency);
-	cp.supervision_timeout = cpu_to_le16(conn->le_supv_timeout);
-	cp.min_ce_len = cpu_to_le16(0x0000);
-	cp.max_ce_len = cpu_to_le16(0x0000);
+		memset(cp, 0, sizeof(*cp));
 
-	hci_req_add(req, HCI_OP_LE_CREATE_CONN, sizeof(cp), &cp);
+		bacpy(&cp->peer_addr, &conn->dst);
+		cp->peer_addr_type = conn->dst_type;
+		cp->own_addr_type = own_addr_type;
+
+		plen = sizeof(*cp);
+
+		if (scan_1m(hdev)) {
+			cp->phys |= LE_SCAN_PHY_1M;
+			set_ext_conn_params(conn, p);
+
+			p++;
+			plen += sizeof(*p);
+		}
+
+		if (scan_2m(hdev)) {
+			cp->phys |= LE_SCAN_PHY_2M;
+			set_ext_conn_params(conn, p);
+
+			p++;
+			plen += sizeof(*p);
+		}
+
+		if (scan_coded(hdev)) {
+			cp->phys |= LE_SCAN_PHY_CODED;
+			set_ext_conn_params(conn, p);
+
+			plen += sizeof(*p);
+		}
+
+		hci_req_add(req, HCI_OP_LE_EXT_CREATE_CONN, plen, data);
+
+	} else {
+		struct hci_cp_le_create_conn cp;
+
+		memset(&cp, 0, sizeof(cp));
+
+		/* Set window to be the same value as the interval to enable
+		 * continuous scanning.
+		 */
+		cp.scan_interval = cpu_to_le16(hdev->le_scan_interval);
+		cp.scan_window = cp.scan_interval;
+
+		bacpy(&cp.peer_addr, &conn->dst);
+		cp.peer_addr_type = conn->dst_type;
+		cp.own_address_type = own_addr_type;
+		cp.conn_interval_min = cpu_to_le16(conn->le_conn_min_interval);
+		cp.conn_interval_max = cpu_to_le16(conn->le_conn_max_interval);
+		cp.conn_latency = cpu_to_le16(conn->le_conn_latency);
+		cp.supervision_timeout = cpu_to_le16(conn->le_supv_timeout);
+		cp.min_ce_len = cpu_to_le16(0x0000);
+		cp.max_ce_len = cpu_to_le16(0x0000);
+
+		hci_req_add(req, HCI_OP_LE_CREATE_CONN, sizeof(cp), &cp);
+	}
 
 	conn->state = BT_CONNECT;
 	clear_bit(HCI_CONN_SCANNING, &conn->flags);
@@ -803,35 +866,89 @@ static void hci_req_directed_advertising(struct hci_request *req,
 					 struct hci_conn *conn)
 {
 	struct hci_dev *hdev = req->hdev;
-	struct hci_cp_le_set_adv_param cp;
 	u8 own_addr_type;
 	u8 enable;
 
-	/* Clear the HCI_LE_ADV bit temporarily so that the
-	 * hci_update_random_address knows that it's safe to go ahead
-	 * and write a new random address. The flag will be set back on
-	 * as soon as the SET_ADV_ENABLE HCI command completes.
-	 */
-	hci_dev_clear_flag(hdev, HCI_LE_ADV);
+	if (ext_adv_capable(hdev)) {
+		struct hci_cp_le_set_ext_adv_params cp;
+		bdaddr_t random_addr;
 
-	/* Set require_privacy to false so that the remote device has a
-	 * chance of identifying us.
-	 */
-	if (hci_update_random_address(req, false, conn_use_rpa(conn),
-				      &own_addr_type) < 0)
-		return;
+		/* Set require_privacy to false so that the remote device has a
+		 * chance of identifying us.
+		 */
+		if (hci_get_random_address(hdev, false, conn_use_rpa(conn), NULL,
+					   &own_addr_type, &random_addr) < 0)
+			return;
 
-	memset(&cp, 0, sizeof(cp));
-	cp.type = LE_ADV_DIRECT_IND;
-	cp.own_address_type = own_addr_type;
-	cp.direct_addr_type = conn->dst_type;
-	bacpy(&cp.direct_addr, &conn->dst);
-	cp.channel_map = hdev->le_adv_channel_map;
+		memset(&cp, 0, sizeof(cp));
 
-	hci_req_add(req, HCI_OP_LE_SET_ADV_PARAM, sizeof(cp), &cp);
+		cp.evt_properties = cpu_to_le16(LE_LEGACY_ADV_DIRECT_IND);
+		cp.own_addr_type = own_addr_type;
+		cp.channel_map = hdev->le_adv_channel_map;
+		cp.tx_power = HCI_TX_POWER_INVALID;
+		cp.primary_phy = HCI_ADV_PHY_1M;
+		cp.secondary_phy = HCI_ADV_PHY_1M;
+		cp.handle = 0; /* Use instance 0 for directed adv */
+		cp.own_addr_type = own_addr_type;
+		cp.peer_addr_type = conn->dst_type;
+		bacpy(&cp.peer_addr, &conn->dst);
 
-	enable = 0x01;
-	hci_req_add(req, HCI_OP_LE_SET_ADV_ENABLE, sizeof(enable), &enable);
+		hci_req_add(req, HCI_OP_LE_SET_EXT_ADV_PARAMS, sizeof(cp), &cp);
+
+		if (own_addr_type == ADDR_LE_DEV_RANDOM &&
+		    bacmp(&random_addr, BDADDR_ANY) &&
+		    bacmp(&random_addr, &hdev->random_addr)) {
+			struct hci_cp_le_set_adv_set_rand_addr cp;
+
+			memset(&cp, 0, sizeof(cp));
+
+			cp.handle = 0;
+			bacpy(&cp.bdaddr, &random_addr);
+
+			hci_req_add(req,
+				    HCI_OP_LE_SET_ADV_SET_RAND_ADDR,
+				    sizeof(cp), &cp);
+		}
+
+		__hci_req_enable_ext_advertising(req);
+	} else {
+		struct hci_cp_le_set_adv_param cp;
+
+		/* Clear the HCI_LE_ADV bit temporarily so that the
+		 * hci_update_random_address knows that it's safe to go ahead
+		 * and write a new random address. The flag will be set back on
+		 * as soon as the SET_ADV_ENABLE HCI command completes.
+		 */
+		hci_dev_clear_flag(hdev, HCI_LE_ADV);
+
+		/* Set require_privacy to false so that the remote device has a
+		 * chance of identifying us.
+		 */
+		if (hci_update_random_address(req, false, conn_use_rpa(conn),
+					      &own_addr_type) < 0)
+			return;
+
+		memset(&cp, 0, sizeof(cp));
+
+		/* Some controllers might reject command if intervals are not
+		 * within range for undirected advertising.
+		 * BCM20702A0 is known to be affected by this.
+		 */
+		cp.min_interval = cpu_to_le16(0x0020);
+		cp.max_interval = cpu_to_le16(0x0020);
+
+		cp.type = LE_ADV_DIRECT_IND;
+		cp.own_address_type = own_addr_type;
+		cp.direct_addr_type = conn->dst_type;
+		bacpy(&cp.direct_addr, &conn->dst);
+		cp.channel_map = hdev->le_adv_channel_map;
+
+		hci_req_add(req, HCI_OP_LE_SET_ADV_PARAM, sizeof(cp), &cp);
+
+		enable = 0x01;
+		hci_req_add(req, HCI_OP_LE_SET_ADV_ENABLE, sizeof(enable),
+			    &enable);
+	}
 
 	conn->state = BT_CONNECT;
 }
@@ -920,7 +1037,7 @@ struct hci_conn *hci_connect_le(struct hci_dev *hdev, bdaddr_t *dst,
 		 */
 		if (hci_dev_test_flag(hdev, HCI_LE_SCAN) &&
 		    hdev->le_scan_type == LE_SCAN_ACTIVE) {
-			skb_queue_purge(&req.cmd_q);
+			hci_req_purge(&req);
 			hci_conn_del(conn);
 			return ERR_PTR(-EBUSY);
 		}
@@ -1085,6 +1202,15 @@ struct hci_conn *hci_connect_acl(struct hci_dev *hdev, bdaddr_t *dst,
 		return ERR_PTR(-EOPNOTSUPP);
 	}
 
+	/* Reject outgoing connection to device with same BD ADDR against
+	 * CVE-2020-26555
+	 */
+	if (!bacmp(&hdev->bdaddr, dst)) {
+		bt_dev_dbg(hdev, "Reject connection with same BD_ADDR %pMR\n",
+			   dst);
+		return ERR_PTR(-ECONNREFUSED);
+	}
+
 	acl = hci_conn_hash_lookup_ba(hdev, ACL_LINK, dst);
 	if (!acl) {
 		acl = hci_conn_add(hdev, ACL_LINK, dst, HCI_ROLE_MASTER);
@@ -1163,6 +1289,23 @@ int hci_conn_check_link_mode(struct hci_conn *conn)
 			return 0;
 	}
 
+	 /* AES encryption is required for Level 4:
+	  *
+	  * BLUETOOTH CORE SPECIFICATION Version 5.2 | Vol 3, Part C
+	  * page 1319:
+	  *
+	  * 128-bit equivalent strength for link and encryption keys
+	  * required using FIPS approved algorithms (E0 not allowed,
+	  * SAFER+ not allowed, and P-192 not allowed; encryption key
+	  * not shortened)
+	  */
+	if (conn->sec_level == BT_SECURITY_FIPS &&
+	    !test_bit(HCI_CONN_AES_CCM, &conn->flags)) {
+		bt_dev_err(conn->hdev,
+			   "Invalid security: Missing AES-CCM usage");
+		return 0;
+	}
+
 	if (hci_conn_ssp_enabled(conn) &&
 	    !test_bit(HCI_CONN_ENCRYPT, &conn->flags))
 		return 0;
@@ -1195,12 +1338,10 @@ static int hci_conn_auth(struct hci_conn *conn, __u8 sec_level, __u8 auth_type)
 		hci_send_cmd(conn->hdev, HCI_OP_AUTH_REQUESTED,
 			     sizeof(cp), &cp);
 
-		/* If we're already encrypted set the REAUTH_PEND flag,
-		 * otherwise set the ENCRYPT_PEND.
+		/* Set the ENCRYPT_PEND to trigger encryption after
+		 * authentication.
 		 */
-		if (test_bit(HCI_CONN_ENCRYPT, &conn->flags))
-			set_bit(HCI_CONN_REAUTH_PEND, &conn->flags);
-		else
+		if (!test_bit(HCI_CONN_ENCRYPT, &conn->flags))
 			set_bit(HCI_CONN_ENCRYPT_PEND, &conn->flags);
 	}
 
@@ -1243,34 +1384,41 @@ int hci_conn_security(struct hci_conn *conn, __u8 sec_level, __u8 auth_type,
 	if (!test_bit(HCI_CONN_AUTH, &conn->flags))
 		goto auth;
 
-	/* An authenticated FIPS approved combination key has sufficient
-	 * security for security level 4. */
-	if (conn->key_type == HCI_LK_AUTH_COMBINATION_P256 &&
-	    sec_level == BT_SECURITY_FIPS)
-		goto encrypt;
-
-	/* An authenticated combination key has sufficient security for
-	   security level 3. */
-	if ((conn->key_type == HCI_LK_AUTH_COMBINATION_P192 ||
-	     conn->key_type == HCI_LK_AUTH_COMBINATION_P256) &&
-	    sec_level == BT_SECURITY_HIGH)
-		goto encrypt;
-
-	/* An unauthenticated combination key has sufficient security for
-	   security level 1 and 2. */
-	if ((conn->key_type == HCI_LK_UNAUTH_COMBINATION_P192 ||
-	     conn->key_type == HCI_LK_UNAUTH_COMBINATION_P256) &&
-	    (sec_level == BT_SECURITY_MEDIUM || sec_level == BT_SECURITY_LOW))
-		goto encrypt;
-
-	/* A combination key has always sufficient security for the security
-	   levels 1 or 2. High security level requires the combination key
-	   is generated using maximum PIN code length (16).
-	   For pre 2.1 units. */
-	if (conn->key_type == HCI_LK_COMBINATION &&
-	    (sec_level == BT_SECURITY_MEDIUM || sec_level == BT_SECURITY_LOW ||
-	     conn->pin_length == 16))
-		goto encrypt;
+	switch (conn->key_type) {
+	case HCI_LK_AUTH_COMBINATION_P256:
+		/* An authenticated FIPS approved combination key has
+		 * sufficient security for security level 4 or lower.
+		 */
+		if (sec_level <= BT_SECURITY_FIPS)
+			goto encrypt;
+		break;
+	case HCI_LK_AUTH_COMBINATION_P192:
+		/* An authenticated combination key has sufficient security for
+		 * security level 3 or lower.
+		 */
+		if (sec_level <= BT_SECURITY_HIGH)
+			goto encrypt;
+		break;
+	case HCI_LK_UNAUTH_COMBINATION_P192:
+	case HCI_LK_UNAUTH_COMBINATION_P256:
+		/* An unauthenticated combination key has sufficient security
+		 * for security level 2 or lower.
+		 */
+		if (sec_level <= BT_SECURITY_MEDIUM)
+			goto encrypt;
+		break;
+	case HCI_LK_COMBINATION:
+		/* A combination key has always sufficient security for the
+		 * security levels 2 or lower. High security level requires the
+		 * combination key is generated using maximum PIN code length
+		 * (16). For pre 2.1 units.
+		 */
+		if (sec_level <= BT_SECURITY_MEDIUM || conn->pin_length == 16)
+			goto encrypt;
+		break;
+	default:
+		break;
+	}
 
 auth:
 	if (test_bit(HCI_CONN_ENCRYPT_PEND, &conn->flags))

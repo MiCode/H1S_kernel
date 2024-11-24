@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/uaccess.h>
@@ -91,10 +83,8 @@ void perfmgr_trace_count(int val, const char *fmt, ...)
 	va_list args;
 	int len;
 
-	if (!strstr(CONFIG_MTK_PLATFORM, "mt8")) {
-		if (powerhal_tid <= 0)
-			return;
-	}
+	if (powerhal_tid <= 0)
+		return;
 
 	memset(log, ' ', sizeof(log));
 	va_start(args, fmt);
@@ -109,13 +99,8 @@ void perfmgr_trace_count(int val, const char *fmt, ...)
 	__mt_update_tracing_mark_write_addr();
 	preempt_disable();
 
-	if (!strstr(CONFIG_MTK_PLATFORM, "mt8")) {
-		event_trace_printk(tracing_mark_write_addr, "C|%d|%s|%d\n",
-			powerhal_tid, log, val);
-	} else {
-		event_trace_printk(tracing_mark_write_addr, "C|%s|%d\n",
-			log, val);
-	}
+	event_trace_printk(tracing_mark_write_addr, "C|%d|%s|%d\n",
+		powerhal_tid, log, val);
 
 	preempt_enable();
 }
@@ -162,3 +147,4 @@ void perfmgr_trace_log(char *module, const char *fmt, ...)
 }
 
 #endif
+

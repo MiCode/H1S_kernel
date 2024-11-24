@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Sagy Shih <sagy.shih@mediatek.com>
  */
 
 #include <linux/kernel.h>
@@ -22,6 +15,7 @@
 #include <linux/memblock.h>
 #include <linux/sched.h>
 #include <linux/delay.h>
+#include <linux/timer.h>
 #include <asm/cacheflush.h>
 /* #include <mach/mtk_clkmgr.h> */
 #include <linux/of.h>
@@ -44,7 +38,17 @@
 #include <mt-plat/aee.h>
 #include <mt-plat/mtk_chip.h>
 
-static unsigned int lp4_highest_freq;
+struct mem_desc {
+	u64 start;
+	u64 size;
+};
+
+struct dram_info {
+	u32 rank_num;
+	struct mem_desc rank_info[4];
+};
+
+static unsigned int highest_freq;
 
 void __iomem *SYS_TIMER_BASE_ADDR;
 void __iomem *DRAMC_AO_CHA_BASE_ADDR;
@@ -165,10 +169,6 @@ static unsigned int read_dram_mode_reg(
 		*mr_value = Reg_Readl(DRAMC_NAO_MRR_STATUS) & 0xFFFF;
 		time_cnt--;
 	} while ((*mr_value == 0) && (time_cnt > 0));
-#if 0
-	if (time_cnt == 0)
-		dramc_info("read mode reg time out 2\n");
-#endif
 
 	/* set MRR fire bit MRREN to 0 for next MRR */
 	temp = Reg_Readl(DRAMC_AO_SPCMD);
@@ -320,28 +320,6 @@ void __iomem *dramc_ao_chx_base, void __iomem *dramc_nao_chx_base)
 
 	res = TX_DONE;
 
-#if 0 /* print message for debugging */
-	/* byte 0 */
-	dqs_cnt = (mr18_cur & 0xFF) | ((mr19_cur & 0xFF) << 8);
-	/* sagy: our frequency is double data rate */
-	if (dqs_cnt != 0)
-		dqs_osc[0] = mr23_value*16000000/(dqs_cnt * frequency);
-	else
-		dqs_osc[0] = 0;
-	/* byte 1 */
-	dqs_cnt = (mr18_cur >> 8) | (mr19_cur & 0xFF00);
-	/* sagy: our frequency is double data rate */
-	if (dqs_cnt != 0)
-		dqs_osc[1] = mr23_value*16000000/(dqs_cnt * frequency);
-	else
-		dqs_osc[1] = 0;
-
-	dramc_info("Rank %d, (LSB)MR18= 0x%x, (MSB)MR19= 0x%x,",
-		rank, mr18_cur, mr19_cur);
-	dramc_info(" tDQSOscB0 = %d ps tDQSOscB1 = %d ps\n",
-		dqs_osc[0], dqs_osc[1]);
-#endif
-
 ret_auto_dram_dqs_osc:
 	Reg_Sync_Writel(DRAMC_AO_MRS, backup_mrs);
 	Reg_Sync_Writel(DRAMC_AO_CKECTRL, backup_ckectrl);
@@ -488,14 +466,6 @@ static unsigned int dramc_tx_tracking(int channel)
 					dqm_new[shu_index][rank][byte] =
 						(dqm_orig[shu_index][rank][byte]
 						 - pi_adj) & 0x3F;
-#if 0 /* print message for debugging */
-dramc_info("CH%d RK%d B%d, shu=%d base=%X cur=%X ",
-channel, rank, byte, shu_index, mr1819_base[rank][byte], mr1819_cur[byte]);
-dramc_info("delta=%d INC=%d PI=0x%x Adj=%d newPI=0x%x\n",
-mr1819_delta, dqsosc_inc[rank], pi_orig[shu_index][rank][byte],
-(pi_adjust * tx_freq_ratio[shu_index] / tx_freq_ratio[shu_level]),
-pi_new[shu_index][rank][byte]);
-#endif
 				}
 			} else {
 				mr1819_delta = mr1819_base[rank][byte] -
@@ -516,14 +486,6 @@ pi_new[shu_index][rank][byte]);
 					dqm_new[shu_index][rank][byte] =
 						(dqm_orig[shu_index][rank][byte]
 						 + pi_adj) & 0x3F;
-#if 0 /* print message for debugging */
-dramc_info("CH%d RK%d B%d, shu=%d base=%X cur=%X "
-channel, rank, byte, shu_index, mr1819_base[rank][byte], mr1819_cur[byte]);
-dramc_info("delta=%d DEC=%d PI=0x%x Adj=%d newPI=0x%x\n",
-mr1819_delta, dqsosc_dec[rank], pi_orig[shu_index][rank][byte],
-(pi_adjust * tx_freq_ratio[shu_index] / tx_freq_ratio[shu_level]),
-pi_new[shu_index][rank][byte]);
-#endif
 				}
 			}
 		}
@@ -1285,12 +1247,7 @@ int dram_steps_freq(unsigned int step)
 
 	switch (step) {
 	case 0:
-		if (DRAM_TYPE == TYPE_LPDDR3)
-			freq = 1866;
-		else if (DRAM_TYPE == TYPE_LPDDR4X)
-			freq = 3200;
-		else if (DRAM_TYPE == TYPE_LPDDR4)
-			freq = lp4_highest_freq;
+		freq = highest_freq;
 		break;
 	case 1:
 		if (DRAM_TYPE == TYPE_LPDDR3)
@@ -1319,7 +1276,7 @@ int dram_can_support_fh(void)
 }
 EXPORT_SYMBOL(dram_can_support_fh);
 
-static ssize_t complex_mem_test_show(struct device_driver *driver, char *buf)
+static ssize_t emi_clk_mem_test_show(struct device_driver *driver, char *buf)
 {
 	int ret;
 
@@ -1330,7 +1287,7 @@ static ssize_t complex_mem_test_show(struct device_driver *driver, char *buf)
 		return snprintf(buf, PAGE_SIZE, "MEM TEST failed %d\n", ret);
 }
 
-static ssize_t complex_mem_test_store(struct device_driver *driver,
+static ssize_t emi_clk_mem_test_store(struct device_driver *driver,
 const char *buf, size_t count)
 {
 	/*snprintf(buf, "do nothing\n");*/
@@ -1349,18 +1306,14 @@ const char *buf, size_t count)
 	return count;
 }
 
-DRIVER_ATTR(emi_clk_mem_test, 0664,
-complex_mem_test_show, complex_mem_test_store);
+DRIVER_ATTR_RW(emi_clk_mem_test);
+DRIVER_ATTR_RW(read_dram_data_rate);
 
-DRIVER_ATTR(read_dram_data_rate, 0664,
-read_dram_data_rate_show, read_dram_data_rate_store);
-
-/*DRIVER_ATTR(dram_dfs, 0664, dram_dfs_show, dram_dfs_store);*/
 static struct timer_list zqcs_timer;
 static unsigned char low_freq_counter;
 DEFINE_SPINLOCK(sw_zq_tx_lock);
 
-void zqcs_timer_callback(unsigned long data)
+static void zqcs_timer_callback(struct timer_list *t)
 {
 #ifdef SW_ZQCS
 	unsigned int Response, TimeCnt, CHCounter, RankCounter;
@@ -1618,19 +1571,6 @@ tx_end:
 #endif
 }
 
-void del_zqcs_timer(void)
-{
-	if (dram_sw_tx || dram_sw_zq)
-		del_timer_sync(&zqcs_timer);
-}
-
-void add_zqcs_timer(void)
-{
-	/* add_timer(&zqcs_timer); */
-	if (dram_sw_tx || dram_sw_zq)
-		mod_timer(&zqcs_timer, jiffies + msecs_to_jiffies(280));
-}
-
 static int dram_probe(struct platform_device *pdev)
 {
 	int ret = 0;
@@ -1756,10 +1696,7 @@ static int dram_probe(struct platform_device *pdev)
 	dramc_info("shuffle_status = %d\n", get_shuffle_status());
 	dramc_info("MR mode = %d\n", dram_mr_mode);
 
-	if (DRAM_TYPE == TYPE_LPDDR4)
-		lp4_highest_freq = get_dram_data_rate();
-	else
-		lp4_highest_freq = 0;
+	highest_freq = get_dram_data_rate();
 
 #ifdef SW_TX_TRACKING
 	dram_sw_tx = (readl(PDEF_DRAMC0_CHA_REG_0C8) >> 24) & 0x1;
@@ -1773,9 +1710,8 @@ static int dram_probe(struct platform_device *pdev)
 	if (((DRAM_TYPE == TYPE_LPDDR4) || (DRAM_TYPE == TYPE_LPDDR4X)) &&
 			(dram_sw_tx || dram_sw_zq)) {
 		low_freq_counter = 10;
-		init_timer_deferrable(&zqcs_timer);
-		zqcs_timer.function = zqcs_timer_callback;
-		zqcs_timer.data = 0;
+		timer_setup(&zqcs_timer, zqcs_timer_callback,
+			TIMER_DEFERRABLE);
 		if (mod_timer(&zqcs_timer, jiffies + msecs_to_jiffies(280)))
 			dramc_info("Error in ZQCS mod_timer\n");
 	}

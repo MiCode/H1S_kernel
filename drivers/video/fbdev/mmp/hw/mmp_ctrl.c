@@ -406,12 +406,10 @@ static int path_init(struct mmphw_path_plat *path_plat,
 	dev_info(ctrl->dev, "%s: %s\n", __func__, config->name);
 
 	/* init driver data */
-	path_info = kzalloc(sizeof(struct mmp_path_info), GFP_KERNEL);
-	if (!path_info) {
-		dev_err(ctrl->dev, "%s: unable to alloc path_info for %s\n",
-				__func__, config->name);
+	path_info = kzalloc(sizeof(*path_info), GFP_KERNEL);
+	if (!path_info)
 		return 0;
-	}
+
 	path_info->name = config->name;
 	path_info->id = path_plat->id;
 	path_info->dev = ctrl->dev;
@@ -525,7 +523,9 @@ static int mmphw_probe(struct platform_device *pdev)
 		ret = -ENOENT;
 		goto failed;
 	}
-	clk_prepare_enable(ctrl->clk);
+	ret = clk_prepare_enable(ctrl->clk);
+	if (ret)
+		goto failed;
 
 	/* init global regs */
 	ctrl_set_default(ctrl);

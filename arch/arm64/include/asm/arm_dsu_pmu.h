@@ -114,6 +114,7 @@ static inline void __dsu_pmu_counter_interrupt_disable(int counter)
 	isb();
 }
 
+
 static inline u32 __dsu_pmu_read_pmceid(int n)
 {
 	switch (n) {
@@ -126,4 +127,3 @@ static inline u32 __dsu_pmu_read_pmceid(int n)
 		return 0;
 	}
 }
-

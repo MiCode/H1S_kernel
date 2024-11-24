@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- *  Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -410,7 +403,7 @@ static int mt6370_pmu_led_change_mode2(struct led_classdev *led_cdev, int mode)
 static const struct device_attribute mt_led_cc_mode_attrs2[] = {
 };
 
-static void mt6370_pmu_led_cc_activate2(struct led_classdev *led_cdev)
+static int mt6370_pmu_led_cc_activate2(struct led_classdev *led_cdev)
 {
 	int i = 0, ret = 0;
 
@@ -428,12 +421,13 @@ static void mt6370_pmu_led_cc_activate2(struct led_classdev *led_cdev)
 		dev_err(led_cdev->dev, "%s: change mode fail\n", __func__);
 		goto out_change_mode;
 	}
-	return;
+	return 0;
 out_change_mode:
 	i = ARRAY_SIZE(mt_led_cc_mode_attrs2);
 out_create_file:
 	while (--i >= 0)
 		device_remove_file(led_cdev->dev, mt_led_cc_mode_attrs2 + i);
+	return ret;
 }
 
 static void mt6370_pmu_led_cc_deactivate2(struct led_classdev *led_cdev)
@@ -621,7 +615,7 @@ static const struct device_attribute mt_led_pwm_mode_attrs2[] = {
 	MT_LED_ATTR2(pwm_dim_freq),
 };
 
-static void mt6370_pmu_led_pwm_activate2(struct led_classdev *led_cdev)
+static int mt6370_pmu_led_pwm_activate2(struct led_classdev *led_cdev)
 {
 	int i = 0, ret = 0;
 
@@ -639,12 +633,13 @@ static void mt6370_pmu_led_pwm_activate2(struct led_classdev *led_cdev)
 		dev_err(led_cdev->dev, "%s: change mode fail\n", __func__);
 		goto out_change_mode;
 	}
-	return;
+	return 0;
 out_change_mode:
 	i = ARRAY_SIZE(mt_led_pwm_mode_attrs2);
 out_create_file:
 	while (--i >= 0)
 		device_remove_file(led_cdev->dev, mt_led_pwm_mode_attrs2 + i);
+	return ret;
 }
 
 static void mt6370_pmu_led_pwm_deactivate2(struct led_classdev *led_cdev)
@@ -952,7 +947,7 @@ static const struct device_attribute mt_led_breath_mode_attrs2[] = {
 	MT_LED_ATTR2(toff),
 };
 
-static void mt6370_pmu_led_breath_activate2(struct led_classdev *led_cdev)
+static int mt6370_pmu_led_breath_activate2(struct led_classdev *led_cdev)
 {
 	int i = 0, ret = 0;
 
@@ -971,13 +966,14 @@ static void mt6370_pmu_led_breath_activate2(struct led_classdev *led_cdev)
 		dev_err(led_cdev->dev, "%s: change mode fail\n", __func__);
 		goto out_change_mode;
 	}
-	return;
+	return 0;
 out_change_mode:
 	i = ARRAY_SIZE(mt_led_breath_mode_attrs2);
 out_create_file:
 	while (--i >= 0)
 		device_remove_file(led_cdev->dev,
 				   mt_led_breath_mode_attrs2 + i);
+	return ret;
 }
 
 static void mt6370_pmu_led_breath_deactivate2(struct led_classdev *led_cdev)
@@ -1371,7 +1367,7 @@ static const struct device_attribute mt_led_cc_mode_attrs[] = {
 	MT_LED_ATTR(soft_start_step),
 };
 
-static void mt6370_pmu_led_cc_activate(struct led_classdev *led_cdev)
+static int mt6370_pmu_led_cc_activate(struct led_classdev *led_cdev)
 {
 	int i = 0, ret = 0;
 
@@ -1389,12 +1385,13 @@ static void mt6370_pmu_led_cc_activate(struct led_classdev *led_cdev)
 		dev_err(led_cdev->dev, "%s: change mode fail\n", __func__);
 		goto out_change_mode;
 	}
-	return;
+	return 0;
 out_change_mode:
 	i = ARRAY_SIZE(mt_led_cc_mode_attrs);
 out_create_file:
 	while (--i >= 0)
 		device_remove_file(led_cdev->dev, mt_led_cc_mode_attrs + i);
+	return ret;
 }
 
 static void mt6370_pmu_led_cc_deactivate(struct led_classdev *led_cdev)
@@ -1572,7 +1569,7 @@ static const struct device_attribute mt_led_pwm_mode_attrs[] = {
 	MT_LED_ATTR(pwm_dim_freq),
 };
 
-static void mt6370_pmu_led_pwm_activate(struct led_classdev *led_cdev)
+static int mt6370_pmu_led_pwm_activate(struct led_classdev *led_cdev)
 {
 	int i = 0, ret = 0;
 
@@ -1597,12 +1594,13 @@ static void mt6370_pmu_led_pwm_activate(struct led_classdev *led_cdev)
 		dev_err(led_cdev->dev, "%s: change mode fail\n", __func__);
 		goto out_change_mode;
 	}
-	return;
+	return 0;
 out_change_mode:
 	i = ARRAY_SIZE(mt_led_pwm_mode_attrs);
 out_create_file:
 	while (--i >= 0)
 		device_remove_file(led_cdev->dev, mt_led_pwm_mode_attrs + i);
+	return ret;
 }
 
 static void mt6370_pmu_led_pwm_deactivate(struct led_classdev *led_cdev)
@@ -1910,7 +1908,7 @@ static const struct device_attribute mt_led_breath_mode_attrs[] = {
 	MT_LED_ATTR(toff),
 };
 
-static void mt6370_pmu_led_breath_activate(struct led_classdev *led_cdev)
+static int mt6370_pmu_led_breath_activate(struct led_classdev *led_cdev)
 {
 	int i = 0, ret = 0;
 
@@ -1929,12 +1927,13 @@ static void mt6370_pmu_led_breath_activate(struct led_classdev *led_cdev)
 		dev_err(led_cdev->dev, "%s: change mode fail\n", __func__);
 		goto out_change_mode;
 	}
-	return;
+	return 0;
 out_change_mode:
 	i = ARRAY_SIZE(mt_led_breath_mode_attrs);
 out_create_file:
 	while (--i >= 0)
 		device_remove_file(led_cdev->dev, mt_led_breath_mode_attrs + i);
+	return ret;
 }
 
 static void mt6370_pmu_led_breath_deactivate(struct led_classdev *led_cdev)

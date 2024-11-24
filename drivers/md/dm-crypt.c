@@ -42,7 +42,8 @@
 
 /* MTK PATCH */
 #if defined(CONFIG_MTK_HW_FDE)
-#include <mt-plat/mtk_secure_api.h>
+#include <linux/arm-smccc.h>
+#include <linux/soc/mediatek/mtk_sip_svc.h>
 #endif
 
 /*
@@ -51,11 +52,11 @@
 struct convert_context {
 	struct completion restart;
 	struct bio *bio_in;
-	struct bio *bio_out;
 	struct bvec_iter iter_in;
+	struct bio *bio_out;
 	struct bvec_iter iter_out;
-	u64 cc_sector;
 	atomic_t cc_pending;
+	u64 cc_sector;
 	union {
 		struct skcipher_request *req;
 		struct aead_request *req_aead;
@@ -104,7 +105,7 @@ struct crypt_iv_operations {
 };
 
 struct iv_essiv_private {
-	struct crypto_ahash *hash_tfm;
+	struct crypto_shash *hash_tfm;
 	u8 *salt;
 };
 
@@ -144,25 +145,13 @@ struct crypt_config {
 	struct dm_dev *dev;
 	sector_t start;
 
-	/*
-	 * pool for per bio private data, crypto requests,
-	 * encryption requeusts/buffer pages and integrity tags
-	 */
-	mempool_t *req_pool;
-	mempool_t *page_pool;
-	mempool_t *tag_pool;
-	unsigned tag_pool_max_sectors;
-
 	struct percpu_counter n_allocated_pages;
-
-	struct bio_set *bs;
-	struct mutex bio_alloc_lock;
 
 	struct workqueue_struct *io_queue;
 	struct workqueue_struct *crypt_queue;
 
+	spinlock_t write_thread_lock;
 	struct task_struct *write_thread;
-	wait_queue_head_t write_thread_wait;
 	struct rb_root write_tree;
 
 	char *cipher;
@@ -222,6 +211,18 @@ struct crypt_config {
 	unsigned int integrity_tag_size;
 	unsigned int integrity_iv_size;
 	unsigned int on_disk_tag_size;
+
+	/*
+	 * pool for per bio private data, crypto requests,
+	 * encryption requeusts/buffer pages and integrity tags
+	 */
+	unsigned tag_pool_max_sectors;
+	mempool_t tag_pool;
+	mempool_t req_pool;
+	mempool_t page_pool;
+
+	struct bio_set bs;
+	struct mutex bio_alloc_lock;
 
 	u8 *authenc_key; /* space for keys in authenc() format (if used) */
 	u8 key[0];
@@ -343,25 +344,22 @@ static int crypt_iv_plain64be_gen(struct crypt_config *cc, u8 *iv,
 static int crypt_iv_essiv_init(struct crypt_config *cc)
 {
 	struct iv_essiv_private *essiv = &cc->iv_gen_private.essiv;
-	AHASH_REQUEST_ON_STACK(req, essiv->hash_tfm);
-	struct scatterlist sg;
+	SHASH_DESC_ON_STACK(desc, essiv->hash_tfm);
 	struct crypto_cipher *essiv_tfm;
 	int err;
 
-	sg_init_one(&sg, cc->key, cc->key_size);
-	ahash_request_set_tfm(req, essiv->hash_tfm);
-	ahash_request_set_callback(req, 0, NULL, NULL);
-	ahash_request_set_crypt(req, &sg, essiv->salt, cc->key_size);
+	desc->tfm = essiv->hash_tfm;
+	desc->flags = 0;
 
-	err = crypto_ahash_digest(req);
-	ahash_request_zero(req);
+	err = crypto_shash_digest(desc, cc->key, cc->key_size, essiv->salt);
+	shash_desc_zero(desc);
 	if (err)
 		return err;
 
 	essiv_tfm = cc->iv_private;
 
 	err = crypto_cipher_setkey(essiv_tfm, essiv->salt,
-			    crypto_ahash_digestsize(essiv->hash_tfm));
+			    crypto_shash_digestsize(essiv->hash_tfm));
 	if (err)
 		return err;
 
@@ -372,7 +370,7 @@ static int crypt_iv_essiv_init(struct crypt_config *cc)
 static int crypt_iv_essiv_wipe(struct crypt_config *cc)
 {
 	struct iv_essiv_private *essiv = &cc->iv_gen_private.essiv;
-	unsigned salt_size = crypto_ahash_digestsize(essiv->hash_tfm);
+	unsigned salt_size = crypto_shash_digestsize(essiv->hash_tfm);
 	struct crypto_cipher *essiv_tfm;
 	int r, err = 0;
 
@@ -424,7 +422,7 @@ static void crypt_iv_essiv_dtr(struct crypt_config *cc)
 	struct crypto_cipher *essiv_tfm;
 	struct iv_essiv_private *essiv = &cc->iv_gen_private.essiv;
 
-	crypto_free_ahash(essiv->hash_tfm);
+	crypto_free_shash(essiv->hash_tfm);
 	essiv->hash_tfm = NULL;
 
 	kzfree(essiv->salt);
@@ -442,7 +440,7 @@ static int crypt_iv_essiv_ctr(struct crypt_config *cc, struct dm_target *ti,
 			      const char *opts)
 {
 	struct crypto_cipher *essiv_tfm = NULL;
-	struct crypto_ahash *hash_tfm = NULL;
+	struct crypto_shash *hash_tfm = NULL;
 	u8 *salt = NULL;
 	int err;
 
@@ -452,14 +450,14 @@ static int crypt_iv_essiv_ctr(struct crypt_config *cc, struct dm_target *ti,
 	}
 
 	/* Allocate hash algorithm */
-	hash_tfm = crypto_alloc_ahash(opts, 0, CRYPTO_ALG_ASYNC);
+	hash_tfm = crypto_alloc_shash(opts, 0, 0);
 	if (IS_ERR(hash_tfm)) {
 		ti->error = "Error initializing ESSIV hash";
 		err = PTR_ERR(hash_tfm);
 		goto bad;
 	}
 
-	salt = kzalloc(crypto_ahash_digestsize(hash_tfm), GFP_KERNEL);
+	salt = kzalloc(crypto_shash_digestsize(hash_tfm), GFP_KERNEL);
 	if (!salt) {
 		ti->error = "Error kmallocing salt storage in ESSIV";
 		err = -ENOMEM;
@@ -470,7 +468,7 @@ static int crypt_iv_essiv_ctr(struct crypt_config *cc, struct dm_target *ti,
 	cc->iv_gen_private.essiv.hash_tfm = hash_tfm;
 
 	essiv_tfm = alloc_essiv_cipher(cc, ti, salt,
-				       crypto_ahash_digestsize(hash_tfm));
+				       crypto_shash_digestsize(hash_tfm));
 	if (IS_ERR(essiv_tfm)) {
 		crypt_iv_essiv_dtr(cc);
 		return PTR_ERR(essiv_tfm);
@@ -481,7 +479,7 @@ static int crypt_iv_essiv_ctr(struct crypt_config *cc, struct dm_target *ti,
 
 bad:
 	if (hash_tfm && !IS_ERR(hash_tfm))
-		crypto_free_ahash(hash_tfm);
+		crypto_free_shash(hash_tfm);
 	kfree(salt);
 	return err;
 }
@@ -974,6 +972,7 @@ static int crypt_integrity_ctr(struct crypt_config *cc, struct dm_target *ti)
 {
 #ifdef CONFIG_BLK_DEV_INTEGRITY
 	struct blk_integrity *bi = blk_get_integrity(cc->dev->bdev->bd_disk);
+	struct mapped_device *md = dm_table_get_md(ti->table);
 
 	/* From now we require underlying device with our integrity profile */
 	if (!bi || strcasecmp(bi->profile->name, "DM-DIF-EXT-TAG")) {
@@ -993,7 +992,7 @@ static int crypt_integrity_ctr(struct crypt_config *cc, struct dm_target *ti)
 
 	if (crypt_integrity_aead(cc)) {
 		cc->integrity_tag_size = cc->on_disk_tag_size - cc->integrity_iv_size;
-		DMINFO("Integrity AEAD, tag size %u, IV size %u.",
+		DMDEBUG("%s: Integrity AEAD, tag size %u, IV size %u.", dm_device_name(md),
 		       cc->integrity_tag_size, cc->integrity_iv_size);
 
 		if (crypto_aead_setauthsize(any_tfm_aead(cc), cc->integrity_tag_size)) {
@@ -1001,7 +1000,7 @@ static int crypt_integrity_ctr(struct crypt_config *cc, struct dm_target *ti)
 			return -EINVAL;
 		}
 	} else if (cc->integrity_iv_size)
-		DMINFO("Additional per-sector space %u bytes for IV.",
+		DMDEBUG("%s: Additional per-sector space %u bytes for IV.", dm_device_name(md),
 		       cc->integrity_iv_size);
 
 	if ((cc->integrity_tag_size + cc->integrity_iv_size) != bi->tag_size) {
@@ -1267,7 +1266,7 @@ static void crypt_alloc_req_skcipher(struct crypt_config *cc,
 	unsigned key_index = ctx->cc_sector & (cc->tfms_count - 1);
 
 	if (!ctx->r.req)
-		ctx->r.req = mempool_alloc(cc->req_pool, GFP_NOIO);
+		ctx->r.req = mempool_alloc(&cc->req_pool, GFP_NOIO);
 
 	skcipher_request_set_tfm(ctx->r.req, cc->cipher_tfm.tfms[key_index]);
 
@@ -1284,7 +1283,7 @@ static void crypt_alloc_req_aead(struct crypt_config *cc,
 				 struct convert_context *ctx)
 {
 	if (!ctx->r.req_aead)
-		ctx->r.req_aead = mempool_alloc(cc->req_pool, GFP_NOIO);
+		ctx->r.req_aead = mempool_alloc(&cc->req_pool, GFP_NOIO);
 
 	aead_request_set_tfm(ctx->r.req_aead, cc->cipher_tfm.tfms_aead[0]);
 
@@ -1312,7 +1311,7 @@ static void crypt_free_req_skcipher(struct crypt_config *cc,
 	struct dm_crypt_io *io = dm_per_bio_data(base_bio, cc->per_bio_data_size);
 
 	if ((struct skcipher_request *)(io + 1) != req)
-		mempool_free(req, cc->req_pool);
+		mempool_free(req, &cc->req_pool);
 }
 
 static void crypt_free_req_aead(struct crypt_config *cc,
@@ -1321,7 +1320,7 @@ static void crypt_free_req_aead(struct crypt_config *cc,
 	struct dm_crypt_io *io = dm_per_bio_data(base_bio, cc->per_bio_data_size);
 
 	if ((struct aead_request *)(io + 1) != req)
-		mempool_free(req, cc->req_pool);
+		mempool_free(req, &cc->req_pool);
 }
 
 static void crypt_free_req(struct crypt_config *cc, void *req, struct bio *base_bio)
@@ -1431,7 +1430,7 @@ retry:
 	if (unlikely(gfp_mask & __GFP_DIRECT_RECLAIM))
 		mutex_lock(&cc->bio_alloc_lock);
 
-	clone = bio_alloc_bioset(GFP_NOIO, nr_iovecs, cc->bs);
+	clone = bio_alloc_bioset(GFP_NOIO, nr_iovecs, &cc->bs);
 	if (!clone)
 		goto out;
 
@@ -1440,7 +1439,7 @@ retry:
 	remaining_size = size;
 
 	for (i = 0; i < nr_iovecs; i++) {
-		page = mempool_alloc(cc->page_pool, gfp_mask);
+		page = mempool_alloc(&cc->page_pool, gfp_mask);
 		if (!page) {
 			crypt_free_buffer_pages(cc, clone);
 			bio_put(clone);
@@ -1475,8 +1474,7 @@ static void crypt_free_buffer_pages(struct crypt_config *cc, struct bio *clone)
 
 	bio_for_each_segment_all(bv, clone, i) {
 		BUG_ON(!bv->bv_page);
-		mempool_free(bv->bv_page, cc->page_pool);
-		bv->bv_page = NULL;
+		mempool_free(bv->bv_page, &cc->page_pool);
 	}
 }
 
@@ -1515,7 +1513,7 @@ static void crypt_dec_pending(struct dm_crypt_io *io)
 		crypt_free_req(cc, io->ctx.r.req, base_bio);
 
 	if (unlikely(io->integrity_metadata_from_pool))
-		mempool_free(io->integrity_metadata, io->cc->tag_pool);
+		mempool_free(io->integrity_metadata, &io->cc->tag_pool);
 	else
 		kfree(io->integrity_metadata);
 
@@ -1588,7 +1586,7 @@ static int kcryptd_io_read(struct dm_crypt_io *io, gfp_t gfp)
 	 * biovecs we don't need to worry about the block layer
 	 * modifying the biovec array; so leverage bio_clone_fast().
 	 */
-	clone = bio_clone_fast(io->base_bio, gfp, cc->bs);
+	clone = bio_clone_fast(io->base_bio, gfp, &cc->bs);
 	if (!clone)
 		return 1;
 
@@ -1700,36 +1698,31 @@ static int dmcrypt_write(void *data)
 		struct rb_root write_tree;
 		struct blk_plug plug;
 
-		DECLARE_WAITQUEUE(wait, current);
-
-		spin_lock_irq(&cc->write_thread_wait.lock);
+		spin_lock_irq(&cc->write_thread_lock);
 continue_locked:
 
 		if (!RB_EMPTY_ROOT(&cc->write_tree))
 			goto pop_from_list;
 
 		set_current_state(TASK_INTERRUPTIBLE);
-		__add_wait_queue(&cc->write_thread_wait, &wait);
 
-		spin_unlock_irq(&cc->write_thread_wait.lock);
+		spin_unlock_irq(&cc->write_thread_lock);
 
 		if (unlikely(kthread_should_stop())) {
 			set_current_state(TASK_RUNNING);
-			remove_wait_queue(&cc->write_thread_wait, &wait);
 			break;
 		}
 
 		schedule();
 
 		set_current_state(TASK_RUNNING);
-		spin_lock_irq(&cc->write_thread_wait.lock);
-		__remove_wait_queue(&cc->write_thread_wait, &wait);
+		spin_lock_irq(&cc->write_thread_lock);
 		goto continue_locked;
 
 pop_from_list:
 		write_tree = cc->write_tree;
 		cc->write_tree = RB_ROOT;
-		spin_unlock_irq(&cc->write_thread_wait.lock);
+		spin_unlock_irq(&cc->write_thread_lock);
 
 		BUG_ON(rb_parent(write_tree.rb_node));
 
@@ -1742,6 +1735,7 @@ pop_from_list:
 			io = crypt_io_from_node(rb_first(&write_tree));
 			rb_erase(&io->rb_node, &write_tree);
 			kcryptd_io_write(io);
+			cond_resched();
 		} while (!RB_EMPTY_ROOT(&write_tree));
 		blk_finish_plug(&plug);
 	}
@@ -1773,7 +1767,9 @@ static void kcryptd_crypt_write_io_submit(struct dm_crypt_io *io, int async)
 		return;
 	}
 
-	spin_lock_irqsave(&cc->write_thread_wait.lock, flags);
+	spin_lock_irqsave(&cc->write_thread_lock, flags);
+	if (RB_EMPTY_ROOT(&cc->write_tree))
+		wake_up_process(cc->write_thread);
 	rbp = &cc->write_tree.rb_node;
 	parent = NULL;
 	sector = io->sector;
@@ -1786,9 +1782,7 @@ static void kcryptd_crypt_write_io_submit(struct dm_crypt_io *io, int async)
 	}
 	rb_link_node(&io->rb_node, parent, rbp);
 	rb_insert_color(&io->rb_node, &cc->write_tree);
-
-	wake_up_locked(&cc->write_thread_wait);
-	spin_unlock_irqrestore(&cc->write_thread_wait.lock, flags);
+	spin_unlock_irqrestore(&cc->write_thread_lock, flags);
 }
 
 static void kcryptd_crypt_write_convert(struct dm_crypt_io *io)
@@ -1813,6 +1807,12 @@ static void kcryptd_crypt_write_convert(struct dm_crypt_io *io)
 
 	io->ctx.bio_out = clone;
 	io->ctx.iter_out = clone->bi_iter;
+
+	if (crypt_integrity_aead(cc)) {
+		bio_copy_data(clone, io->base_bio);
+		io->ctx.bio_in = clone;
+		io->ctx.iter_in = clone->bi_iter;
+	}
 
 	sector += bio_sectors(clone);
 
@@ -1958,8 +1958,9 @@ static int crypt_alloc_tfms_skcipher(struct crypt_config *cc, char *ciphermode)
 	unsigned i;
 	int err;
 
-	cc->cipher_tfm.tfms = kzalloc(cc->tfms_count *
-				      sizeof(struct crypto_skcipher *), GFP_KERNEL);
+	cc->cipher_tfm.tfms = kcalloc(cc->tfms_count,
+				      sizeof(struct crypto_skcipher *),
+				      GFP_KERNEL);
 	if (!cc->cipher_tfm.tfms)
 		return -ENOMEM;
 
@@ -2049,14 +2050,16 @@ static int crypt_setkey(struct crypt_config *cc)
 
 /* MTK PATCH */
 #if defined(CONFIG_MTK_HW_FDE)
+	struct arm_smccc_res res;
+
 	if (cc->hw_fde == 1) {
 		for (i = 0; i < (cc->key_size>>3); i++)
-			mt_secure_call(MTK_SIP_KERNEL_HW_FDE_KEY,
+			arm_smccc_smc(MTK_SIP_KERNEL_HW_FDE_KEY,
 				*(u32 *)(cc->key+(i*8)),
 				*(u32 *)(cc->key+(i*8)+4),
 				(cc->id & 0xff) << 24 |
 				(i & 0xff)<<16 | (cc->key_size & 0xffff),
-				0);
+				0, 0, 0, 0, &res);
 		key_idx++;
 	} else
 #endif
@@ -2211,7 +2214,7 @@ static int crypt_set_keyring_key(struct crypt_config *cc, const char *key_string
 
 static int get_key_size(char **key_string)
 {
-	return (*key_string[0] == ':') ? -EINVAL : strlen(*key_string) >> 1;
+	return (*key_string[0] == ':') ? -EINVAL : (int)(strlen(*key_string) >> 1);
 }
 
 #endif
@@ -2285,7 +2288,12 @@ static void *crypt_page_alloc(gfp_t gfp_mask, void *pool_data)
 	struct crypt_config *cc = pool_data;
 	struct page *page;
 
-	if (unlikely(percpu_counter_compare(&cc->n_allocated_pages, dm_crypt_pages_per_client) >= 0) &&
+	/*
+	 * Note, percpu_counter_read_positive() may over (and under) estimate
+	 * the current usage by at most (batch - 1) * num_online_cpus() pages,
+	 * but avoids potential spinlock contention of an exact result.
+	 */
+	if (unlikely(percpu_counter_read_positive(&cc->n_allocated_pages) >= dm_crypt_pages_per_client) &&
 	    likely(gfp_mask & __GFP_NORETRY))
 		return NULL;
 
@@ -2329,25 +2337,23 @@ static void crypt_dtr(struct dm_target *ti)
 
 	crypt_free_tfms(cc);
 
-	if (cc->bs)
-		bioset_free(cc->bs);
+	bioset_exit(&cc->bs);
+
 /* MTK PATCH */
 #if defined(CONFIG_MTK_HW_FDE)
 	if (cc->hw_fde == 0)
 #endif
 	{
-	mempool_destroy(cc->page_pool);
-	mempool_destroy(cc->req_pool);
-	mempool_destroy(cc->tag_pool);
+	mempool_exit(&cc->page_pool);
+	mempool_exit(&cc->req_pool);
+	mempool_exit(&cc->tag_pool);
 
-	if (cc->page_pool)
-		WARN_ON(percpu_counter_sum(&cc->n_allocated_pages) != 0);
+	WARN_ON(percpu_counter_sum(&cc->n_allocated_pages) != 0);
 	percpu_counter_destroy(&cc->n_allocated_pages);
 
 	if (cc->iv_gen_ops && cc->iv_gen_ops->dtr)
 		cc->iv_gen_ops->dtr(cc);
 	}
-
 	if (cc->dev)
 		dm_put_device(ti, cc->dev);
 
@@ -2356,6 +2362,8 @@ static void crypt_dtr(struct dm_target *ti)
 	kzfree(cc->key_string);
 	kzfree(cc->cipher_auth);
 	kzfree(cc->authenc_key);
+
+	mutex_destroy(&cc->bio_alloc_lock);
 
 /* MTK PATCH */
 #if defined(CONFIG_MTK_HW_FDE)
@@ -2837,10 +2845,7 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 			__LINE__,
 			cc->hw_fde,
 			cc->id);
-#endif
 
-/* MTK PATCH */
-#if defined(CONFIG_MTK_HW_FDE)
 	if (cc->hw_fde == 1) {
 		additional_req_size = 0; /* for per_bio_data_size. */
 		/* Initialize and set key */
@@ -2897,8 +2902,6 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		iv_size_padding = align_mask;
 	}
 
-	ret = -ENOMEM;
-
 	/*  ...| IV + padding | original IV | original sec. number | bio tag offset | */
 	additional_req_size = sizeof(struct dm_crypt_request) +
 		iv_size_padding + cc->iv_size +
@@ -2906,8 +2909,8 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		sizeof(uint64_t) +
 		sizeof(unsigned int);
 
-	cc->req_pool = mempool_create_kmalloc_pool(MIN_IOS, cc->dmreq_start + additional_req_size);
-	if (!cc->req_pool) {
+	ret = mempool_init_kmalloc_pool(&cc->req_pool, MIN_IOS, cc->dmreq_start + additional_req_size);
+	if (ret) {
 		ti->error = "Cannot allocate crypt request mempool";
 		goto bad;
 	}
@@ -2916,24 +2919,21 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	cc->per_bio_data_size = ti->per_io_data_size =
 		ALIGN(sizeof(struct dm_crypt_io) + cc->dmreq_start + additional_req_size,
 		      ARCH_KMALLOC_MINALIGN);
-
 /* MTK PATCH */
 #if defined(CONFIG_MTK_HW_FDE)
 	if (cc->hw_fde == 0)
 #endif
 	{
 
-	cc->page_pool = mempool_create(BIO_MAX_PAGES, crypt_page_alloc, crypt_page_free, cc);
-	if (!cc->page_pool) {
+	ret = mempool_init(&cc->page_pool, BIO_MAX_PAGES, crypt_page_alloc, crypt_page_free, cc);
+	if (ret) {
 		ti->error = "Cannot allocate page mempool";
 		goto bad;
 	}
 
 	}
-
-	cc->bs = bioset_create(MIN_IOS, 0, (BIOSET_NEED_BVECS |
-					    BIOSET_NEED_RESCUER));
-	if (!cc->bs) {
+	ret = bioset_init(&cc->bs, MIN_IOS, 0, BIOSET_NEED_BVECS);
+	if (ret) {
 		ti->error = "Cannot allocate crypt bioset";
 		goto bad;
 	}
@@ -2955,7 +2955,6 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	cc->iv_offset = tmpll;
 
 	}
-
 	ret = dm_get_device(ti, argv[3], dm_table_get_mode(ti->table), &cc->dev);
 	if (ret) {
 		ti->error = "Device lookup failed";
@@ -2963,7 +2962,7 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	ret = -EINVAL;
-	if (sscanf(argv[4], "%llu%c", &tmpll, &dummy) != 1) {
+	if (sscanf(argv[4], "%llu%c", &tmpll, &dummy) != 1 || tmpll != (sector_t)tmpll) {
 		ti->error = "Invalid device sector";
 		goto bad;
 	}
@@ -2978,11 +2977,10 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		if (!cc->tag_pool_max_sectors)
 			cc->tag_pool_max_sectors = 1;
 
-		cc->tag_pool = mempool_create_kmalloc_pool(MIN_IOS,
+		ret = mempool_init_kmalloc_pool(&cc->tag_pool, MIN_IOS,
 			cc->tag_pool_max_sectors * cc->on_disk_tag_size);
-		if (!cc->tag_pool) {
+		if (ret) {
 			ti->error = "Cannot allocate integrity tags mempool";
-			ret = -ENOMEM;
 			goto bad;
 		}
 
@@ -2990,13 +2988,11 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	ret = -ENOMEM;
-
 /* MTK PATCH */
 #if defined(CONFIG_MTK_HW_FDE)
 	if (cc->hw_fde == 0)
 #endif
 	{
-
 	cc->io_queue = alloc_workqueue("kcryptd_io", WQ_HIGHPRI | WQ_CPU_INTENSIVE | WQ_MEM_RECLAIM, 1);
 	if (!cc->io_queue) {
 		ti->error = "Couldn't create kcryptd io queue";
@@ -3014,7 +3010,7 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad;
 	}
 
-	init_waitqueue_head(&cc->write_thread_wait);
+	spin_lock_init(&cc->write_thread_lock);
 	cc->write_tree = RB_ROOT;
 
 	cc->write_thread = kthread_create(dmcrypt_write, cc, "dmcrypt_write");
@@ -3027,7 +3023,6 @@ static int crypt_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	wake_up_process(cc->write_thread);
 
 	}
-
 	ti->num_flush_bios = 1;
 
 	return 0;
@@ -3070,7 +3065,6 @@ static int crypt_map(struct dm_target *ti, struct bio *bio)
 	} else
 #endif
 	{
-
 	/*
 	 * Check if bio is too large, split as needed.
 	 */
@@ -3099,7 +3093,7 @@ static int crypt_map(struct dm_target *ti, struct bio *bio)
 				GFP_NOIO | __GFP_NORETRY | __GFP_NOMEMALLOC | __GFP_NOWARN)))) {
 			if (bio_sectors(bio) > cc->tag_pool_max_sectors)
 				dm_accept_partial_bio(bio, cc->tag_pool_max_sectors);
-			io->integrity_metadata = mempool_alloc(cc->tag_pool, GFP_NOIO);
+			io->integrity_metadata = mempool_alloc(&cc->tag_pool, GFP_NOIO);
 			io->integrity_metadata_from_pool = true;
 		}
 	}
@@ -3116,8 +3110,12 @@ static int crypt_map(struct dm_target *ti, struct bio *bio)
 		kcryptd_queue_crypt(io);
 
 	}
-
 	return DM_MAPIO_SUBMITTED;
+}
+
+static char hex2asc(unsigned char c)
+{
+	return c + '0' + ((unsigned)(9 - c) >> 4 & 0x27);
 }
 
 static void crypt_status(struct dm_target *ti, status_type_t type,
@@ -3138,9 +3136,12 @@ static void crypt_status(struct dm_target *ti, status_type_t type,
 		if (cc->key_size > 0) {
 			if (cc->key_string)
 				DMEMIT(":%u:%s", cc->key_size, cc->key_string);
-			else
-				for (i = 0; i < cc->key_size; i++)
-					DMEMIT("%02x", cc->key[i]);
+			else {
+				for (i = 0; i < cc->key_size; i++) {
+					DMEMIT("%c%c", hex2asc(cc->key[i] >> 4),
+					       hex2asc(cc->key[i] & 0xf));
+				}
+			}
 		} else
 			DMEMIT("-");
 
@@ -3204,7 +3205,8 @@ static void crypt_resume(struct dm_target *ti)
  *	key set <key>
  *	key wipe
  */
-static int crypt_message(struct dm_target *ti, unsigned argc, char **argv)
+static int crypt_message(struct dm_target *ti, unsigned argc, char **argv,
+			 char *result, unsigned maxlen)
 {
 	struct crypt_config *cc = ti->private;
 	int key_size, ret = -EINVAL;

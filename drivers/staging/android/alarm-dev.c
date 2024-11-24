@@ -1,16 +1,6 @@
-/* drivers/rtc/alarm-dev.c
- *
- * Copyright (C) 2007-2009 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2007 Google, Inc.
  */
 
 #ifdef pr_fmt
@@ -51,7 +41,7 @@ do {									\
 
 static int alarm_opened;
 static DEFINE_SPINLOCK(alarm_slock);
-static struct wakeup_source alarm_wake_lock;
+static struct wakeup_source *alarm_wake_lock;
 static DECLARE_WAIT_QUEUE_HEAD(alarm_wait_queue);
 static u32 alarm_pending;
 static u32 alarm_enabled;
@@ -124,18 +114,8 @@ void alarm_set_power_on(struct timespec new_pwron_time, bool logo)
 	rtc_set_alarm_poweron(alarm_rtc_dev, &alm);
 }
 
-void alarm_get_power_on(struct rtc_wkalrm *alm)
-{
-	if (!alm)
-		return;
-
-	memset(alm, 0, sizeof(struct rtc_wkalrm));
-#ifndef CONFIG_MTK_FPGA
-	rtc_read_pwron_alarm(alm);
-#endif
-}
-
-static void alarm_clear(enum android_alarm_type alarm_type, struct timespec *ts)
+static void alarm_clear(enum android_alarm_type alarm_type,
+			struct timespec *ts)
 {
 	u32 alarm_type_mask = 1U << alarm_type;
 	unsigned long flags;
@@ -152,7 +132,7 @@ static void alarm_clear(enum android_alarm_type alarm_type, struct timespec *ts)
 	if (alarm_pending) {
 		alarm_pending &= ~alarm_type_mask;
 		if (!alarm_pending && !wait_pending)
-			__pm_relax(&alarm_wake_lock);
+			__pm_relax(alarm_wake_lock);
 	}
 	alarm_enabled &= ~alarm_type_mask;
 	spin_unlock_irqrestore(&alarm_slock, flags);
@@ -162,13 +142,9 @@ static void alarm_set(enum android_alarm_type alarm_type, struct timespec *ts)
 {
 	u32 alarm_type_mask = 1U << alarm_type;
 	unsigned long flags;
-	static DEFINE_RATELIMIT_STATE(ratelimit, HZ - 1, 5);
 
-	if (__ratelimit(&ratelimit)) {
-		ratelimit.begin = jiffies;
-		pr_notice("alarm %d set %ld.%09ld\n", alarm_type,
-			  ts->tv_sec, ts->tv_nsec);
-	}
+	pr_notice("alarm %d set %ld.%09ld\n", alarm_type,
+		  ts->tv_sec, ts->tv_nsec);
 	if (alarm_type == ANDROID_ALARM_POWER_ON) {
 		alarm_set_power_on(*ts, false);
 		return;
@@ -192,7 +168,7 @@ static int alarm_wait(void)
 	spin_lock_irqsave(&alarm_slock, flags);
 	alarm_dbg(IO, "alarm wait\n");
 	if (!alarm_pending && wait_pending) {
-		__pm_relax(&alarm_wake_lock);
+		__pm_relax(alarm_wake_lock);
 		wait_pending = 0;
 	}
 	spin_unlock_irqrestore(&alarm_slock, flags);
@@ -328,13 +304,6 @@ static long alarm_do_ioctl(struct file *file, unsigned int cmd,
 	case ANDROID_ALARM_GET_TIME(0):
 		rv = alarm_get_time(alarm_type, ts);
 		break;
-	case ANDROID_ALARM_GET_POWER_ON:
-		alarm_get_power_on(alm);
-		break;
-	case ANDROID_ALARM_GET_POWER_ON_IPO:
-		alarm_get_power_on(alm);
-		break;
-
 	default:
 		rv = -EINVAL;
 	}
@@ -460,7 +429,7 @@ static int alarm_release(struct inode *inode, struct file *file)
 			if (alarm_pending)
 				alarm_dbg(INFO, "%s: clear pending alarms %x\n",
 					  __func__, alarm_pending);
-			__pm_relax(&alarm_wake_lock);
+			__pm_relax(alarm_wake_lock);
 			wait_pending = 0;
 			alarm_pending = 0;
 		}
@@ -480,7 +449,7 @@ static void devalarm_triggered(struct devalarm *alarm)
 	alarm_dbg(INT, "%s: type %d\n", __func__, alarm->type);
 	spin_lock_irqsave(&alarm_slock, flags);
 	if (alarm_enabled & alarm_type_mask) {
-		__pm_wakeup_event(&alarm_wake_lock, 5000);	/* 5secs */
+		__pm_wakeup_event(alarm_wake_lock, 5000);	/* 5secs */
 		alarm_enabled &= ~alarm_type_mask;
 		alarm_pending |= alarm_type_mask;
 		wake_up(&alarm_wait_queue);
@@ -549,15 +518,18 @@ static int __init alarm_dev_init(void)
 			alarms[i].u.hrt.function = devalarm_hrthandler;
 	}
 
-	wakeup_source_init(&alarm_wake_lock, "alarm");
+	alarm_wake_lock =
+		wakeup_source_register(alarm_device.this_device, "alarm");
 	return 0;
 }
 
 static void __exit alarm_dev_exit(void)
 {
 	misc_deregister(&alarm_device);
-	wakeup_source_trash(&alarm_wake_lock);
+	wakeup_source_unregister(alarm_wake_lock);
 }
 
 module_init(alarm_dev_init);
 module_exit(alarm_dev_exit);
+MODULE_LICENSE("GPL v2");
+

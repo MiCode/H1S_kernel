@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 /**
@@ -21,9 +13,8 @@
 #include <linux/init.h>		/* module_init, module_exit */
 #include <linux/cpu.h>		/* cpu_up */
 #include <linux/kthread.h>	/* kthread_create */
-#include <asm-generic/bug.h>	/* BUG_ON */
-#include <linux/sched.h>
 #include <linux/sched/task.h>
+#include <asm-generic/bug.h>	/* BUG_ON */
 
 #include "mt_hotplug_strategy_internal.h"
 
@@ -53,11 +44,11 @@ static u64 hps_get_current_time_ms(void)
 	return (u64)t.tv_sec * 1000 + t.tv_usec / 1000;
 }
 
-static void hps_timer_callback(unsigned long data)
+static void hps_timer_callback(struct timer_list *tl)
 {
 	int ret;
 
-	log_tmr("timer(%lu): %llu\n", data, hps_get_current_time_ms());
+	log_tmr("timer: %llu\n", hps_get_current_time_ms());
 
 	if (hps_ctxt.tsk_struct_ptr) {
 		ret = wake_up_process(hps_ctxt.tsk_struct_ptr);
@@ -201,13 +192,9 @@ int hps_core_init(void)
 	log_info("%s\n", __func__);
 
 #if HPS_PERIODICAL_BY_TIMER
-	init_timer_deferrable(&hps_ctxt.hps_tmr_dfr);
-	hps_ctxt.hps_tmr_dfr.function = hps_timer_callback;
-	hps_ctxt.hps_tmr_dfr.data = 1;
-
-	init_timer(&hps_ctxt.hps_tmr);
-	hps_ctxt.hps_tmr.function = hps_timer_callback;
-	hps_ctxt.hps_tmr.data = 2;
+	timer_setup(&hps_ctxt.hps_tmr_dfr, hps_timer_callback,
+							TIMER_DEFERRABLE);
+	timer_setup(&hps_ctxt.hps_tmr, hps_timer_callback, 0);
 
 	hps_ctxt.active_hps_tmr = &hps_ctxt.hps_tmr;
 	hps_ctxt.active_hps_tmr->expires = jiffies +

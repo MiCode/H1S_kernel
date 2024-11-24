@@ -6,6 +6,7 @@
 #include "mt6785-afe-common.h"
 #include "mtk-scp-ultra-platform-mem-control.h"
 #include "mtk-scp-ultra-common.h"
+#include "mt6785-afe-clk.h"
 
 const int get_scp_ultra_memif_id(int scp_ultra_task_id)
 {
@@ -20,3 +21,11 @@ const int get_scp_ultra_memif_id(int scp_ultra_task_id)
 	}
 }
 
+const int set_afe_clock(bool enable, struct mtk_base_afe *afe)
+{
+	if (enable)
+		mt6785_afe_enable_clock(afe);
+	else
+		mt6785_afe_disable_clock(afe);
+	return 0;
+}

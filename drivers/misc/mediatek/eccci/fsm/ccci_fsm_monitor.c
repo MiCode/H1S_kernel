@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include "ccci_fsm_internal.h"
@@ -133,12 +125,10 @@ int fsm_monitor_send_message(int md_id, enum CCCI_MD_MSG msg, u32 resv)
 	struct sk_buff *skb = NULL;
 	struct ccci_header *ccci_h;
 	struct ccci_fsm_ctl *ctl = fsm_get_entity_by_md_id(md_id);
-	struct ccci_fsm_monitor *monitor_ctl = NULL;
+	struct ccci_fsm_monitor *monitor_ctl = &ctl->monitor_ctl;
 
 	if (!ctl)
 		return -CCCI_ERR_INVALID_PARAM;
-
-	monitor_ctl = &ctl->monitor_ctl;
 
 	if (unlikely(in_interrupt())) {
 		CCCI_ERROR_LOG(monitor_ctl->md_id, FSM,
@@ -148,11 +138,6 @@ int fsm_monitor_send_message(int md_id, enum CCCI_MD_MSG msg, u32 resv)
 	}
 
 	skb = ccci_alloc_skb(sizeof(struct ccci_header), 1, 1);
-	if (skb == NULL) {
-		CCCI_ERROR_LOG(monitor_ctl->md_id, FSM,
-			"%s:ccci_alloc_skb fail\n", __func__);
-		return -CCCI_ERR_ASSERT_ERR;
-	}
 	ccci_h =
 	(struct ccci_header *)skb_put(skb, sizeof(struct ccci_header));
 	ccci_h->data[0] = CCCI_MAGIC_NUM;

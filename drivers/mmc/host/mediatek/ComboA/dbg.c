@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifdef pr_fmt
@@ -24,7 +16,7 @@
 #include <linux/slab.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
-#include <mt-plat/mtk_gpt.h>
+//#include <mt-plat/mtk_gpt.h>
 #include <mt-plat/mtk_boot_common.h>
 #include <linux/io.h>
 #include <linux/scatterlist.h>
@@ -211,7 +203,6 @@ static void msdc_init_dma_latest_address(void)
 #endif
 
 #define dbg_max_cnt (4000)
-#define sd_dbg_max_cnt (1000)
 #ifdef CONFIG_MTK_MMC_DEBUG
 #ifdef MTK_MSDC_LOW_IO_DEBUG
 #define dbg_max_cnt_low_io (5000)
@@ -251,8 +242,6 @@ struct dbg_dma_cmd_log {
 };
 
 static struct dbg_run_host_log dbg_run_host_log_dat[dbg_max_cnt];
-/* for sdcard cmd */
-static struct dbg_run_host_log dbg_run_sd_log_dat[dbg_max_cnt];
 
 #ifdef MTK_MSDC_LOW_IO_DEBUG
 static struct dbg_run_host_log_low_io
@@ -263,9 +252,9 @@ static int dbg_host_cnt_low_io;
 static struct dbg_dma_cmd_log dbg_dma_cmd_log_dat;
 static struct dbg_task_log dbg_task_log_dat[32];
 char msdc_aee_buffer[MSDC_AEE_BUFFER_SIZE];
-static int dbg_host_cnt, dbg_sd_cnt;
+static int dbg_host_cnt;
 
-static unsigned int printk_cpu_test = UINT_MAX;
+static unsigned int print_cpu_test = UINT_MAX;
 
 /*
  * type 0: cmd; type 1: rsp; type 3: dma end
@@ -293,7 +282,7 @@ inline void __dbg_add_host_log(struct mmc_host *mmc, int type,
 	if (!host || host->id != 0)
 		return;
 
-	t = cpu_clock(printk_cpu_test);
+	t = cpu_clock(print_cpu_test);
 #ifdef CONFIG_MTK_EMMC_HW_CQ
 	spin_lock_irqsave(&host->cmd_dump_lock, flags);
 #endif
@@ -407,85 +396,13 @@ inline void __dbg_add_host_log(struct mmc_host *mmc, int type,
 		dbg_host_cnt++;
 		if (dbg_host_cnt >= dbg_max_cnt)
 			dbg_host_cnt = 0;
+		break;
 	default:
 		break;
 	}
 #ifdef CONFIG_MTK_EMMC_HW_CQ
 	spin_unlock_irqrestore(&host->cmd_dump_lock, flags);
 #endif
-}
-
-/*
- * for sdcard cmd dump
- * type 0: cmd; type 1: rsp;
- */
-inline void __dbg_add_sd_log(struct mmc_host *mmc, int type,
-			int cmd, int arg)
-{
-	unsigned long long t, tn;
-	unsigned long long nanosec_rem;
-	static int last_cmd, last_arg, skip;
-	int l_skip = 0;
-	struct msdc_host *host = mmc_priv(mmc);
-	static int tag = -1;
-
-	/* only log msdc1 */
-	if (!host || host->id == 0)
-		return;
-
-	t = cpu_clock(printk_cpu_test);
-
-	switch (type) {
-	case 0: /* normal - cmd */
-		tn = t;
-		nanosec_rem = do_div(t, 1000000000)/1000;
-
-		dbg_run_sd_log_dat[dbg_sd_cnt].time_sec = t;
-		dbg_run_sd_log_dat[dbg_sd_cnt].time_usec = nanosec_rem;
-		dbg_run_sd_log_dat[dbg_sd_cnt].type = type;
-		dbg_run_sd_log_dat[dbg_sd_cnt].cmd = cmd;
-		dbg_run_sd_log_dat[dbg_sd_cnt].arg = arg;
-		dbg_run_sd_log_dat[dbg_sd_cnt].skip = l_skip;
-		dbg_sd_cnt++;
-		if (dbg_sd_cnt >= sd_dbg_max_cnt)
-			dbg_sd_cnt = 0;
-		break;
-	case 1: /* normal -rsp */
-		nanosec_rem = do_div(t, 1000000000)/1000;
-		/*skip log if last cmd rsp are the same*/
-		if (last_cmd == cmd &&
-			last_arg == arg && cmd == 13) {
-			skip++;
-			if (dbg_sd_cnt == 0)
-				dbg_sd_cnt = sd_dbg_max_cnt;
-			/*remove type = 0, command*/
-			dbg_sd_cnt--;
-			break;
-		}
-		last_cmd = cmd;
-		last_arg = arg;
-		l_skip = skip;
-		skip = 0;
-
-		dbg_run_sd_log_dat[dbg_sd_cnt].time_sec = t;
-		dbg_run_sd_log_dat[dbg_sd_cnt].time_usec = nanosec_rem;
-		dbg_run_sd_log_dat[dbg_sd_cnt].type = type;
-		dbg_run_sd_log_dat[dbg_sd_cnt].cmd = cmd;
-		dbg_run_sd_log_dat[dbg_sd_cnt].arg = arg;
-		dbg_run_sd_log_dat[dbg_sd_cnt].skip = l_skip;
-		dbg_sd_cnt++;
-		if (dbg_sd_cnt >= sd_dbg_max_cnt)
-			dbg_sd_cnt = 0;
-		break;
-	default:
-		break;
-	}
-}
-
-void dbg_add_sd_log(struct mmc_host *mmc, int type,
-		int cmd, int arg)
-{
-	__dbg_add_sd_log(mmc, type, cmd, arg);
 }
 
 /* all cases which except softirq of IO */
@@ -661,57 +578,10 @@ void mmc_cmd_dump(char **buff, unsigned long *size, struct seq_file *m,
 	SPREAD_PRINTF(buff, size, m,
 		"claimed(%d), claim_cnt(%d), claimer pid(%d), comm %s\n",
 		mmc->claimed, mmc->claim_cnt,
-		mmc->claimer ? mmc->claimer->pid : 0,
-		mmc->claimer ? mmc->claimer->comm : "NULL");
-}
-
-void sd_cmd_dump(char **buff, unsigned long *size, struct seq_file *m,
-	struct mmc_host *mmc, u32 latest_cnt)
-{
-	int i, j;
-	int tag = -1;
-	int is_read, is_rel, is_fprg;
-	unsigned long long time_sec, time_usec;
-	int type, cmd, arg, skip, cnt, cpu;
-	unsigned long active_reqs;
-	struct msdc_host *host;
-	u32 dump_cnt;
-
-	if (!mmc || !mmc->card)
-		return;
-	/* only dump msdc1 */
-	host = mmc_priv(mmc);
-	if (!host || host->id == 0)
-		return;
-
-	dump_cnt = min_t(u32, latest_cnt, sd_dbg_max_cnt);
-
-	i = dbg_sd_cnt - 1;
-	if (i < 0)
-		i = sd_dbg_max_cnt - 1;
-
-	for (j = 0; j < dump_cnt; j++) {
-		time_sec = dbg_run_sd_log_dat[i].time_sec;
-		time_usec = dbg_run_sd_log_dat[i].time_usec;
-		type = dbg_run_sd_log_dat[i].type;
-		cmd = dbg_run_sd_log_dat[i].cmd;
-		arg = dbg_run_sd_log_dat[i].arg;
-		skip = dbg_run_sd_log_dat[i].skip;
-
-		SPREAD_PRINTF(buff, size, m,
-		"%03d [%5llu.%06llu]%2d %3d %08x (%d)\n",
-			j, time_sec, time_usec,
-			type, cmd, arg, skip);
-		i--;
-		if (i < 0)
-			i = sd_dbg_max_cnt - 1;
-	}
-
-	SPREAD_PRINTF(buff, size, m,
-		"claimed(%d), claim_cnt(%d), claimer pid(%d), comm %s\n",
-		mmc->claimed, mmc->claim_cnt,
-		mmc->claimer ? mmc->claimer->pid : 0,
-		mmc->claimer ? mmc->claimer->comm : "NULL");
+		mmc->claimer && mmc->claimer->task ?
+			mmc->claimer->task->pid : 0,
+		mmc->claimer && mmc->claimer->task ?
+			mmc->claimer->task->comm : "NULL");
 }
 
 void msdc_dump_host_state(char **buff, unsigned long *size,
@@ -774,10 +644,7 @@ static void msdc_proc_dump(struct seq_file *m, u32 id)
 	}
 
 	msdc_dump_host_state(NULL, NULL, m, host);
-	if (id == 0)
-		mmc_cmd_dump(NULL, NULL, m, host->mmc, dbg_max_cnt);
-	else if (id == 1)
-		sd_cmd_dump(NULL, NULL, m, host->mmc, sd_dbg_max_cnt);
+	mmc_cmd_dump(NULL, NULL, m, host->mmc, dbg_max_cnt);
 	mmc_low_io_dump(NULL, NULL, m, host->mmc);
 }
 
@@ -785,45 +652,24 @@ void get_msdc_aee_buffer(unsigned long *vaddr, unsigned long *size)
 {
 	struct msdc_host *host = mtk_msdc_host[0];
 	unsigned long free_size = MSDC_AEE_BUFFER_SIZE;
-	char *buff = msdc_aee_buffer;
+	char *buff;
 
 	if (host == NULL) {
-		pr_info("====== Null msdc0, dump skipped ======\n");
-		goto msdc1_dump;
+		pr_info("====== Null msdc, dump skipped ======\n");
+		return;
 	}
 
-	pr_info("====== msdc0 dump ======\n");
+	buff = msdc_aee_buffer;
 	msdc_dump_host_state(&buff, &free_size, NULL, host);
 	mmc_cmd_dump(&buff, &free_size, NULL, host->mmc, dbg_max_cnt);
 	mmc_low_io_dump(&buff, &free_size, NULL, host->mmc);
-
-msdc1_dump:
-	host = mtk_msdc_host[1];
-	if (host == NULL) {
-		pr_info("====== Null msdc1, dump skipped ======\n");
-		goto exit;
-	}
-
-	pr_info("====== msdc1 dump ======\n");
-	sd_cmd_dump(&buff, &free_size, NULL, host->mmc, sd_dbg_max_cnt);
-
-exit:
 	/* retrun start location */
 	*vaddr = (unsigned long)msdc_aee_buffer;
 	*size = MSDC_AEE_BUFFER_SIZE - free_size;
 }
 EXPORT_SYMBOL(get_msdc_aee_buffer);
 #else
-inline void dbg_add_sd_log(struct mmc_host *mmc, int type, int cmd, int arg)
-{
-	//pr_info("config MTK_MMC_DEBUG is not set: %s!\n",__func__);
-}
 inline void dbg_add_host_log(struct mmc_host *mmc, int type, int cmd, int arg)
-{
-	//pr_info("config MTK_MMC_DEBUG is not set: %s!\n",__func__);
-}
-inline void dbg_add_sirq_log(struct mmc_host *mmc, int type,
-		int cmd, int arg, int cpu, unsigned long active_reqs)
 {
 	//pr_info("config MTK_MMC_DEBUG is not set: %s!\n",__func__);
 }
@@ -886,10 +732,11 @@ void msdc_cmdq_status_print(struct msdc_host *host, struct seq_file *m)
 	seq_printf(m, "host claim cnt : %d\n",
 		mmc->claim_cnt);
 	seq_printf(m, "host claimer pid : %d\n",
-		mmc->claimer ? mmc->claimer->pid : 0);
+		mmc->claimer && mmc->claimer->task ?
+			mmc->claimer->task->pid : 0);
 	seq_printf(m, "host claimer comm : %s\n",
-		mmc->claimer ? mmc->claimer->comm : "NULL");
-
+		mmc->claimer && mmc->claimer->task ?
+			mmc->claimer->task->comm : "NULL");
 
 #if defined(CONFIG_MTK_EMMC_HW_CQ)
 	curr_state = mmc->cmdq_ctx.curr_state;
@@ -919,6 +766,9 @@ void msdc_cmdq_status_print(struct msdc_host *host, struct seq_file *m)
 #endif
 #if defined(CONFIG_MTK_HW_FDE) && !defined(CONFIG_MTK_HW_FDE_AES)
 	seq_puts(m, "hardware fde support\n");
+#endif
+#if defined(CONFIG_MMC_CRYPTO)
+	seq_puts(m, "hardware inline crypto\n");
 #endif
 }
 
@@ -1142,7 +992,7 @@ static void msdc_set_field(struct seq_file *m, void __iomem *address,
 {
 	unsigned long field;
 
-	if (start_bit > 31 || start_bit < 0 || len > 31 || len <= 0
+	if (start_bit > 31 || len > 31 || len <= 0
 	 || (start_bit + len > 32)) {
 		seq_puts(m, "[SD_Debug]invalid reg field range or length\n");
 	} else {
@@ -1290,14 +1140,6 @@ void msdc_performance(u32 opcode, u32 sizes, u32 bRx, u32 ticks)
 		result->total_tx_bytes += sizes;
 
 	result->total_tc += ticks;
-#if 0
-	/* dump when total_tc > 30s */
-	if (result->total_tc >= sdio_pro_time * TICKS_ONE_MS * 1000) {
-		msdc_sdio_profile(result);
-		memset(result, 0, sizeof(struct sdio_profile));
-	}
-#endif
-
 	endtime = sched_clock();
 	if ((endtime - sdio_profiling_start) >=
 		sdio_pro_time * 1000000000) {
@@ -1461,7 +1303,7 @@ static int multi_rw_compare_core(int host_num, int read, uint address,
 
 	mmc = host_ctl->mmc;
 
-	mmc_get_card(mmc->card);
+	mmc_get_card(mmc->card, NULL);
 
 #if defined(CONFIG_MTK_EMMC_CQ_SUPPORT) || defined(CONFIG_MTK_EMMC_HW_CQ)
 	cmdq_en = !!mmc_card_cmdq(mmc->card);
@@ -1471,7 +1313,7 @@ static int multi_rw_compare_core(int host_num, int read, uint address,
 		ret = mmc_cmdq_disable(host_ctl->mmc->card);
 		if (ret) {
 			pr_notice("[MSDC_DBG] turn off cmdq en failed\n");
-			mmc_put_card(host_ctl->mmc->card);
+			mmc_put_card(host_ctl->mmc->card, NULL);
 			result = -1;
 			goto free;
 		}
@@ -1558,7 +1400,7 @@ skip_check:
 	}
 #endif
 
-	mmc_put_card(host_ctl->mmc->card);
+	mmc_put_card(host_ctl->mmc->card, NULL);
 
 	if (msdc_cmd.error)
 		result = msdc_cmd.error;
@@ -2149,7 +1991,7 @@ static void msdc_enable_emmc_cache(struct seq_file *m,
 
 	card = host->mmc->card;
 
-	(void)mmc_get_card(card);
+	(void)mmc_get_card(card, NULL);
 
 	c_ctrl = card->ext_csd.cache_ctrl;
 
@@ -2165,7 +2007,7 @@ static void msdc_enable_emmc_cache(struct seq_file *m,
 			seq_printf(m, "msdc%d: %s cache successfully\n",
 				host->id, enable ? "enable" : "disable");
 	}
-	mmc_put_card(card);
+	mmc_put_card(card, NULL);
 }
 
 #ifdef MTK_MSDC_ERROR_TUNE_DEBUG
@@ -2354,6 +2196,22 @@ static void msdc_dump_sdio_setting(struct msdc_host *host, struct seq_file *m)
 #endif
 
 int g_count;
+#define MSDC_REGISTER_MAP_OFFSET	0x2000
+#define MSDC_TOP_REGISTER_MAP_OFFSET	0x1000
+static int msdc_check_register_offset(struct msdc_host *host,
+		struct seq_file *m, unsigned int offset, unsigned int map_offset)
+{
+	if ((map_offset == MSDC_REGISTER_MAP_OFFSET && offset > map_offset) ||
+		(map_offset == MSDC_TOP_REGISTER_MAP_OFFSET && offset > map_offset)) {
+		seq_puts(m, "invalid register offset\n");
+		return 1;
+	}
+	if (offset % 4) {
+		seq_puts(m, "register offset not align by 0x4\n");
+		return 1;
+	}
+	return 0;
+}
 /* ========== driver proc interface =========== */
 static int msdc_debug_proc_show(struct seq_file *m, void *v)
 {
@@ -2365,7 +2223,7 @@ static int msdc_debug_proc_show(struct seq_file *m, void *v)
 	int thread_num, compare_count, multi_address;
 	void __iomem *base = NULL;
 	ulong data_for_wr;
-	unsigned int offset = 0;
+	unsigned int offset = 0, msdc_map_offset = 0;
 	unsigned int reg_value;
 	int spd_mode = MMC_TIMING_LEGACY;
 	struct msdc_host *host = NULL;
@@ -2392,7 +2250,7 @@ static int msdc_debug_proc_show(struct seq_file *m, void *v)
 
 	if (cmd == SD_TOOL_ZONE) {
 		id = p1;
-		if (id >= HOST_MAX_NUM || id < 0)
+		if (id >= HOST_MAX_NUM || id < 0 || mtk_msdc_host[id] == NULL)
 			goto invalid_host_id;
 
 		host = mtk_msdc_host[id];
@@ -2409,7 +2267,7 @@ static int msdc_debug_proc_show(struct seq_file *m, void *v)
 		}
 	} else if (cmd == SD_TOOL_DMA_SIZE) {
 		id = p2;
-		if (id >= HOST_MAX_NUM || id < 0)
+		if (id >= HOST_MAX_NUM || id < 0 || mtk_msdc_host[id] == NULL)
 			goto invalid_host_id;
 		if (p1 == 0) {
 			drv_mode[id] = p3;
@@ -2426,24 +2284,26 @@ static int msdc_debug_proc_show(struct seq_file *m, void *v)
 			goto invalid_host_id;
 
 		host = mtk_msdc_host[id];
-		mmc_claim_host(host->mmc);
 		if (cmd == SD_TOOL_REG_ACCESS) {
 			base = host->base;
+			msdc_map_offset = MSDC_REGISTER_MAP_OFFSET;
 			if ((offset == 0x18 || offset == 0x1C) && p1 != 4) {
 				seq_puts(m, "[SD_Debug] Err: Accessing TXDATA and RXDATA is forbidden\n");
-				mmc_release_host(host->mmc);
 				goto out;
 			}
 		} else {
+			msdc_map_offset = MSDC_TOP_REGISTER_MAP_OFFSET;
 			base = host->base_top;
 		}
 
-		if (p1 == 0) {
-			if (offset > 0x1000) {
-				seq_puts(m, "invalid register offset\n");
+		if (p1 >= 0 && p1 <= 3) {
+			if (msdc_check_register_offset(host, m, offset,
+								msdc_map_offset)) {
 				mmc_release_host(host->mmc);
 				goto out;
 			}
+		}
+		if (p1 == 0) {
 			reg_value = p4;
 			seq_printf(m, "[SD_Debug][MSDC Reg]Original:0x%p+0x%x (0x%x)\n",
 				base, offset, MSDC_READ32(base + offset));
@@ -2462,12 +2322,11 @@ static int msdc_debug_proc_show(struct seq_file *m, void *v)
 		} else if (p1 == 5) {
 			msdc_dump_info(NULL, 0, NULL, host->id);
 		}
-		mmc_release_host(host->mmc);
 	} else if (cmd == SD_TOOL_SET_DRIVING) {
 		char *device_str, *get_set_str;
 
 		id = p2;
-		if (id >= HOST_MAX_NUM || id < 0)
+		if (id >= HOST_MAX_NUM || id < 0 || mtk_msdc_host[id] == NULL)
 			goto invalid_host_id;
 		host = mtk_msdc_host[id];
 
@@ -2512,7 +2371,7 @@ static int msdc_debug_proc_show(struct seq_file *m, void *v)
 			host->hw->driving_applied->ds_drv);
 	} else if (cmd == SD_TOOL_ENABLE_SLEW_RATE) {
 		id = p1;
-		if (id >= HOST_MAX_NUM || id < 0)
+		if (id >= HOST_MAX_NUM || id < 0 || mtk_msdc_host[id] == NULL)
 			goto invalid_host_id;
 		host = mtk_msdc_host[id];
 		if ((unsigned char)p2 > 1 || (unsigned char)p3 > 1
@@ -2526,7 +2385,7 @@ static int msdc_debug_proc_show(struct seq_file *m, void *v)
 		}
 	} else if (cmd == SD_TOOL_SET_RDTDSEL) {
 		id = p1;
-		if (id >= HOST_MAX_NUM || id < 0)
+		if (id >= HOST_MAX_NUM || id < 0 || mtk_msdc_host[id] == NULL)
 			goto invalid_host_id;
 		host = mtk_msdc_host[id];
 		if ((p2 < 0) || (p2 > 2)) {
@@ -2550,7 +2409,7 @@ static int msdc_debug_proc_show(struct seq_file *m, void *v)
 		}
 	} else if (cmd == SD_TOOL_ENABLE_SMT) {
 		id = p1;
-		if (id >= HOST_MAX_NUM || id < 0)
+		if (id >= HOST_MAX_NUM || id < 0 || mtk_msdc_host[id] == NULL)
 			goto invalid_host_id;
 		host = mtk_msdc_host[id];
 		msdc_set_smt(host, p2);
@@ -2613,14 +2472,13 @@ static int msdc_debug_proc_show(struct seq_file *m, void *v)
 	} else if (cmd == SD_TOOL_MSDC_HOST_MODE) {
 		id = p2;
 		spd_mode = p3;
-		if (id >= HOST_MAX_NUM || id < 0)
+		if (id >= HOST_MAX_NUM || id < 0 || mtk_msdc_host[id] == NULL)
 			goto invalid_host_id;
-
-			host = mtk_msdc_host[id];
+		host = mtk_msdc_host[id];
 		if (p1 == 1) {
-			mmc_get_card(host->mmc->card);
+			mmc_get_card(host->mmc->card, NULL);
 			msdc_set_host_mode_speed(m, host->mmc, spd_mode);
-			mmc_put_card(host->mmc->card);
+			mmc_put_card(host->mmc->card, NULL);
 		}
 		msdc_get_host_mode_speed(m, host->mmc);
 	} else if (cmd == SD_TOOL_DMA_STATUS) {
@@ -2874,7 +2732,6 @@ static int msdc_debug_proc_show(struct seq_file *m, void *v)
 
 #endif
 		msdc_proc_dump(m, 0);
-		msdc_proc_dump(m, 1);
 	}
 
 out:
@@ -3014,7 +2871,7 @@ static int msdc_ext_csd_show(struct seq_file *m, void *v)
 		return 0;
 
 	card = host->mmc->card;
-	mmc_get_card(card);
+	mmc_get_card(card, NULL);
 
 #if defined(CONFIG_MTK_EMMC_CQ_SUPPORT) || defined(CONFIG_MTK_EMMC_HW_CQ)
 	cmdq_en = !!mmc_card_cmdq(card);
@@ -3024,7 +2881,7 @@ static int msdc_ext_csd_show(struct seq_file *m, void *v)
 		ret = mmc_cmdq_disable(card);
 		if (ret) {
 			pr_notice("[%s] turn off cmdq en failed\n", __func__);
-			mmc_put_card(card);
+			mmc_put_card(card, NULL);
 			return 0;
 		}
 	}
@@ -3041,7 +2898,7 @@ static int msdc_ext_csd_show(struct seq_file *m, void *v)
 	}
 #endif
 
-	mmc_put_card(card);
+	mmc_put_card(card, NULL);
 	if (err) {
 		pr_notice("[%s ]mmc_get_ext_csd failed!\n", __func__);
 		kfree(ext_csd);
@@ -3104,6 +2961,7 @@ MSDC_PROC_SHOW(size, "%d\n", ((u32)card->ext_csd.raw_sectors[3]<<24)
 	+ ((u32)card->ext_csd.raw_sectors[2]<<16) +
 ((u32)card->ext_csd.raw_sectors[1]<<8)+((u32)card->ext_csd.raw_sectors[0]));
 
+#ifdef CONFIG_MTK_MMC_DEBUG
 static const struct file_operations *proc_fops_list[] = {
 	&cid_fops,
 	&life_time_est_typ_a_fops,
@@ -3186,4 +3044,16 @@ int msdc_debug_proc_init(void)
 #endif
 	return 0;
 }
+#else
+int msdc_debug_proc_init_bootdevice(void)
+{
+	pr_notice("[%s]: CONFIG_MTK_MMC_DEBUG is not set\n", __func__);
+	return 0;
+}
+int msdc_debug_proc_init(void)
+{
+	pr_notice("[%s]: CONFIG_MTK_MMC_DEBUG is not set\n", __func__);
+	return 0;
+}
+#endif
 EXPORT_SYMBOL_GPL(msdc_debug_proc_init);

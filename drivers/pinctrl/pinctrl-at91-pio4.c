@@ -14,6 +14,7 @@
  * GNU General Public License for more details.
  */
 
+#include <dt-bindings/pinctrl/at91.h>
 #include <linux/clk.h>
 #include <linux/gpio/driver.h>
 /* FIXME: needed for gpio_to_irq(), get rid of this */
@@ -49,6 +50,8 @@
 #define		ATMEL_PIO_IFSCEN_MASK		BIT(13)
 #define		ATMEL_PIO_OPD_MASK		BIT(14)
 #define		ATMEL_PIO_SCHMITT_MASK		BIT(15)
+#define		ATMEL_PIO_DRVSTR_MASK		GENMASK(17, 16)
+#define		ATMEL_PIO_DRVSTR_OFFSET		16
 #define		ATMEL_PIO_CFGR_EVTSEL_MASK	GENMASK(26, 24)
 #define		ATMEL_PIO_CFGR_EVTSEL_FALLING	(0 << 24)
 #define		ATMEL_PIO_CFGR_EVTSEL_RISING	(1 << 24)
@@ -74,6 +77,9 @@
 #define ATMEL_GET_PIN_NO(pinfunc)	((pinfunc) & 0xff)
 #define ATMEL_GET_PIN_FUNC(pinfunc)	((pinfunc >> 16) & 0xf)
 #define ATMEL_GET_PIN_IOSET(pinfunc)	((pinfunc >> 20) & 0xf)
+
+/* Custom pinconf parameters */
+#define ATMEL_PIN_CONFIG_DRIVE_STRENGTH	(PIN_CONFIG_END + 1)
 
 struct atmel_pioctrl_data {
 	unsigned nbanks;
@@ -137,6 +143,10 @@ struct atmel_pioctrl {
 
 static const char * const atmel_functions[] = {
 	"GPIO", "A", "B", "C", "D", "E", "F", "G"
+};
+
+static const struct pinconf_generic_params atmel_custom_bindings[] = {
+	{"atmel,drive-strength", ATMEL_PIN_CONFIG_DRIVE_STRENGTH, 0},
 };
 
 /* --- GPIO --- */
@@ -688,6 +698,11 @@ static int atmel_conf_pin_config_group_get(struct pinctrl_dev *pctldev,
 			return -EINVAL;
 		arg = 1;
 		break;
+	case ATMEL_PIN_CONFIG_DRIVE_STRENGTH:
+		if (!(res & ATMEL_PIO_DRVSTR_MASK))
+			return -EINVAL;
+		arg = (res & ATMEL_PIO_DRVSTR_MASK) >> ATMEL_PIO_DRVSTR_OFFSET;
+		break;
 	default:
 		return -ENOTSUPP;
 	}
@@ -773,6 +788,18 @@ static int atmel_conf_pin_config_group_set(struct pinctrl_dev *pctldev,
 					ATMEL_PIO_SODR);
 			}
 			break;
+		case ATMEL_PIN_CONFIG_DRIVE_STRENGTH:
+			switch (arg) {
+			case ATMEL_PIO_DRVSTR_LO:
+			case ATMEL_PIO_DRVSTR_ME:
+			case ATMEL_PIO_DRVSTR_HI:
+				conf &= (~ATMEL_PIO_DRVSTR_MASK);
+				conf |= arg << ATMEL_PIO_DRVSTR_OFFSET;
+				break;
+			default:
+				dev_warn(pctldev->dev, "drive strength not updated (incorrect value)\n");
+			}
+			break;
 		default:
 			dev_warn(pctldev->dev,
 				 "unsupported configuration parameter: %u\n",
@@ -812,6 +839,19 @@ static void atmel_conf_pin_config_dbg_show(struct pinctrl_dev *pctldev,
 		seq_printf(s, "%s ", "open-drain");
 	if (conf & ATMEL_PIO_SCHMITT_MASK)
 		seq_printf(s, "%s ", "schmitt");
+	if (conf & ATMEL_PIO_DRVSTR_MASK) {
+		switch ((conf & ATMEL_PIO_DRVSTR_MASK) >> ATMEL_PIO_DRVSTR_OFFSET) {
+		case ATMEL_PIO_DRVSTR_ME:
+			seq_printf(s, "%s ", "medium-drive");
+			break;
+		case ATMEL_PIO_DRVSTR_HI:
+			seq_printf(s, "%s ", "high-drive");
+			break;
+		/* ATMEL_PIO_DRVSTR_LO and 0 which is the default value at reset */
+		default:
+			seq_printf(s, "%s ", "low-drive");
+		}
+	}
 }
 
 static const struct pinconf_ops atmel_confops = {
@@ -899,6 +939,13 @@ static const struct of_device_id atmel_pctrl_of_match[] = {
 	}
 };
 
+/*
+ * This lock class allows to tell lockdep that parent IRQ and children IRQ do
+ * not share the same class so it does not raise false positive
+ */
+static struct lock_class_key atmel_lock_key;
+static struct lock_class_key atmel_request_key;
+
 static int atmel_pinctrl_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -908,7 +955,7 @@ static int atmel_pinctrl_probe(struct platform_device *pdev)
 	int i, ret;
 	struct resource	*res;
 	struct atmel_pioctrl *atmel_pioctrl;
-	struct atmel_pioctrl_data *atmel_pioctrl_data;
+	const struct atmel_pioctrl_data *atmel_pioctrl_data;
 
 	atmel_pioctrl = devm_kzalloc(dev, sizeof(*atmel_pioctrl), GFP_KERNEL);
 	if (!atmel_pioctrl)
@@ -922,15 +969,11 @@ static int atmel_pinctrl_probe(struct platform_device *pdev)
 		dev_err(dev, "unknown compatible string\n");
 		return -ENODEV;
 	}
-	atmel_pioctrl_data = (struct atmel_pioctrl_data *)match->data;
+	atmel_pioctrl_data = match->data;
 	atmel_pioctrl->nbanks = atmel_pioctrl_data->nbanks;
 	atmel_pioctrl->npins = atmel_pioctrl->nbanks * ATMEL_PIO_NPINS_PER_BANK;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res) {
-		dev_err(dev, "unable to get atmel pinctrl resource\n");
-		return -EINVAL;
-	}
 	atmel_pioctrl->reg_base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(atmel_pioctrl->reg_base))
 		return -EINVAL;
@@ -941,27 +984,32 @@ static int atmel_pinctrl_probe(struct platform_device *pdev)
 		return PTR_ERR(atmel_pioctrl->clk);
 	}
 
-	atmel_pioctrl->pins = devm_kzalloc(dev, sizeof(*atmel_pioctrl->pins)
-			* atmel_pioctrl->npins, GFP_KERNEL);
+	atmel_pioctrl->pins = devm_kcalloc(dev,
+					   atmel_pioctrl->npins,
+					   sizeof(*atmel_pioctrl->pins),
+					   GFP_KERNEL);
 	if (!atmel_pioctrl->pins)
 		return -ENOMEM;
 
-	pin_desc = devm_kzalloc(dev, sizeof(*pin_desc)
-			* atmel_pioctrl->npins, GFP_KERNEL);
+	pin_desc = devm_kcalloc(dev, atmel_pioctrl->npins, sizeof(*pin_desc),
+				GFP_KERNEL);
 	if (!pin_desc)
 		return -ENOMEM;
 	atmel_pinctrl_desc.pins = pin_desc;
 	atmel_pinctrl_desc.npins = atmel_pioctrl->npins;
+	atmel_pinctrl_desc.num_custom_params = ARRAY_SIZE(atmel_custom_bindings);
+	atmel_pinctrl_desc.custom_params = atmel_custom_bindings;
 
 	/* One pin is one group since a pin can achieve all functions. */
-	group_names = devm_kzalloc(dev, sizeof(*group_names)
-			* atmel_pioctrl->npins, GFP_KERNEL);
+	group_names = devm_kcalloc(dev,
+				   atmel_pioctrl->npins, sizeof(*group_names),
+				   GFP_KERNEL);
 	if (!group_names)
 		return -ENOMEM;
 	atmel_pioctrl->group_names = group_names;
 
-	atmel_pioctrl->groups = devm_kzalloc(&pdev->dev,
-			sizeof(*atmel_pioctrl->groups) * atmel_pioctrl->npins,
+	atmel_pioctrl->groups = devm_kcalloc(&pdev->dev,
+			atmel_pioctrl->npins, sizeof(*atmel_pioctrl->groups),
 			GFP_KERNEL);
 	if (!atmel_pioctrl->groups)
 		return -ENOMEM;
@@ -981,8 +1029,10 @@ static int atmel_pinctrl_probe(struct platform_device *pdev)
 
 		pin_desc[i].number = i;
 		/* Pin naming convention: P(bank_name)(bank_pin_number). */
-		pin_desc[i].name = kasprintf(GFP_KERNEL, "P%c%d",
-					     bank + 'A', line);
+		pin_desc[i].name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "P%c%d",
+						  bank + 'A', line);
+		if (!pin_desc[i].name)
+			return -ENOMEM;
 
 		group->name = group_names[i] = pin_desc[i].name;
 		group->pin = pin_desc[i].number;
@@ -997,20 +1047,24 @@ static int atmel_pinctrl_probe(struct platform_device *pdev)
 	atmel_pioctrl->gpio_chip->parent = dev;
 	atmel_pioctrl->gpio_chip->names = atmel_pioctrl->group_names;
 
-	atmel_pioctrl->pm_wakeup_sources = devm_kzalloc(dev,
-			sizeof(*atmel_pioctrl->pm_wakeup_sources)
-			* atmel_pioctrl->nbanks, GFP_KERNEL);
+	atmel_pioctrl->pm_wakeup_sources = devm_kcalloc(dev,
+			atmel_pioctrl->nbanks,
+			sizeof(*atmel_pioctrl->pm_wakeup_sources),
+			GFP_KERNEL);
 	if (!atmel_pioctrl->pm_wakeup_sources)
 		return -ENOMEM;
 
-	atmel_pioctrl->pm_suspend_backup = devm_kzalloc(dev,
-			sizeof(*atmel_pioctrl->pm_suspend_backup)
-			* atmel_pioctrl->nbanks, GFP_KERNEL);
+	atmel_pioctrl->pm_suspend_backup = devm_kcalloc(dev,
+			atmel_pioctrl->nbanks,
+			sizeof(*atmel_pioctrl->pm_suspend_backup),
+			GFP_KERNEL);
 	if (!atmel_pioctrl->pm_suspend_backup)
 		return -ENOMEM;
 
-	atmel_pioctrl->irqs = devm_kzalloc(dev, sizeof(*atmel_pioctrl->irqs)
-			* atmel_pioctrl->nbanks, GFP_KERNEL);
+	atmel_pioctrl->irqs = devm_kcalloc(dev,
+					   atmel_pioctrl->nbanks,
+					   sizeof(*atmel_pioctrl->irqs),
+					   GFP_KERNEL);
 	if (!atmel_pioctrl->irqs)
 		return -ENOMEM;
 
@@ -1035,7 +1089,6 @@ static int atmel_pinctrl_probe(struct platform_device *pdev)
 		dev_err(dev, "can't add the irq domain\n");
 		return -ENODEV;
 	}
-	atmel_pioctrl->irq_domain->name = "atmel gpio";
 
 	for (i = 0; i < atmel_pioctrl->npins; i++) {
 		int irq = irq_create_mapping(atmel_pioctrl->irq_domain, i);
@@ -1043,6 +1096,7 @@ static int atmel_pinctrl_probe(struct platform_device *pdev)
 		irq_set_chip_and_handler(irq, &atmel_gpio_irq_chip,
 					 handle_simple_irq);
 		irq_set_chip_data(irq, atmel_pioctrl);
+		irq_set_lockdep_class(irq, &atmel_lock_key, &atmel_request_key);
 		dev_dbg(dev,
 			"atmel gpio irq domain: hwirq: %d, linux irq: %d\n",
 			i, irq);

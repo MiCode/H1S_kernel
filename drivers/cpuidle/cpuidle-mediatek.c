@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2019 MediaTek Inc.
+ * Copyright (c) 2014 MediaTek Inc.
  */
 
 
@@ -40,11 +40,6 @@ static int mtk_idle_state_enter(struct cpuidle_device *dev,
 
 	if (mtk_pwr_conservation) {
 		ret = mtk_pwr_conservation(MTK_CPUIDLE_PREPARE, drv, idx);
-		/* abort s2idle when fail */
-		if (ret < 0 && !strcmp(drv->states[idx].name, "s2idle")) {
-			mtk_pwr_conservation(MTK_CPUIDLE_RESUME, drv, idx);
-			return ret;
-		}
 		idx = ret ? 0 : idx;
 		ret = __mtk_lp_enter(idx);
 		mtk_pwr_conservation(MTK_CPUIDLE_RESUME, drv, idx);

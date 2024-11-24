@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _MTK_THERMAL_MONITOR_H
@@ -115,7 +107,7 @@ extern int mtk_thermal_get_temp(enum mtk_thermal_sensor_id id);
 extern struct proc_dir_entry *mtk_thermal_get_proc_drv_therm_dir_entry(void);
 
 /* This API function is implemented in mediatek/kernel/drivers/leds/leds.c */
-#if defined(CONFIG_LEDS_MTK_DISP) || defined(CONFIG_LEDS_MTK_PWM)
+#if defined(CONFIG_LEDS_MTK_DISP) || defined(CONFIG_LEDS_MTK_PWM) || defined(CONFIG_LEDS_MTK_I2C)
 extern int setMaxBrightness(char *name, int percent, bool enable);
 #else
 extern int setMaxbrightness(int max_level, int enable);

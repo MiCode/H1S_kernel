@@ -18,7 +18,7 @@
 #include <linux/freezer.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
-#include "dvbdev.h"
+#include <media/dvbdev.h>
 #include "pvrusb2-debug.h"
 #include "pvrusb2-hdw-internal.h"
 #include "pvrusb2-hdw.h"
@@ -97,8 +97,10 @@ static int pvr2_dvb_feed_thread(void *data)
 	return stat;
 }
 
-static void pvr2_dvb_notify(struct pvr2_dvb_adapter *adap)
+static void pvr2_dvb_notify(void *ptr)
 {
+	struct pvr2_dvb_adapter *adap = ptr;
+
 	wake_up(&adap->buffer_wait_data);
 }
 
@@ -158,7 +160,7 @@ static int pvr2_dvb_stream_do_start(struct pvr2_dvb_adapter *adap)
 	}
 
 	pvr2_stream_set_callback(pvr->video_stream.stream,
-				 (pvr2_stream_callback) pvr2_dvb_notify, adap);
+				 pvr2_dvb_notify, adap);
 
 	ret = pvr2_stream_set_buffer_count(stream, PVR2_DVB_BUFFER_COUNT);
 	if (ret < 0) return ret;

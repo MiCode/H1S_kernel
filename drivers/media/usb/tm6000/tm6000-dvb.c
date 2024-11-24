@@ -45,10 +45,10 @@ static inline void print_err_status(struct tm6000_core *dev,
 
 	switch (status) {
 	case -ENOENT:
-		errmsg = "unlinked synchronuously";
+		errmsg = "unlinked synchronously";
 		break;
 	case -ECONNRESET:
-		errmsg = "unlinked asynchronuously";
+		errmsg = "unlinked asynchronously";
 		break;
 	case -ENOSR:
 		errmsg = "Buffer error (overrun)";
@@ -124,7 +124,7 @@ static int tm6000_start_stream(struct tm6000_core *dev)
 	}
 
 	dvb->bulk_urb = usb_alloc_urb(0, GFP_KERNEL);
-	if (dvb->bulk_urb == NULL)
+	if (!dvb->bulk_urb)
 		return -ENOMEM;
 
 	pipe = usb_rcvbulkpipe(dev->udev, dev->bulk_in.endp->desc.bEndpointAddress
@@ -134,10 +134,9 @@ static int tm6000_start_stream(struct tm6000_core *dev)
 	size = size * 15; /* 512 x 8 or 12 or 15 */
 
 	dvb->bulk_urb->transfer_buffer = kzalloc(size, GFP_KERNEL);
-	if (dvb->bulk_urb->transfer_buffer == NULL) {
+	if (!dvb->bulk_urb->transfer_buffer) {
 		usb_free_urb(dvb->bulk_urb);
 		dvb->bulk_urb = NULL;
-		printk(KERN_ERR "tm6000: couldn't allocate transfer buffer!\n");
 		return -ENOMEM;
 	}
 
@@ -150,6 +149,10 @@ static int tm6000_start_stream(struct tm6000_core *dev)
 	if (ret < 0) {
 		printk(KERN_ERR "tm6000: error %i in %s during pipe reset\n",
 							ret, __func__);
+
+		kfree(dvb->bulk_urb->transfer_buffer);
+		usb_free_urb(dvb->bulk_urb);
+		dvb->bulk_urb = NULL;
 		return ret;
 	} else
 		printk(KERN_ERR "tm6000: pipe resetted\n");
@@ -369,7 +372,7 @@ static void unregister_dvb(struct tm6000_core *dev)
 {
 	struct tm6000_dvb *dvb = dev->dvb;
 
-	if (dvb->bulk_urb != NULL) {
+	if (dvb->bulk_urb) {
 		struct urb *bulk_urb = dvb->bulk_urb;
 
 		kfree(bulk_urb->transfer_buffer);
@@ -408,10 +411,8 @@ static int dvb_init(struct tm6000_core *dev)
 	}
 
 	dvb = kzalloc(sizeof(struct tm6000_dvb), GFP_KERNEL);
-	if (!dvb) {
-		printk(KERN_INFO "Cannot allocate memory\n");
+	if (!dvb)
 		return -ENOMEM;
-	}
 
 	dev->dvb = dvb;
 

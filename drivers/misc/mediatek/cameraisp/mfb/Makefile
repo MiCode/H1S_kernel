@@ -40,6 +40,10 @@ ifeq ($(CONFIG_MACH_MT6785),y)
   obj-$(CONFIG_MTK_CAMERA_ISP_MFB_SUPPORT) += isp_50/camera_mfb.o
 endif
 
+ifeq ($(CONFIG_MACH_MT6779),y)
+  obj-$(CONFIG_MTK_CAMERA_ISP_MFB_SUPPORT) += mt6779/camera_mfb.o
+endif
+
 ifeq ($(CONFIG_MACH_MT6885),y)
   obj-$(CONFIG_MTK_CAMERA_ISP_MFB_SUPPORT) += isp_6s/engine_request.o
   obj-$(CONFIG_MTK_CAMERA_ISP_MFB_SUPPORT) += isp_6s/camera_mfb.o
@@ -65,6 +69,18 @@ ifeq ($(CONFIG_MACH_MT6893),y)
 endif
 
 ifeq ($(CONFIG_MACH_MT6833),y)
+  obj-$(CONFIG_MTK_CAMERA_ISP_MFB_SUPPORT) += isp_6s/engine_request.o
+  obj-$(CONFIG_MTK_CAMERA_ISP_MFB_SUPPORT) += isp_6s/camera_mfb.o
+  MTK_MFB_REG_VERSION := 3
+endif
+
+ifeq ($(CONFIG_MACH_MT6877),y)
+  obj-$(CONFIG_MTK_CAMERA_ISP_MFB_SUPPORT) += isp_6s/engine_request.o
+  obj-$(CONFIG_MTK_CAMERA_ISP_MFB_SUPPORT) += isp_6s/camera_mfb.o
+  MTK_MFB_REG_VERSION := 3
+endif
+
+ifeq ($(CONFIG_MACH_MT6781),y)
   obj-$(CONFIG_MTK_CAMERA_ISP_MFB_SUPPORT) += isp_6s/engine_request.o
   obj-$(CONFIG_MTK_CAMERA_ISP_MFB_SUPPORT) += isp_6s/camera_mfb.o
   MTK_MFB_REG_VERSION := 3

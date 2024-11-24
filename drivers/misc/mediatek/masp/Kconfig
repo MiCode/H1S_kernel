@@ -19,7 +19,6 @@ config MTK_SEC_MODEM_NVRAM_ANTI_CLONE
 
 config MTK_AVB20_SUPPORT
 	bool "Android Verified Boot 2.0 Support"
-	default y
 	help
 	  This option is used to enable AVB2.0, which stands for Android
 	  Verified Boot 2.0. When enabled, linux kernel sets up dm-verity

@@ -472,6 +472,7 @@ static int atp_status_check(struct urb *urb)
 				dev->info->datalen, dev->urb->actual_length);
 			dev->overflow_warned = true;
 		}
+		/* fall through */
 	case -ECONNRESET:
 	case -ENOENT:
 	case -ESHUTDOWN:
@@ -587,7 +588,7 @@ static void atp_complete_geyser_1_2(struct urb *urb)
 		/* Perform size detection, if not done already */
 		if (unlikely(!dev->size_detect_done)) {
 			atp_detect_size(dev);
-			dev->size_detect_done = 1;
+			dev->size_detect_done = true;
 			goto exit;
 		}
 	}
@@ -810,10 +811,10 @@ static int atp_open(struct input_dev *input)
 {
 	struct atp *dev = input_get_drvdata(input);
 
-	if (usb_submit_urb(dev->urb, GFP_ATOMIC))
+	if (usb_submit_urb(dev->urb, GFP_KERNEL))
 		return -EIO;
 
-	dev->open = 1;
+	dev->open = true;
 	return 0;
 }
 
@@ -823,7 +824,7 @@ static void atp_close(struct input_dev *input)
 
 	usb_kill_urb(dev->urb);
 	cancel_work_sync(&dev->work);
-	dev->open = 0;
+	dev->open = false;
 }
 
 static int atp_handle_geyser(struct atp *dev)
@@ -929,14 +930,14 @@ static int atp_probe(struct usb_interface *iface,
 	set_bit(BTN_TOOL_TRIPLETAP, input_dev->keybit);
 	set_bit(BTN_LEFT, input_dev->keybit);
 
+	INIT_WORK(&dev->work, atp_reinit);
+
 	error = input_register_device(dev->input);
 	if (error)
 		goto err_free_buffer;
 
 	/* save our data pointer in this interface device */
 	usb_set_intfdata(iface, dev);
-
-	INIT_WORK(&dev->work, atp_reinit);
 
 	return 0;
 
@@ -976,7 +977,7 @@ static int atp_recover(struct atp *dev)
 	if (error)
 		return error;
 
-	if (dev->open && usb_submit_urb(dev->urb, GFP_ATOMIC))
+	if (dev->open && usb_submit_urb(dev->urb, GFP_KERNEL))
 		return -EIO;
 
 	return 0;
@@ -994,7 +995,7 @@ static int atp_resume(struct usb_interface *iface)
 {
 	struct atp *dev = usb_get_intfdata(iface);
 
-	if (dev->open && usb_submit_urb(dev->urb, GFP_ATOMIC))
+	if (dev->open && usb_submit_urb(dev->urb, GFP_KERNEL))
 		return -EIO;
 
 	return 0;

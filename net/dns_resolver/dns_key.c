@@ -25,7 +25,6 @@
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/ratelimit.h>
 #include <linux/kernel.h>
 #include <linux/keyctl.h>
 #include <linux/err.h>
@@ -39,7 +38,7 @@ MODULE_AUTHOR("Wang Lei");
 MODULE_LICENSE("GPL");
 
 unsigned int dns_resolver_debug;
-module_param_named(debug, dns_resolver_debug, uint, S_IWUSR | S_IRUGO);
+module_param_named(debug, dns_resolver_debug, uint, 0644);
 MODULE_PARM_DESC(debug, "DNS Resolver debugging mask");
 
 const struct cred *dns_resolver_cache;
@@ -321,4 +320,3 @@ static void __exit exit_dns_resolver(void)
 module_init(init_dns_resolver)
 module_exit(exit_dns_resolver)
 MODULE_LICENSE("GPL");
-

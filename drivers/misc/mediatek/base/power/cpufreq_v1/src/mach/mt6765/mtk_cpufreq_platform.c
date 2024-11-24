@@ -1,19 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/regulator/consumer.h>
+#include <linux/nvmem-consumer.h>
 
 #include <mt-plat/mtk_devinfo.h>
 #ifdef CONFIG_MTK_FREQ_HOPPING
@@ -26,6 +19,7 @@
 
 #include "mtk_cpufreq_platform.h"
 #include "../../mtk_cpufreq_hybrid.h"
+#include <linux/of_platform.h>
 
 static struct regulator *regulator_proc1;
 static struct regulator *regulator_sram1;
@@ -33,7 +27,7 @@ static struct regulator *regulator_sram1;
 static unsigned long apmixed_base	= 0x1000c000;
 static unsigned long mcucfg_base	= 0x10200000;
 
-#define APMIXED_NODE		"mediatek,apmixed"
+#define APMIXED_NODE		"mediatek,mt6765-apmixedsys"
 #define MCUCFG_NODE		"mediatek,mcucfg"
 
 #define ARMPLL_LL_CON1    (apmixed_base + 0x210) /* ARMPLL */
@@ -216,6 +210,8 @@ void prepare_pll_addr(enum mt_cpu_dvfs_pll_id pll_id)
 {
 	struct pll_ctrl_t *pll_p = id_to_pll_ctrl(pll_id);
 
+	if (pll_p == NULL)
+		return;
 	pll_p->armpll_addr =
 	(unsigned int *)(pll_id == PLL_L_CLUSTER ? ARMPLL_L_CON1 :
 	pll_id == PLL_LL_CLUSTER ? ARMPLL_LL_CON1 : CCIPLL_CON1);
@@ -394,6 +390,7 @@ unsigned int get_cur_phy_freq(struct pll_ctrl_t *pll_p)
 	unsigned int ckdiv1;
 	unsigned int cur_khz;
 
+
 	con1 = cpufreq_read(pll_p->armpll_addr);
 	ckdiv1 = cpufreq_read(pll_p->armpll_div_addr);
 	ckdiv1 = _GET_BITS_VAL_(21:17, ckdiv1);
@@ -475,7 +472,7 @@ struct pll_ctrl_t pll_ctrl[NR_MT_PLL] = {
 };
 
 /* Always put action cpu at last */
-struct hp_action_tbl cpu_dvfs_hp_action[] = {
+struct hp_action_tbl cpu_dvfs_hp_action[4] = {
 	{
 		.action		= CPUFREQ_CPU_DOWN_PREPARE,
 		.cluster	= MT_CPU_DVFS_L,
@@ -491,14 +488,14 @@ struct hp_action_tbl cpu_dvfs_hp_action[] = {
 	},
 
 	{
-		.action		= CPUFREQ_CPU_DOWN_PREPARE | CPU_TASKS_FROZEN,
+		.action		= CPUFREQ_CPU_DOWN_PREPARE,
 		.cluster	= MT_CPU_DVFS_L,
 		.trigged_core	= 1,
 		.hp_action_cfg[MT_CPU_DVFS_L].action_id = FREQ_LOW,
 	},
 
 	{
-		.action		= CPUFREQ_CPU_DOWN_PREPARE | CPU_TASKS_FROZEN,
+		.action		= CPUFREQ_CPU_DOWN_PREPARE,
 		.cluster	= MT_CPU_DVFS_LL,
 		.trigged_core	= 1,
 		.hp_action_cfg[MT_CPU_DVFS_LL].action_id = FREQ_LOW,
@@ -560,32 +557,152 @@ int mt_cpufreq_dts_map(void)
 unsigned int _mt_cpufreq_get_cpu_level(void)
 {
 	unsigned int lv = CPU_LEVEL_3;
-	int val = get_devinfo_with_index(30);
-	int val_ly = (get_devinfo_with_index(132) >> 1) & 0x1;
+	unsigned int efuse_seg;
+	unsigned int efuse_ly;
+	struct platform_device *pdev;
+	struct device_node *node;
+	struct nvmem_cell *efuse_cell;
+	struct nvmem_device *nvmem_dev;
+	size_t efuse_len;
+	unsigned int *efuse_buf;
+	unsigned int *efuse_ly_buf;
+	int val = 0;
+	int val_ly = 0;
+	unsigned int fabinfo2;
+	unsigned int tmp;
 
-#if 1
+	node = of_find_compatible_node(NULL, NULL, "mediatek,mt6765-dvfsp");
+
+	if (!node) {
+		tag_pr_info("%s fail to get device node\n", __func__);
+		return 0;
+	}
+	pdev = of_device_alloc(node, NULL, NULL);
+	if (!pdev) {
+		tag_pr_info("%s fail to create device node\n", __func__);
+		return 0;
+	}
+	efuse_cell = nvmem_cell_get(&pdev->dev, "efuse_segment_cell");
+	if (IS_ERR(efuse_cell)) {
+		tag_pr_info("@%s: cannot get efuse_cell, errno %ld\n",
+			__func__, PTR_ERR(efuse_cell));
+		return 0;
+	}
+
+	efuse_buf = (unsigned int *)nvmem_cell_read(efuse_cell, &efuse_len);
+	nvmem_cell_put(efuse_cell);
+	efuse_seg = *efuse_buf;
+	val = efuse_seg;
+	kfree(efuse_buf);
+
+	/* get efuse ly */
+	efuse_cell = nvmem_cell_get(&pdev->dev, "efuse_ly_cell");
+	if (IS_ERR(efuse_cell)) {
+		tag_pr_info("@%s: cannot get efuse_ly_cell, errno %ld\n",
+			__func__, PTR_ERR(efuse_cell));
+		return 0;
+	}
+
+	efuse_ly_buf = (unsigned int *)nvmem_cell_read(efuse_cell, &efuse_len);
+	nvmem_cell_put(efuse_cell);
+	efuse_ly = *efuse_ly_buf;
+	val_ly = (efuse_ly >> 1) & 0x1;
+	kfree(efuse_ly_buf);
+
+/* Volt Yield change for 65OD */
+	nvmem_dev = nvmem_device_get(&pdev->dev, "mtk_efuse");
+
+	if (IS_ERR(nvmem_dev)) {
+		tag_pr_info("%s CPU DVFS failed to get mtk_efuse device\n",
+				__func__);
+		return 0;
+	}
+
+	nvmem_device_read(nvmem_dev, EX_DEV_OFF_FAB2, sizeof(__u32), &tmp);
+	fabinfo2 = (tmp >> 3) & 0x1;
+	nvmem_device_put(nvmem_dev);
+/* Volt Yield change End */
+
 	if ((val == 0x2) || (val == 0x5))
 		lv = CPU_LEVEL_2;
 	else if ((val == 0x4) || (val == 0x3))
 		lv = CPU_LEVEL_3;
-	else if ((val == 0x1) || (val == 0x7))
+	else if ((val == 0x1) || (val == 0x7) || (val == 0x19))
 		lv = CPU_LEVEL_4;
 	else if ((val == 0x8) || (val == 0x9) || (val == 0xF))
 		lv = CPU_LEVEL_4;
+	else if (val == 0x14)
+		lv = CPU_LEVEL_6;
+	else if (val == 0x20)
+		lv = CPU_LEVEL_7;
+	else if (val == 0x24)
+		lv = CPU_LEVEL_10;
 	else
 		lv = CPU_LEVEL_3;
 
-	if (val_ly == 0x1)
-		lv = CPU_LEVEL_5;
-#else
-	lv = CPU_LEVEL_3;
-#endif
+	if (val_ly == 0x1) {
+		if (val == 0x20)
+			lv = CPU_LEVEL_8;
+		else
+			lv = CPU_LEVEL_5;
+	}
+
+	/* for improve yield MT6765OD */
+	if ((val == 0x3) || (val == 0x4) || (val == 0x12)) {
+		if (fabinfo2 == 1) {
+			lv = CPU_LEVEL_9;
+			tag_pr_info("%s CPU DVFS fabinfo2 is true for 65OD, lv=%d\n",
+				__func__, lv);
+		}
+	}
 
 	turbo_flag = 0;
 	tag_pr_info("%d,%d,%d,%d,%d,%d,%d,%d\n",
 		lv, turbo_flag, val, val_ly,
 		UP_VPROC_ST, DOWN_VPROC_ST,
 		UP_VSRAM_ST, DOWN_VSRAM_ST);
+	/* free pdev */
+	if (pdev != NULL) {
+		of_platform_device_destroy(&pdev->dev, NULL);
+		of_dev_put(pdev);
+	}
 
 	return lv;
+}
+
+unsigned int cpufreq_get_nr_clusters(void)
+{
+	return (NR_MT_CPU_DVFS - 1);
+}
+
+void cpufreq_get_cluster_cpus(struct cpumask *cpu_mask, unsigned int cid)
+{
+	if (cid == 0) {
+		cpumask_setall(cpu_mask);
+		cpumask_clear_cpu(4, cpu_mask);
+		cpumask_clear_cpu(5, cpu_mask);
+		cpumask_clear_cpu(6, cpu_mask);
+		cpumask_clear_cpu(7, cpu_mask);
+	} else if (cid == 1) {
+		cpumask_clear(cpu_mask);
+		cpumask_set_cpu(4, cpu_mask);
+		cpumask_set_cpu(5, cpu_mask);
+		cpumask_set_cpu(6, cpu_mask);
+		cpumask_set_cpu(7, cpu_mask);
+	}
+
+}
+
+unsigned int cpufreq_get_cluster_id(unsigned int cpu_id)
+{
+	struct cpumask cpu_mask;
+	unsigned int i;
+
+	for (i = 0; i < NR_MT_CPU_DVFS - 1; i++) {
+		cpufreq_get_cluster_cpus(&cpu_mask, i);
+		if (cpumask_test_cpu(cpu_id, &cpu_mask))
+			return i;
+	}
+
+	return 0;
 }

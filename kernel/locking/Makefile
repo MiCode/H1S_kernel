@@ -15,17 +15,14 @@ CFLAGS_REMOVE_rtmutex-debug.o = $(CC_FLAGS_FTRACE)
 endif
 
 ifeq ($(CONFIG_PROVE_LOCKING),y)
-ccflags-y += -DMTK_LOCK_DEBUG_NEW_DEPENDENCY
+#ccflags-y += -DMTK_LOCK_DEBUG_NEW_DEPENDENCY
 endif
 
 ifeq ($(CONFIG_DEBUG_LOCK_ALLOC),y)
 ifneq (y, $(filter y, $(CONFIG_KASAN) $(CONFIG_UBSAN)))
 ccflags-y += -DMTK_LOCK_MONITOR
+ccflags-y += -DMTK_LOCK_DEBUG_HELD_LOCK
 endif
-endif
-
-ifeq ($(CONFIG_LOCKDEP),y)
-ccflags-y += -DMTK_ENHANCE_LOCKDEP_PROC
 endif
 
 ifeq ($(CONFIG_DEBUG_SPINLOCK),y)

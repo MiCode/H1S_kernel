@@ -1,8 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * mtk-sp-pcm-ops.h  --  Mediatek Smart Phone PCM Operation
- *
- * Copyright (c) 2017 MediaTek Inc.
+ * Copyright (c) 2019 MediaTek Inc.
  * Author: Kai Chieh Chuang <kaichieh.chuang@mediatek.com>
  */
 

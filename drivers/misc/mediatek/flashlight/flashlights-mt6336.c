@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": %s: " fmt, __func__
@@ -105,19 +97,6 @@ static int mt6336_is_torch(int level)
 
 	return 0;
 }
-
-#if 0
-static int mt6336_is_torch_by_timeout(int timeout)
-{
-	if (!timeout)
-		return 0;
-
-	if (timeout >= MT6336_WDT_TIMEOUT)
-		return 0;
-
-	return -1;
-}
-#endif
 
 static int mt6336_verify_level(int level)
 {
@@ -318,20 +297,11 @@ static int mt6336_enable(void)
 			mt6336_set_flag_register_value(
 					MT6336_RG_EN_LEDCS, 0x01);
 
-#if 1
 			/* enable flash and apply previous buck setting */
 			mt6336_set_flag_register_value(MT6336_RG_EN_BUCK,
 					buck_enable_status);
 			mt6336_set_flag_register_value(MT6336_RG_EN_FLASH,
 					0x01);
-#else
-			/* Enable flash and enable charger here for robust.
-			 *
-			 * When flash mode and charging mode are both enable,
-			 * flash will get first priority in chip.
-			 */
-			mt6336_set_register_value(0x0400, 0x13);
-#endif
 		} else {
 			/*  failed in OTG mode */
 			pr_info("Failed to turn on flash mode since in OTG mode.\n");
@@ -434,7 +404,7 @@ static int mt6336_set_level(int channel, int level)
 	else if (channel == MT6336_CHANNEL_CH2)
 		mt6336_set_level_ch2(level);
 	else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -559,7 +529,7 @@ static int mt6336_timer_start(int channel, ktime_t ktime)
 	else if (channel == MT6336_CHANNEL_CH2)
 		hrtimer_start(&mt6336_timer_ch2, ktime, HRTIMER_MODE_REL);
 	else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -573,7 +543,7 @@ static int mt6336_timer_cancel(int channel)
 	else if (channel == MT6336_CHANNEL_CH2)
 		hrtimer_cancel(&mt6336_timer_ch2);
 	else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -601,7 +571,7 @@ static int mt6336_operate(int channel, int enable)
 			if (mt6336_is_torch(mt6336_level_ch2))
 				mt6336_en_ch2 = MT6336_ENABLE_FLASH;
 	} else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -661,7 +631,7 @@ static int mt6336_ioctl(unsigned int cmd, unsigned long arg)
 
 	/* verify channel */
 	if (channel < 0 || channel >= MT6336_CHANNEL_NUM) {
-		pr_err("Failed with error channel\n");
+		pr_info("Failed with error channel\n");
 		return -EINVAL;
 	}
 
@@ -986,14 +956,14 @@ static int __init flashlight_mt6336_init(void)
 #ifndef CONFIG_OF
 	ret = platform_device_register(&mt6336_platform_device);
 	if (ret) {
-		pr_err("Failed to register platform device\n");
+		pr_info("Failed to register platform device\n");
 		return ret;
 	}
 #endif
 
 	ret = platform_driver_register(&mt6336_platform_driver);
 	if (ret) {
-		pr_err("Failed to register platform driver\n");
+		pr_info("Failed to register platform driver\n");
 		return ret;
 	}
 

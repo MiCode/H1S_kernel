@@ -44,11 +44,20 @@
 
 #include <linux/highmem.h>
 #include <asm/cacheflush.h>
+#include <asm/cputype.h>
+#include <asm/kvm_hyp.h>
 #include <asm/pgalloc.h>
 #include <asm/stage2_pgtable.h>
 
+/* Ensure compatibility with arm64 */
+#define VA_BITS			32
+
 int create_hyp_mappings(void *from, void *to, pgprot_t prot);
-int create_hyp_io_mappings(void *from, void *to, phys_addr_t);
+int create_hyp_io_mappings(phys_addr_t phys_addr, size_t size,
+			   void __iomem **kaddr,
+			   void __iomem **haddr);
+int create_hyp_exec_mappings(phys_addr_t phys_addr, size_t size,
+			     void **haddr);
 void free_hyp_pgds(void);
 
 void stage2_unmap_vm(struct kvm *kvm);
@@ -66,17 +75,9 @@ phys_addr_t kvm_get_idmap_vector(void);
 int kvm_mmu_init(void);
 void kvm_clear_hyp_idmap(void);
 
-static inline void kvm_set_pmd(pmd_t *pmd, pmd_t new_pmd)
-{
-	*pmd = new_pmd;
-	dsb(ishst);
-}
-
-static inline void kvm_set_pte(pte_t *pte, pte_t new_pte)
-{
-	*pte = new_pte;
-	dsb(ishst);
-}
+#define kvm_mk_pmd(ptep)	__pmd(__pa(ptep) | PMD_TYPE_TABLE)
+#define kvm_mk_pud(pmdp)	__pud(__pa(pmdp) | PMD_TYPE_TABLE)
+#define kvm_mk_pgd(pudp)	({ BUILD_BUG(); 0; })
 
 static inline pte_t kvm_s2pte_mkwrite(pte_t pte)
 {
@@ -90,6 +91,18 @@ static inline pmd_t kvm_s2pmd_mkwrite(pmd_t pmd)
 	return pmd;
 }
 
+static inline pte_t kvm_s2pte_mkexec(pte_t pte)
+{
+	pte_val(pte) &= ~L_PTE_XN;
+	return pte;
+}
+
+static inline pmd_t kvm_s2pmd_mkexec(pmd_t pmd)
+{
+	pmd_val(pmd) &= ~PMD_SECT_XN;
+	return pmd;
+}
+
 static inline void kvm_set_s2pte_readonly(pte_t *pte)
 {
 	pte_val(*pte) = (pte_val(*pte) & ~L_PTE_S2_RDWR) | L_PTE_S2_RDONLY;
@@ -100,6 +113,11 @@ static inline bool kvm_s2pte_readonly(pte_t *pte)
 	return (pte_val(*pte) & L_PTE_S2_RDWR) == L_PTE_S2_RDONLY;
 }
 
+static inline bool kvm_s2pte_exec(pte_t *pte)
+{
+	return !(pte_val(*pte) & L_PTE_XN);
+}
+
 static inline void kvm_set_s2pmd_readonly(pmd_t *pmd)
 {
 	pmd_val(*pmd) = (pmd_val(*pmd) & ~L_PMD_S2_RDWR) | L_PMD_S2_RDONLY;
@@ -108,6 +126,11 @@ static inline void kvm_set_s2pmd_readonly(pmd_t *pmd)
 static inline bool kvm_s2pmd_readonly(pmd_t *pmd)
 {
 	return (pmd_val(*pmd) & L_PMD_S2_RDWR) == L_PMD_S2_RDONLY;
+}
+
+static inline bool kvm_s2pmd_exec(pmd_t *pmd)
+{
+	return !(pmd_val(*pmd) & PMD_SECT_XN);
 }
 
 static inline bool kvm_page_empty(void *ptr)
@@ -133,21 +156,10 @@ static inline bool vcpu_has_cache_enabled(struct kvm_vcpu *vcpu)
 	return (vcpu_cp15(vcpu, c1_SCTLR) & 0b101) == 0b101;
 }
 
-static inline void __coherent_cache_guest_page(struct kvm_vcpu *vcpu,
-					       kvm_pfn_t pfn,
-					       unsigned long size)
+static inline void __clean_dcache_guest_page(kvm_pfn_t pfn, unsigned long size)
 {
 	/*
-	 * If we are going to insert an instruction page and the icache is
-	 * either VIPT or PIPT, there is a potential problem where the host
-	 * (or another VM) may have used the same page as this guest, and we
-	 * read incorrect data from the icache.  If we're using a PIPT cache,
-	 * we can invalidate just that page, but if we are using a VIPT cache
-	 * we need to invalidate the entire icache - damn shame - as written
-	 * in the ARM ARM (DDI 0406C.b - Page B3-1393).
-	 *
-	 * VIVT caches are tagged using both the ASID and the VMID and doesn't
-	 * need any kind of flushing (DDI 0406C.b - Page B3-1392).
+	 * Clean the dcache to the Point of Coherency.
 	 *
 	 * We need to do this through a kernel mapping (using the
 	 * user-space mapping has proved to be the wrong
@@ -162,9 +174,63 @@ static inline void __coherent_cache_guest_page(struct kvm_vcpu *vcpu,
 
 		kvm_flush_dcache_to_poc(va, PAGE_SIZE);
 
-		if (icache_is_pipt())
-			__cpuc_coherent_user_range((unsigned long)va,
-						   (unsigned long)va + PAGE_SIZE);
+		size -= PAGE_SIZE;
+		pfn++;
+
+		kunmap_atomic(va);
+	}
+}
+
+static inline void __invalidate_icache_guest_page(kvm_pfn_t pfn,
+						  unsigned long size)
+{
+	u32 iclsz;
+
+	/*
+	 * If we are going to insert an instruction page and the icache is
+	 * either VIPT or PIPT, there is a potential problem where the host
+	 * (or another VM) may have used the same page as this guest, and we
+	 * read incorrect data from the icache.  If we're using a PIPT cache,
+	 * we can invalidate just that page, but if we are using a VIPT cache
+	 * we need to invalidate the entire icache - damn shame - as written
+	 * in the ARM ARM (DDI 0406C.b - Page B3-1393).
+	 *
+	 * VIVT caches are tagged using both the ASID and the VMID and doesn't
+	 * need any kind of flushing (DDI 0406C.b - Page B3-1392).
+	 */
+
+	VM_BUG_ON(size & ~PAGE_MASK);
+
+	if (icache_is_vivt_asid_tagged())
+		return;
+
+	if (!icache_is_pipt()) {
+		/* any kind of VIPT cache */
+		__flush_icache_all();
+		return;
+	}
+
+	/*
+	 * CTR IminLine contains Log2 of the number of words in the
+	 * cache line, so we can get the number of words as
+	 * 2 << (IminLine - 1).  To get the number of bytes, we
+	 * multiply by 4 (the number of bytes in a 32-bit word), and
+	 * get 4 << (IminLine).
+	 */
+	iclsz = 4 << (read_cpuid(CPUID_CACHETYPE) & 0xf);
+
+	while (size) {
+		void *va = kmap_atomic_pfn(pfn);
+		void *end = va + PAGE_SIZE;
+		void *addr = va;
+
+		do {
+			write_sysreg(addr, ICIMVAU);
+			addr += iclsz;
+		} while (addr < end);
+
+		dsb(ishst);
+		isb();
 
 		size -= PAGE_SIZE;
 		pfn++;
@@ -172,9 +238,11 @@ static inline void __coherent_cache_guest_page(struct kvm_vcpu *vcpu,
 		kunmap_atomic(va);
 	}
 
-	if (!icache_is_pipt() && !icache_is_vivt_asid_tagged()) {
-		/* any kind of VIPT cache */
-		__flush_icache_all();
+	/* Check if we need to invalidate the BTB */
+	if ((read_cpuid_ext(CPUID_EXT_MMFR1) >> 28) != 4) {
+		write_sysreg(0, BPIALLIS);
+		dsb(ishst);
+		isb();
 	}
 }
 
@@ -218,6 +286,11 @@ static inline bool __kvm_cpu_uses_extended_idmap(void)
 	return false;
 }
 
+static inline unsigned long __kvm_idmap_ptrs_per_pgd(void)
+{
+	return PTRS_PER_PGD;
+}
+
 static inline void __kvm_extend_hypmap(pgd_t *boot_hyp_pgd,
 				       pgd_t *hyp_pgd,
 				       pgd_t *merged_hyp_pgd,
@@ -238,6 +311,17 @@ static inline int kvm_read_guest_lock(struct kvm *kvm,
 {
 	int srcu_idx = srcu_read_lock(&kvm->srcu);
 	int ret = kvm_read_guest(kvm, gpa, data, len);
+
+	srcu_read_unlock(&kvm->srcu, srcu_idx);
+
+	return ret;
+}
+
+static inline int kvm_write_guest_lock(struct kvm *kvm, gpa_t gpa,
+				       const void *data, unsigned long len)
+{
+	int srcu_idx = srcu_read_lock(&kvm->srcu);
+	int ret = kvm_write_guest(kvm, gpa, data, len);
 
 	srcu_read_unlock(&kvm->srcu, srcu_idx);
 
@@ -279,6 +363,8 @@ static inline int hyp_map_aux_data(void)
 {
 	return 0;
 }
+
+#define kvm_phys_to_vttbr(addr)		(addr)
 
 #endif	/* !__ASSEMBLY__ */
 

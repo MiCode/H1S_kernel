@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "ddp_m4u.h"
@@ -21,9 +13,7 @@
 #include <ion_priv.h>
 #ifdef CONFIG_MTK_IOMMU_V2
 #include "mach/mt_iommu.h"
-#include "mach/pseudo_m4u.h"
 #include <soc/mediatek/smi.h>
-#include "mtk_iommu_ext.h"
 #elif defined(CONFIG_MTK_M4U)
 #include "m4u.h"
 #endif
@@ -48,7 +38,7 @@ int module_to_m4u_port(enum DISP_MODULE_ENUM module)
 		if (module_to_m4u_port_mapping[i].module == module)
 			return module_to_m4u_port_mapping[i].port;
 
-	DDPERR("%s: get m4u port fail(module=%d)\n", __func__, module);
+	DDPERR("module_to_m4u_port, get m4u port fail(module=%d)\n", module);
 	return M4U_PORT_UNKNOWN;
 }
 
@@ -72,7 +62,7 @@ enum DISP_MODULE_ENUM m4u_port_to_module(int port)
 		if (module_to_m4u_port_mapping[i].port == port)
 			return module_to_m4u_port_mapping[i].module;
 
-	DDPERR("%s: unknown port=%d\n", __func__, port);
+	DDPERR("m4u_port_to_module, unknown port=%d\n", port);
 	return DISP_MODULE_UNKNOWN;
 }
 
@@ -107,8 +97,14 @@ void disp_m4u_init(void)
 int config_display_m4u_port(void)
 {
 	int ret = 0;
-#if defined(CONFIG_MTK_IOMMU_V2) || defined(CONFIG_MTK_M4U)
-	struct M4U_PORT_STRUCT sPort;
+#ifdef CONFIG_MTK_IOMMU_V2
+	/* if you config to pa mode, please contact iommu owner */
+	/*
+	 * struct device *disp_larbdev = NULL;
+	 * ret = mtk_smi_larb_get_ext(disp_larbdev);
+	 */
+#elif defined(CONFIG_MTK_M4U)
+	struct m4u_port_config_struct sPort;
 	unsigned int i;
 	enum DISP_MODULE_ENUM module;
 	char *m4u_usage = disp_helper_get_option(DISP_OPT_USE_M4U) ?
@@ -149,20 +145,23 @@ int disp_m4u_callback(int port, unsigned long mva, void *data)
 int disp_mva_map_kernel(enum DISP_MODULE_ENUM module, unsigned int mva,
 	unsigned int size, unsigned long *map_va, unsigned int *map_size)
 {
-	int ret = 0;
 #ifdef CONFIG_MTK_IOMMU_V2
 	struct disp_iommu_device *disp_dev = disp_get_iommu_dev();
 
 	if ((disp_dev != NULL) && (disp_dev->iommu_pdev != NULL))
-		ret = mtk_iommu_iova_to_va(&(disp_dev->iommu_pdev->dev),
+		mtk_iommu_iova_to_va(&(disp_dev->iommu_pdev->dev),
 					      mva, map_va, size);
 	else
-		pr_info("%s, %d, disp_dev is null\n", __func__, __LINE__);
+		pr_info("disp_mva_map_kernel is null\n");
 #elif defined(CONFIG_MTK_M4U)
-	ret = m4u_mva_map_kernel(mva, size, map_va, map_size);
+	if (m4u_mva_map_kernel(mva, size, map_va, map_size) != 0) {
+		DDPERR("error to map kernel va: mva=0x%x, size=%d\n",
+			mva, size);
+		return -1;
+	}
 #endif
 
-	return ret;
+	return 0;
 }
 
 int disp_mva_unmap_kernel(unsigned int mva, unsigned int size,
@@ -212,47 +211,27 @@ struct ion_handle *disp_ion_alloc(struct ion_client *client,
 }
 
 int disp_ion_get_mva(struct ion_client *client, struct ion_handle *handle,
-	unsigned long *mva, unsigned long fixed_mva, int port)
+		     unsigned long *mva, int port)
 {
 #if defined(MTK_FB_ION_SUPPORT)
 	struct ion_mm_data mm_data;
-	//struct ion_sys_data sys_data;
-	ion_phys_addr_t phy_addr;
-	size_t mva_size;
-	size_t len;
 
 	memset((void *)&mm_data, 0, sizeof(struct ion_mm_data));
-	mm_data.config_buffer_param.module_id = port;
-	mm_data.config_buffer_param.kernel_handle = handle;
-	if (fixed_mva > 0) {
-		mm_data.mm_cmd = ION_MM_CONFIG_BUFFER_EXT;
-		mm_data.config_buffer_param.reserve_iova_start = fixed_mva;
-		mm_data.config_buffer_param.reserve_iova_end = fixed_mva;
-	} else {
-		mm_data.mm_cmd = ION_MM_CONFIG_BUFFER;
-	}
+	mm_data.mm_cmd = ION_MM_GET_IOVA;
+	mm_data.get_phys_param.module_id = port;
+	mm_data.get_phys_param.kernel_handle = handle;
 	if (ion_kernel_ioctl(client, ION_CMD_MULTIMEDIA,
 		(unsigned long)&mm_data) < 0) {
+
 		DISPERR("disp_ion_get_mva: config buffer failed.%p -%p\n",
 			client, handle);
 		ion_free(client, handle);
 		return -1;
 	}
 
-	if (fixed_mva == 0) {
-		ion_phys(client, handle,
-			(ion_phys_addr_t *)mva, &mva_size);
-	} else {
-		phy_addr = (port << 24) | ION_FLAG_GET_FIXED_PHYS;
-		len = ION_FLAG_GET_FIXED_PHYS;
-		ion_phys(client, handle,
-			&phy_addr, &len);
-		*mva = phy_addr;
-		mva_size = len;
-	}
-	if (*mva == 0)
-		DDPERR("alloc mmu addr hnd=0x%p,mva=0x%08lx\n",
-			handle, *mva);
+	*mva = (unsigned int)mm_data.get_phys_param.phy_addr;
+	DDPDBG("alloc mmu addr hnd=0x%p,mva=0x%08x\n",
+		   handle, (unsigned int)*mva);
 #endif
 	return 0;
 }
@@ -318,8 +297,8 @@ void disp_ion_destroy(struct ion_client *client)
 #endif
 }
 
-void disp_ion_cache_flush(struct ion_client *client,
-	struct ion_handle *handle, enum ION_CACHE_SYNC_TYPE sync_type)
+void disp_ion_cache_flush(struct ion_client *client, struct ion_handle *handle,
+			  enum ION_CACHE_SYNC_TYPE sync_type)
 {
 #if defined(MTK_FB_ION_SUPPORT)
 	struct ion_sys_data sys_data;
@@ -328,25 +307,17 @@ void disp_ion_cache_flush(struct ion_client *client,
 	if (!client || !handle)
 		return;
 
-	if (sync_type == ION_CACHE_FLUSH_ALL) {
-		pr_info("Cannot use ion cache flush anymore\n");
-		return;
-	}
-
 	sys_data.sys_cmd = ION_SYS_CACHE_SYNC;
 	sys_data.cache_sync_param.kernel_handle = handle;
-	sys_data.cache_sync_param.sync_type = ION_CACHE_INVALID_BY_RANGE;
+	sys_data.cache_sync_param.sync_type = ION_CACHE_FLUSH_BY_RANGE;
 
 	buffer_va = ion_map_kernel(client, handle);
-	if (!buffer_va || IS_ERR(buffer_va)) {
-		pr_info("[%s]:ion_map_kernel failed!\n", __func__);
-		return;
-	}
 	sys_data.cache_sync_param.va = buffer_va;
 	sys_data.cache_sync_param.size = handle->buffer->size;
 
 	if (ion_kernel_ioctl(client, ION_CMD_SYSTEM, (unsigned long)&sys_data))
-		pr_info("ion cache flush failed!\n");
+		DDPERR("ion cache flush failed!\n");
+
 	ion_unmap_kernel(client, handle);
 #endif
 }
@@ -373,7 +344,7 @@ int disp_hal_allocate_framebuffer(phys_addr_t pa_start, phys_addr_t pa_end,
 {
 	int ret = 0;
 
-	*va = (unsigned long)ioremap_wc(pa_start, pa_end - pa_start + 1);
+	*va = (unsigned long)ioremap_nocache(pa_start, pa_end - pa_start + 1);
 	pr_info("disphal_allocate_fb, pa_start=0x%pa, pa_end=0x%pa, va=0x%lx\n",
 		&pa_start, &pa_end, *va);
 
@@ -382,9 +353,8 @@ int disp_hal_allocate_framebuffer(phys_addr_t pa_start, phys_addr_t pa_end,
 
 		struct sg_table *sg_table = &table;
 
-		ret = sg_alloc_table(sg_table, 1, GFP_KERNEL);
-		if (ret)
-			return ret;
+		sg_alloc_table(sg_table, 1, GFP_KERNEL);
+
 		sg_dma_address(sg_table->sgl) = pa_start;
 		sg_dma_len(sg_table->sgl) = (pa_end - pa_start + 1);
 		client = m4u_create_client();

@@ -1,20 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __APUSYS_REVISER_SECURE_H__
 #define __APUSYS_REVISER_SECURE_H__
 
 #include <mt-plat/mtk_secure_api.h>
+#include <linux/arm-smccc.h>
 
 #define APUSYS_SECURE 1
 #define BOUNDARY_ALL_NO_CHANGE (0xFFFFFFFF)
@@ -34,6 +27,7 @@ enum MTK_APUSYS_KERNEL_OP {
 	MTK_APUSYS_KERNEL_OP_REVISER_GET_INTERRUPT_STATUS,
 	MTK_APUSYS_KERNEL_OP_REVISER_SET_CONTEXT_ID,
 	MTK_APUSYS_KERNEL_OP_REVISER_SET_REMAP_TABLE,
+	MTK_APUSYS_KERNEL_OP_REVISER_INIT_IP,
 	MTK_APUSYS_KERNEL_OP_NUM
 };
 

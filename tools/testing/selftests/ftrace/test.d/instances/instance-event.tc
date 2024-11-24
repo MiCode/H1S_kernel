@@ -11,7 +11,7 @@ fail() { # mesg
     rmdir foo 2>/dev/null
     echo $1
     set -e
-    exit $FAIL
+    exit_fail
 }
 
 cd instances
@@ -43,7 +43,7 @@ instance_read() {
 
 instance_set() {
         while :; do
-                echo 1 > foo/events/sched/sched_switch
+                echo 1 > foo/events/sched/sched_switch/enable
         done 2> /dev/null
 }
 

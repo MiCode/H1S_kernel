@@ -12,6 +12,8 @@
  * published by the Free Software Foundation.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/skbuff.h>
 #include <linux/module.h>
 #include <linux/netfilter/x_tables.h>
@@ -48,7 +50,7 @@ static int cgroup_mt_check_v1(const struct xt_mtchk_param *par)
 	}
 
 	if (info->has_path && info->has_classid) {
-		pr_info("xt_cgroup: both path and classid specified\n");
+		pr_info_ratelimited("path and classid specified\n");
 		return -EINVAL;
 	}
 
@@ -56,8 +58,8 @@ static int cgroup_mt_check_v1(const struct xt_mtchk_param *par)
 	if (info->has_path) {
 		cgrp = cgroup_get_from_path(info->path);
 		if (IS_ERR(cgrp)) {
-			pr_info("xt_cgroup: invalid path, errno=%ld\n",
-				PTR_ERR(cgrp));
+			pr_info_ratelimited("invalid path, errno=%ld\n",
+					    PTR_ERR(cgrp));
 			return -EINVAL;
 		}
 		info->priv = cgrp;
@@ -102,8 +104,9 @@ static bool
 cgroup_mt_v0(const struct sk_buff *skb, struct xt_action_param *par)
 {
 	const struct xt_cgroup_info_v0 *info = par->matchinfo;
+	struct sock *sk = skb->sk;
 
-	if (skb->sk == NULL || !sk_fullsock(skb->sk))
+	if (!sk || !sk_fullsock(sk) || !net_eq(xt_net(par), sock_net(sk)))
 		return false;
 
 	return (info->id == sock_cgroup_classid(&skb->sk->sk_cgrp_data)) ^
@@ -115,8 +118,9 @@ static bool cgroup_mt_v1(const struct sk_buff *skb, struct xt_action_param *par)
 	const struct xt_cgroup_info_v1 *info = par->matchinfo;
 	struct sock_cgroup_data *skcd = &skb->sk->sk_cgrp_data;
 	struct cgroup *ancestor = info->priv;
+	struct sock *sk = skb->sk;
 
-	if (!skb->sk || !sk_fullsock(skb->sk))
+	if (!sk || !sk_fullsock(sk) || !net_eq(xt_net(par), sock_net(sk)))
 		return false;
 
 	if (ancestor)

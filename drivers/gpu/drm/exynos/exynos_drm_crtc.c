@@ -43,13 +43,12 @@ static void exynos_drm_crtc_atomic_disable(struct drm_crtc *crtc,
 	if (exynos_crtc->ops->disable)
 		exynos_crtc->ops->disable(exynos_crtc);
 
+	spin_lock_irq(&crtc->dev->event_lock);
 	if (crtc->state->event && !crtc->state->active) {
-		spin_lock_irq(&crtc->dev->event_lock);
 		drm_crtc_send_vblank_event(crtc, crtc->state->event);
-		spin_unlock_irq(&crtc->dev->event_lock);
-
 		crtc->state->event = NULL;
 	}
+	spin_unlock_irq(&crtc->dev->event_lock);
 }
 
 static int exynos_crtc_atomic_check(struct drm_crtc *crtc,
@@ -95,8 +94,23 @@ static enum drm_mode_status exynos_crtc_mode_valid(struct drm_crtc *crtc,
 	return MODE_OK;
 }
 
+static bool exynos_crtc_mode_fixup(struct drm_crtc *crtc,
+		const struct drm_display_mode *mode,
+		struct drm_display_mode *adjusted_mode)
+{
+	struct exynos_drm_crtc *exynos_crtc = to_exynos_crtc(crtc);
+
+	if (exynos_crtc->ops->mode_fixup)
+		return exynos_crtc->ops->mode_fixup(exynos_crtc, mode,
+				adjusted_mode);
+
+	return true;
+}
+
+
 static const struct drm_crtc_helper_funcs exynos_crtc_helper_funcs = {
 	.mode_valid	= exynos_crtc_mode_valid,
+	.mode_fixup	= exynos_crtc_mode_fixup,
 	.atomic_check	= exynos_crtc_atomic_check,
 	.atomic_begin	= exynos_crtc_atomic_begin,
 	.atomic_flush	= exynos_crtc_atomic_flush,
@@ -202,7 +216,7 @@ struct exynos_drm_crtc *exynos_drm_crtc_get_by_type(struct drm_device *drm_dev,
 		if (to_exynos_crtc(crtc)->type == out_type)
 			return to_exynos_crtc(crtc);
 
-	return ERR_PTR(-EPERM);
+	return ERR_PTR(-ENODEV);
 }
 
 int exynos_drm_set_possible_crtcs(struct drm_encoder *encoder,

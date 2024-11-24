@@ -1,24 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Joey Pan <joey.pan@mediatek.com>
  */
 
 #ifndef __MMPROFILE_INTERNAL_H__
 #define __MMPROFILE_INTERNAL_H__
 
 #include "mmprofile.h"
+#include "mmprofile_function.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 #define MMProfileMaxEventCount 1000
 
@@ -132,11 +123,4 @@ struct compat_mmprofile_metalog_t {
 #define MMP_IOC_REMOTESTART _IOW(MMP_IOC_MAGIC, 14, unsigned int)
 #define MMP_IOC_TEST _IOWR(MMP_IOC_MAGIC, 100, unsigned int)
 
-/* fix build warning: unused */
-/*static void mmprofile_init_buffer(void);*/
-/*static void mmprofile_reset_buffer(void);*/
-
-#ifdef __cplusplus
-}
-#endif
 #endif

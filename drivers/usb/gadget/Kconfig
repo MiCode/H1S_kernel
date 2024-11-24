@@ -188,6 +188,12 @@ config USB_F_RNDIS
 config USB_F_MASS_STORAGE
 	tristate
 
+config USB_F_BICR
+	tristate
+
+config USB_F_MTK_FASTMETA
+	tristate
+
 config USB_F_FS
 	tristate
 
@@ -215,10 +221,10 @@ config USB_F_PRINTER
 config USB_F_TCM
 	tristate
 
-config USB_F_AUDIO_SRC
+config USB_F_ACC
 	tristate
 
-config USB_F_ACC
+config USB_F_AUDIO_SRC
 	tristate
 
 # this first set of drivers all depend on bulk-capable hardware.
@@ -234,6 +240,14 @@ config USB_CONFIGFS
 	  Associating functions with configurations is done by creating
 	  appropriate symbolic links.
 	  For more information see Documentation/usb/gadget_configfs.txt.
+
+config USB_CONFIGFS_UEVENT
+	bool "Uevent notification of Gadget state"
+	depends on USB_CONFIGFS
+	help
+	  Enable uevent notifications to userspace when the gadget
+	  state changes. The gadget can be in any of the following
+	  three states: "CONNECTED/DISCONNECTED/CONFIGURED"
 
 config USB_CONFIGFS_SERIAL
 	bool "Generic serial bulk in/out"
@@ -270,6 +284,7 @@ config USB_CONFIGFS_NCM
 	depends on NET
 	select USB_U_ETHER
 	select USB_F_NCM
+	select CRC32
 	help
 	  NCM is an advanced protocol for Ethernet encapsulation, allows
 	  grouping of several ethernet frames into one USB transfer and
@@ -319,6 +334,7 @@ config USB_CONFIGFS_EEM
 	depends on NET
 	select USB_U_ETHER
 	select USB_F_EEM
+	select CRC32
 	help
 	  CDC EEM is a newer USB standard that is somewhat simpler than CDC ECM
 	  and therefore can be supported by more hardware.  Technically ECM and
@@ -349,6 +365,32 @@ config USB_CONFIGFS_MASS_STORAGE
 	  device (in much the same way as the "loop" device driver),
 	  specified as a module parameter or sysfs option.
 
+config USB_CONFIGFS_BICR
+	bool "Built-In CDROM emulation"
+	depends on USB_CONFIGFS
+	depends on BLOCK
+	depends on USB_CONFIGFS_MASS_STORAGE
+	select USB_F_BICR
+	help
+	  The Build-In CDROM Gadget acts as a CDROM emulation disk drive.
+	  It is based on kernel option "USB_CONFIGFS_MASS_STORAGE".
+	  As its storage repository it can use a regular file or a block
+	  device (in much the same way as the "loop" device driver),
+	  specified as a module parameter or sysfs option.
+
+config USB_CONFIGFS_MTK_FASTMETA
+	bool "Mediatek's Fast META mode"
+	depends on USB_CONFIGFS
+	depends on BLOCK
+	depends on USB_CONFIGFS_MASS_STORAGE
+	depends on USB_CONFIGFS_ACM
+	select USB_F_MTK_FASTMETA
+	help
+	  Mediatek's Fast META mode allow manufacturer be able to
+	  connect phone's META faction functions. Which allow user to
+	  saving time when doing MODEM calibration or download RF parameters
+	  in mass production in factory.
+
 config USB_CONFIGFS_F_LB_SS
 	bool "Loopback and sourcesink function (for testing)"
 	depends on USB_CONFIGFS
@@ -375,7 +417,7 @@ config USB_CONFIGFS_F_FS
 	  mass storage) and other are implemented in user space.
 
 config USB_CONFIGFS_F_ACC
-	boolean "Accessory gadget"
+	bool "Accessory gadget"
 	depends on USB_CONFIGFS
 	depends on HID=y
 	select USB_F_ACC
@@ -383,21 +425,13 @@ config USB_CONFIGFS_F_ACC
 	  USB gadget Accessory support
 
 config USB_CONFIGFS_F_AUDIO_SRC
-	boolean "Audio Source gadget"
-	depends on USB_CONFIGFS && USB_CONFIGFS_F_ACC
+	bool "Audio Source gadget"
+	depends on USB_CONFIGFS
 	depends on SND
 	select SND_PCM
 	select USB_F_AUDIO_SRC
 	help
 	  USB gadget Audio Source support
-
-config USB_CONFIGFS_UEVENT
-	boolean "Uevent notification of Gadget state"
-	depends on USB_CONFIGFS
-	help
-	  Enable uevent notifications to userspace when the gadget
-	  state changes. The gadget can be in any of the following
-	  three states: "CONNECTED/DISCONNECTED/CONFIGURED"
 
 config USB_CONFIGFS_F_UAC1
 	bool "Audio Class 1.0"

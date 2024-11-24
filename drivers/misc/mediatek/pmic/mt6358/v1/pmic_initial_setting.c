@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 #include <linux/delay.h>
 #include <mt-plat/upmu_common.h>
@@ -141,6 +134,113 @@ void PMIC_CUST_SETTING(void)
 	pr_debug("[%s] Done\n", __func__);
 }
 
+#if defined(CONFIG_MACH_MT6781)
+/* for PMIC MT6366 */
+void PMIC_LP_INIT_SETTING(void)
+{
+	g_pmic_chip_version = PMIC_CHIP_VER();
+#if LP_INIT_SETTING_VERIFIED
+	/*SODI3*/
+	pmic_buck_vproc11_lp(SW, 1, SW_OFF);
+	pmic_buck_vgpu_lp(SW, 1, SW_OFF);
+	pmic_buck_vmodem_lp(SRCLKEN0, 1, HW_LP);
+	pmic_buck_vs1_lp(SRCLKEN0, 1, HW_LP);
+	pmic_buck_vs2_lp(SRCLKEN0, 1, HW_LP);
+	pmic_buck_vpa_lp(SW, 1, SW_OFF);
+	pmic_buck_vdram1_lp(SRCLKEN0, 1, HW_LP);
+	pmic_buck_vproc12_lp(SW, 1, SW_OFF);
+	pmic_ldo_vsram_gpu_lp(SW, 1, SW_OFF);
+	pmic_ldo_vsram_proc11_lp(SW, 1, SW_OFF);
+	pmic_ldo_vxo22_lp(SRCLKEN0, 1, HW_LP);
+	pmic_ldo_vrf18_lp(SRCLKEN1, 1, HW_OFF);
+	pmic_ldo_vrf12_lp(SRCLKEN1, 1, HW_OFF);
+	pmic_ldo_vefuse_lp(SW, 1, SW_OFF);
+	pmic_ldo_vcn33_lp(SW, 1, SW_OFF);
+	pmic_ldo_vcn28_lp(SW, 1, SW_OFF);
+	pmic_ldo_vm18_lp(SW, 1, SW_ON);
+	pmic_ldo_vcn18_lp(SW, 1, SW_OFF);
+	pmic_ldo_vmddr_lp(SRCLKEN0, 1, HW_LP);
+	pmic_ldo_vsram_proc12_lp(SW, 1, SW_OFF);
+	if (is_pmic_new_power_grid()) {
+		pmic_buck_vcore_lp(SRCLKEN0, 1, HW_LP);
+		pmic_ldo_vsram_others_lp(SRCLKEN0, 1, HW_LP);
+		pmic_ldo_vsram_core_lp(SW, 1, SW_ON);
+	} else {
+		pmic_ldo_vsram_others_lp(SW, 1, SW_ON);
+		/* disable HW LP mode (wk_sshub) */
+		pmic_buck_vcore_lp(SW, 1, SW_ON);
+		pmic_ldo_vsram_core_lp(SW, 1, SW_ON);
+	}
+	pmic_ldo_va12_lp(SRCLKEN0, 1, HW_LP);
+	pmic_ldo_vaux18_lp(SRCLKEN0, 1, HW_LP);
+	pmic_ldo_vaud28_lp(SRCLKEN0, 1, HW_LP);
+	pmic_ldo_vio28_lp(SW, 1, SW_ON);
+	pmic_ldo_vio18_lp(SW, 1, SW_ON);
+	pmic_ldo_vfe28_lp(SRCLKEN1, 1, HW_OFF);
+	pmic_ldo_vdram2_lp(SRCLKEN0, 1, HW_LP);
+	pmic_ldo_vmc_lp(SW, 1, SW_OFF);
+	pmic_ldo_vmch_lp(SW, 1, SW_OFF);
+	pmic_ldo_vemc_lp(SW, 1, SW_ON);
+	pmic_ldo_vsim1_lp(SW, 1, SW_OFF);
+	pmic_ldo_vsim2_lp(SW, 1, SW_OFF);
+	pmic_ldo_vibr_lp(SW, 1, SW_OFF);
+	pmic_ldo_vusb_lp(SRCLKEN0, 1, HW_LP);
+	pmic_ldo_vbif28_lp(SRCLKEN0, 1, HW_OFF);
+
+	/*Deepidle*/
+	pmic_buck_vproc11_lp(SW, 1, SW_OFF);
+	pmic_buck_vgpu_lp(SW, 1, SW_OFF);
+	pmic_buck_vmodem_lp(SRCLKEN2, 1, HW_LP);
+	pmic_buck_vs1_lp(SRCLKEN2, 1, HW_LP);
+	pmic_buck_vs2_lp(SRCLKEN2, 1, HW_LP);
+	pmic_buck_vpa_lp(SW, 1, SW_OFF);
+	pmic_buck_vdram1_lp(SRCLKEN2, 1, HW_LP);
+	pmic_buck_vproc12_lp(SW, 1, SW_OFF);
+	pmic_ldo_vsram_gpu_lp(SW, 1, SW_OFF);
+	pmic_ldo_vsram_proc11_lp(SW, 1, SW_OFF);
+	pmic_ldo_vxo22_lp(SRCLKEN2, 1, HW_LP);
+	pmic_ldo_vrf18_lp(SRCLKEN1, 1, HW_OFF);
+	pmic_ldo_vrf12_lp(SRCLKEN1, 1, HW_OFF);
+	pmic_ldo_vefuse_lp(SW, 1, SW_OFF);
+	pmic_ldo_vcn33_lp(SW, 1, SW_OFF);
+	pmic_ldo_vcn28_lp(SW, 1, SW_OFF);
+	pmic_ldo_vm18_lp(SW, 1, SW_ON);
+	pmic_ldo_vcn18_lp(SW, 1, SW_OFF);
+	pmic_ldo_vmddr_lp(SRCLKEN2, 1, HW_LP);
+	pmic_ldo_vsram_proc12_lp(SW, 1, SW_OFF);
+	if (is_pmic_new_power_grid()) {
+		pmic_buck_vcore_lp(SRCLKEN2, 1, HW_LP);
+		pmic_ldo_vsram_others_lp(SRCLKEN2, 1, HW_LP);
+		pmic_ldo_vsram_core_lp(SW, 1, SW_ON);
+	} else {
+		pmic_ldo_vsram_others_lp(SW, 1, SW_ON);
+		/* disable HW LP mode (wk_sshub) */
+		pmic_buck_vcore_lp(SW, 1, SW_ON);
+		pmic_ldo_vsram_core_lp(SW, 1, SW_ON);
+	}
+	pmic_ldo_va12_lp(SRCLKEN2, 1, HW_LP);
+	pmic_ldo_vaux18_lp(SRCLKEN2, 1, HW_LP);
+	pmic_ldo_vaud28_lp(SW, 1, SW_ON);
+	pmic_ldo_vio28_lp(SW, 1, SW_ON);
+	pmic_ldo_vio18_lp(SW, 1, SW_ON);
+	pmic_ldo_vfe28_lp(SRCLKEN1, 1, HW_OFF);
+	pmic_ldo_vdram2_lp(SRCLKEN2, 1, HW_LP);
+	pmic_ldo_vmc_lp(SW, 1, SW_OFF);
+	pmic_ldo_vmch_lp(SW, 1, SW_OFF);
+	pmic_ldo_vemc_lp(SW, 1, SW_ON);
+	pmic_ldo_vsim1_lp(SW, 1, SW_OFF);
+	pmic_ldo_vsim2_lp(SW, 1, SW_OFF);
+	pmic_ldo_vibr_lp(SW, 1, SW_OFF);
+	pmic_ldo_vusb_lp(SRCLKEN2, 1, HW_LP);
+	pmic_ldo_vbif28_lp(SRCLKEN2, 1, HW_OFF);
+
+	pr_info("[%s] Chip Ver = %d\n", __func__, g_pmic_chip_version);
+#endif /*LP_INIT_SETTING_VERIFIED*/
+
+	PMIC_CUST_SETTING();
+}
+#else
+/* for PMIC MT6358 (MT6771 & MT6768) */
 void PMIC_LP_INIT_SETTING(void)
 {
 	g_pmic_chip_version = PMIC_CHIP_VER();
@@ -234,3 +334,4 @@ void PMIC_LP_INIT_SETTING(void)
 
 	PMIC_CUST_SETTING();
 }
+#endif

@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Sagy Shih <sagy.shih@mediatek.com>
  */
 
 #include <linux/kernel.h>
@@ -20,15 +13,16 @@
 #include <linux/of_irq.h>
 #include <linux/printk.h>
 #include <linux/memblock.h>
+#include <linux/arm-smccc.h>
+#include <linux/soc/mediatek/mtk_sip_svc.h>
 #include <mt-plat/sync_write.h>
-#include <mt-plat/mtk_io.h>
-#include <mt-plat/mtk_meminfo.h>
 #include <mt-plat/mtk_ccci_common.h>
-#include <mt-plat/mtk_secure_api.h>
 #ifdef CONFIG_MTK_AEE_FEATURE
 #include <mt-plat/aee.h>
 #endif
 
+#include <emi.h>
+#include <emi_io.h>
 #include <mt_emi.h>
 #include "mpu_v1.h"
 #include <mpu_platform.h>
@@ -71,6 +65,16 @@ static const char *id2name(unsigned int axi_id, unsigned int port_id)
 	}
 
 	return (char *)UNKNOWN_MASTER;
+}
+
+static unsigned int emi_mpu_read_protection(
+	unsigned int reg_type, unsigned int region, unsigned int dgroup)
+{
+	struct arm_smccc_res smc_res;
+
+	arm_smccc_smc(MTK_SIP_EMIMPU_CONTROL, MTK_EMIMPU_READ,
+		reg_type, region, dgroup, 0, 0, 0, &smc_res);
+	return (unsigned int)smc_res.a0;
 }
 
 static void clear_violation(void)
@@ -160,11 +164,16 @@ static void check_violation(void)
 		if (is_md_master(master_id, domain_id)) {
 			char str[CCCI_STR_MAX_LEN] = "0";
 
-			snprintf(str, CCCI_STR_MAX_LEN,
+			if (snprintf(str, CCCI_STR_MAX_LEN,
 				"EMI_MPUS = 0x%x, ADDR = 0x%llx",
-				mpus, vio_addr);
+				mpus, vio_addr) < 0) {
+				pr_info("[MPU] CCCI string fail\n");
+			}
+
+#if CCCI_API_READY
 			exec_ccci_kern_func_by_md_id(0, ID_MD_MPU_ASSERT,
 				str, strlen(str));
+#endif
 
 			pr_info("[MPU] violation trigger MD, ");
 			pr_info("str=%s strlen(str)=%d\n",
@@ -195,6 +204,7 @@ static irqreturn_t violation_irq(int irq, void *dev_id)
 int emi_mpu_set_protection(struct emi_region_info_t *region_info)
 {
 	unsigned int start, end;
+	struct arm_smccc_res smc_res;
 	int i;
 
 	if (region_info->region >= EMI_MPU_REGION_NUM) {
@@ -209,22 +219,81 @@ int emi_mpu_set_protection(struct emi_region_info_t *region_info)
 	for (i = EMI_MPU_DGROUP_NUM - 1; i >= 0; i--) {
 		end = (unsigned int)(region_info->end >> EMI_MPU_ALIGN_BITS) |
 			(i << 24);
-		emi_mpu_smc_protect(start, end, region_info->apc[i]);
+		arm_smccc_smc(MTK_SIP_EMIMPU_CONTROL, MTK_EMIMPU_SET,
+			start, end, region_info->apc[i], 0, 0, 0, &smc_res);
 	}
 
 	return 0;
 }
 EXPORT_SYMBOL(emi_mpu_set_protection);
 
+int emi_mpu_set_single_permission(unsigned int region,
+				  unsigned int domain,
+				  unsigned int permission)
+{
+	struct arm_smccc_res smc_res;
+	unsigned int old_apc, new_apc;
+	unsigned long long start, end;
+	int i;
+
+	if (region >= EMI_MPU_REGION_NUM) {
+		pr_debug("[EMI] wrong region %d when calling %s\n",
+		       region, __func__);
+		return -1;
+	}
+
+	if (domain >= EMI_MPU_DOMAIN_NUM) {
+		pr_debug("[EMI] wrong domain %d when calling %s\n",
+		       domain, __func__);
+		return -1;
+	}
+
+	for (i = 0; i < EMI_MPU_DGROUP_NUM; i++) {
+		unsigned int index = domain % 8;
+
+		if ((domain / 8) == i) {
+			old_apc = emi_mpu_read_protection(
+				MTK_EMIMPU_READ_APC, region, i);
+			old_apc &= ~(0x7 << (3 * index));
+			new_apc = old_apc | (permission << (3 * index));
+
+			start = (unsigned long long)emi_mpu_read_protection(
+				MTK_EMIMPU_READ_SA, region, 0) & 0xffffff;
+
+			end = (unsigned long long)emi_mpu_read_protection(
+				MTK_EMIMPU_READ_EA, region, 0) & 0xffffff;
+
+			start = (start << EMI_MPU_ALIGN_BITS) + DRAM_OFFSET;
+			start = start >> EMI_MPU_ALIGN_BITS;
+
+			end = (end << EMI_MPU_ALIGN_BITS) + DRAM_OFFSET;
+			end = end >> EMI_MPU_ALIGN_BITS;
+
+			arm_smccc_smc(MTK_SIP_EMIMPU_CONTROL, MTK_EMIMPU_SET,
+				(region << 24) | start, (i << 24) | end,
+				new_apc, 0, 0, 0, &smc_res);
+		} else {
+			pr_debug("[EMI] don't need to set apc\n");
+			continue;
+		}
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(emi_mpu_set_single_permission);
+
 int emi_mpu_clear_protection(struct emi_region_info_t *region_info)
 {
+	struct arm_smccc_res smc_res;
+
 	if (region_info->region > EMI_MPU_REGION_NUM) {
 		pr_info("[MPU] can not support region %u\n",
 			region_info->region);
 		return -1;
 	}
 
-	emi_mpu_smc_clear(region_info->region);
+	arm_smccc_smc(MTK_SIP_EMIMPU_CONTROL, MTK_EMIMPU_CLEAR,
+		region_info->region, 0, 0, 0, 0, 0, &smc_res);
 
 	return 0;
 }
@@ -253,12 +322,12 @@ static ssize_t mpu_config_show(struct device_driver *driver, char *buf)
 #endif
 
 	for (region = show_region; region < EMI_MPU_REGION_NUM; region++) {
-		start = (unsigned long long)emi_mpu_smc_read(
-			EMI_MPU_SA(region));
+		start = (unsigned long long)emi_mpu_read_protection(
+			MTK_EMIMPU_READ_SA, region, 0);
 		start = (start << EMI_MPU_ALIGN_BITS) + DRAM_OFFSET;
 
-		end = (unsigned long long)emi_mpu_smc_read(
-			EMI_MPU_EA(region));
+		end = (unsigned long long)emi_mpu_read_protection(
+			MTK_EMIMPU_READ_EA, region, 0);
 		end = (end << EMI_MPU_ALIGN_BITS) + DRAM_OFFSET;
 
 		ret += snprintf(buf + ret, PAGE_SIZE - ret,
@@ -268,7 +337,8 @@ static ssize_t mpu_config_show(struct device_driver *driver, char *buf)
 			return strlen(buf);
 
 		for (i = 0; i < EMI_MPU_DGROUP_NUM; i++) {
-			apc = emi_mpu_smc_read(EMI_MPU_APC(region, i));
+			apc = emi_mpu_read_protection(
+				MTK_EMIMPU_READ_APC, region, i);
 			ret += snprintf(buf + ret, PAGE_SIZE - ret,
 				"%s, %s, %s, %s\n%s, %s, %s, %s\n\n",
 				permission[(apc >> 0) & 0x7],
@@ -435,12 +505,12 @@ static void protect_ap_region(void)
 #ifdef ENABLE_MPU_SLVERR
 static void enable_slverr(void)
 {
-	unsigned int value;
+	struct arm_smccc_res smc_res;
 	unsigned int domain;
 
 	for (domain = 0; domain < EMI_MPU_DOMAIN_NUM; domain++) {
-		value = emi_mpu_smc_read(EMI_MPU_CTRL_D(domain));
-		emi_mpu_smc_write(EMI_MPU_CTRL_D(domain), value | 0x2);
+		arm_smccc_smc(MTK_SIP_EMIMPU_CONTROL, MTK_EMIMPU_SLVERR,
+			i, 0, 0, 0, 0, 0, &smc_res);
 	}
 }
 #endif

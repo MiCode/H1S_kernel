@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
-
 #ifndef __CMDQ_CORE_H__
 #define __CMDQ_CORE_H__
 
@@ -23,6 +14,12 @@
 #include <linux/printk.h>
 #include <linux/sched.h>
 #include "cmdq_def.h"
+
+static inline unsigned int enable_4G(void)
+{
+	return 0;
+}
+
 
 /*  */
 /* address conversion for 4GB ram support: */
@@ -963,15 +960,15 @@ extern "C" {
  */
 	void cmdq_core_set_log_level(const int32_t value);
 	int32_t cmdq_core_get_log_level(void);
-	ssize_t cmdqCorePrintLogLevel(struct device *dev,
+	ssize_t log_level_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
-	ssize_t cmdqCoreWriteLogLevel(struct device *dev,
+	ssize_t log_level_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size);
 
-	ssize_t cmdqCorePrintProfileEnable(struct device *dev,
+	ssize_t profile_enable_show(struct device *dev,
 		struct device_attribute *attr,
 		char *buf);
-	ssize_t cmdqCoreWriteProfileEnable(struct device *dev,
+	ssize_t profile_enable_store(struct device *dev,
 		struct device_attribute *attr,
 		const char *buf, size_t size);
 
@@ -993,11 +990,11 @@ extern "C" {
 	int cmdqCorePrintErrorSeq(struct seq_file *m, void *v);
 	int cmdqCorePrintStatusSeq(struct seq_file *m, void *v);
 
-	ssize_t cmdqCorePrintRecord(struct device *dev,
+	ssize_t record_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
-	ssize_t cmdqCorePrintError(struct device *dev,
+	ssize_t error_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
-	ssize_t cmdqCorePrintStatus(struct device *dev,
+	ssize_t status_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
 
 	void cmdq_core_fix_command_scenario_for_user_space(

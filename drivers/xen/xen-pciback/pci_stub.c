@@ -71,7 +71,7 @@ static struct pcistub_device *pcistub_device_alloc(struct pci_dev *dev)
 
 	dev_dbg(&dev->dev, "pcistub_device_alloc\n");
 
-	psdev = kzalloc(sizeof(*psdev), GFP_ATOMIC);
+	psdev = kzalloc(sizeof(*psdev), GFP_KERNEL);
 	if (!psdev)
 		return NULL;
 
@@ -365,7 +365,7 @@ static int pcistub_init_device(struct pci_dev *dev)
 	 * here and then to call kfree(pci_get_drvdata(psdev->dev)).
 	 */
 	dev_data = kzalloc(sizeof(*dev_data) +  strlen(DRV_NAME "[]")
-				+ strlen(pci_name(dev)) + 1, GFP_ATOMIC);
+				+ strlen(pci_name(dev)) + 1, GFP_KERNEL);
 	if (!dev_data) {
 		err = -ENOMEM;
 		goto out;
@@ -578,7 +578,7 @@ static int pcistub_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		}
 
 		if (!match) {
-			pci_dev_id = kmalloc(sizeof(*pci_dev_id), GFP_ATOMIC);
+			pci_dev_id = kmalloc(sizeof(*pci_dev_id), GFP_KERNEL);
 			if (!pci_dev_id) {
 				err = -ENOMEM;
 				goto out;
@@ -733,9 +733,16 @@ static pci_ers_result_t common_process(struct pcistub_device *psdev,
 	wmb();
 	notify_remote_via_irq(pdev->evtchn_irq);
 
+	/* Enable IRQ to signal "request done". */
+	xen_pcibk_lateeoi(pdev, 0);
+
 	ret = wait_event_timeout(xen_pcibk_aer_wait_queue,
 				 !(test_bit(_XEN_PCIB_active, (unsigned long *)
 				 &sh_info->flags)), 300*HZ);
+
+	/* Enable IRQ for pcifront request if not already active. */
+	if (!test_bit(_PDEVF_op_active, &pdev->flags))
+		xen_pcibk_lateeoi(pdev, 0);
 
 	if (!ret) {
 		if (test_bit(_XEN_PCIB_active,
@@ -749,13 +756,6 @@ static pci_ers_result_t common_process(struct pcistub_device *psdev,
 		}
 	}
 	clear_bit(_PCIB_op_pending, (unsigned long *)&pdev->flags);
-
-	if (test_bit(_XEN_PCIF_active,
-		(unsigned long *)&sh_info->flags)) {
-		dev_dbg(&psdev->dev->dev,
-			"schedule pci_conf service in " DRV_NAME "\n");
-		xen_pcibk_test_and_schedule_op(psdev->pdev);
-	}
 
 	res = (pci_ers_result_t)aer_op->err;
 	return res;
@@ -1150,7 +1150,7 @@ static int pcistub_reg_add(int domain, int bus, int slot, int func,
 	}
 	dev = psdev->dev;
 
-	field = kzalloc(sizeof(*field), GFP_ATOMIC);
+	field = kzalloc(sizeof(*field), GFP_KERNEL);
 	if (!field) {
 		err = -ENOMEM;
 		goto out;

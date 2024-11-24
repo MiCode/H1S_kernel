@@ -1,17 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /************************************************************************
  * Copyright 2003 Digi International (www.digi.com)
  *
  * Copyright (C) 2004 IBM Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2, or (at your option)
- * any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY, EXPRESS OR IMPLIED; without even the
- * implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
- * PURPOSE.  See the GNU General Public License for more details.
  *
  * Contact Information:
  * Scott H Kilau <Scott_Kilau@digi.com>
@@ -36,7 +27,7 @@ static void jsm_carrier(struct jsm_channel *ch);
 static inline int jsm_get_mstat(struct jsm_channel *ch)
 {
 	unsigned char mstat;
-	unsigned result;
+	int result;
 
 	jsm_dbg(IOCTL, &ch->ch_bd->pci_dev, "start\n");
 
@@ -124,6 +115,7 @@ static void jsm_tty_set_mctrl(struct uart_port *port, unsigned int mctrl)
 static void jsm_tty_write(struct uart_port *port)
 {
 	struct jsm_channel *channel;
+
 	channel = container_of(port, struct jsm_channel, uart_port);
 	channel->ch_bd->bd_ops->copy_data_from_queue_to_uart(channel);
 }
@@ -195,6 +187,7 @@ static void jsm_tty_break(struct uart_port *port, int break_state)
 
 static int jsm_tty_open(struct uart_port *port)
 {
+	unsigned long lock_flags;
 	struct jsm_board *brd;
 	struct jsm_channel *channel =
 		container_of(port, struct jsm_channel, uart_port);
@@ -248,6 +241,7 @@ static int jsm_tty_open(struct uart_port *port)
 	channel->ch_cached_lsr = 0;
 	channel->ch_stops_sent = 0;
 
+	spin_lock_irqsave(&port->lock, lock_flags);
 	termios = &port->state->port.tty->termios;
 	channel->ch_c_cflag	= termios->c_cflag;
 	channel->ch_c_iflag	= termios->c_iflag;
@@ -267,6 +261,7 @@ static int jsm_tty_open(struct uart_port *port)
 	jsm_carrier(channel);
 
 	channel->ch_open_count++;
+	spin_unlock_irqrestore(&port->lock, lock_flags);
 
 	jsm_dbg(OPEN, &channel->ch_bd->pci_dev, "finish\n");
 	return 0;
@@ -275,14 +270,12 @@ static int jsm_tty_open(struct uart_port *port)
 static void jsm_tty_close(struct uart_port *port)
 {
 	struct jsm_board *bd;
-	struct ktermios *ts;
 	struct jsm_channel *channel =
 		container_of(port, struct jsm_channel, uart_port);
 
 	jsm_dbg(CLOSE, &channel->ch_bd->pci_dev, "start\n");
 
 	bd = channel->ch_bd;
-	ts = &port->state->port.tty->termios;
 
 	channel->ch_flags &= ~(CH_STOPI);
 
@@ -440,7 +433,6 @@ int jsm_uart_port_init(struct jsm_board *brd)
 {
 	int i, rc;
 	unsigned int line;
-	struct jsm_channel *ch;
 
 	if (!brd)
 		return -ENXIO;
@@ -454,7 +446,7 @@ int jsm_uart_port_init(struct jsm_board *brd)
 	brd->nasync = brd->maxports;
 
 	/* Set up channel variables */
-	for (i = 0; i < brd->nasync; i++, ch = brd->channels[i]) {
+	for (i = 0; i < brd->nasync; i++) {
 
 		if (!brd->channels[i])
 			continue;
@@ -473,12 +465,11 @@ int jsm_uart_port_init(struct jsm_board *brd)
 		} else
 			set_bit(line, linemap);
 		brd->channels[i]->uart_port.line = line;
-		rc = uart_add_one_port (&jsm_uart_driver, &brd->channels[i]->uart_port);
-		if (rc){
+		rc = uart_add_one_port(&jsm_uart_driver, &brd->channels[i]->uart_port);
+		if (rc) {
 			printk(KERN_INFO "jsm: Port %d failed. Aborting...\n", i);
 			return rc;
-		}
-		else
+		} else
 			printk(KERN_INFO "jsm: Port %d added\n", i);
 	}
 
@@ -534,14 +525,11 @@ void jsm_input(struct jsm_channel *ch)
 
 	jsm_dbg(READ, &ch->ch_bd->pci_dev, "start\n");
 
-	if (!ch)
-		return;
-
 	port = &ch->uart_port.state->port;
 	tp = port->tty;
 
 	bd = ch->ch_bd;
-	if(!bd)
+	if (!bd)
 		return;
 
 	spin_lock_irqsave(&ch->ch_lock, lock_flags);
@@ -659,11 +647,8 @@ static void jsm_carrier(struct jsm_channel *ch)
 	int phys_carrier = 0;
 
 	jsm_dbg(CARR, &ch->ch_bd->pci_dev, "start\n");
-	if (!ch)
-		return;
 
 	bd = ch->ch_bd;
-
 	if (!bd)
 		return;
 
@@ -781,7 +766,7 @@ void jsm_check_queue_flow_control(struct jsm_channel *ch)
 	if (qleft < 256) {
 		/* HWFLOW */
 		if (ch->ch_c_cflag & CRTSCTS) {
-			if(!(ch->ch_flags & CH_RECEIVER_OFF)) {
+			if (!(ch->ch_flags & CH_RECEIVER_OFF)) {
 				bd_ops->disable_receiver(ch);
 				ch->ch_flags |= (CH_RECEIVER_OFF);
 				jsm_dbg(READ, &ch->ch_bd->pci_dev,

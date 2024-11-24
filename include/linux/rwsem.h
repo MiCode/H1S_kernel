@@ -45,6 +45,11 @@ struct rw_semaphore {
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lockdep_map	dep_map;
 #endif
+        /* NOTICE: m_count is a vendor variable used for the config
+         * CONFIG_RWSEM_PRIO_AWARE. This is included here to maintain ABI
+         * compatibility with our vendors */
+        /* count for waiters preempt to queue in wait list */
+	long m_count;
 };
 
 /*
@@ -128,6 +133,7 @@ static inline int rwsem_is_contended(struct rw_semaphore *sem)
  * lock for reading
  */
 extern void down_read(struct rw_semaphore *sem);
+extern int __must_check down_read_killable(struct rw_semaphore *sem);
 
 /*
  * trylock for reading -- returns 1 if successful, 0 if contention

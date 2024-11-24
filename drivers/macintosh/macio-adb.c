@@ -70,14 +70,13 @@ static void macio_adb_poll(void);
 static int macio_adb_reset_bus(void);
 
 struct adb_driver macio_adb_driver = {
-	"MACIO",
-	macio_probe,
-	macio_init,
-	macio_send_request,
-	/*macio_write,*/
-	macio_adb_autopoll,
-	macio_adb_poll,
-	macio_adb_reset_bus
+	.name         = "MACIO",
+	.probe        = macio_probe,
+	.init         = macio_init,
+	.send_request = macio_send_request,
+	.autopoll     = macio_adb_autopoll,
+	.poll         = macio_adb_poll,
+	.reset_bus    = macio_adb_reset_bus,
 };
 
 int macio_probe(void)
@@ -107,6 +106,10 @@ int macio_init(void)
 		return -ENXIO;
 	}
 	adb = ioremap(r.start, sizeof(struct adb_regs));
+	if (!adb) {
+		of_node_put(adbs);
+		return -ENOMEM;
+	}
 
 	out_8(&adb->ctrl.r, 0);
 	out_8(&adb->intr.r, 0);

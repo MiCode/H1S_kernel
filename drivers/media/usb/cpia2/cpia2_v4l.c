@@ -169,10 +169,10 @@ static ssize_t cpia2_v4l_read(struct file *file, char __user *buf, size_t count,
  *  cpia2_v4l_poll
  *
  *****************************************************************************/
-static unsigned int cpia2_v4l_poll(struct file *filp, struct poll_table_struct *wait)
+static __poll_t cpia2_v4l_poll(struct file *filp, struct poll_table_struct *wait)
 {
 	struct camera_data *cam = video_drvdata(filp);
-	unsigned int res;
+	__poll_t res;
 
 	mutex_lock(&cam->v4l2_lock);
 	res = cpia2_poll(cam, filp, wait);
@@ -949,7 +949,7 @@ static int cpia2_dqbuf(struct file *file, void *fh, struct v4l2_buffer *buf)
 	buf->m.offset = cam->buffers[buf->index].data - cam->frame_buffer;
 	buf->length = cam->frame_size;
 	buf->reserved2 = 0;
-	buf->reserved = 0;
+	buf->request_fd = 0;
 	memset(&buf->timecode, 0, sizeof(buf->timecode));
 
 	DBG("DQBUF #%d status:%d seq:%d length:%d\n", buf->index,

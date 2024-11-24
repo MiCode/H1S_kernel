@@ -167,6 +167,7 @@ static struct scsi_host_template isci_sht = {
 	.eh_abort_handler		= sas_eh_abort_handler,
 	.eh_device_reset_handler        = sas_eh_device_reset_handler,
 	.eh_target_reset_handler        = sas_eh_target_reset_handler,
+	.slave_alloc			= sas_slave_alloc,
 	.target_destroy			= sas_target_destroy,
 	.ioctl				= sas_ioctl,
 	.shost_attrs			= isci_host_attrs,
@@ -232,14 +233,14 @@ static int isci_register_sas_ha(struct isci_host *isci_host)
 	struct asd_sas_phy **sas_phys;
 	struct asd_sas_port **sas_ports;
 
-	sas_phys = devm_kzalloc(&isci_host->pdev->dev,
-				SCI_MAX_PHYS * sizeof(void *),
+	sas_phys = devm_kcalloc(&isci_host->pdev->dev,
+				SCI_MAX_PHYS, sizeof(void *),
 				GFP_KERNEL);
 	if (!sas_phys)
 		return -ENOMEM;
 
-	sas_ports = devm_kzalloc(&isci_host->pdev->dev,
-				 SCI_MAX_PORTS * sizeof(void *),
+	sas_ports = devm_kcalloc(&isci_host->pdev->dev,
+				 SCI_MAX_PORTS, sizeof(void *),
 				 GFP_KERNEL);
 	if (!sas_ports)
 		return -ENOMEM;
@@ -431,9 +432,6 @@ static enum sci_status sci_user_parameters_set(struct isci_host *ihost,
 
 		if (!((u->max_speed_generation <= SCIC_SDS_PARM_MAX_SPEED) &&
 		      (u->max_speed_generation > SCIC_SDS_PARM_NO_SPEED)))
-			return SCI_FAILURE_INVALID_PARAMETER_VALUE;
-
-		if (u->in_connection_align_insertion_frequency < 3)
 			return SCI_FAILURE_INVALID_PARAMETER_VALUE;
 
 		if ((u->in_connection_align_insertion_frequency < 3) ||

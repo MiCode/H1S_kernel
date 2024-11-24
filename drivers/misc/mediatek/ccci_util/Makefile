@@ -16,50 +16,51 @@ ifndef CONFIG_MTK_FPGA
 
 # ccci_util is build when ECCCI driver or CCCI driver enabled
 
-ENABLE_CCCI_UTIL=n
+
 ifeq ($(CONFIG_MTK_ECCCI_DRIVER), y)
-ENABLE_CCCI_UTIL=y
-endif
-
-# mt6893&mt6885 co-platform config
-ifeq (y, $(filter y, $(CONFIG_MACH_MT6893)))
-MTK_PLATFORM := mt6885
-CONFIG_MTK_PLATFORM := "mt6885"
+CCCI_OBJ=y
+else ifeq ($(CONFIG_MTK_ECCCI_DRIVER), m)
+CCCI_OBJ=m
 else
-MTK_PLATFORM := $(CONFIG_MTK_PLATFORM)
+CCCI_OBJ=n
 endif
 
-ifeq ($(ENABLE_CCCI_UTIL), y)
+ifneq ($(CONFIG_MTK_ENG_BUILD),y)
+  ifeq ($(CONFIG_EXTREME_LOW_RAM), y)
+         ccflags-y += -DCCCI_LOG_DISABLE
+  endif
+endif
+
+ifneq ($(CCCI_OBJ), n)
 
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/ccci_util
-
-obj-y += ccci_util_lib.o
-ccci_util_lib-y := ccci_util_lib_fo.o
-ccci_util_lib-y += ccci_util_lib_load_img.o
-ccci_util_lib-y += ccci_util_lib_sys.o
-ccci_util_lib-y += ccci_private_log.o
-ccci_util_lib-y += ccci_util_lib_time.o
-ccci_util_lib-y += ccci_util_lib_main.o
-ccci_util_lib-y += ccci_util_ld_md_errno.o
-ccci_util_lib-y += ccci_util_broadcast.o
-ccci_util_lib-y += ccci_util_sib.o
-endif
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/memory-amms
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/
 
 ifeq ($(CONFIG_MTK_SECURITY_SW_SUPPORT), y)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/masp/asfv2/asf_export_inc
-ccflags-y  += -DENABLE_MD_IMG_SECURITY_FEATURE
+ccflags-y += -DENABLE_MD_IMG_SECURITY_FEATURE
 endif
+
 ifeq ($(CONFIG_MTK_SEC_MODEM_NVRAM_ANTI_CLONE), y)
-ccflags-y  += -DMTK_SEC_MODEM_NVRAM_ANTI_CLONE
+ccflags-y += -DMTK_SEC_MODEM_NVRAM_ANTI_CLONE
 endif
 
-# always build platform, for power off md
-MTK_PLATFORM_DIR=$(srctree)/drivers/misc/mediatek/ccci_util/$(subst ",,$(CONFIG_MTK_PLATFORM))
-mtkplatform_exist=$(shell if [ -d ${MTK_PLATFORM_DIR} ]; then echo "y"; else echo "n"; fi;)
-ifeq ($(mtkplatform_exist), y)
-obj-y += $(subst ",,$(CONFIG_MTK_PLATFORM))/
-endif
+obj-$(CCCI_OBJ) += ccci_util_lib.o
+ccci_util_lib-$(CCCI_OBJ) := ccci_util_lib_fo.o \
+			ccci_util_lib_load_img.o \
+			ccci_util_lib_sys.o \
+			ccci_private_log.o \
+			ccci_util_lib_time.o \
+			ccci_util_lib_main.o \
+			ccci_util_ld_md_errno.o \
+			ccci_util_broadcast.o \
+			ccci_util_pin_broadcast.o \
+			ccci_util_sib.o \
+			ccci_util_md_rat.o
 
 endif
+endif
 
-obj-y += ccci_util_dummy.o # avoid build error
+obj-y += CCCI_UTIL_DUMMY.o # avoid build error
+CCCI_UTIL_DUMMY-y := ccci_util_dummy.o

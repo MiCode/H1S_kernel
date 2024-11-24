@@ -1,38 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Universal Flash Storage Turbo Write
- *
  * Copyright (C) 2017-2018 Samsung Electronics Co., Ltd.
- *
- * Authors:
- *	Yongmyung Lee <ymhungry.lee@samsung.com>
- *	Jinyoung Choi <j-young.choi@samsung.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- * See the COPYING file in the top-level directory or visit
- * <http://www.gnu.org/licenses/gpl-2.0.html>
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * This program is provided "AS IS" and "WITH ALL FAULTS" and
- * without warranty of any kind. You are solely responsible for
- * determining the appropriateness of using and distributing
- * the program and assume all risks associated with your exercise
- * of rights with respect to the program, including but not limited
- * to infringement of third party rights, the risks and costs of
- * program errors, damage to or loss of data, programs or equipment,
- * and unavailability or interruption of operations. Under no
- * circumstances will the contributor of this Program be liable for
- * any damages of any kind arising from your use or distribution of
- * this program.
- *
- * The Linux Foundation chooses to take subject only to the GPLv2
- * license terms, and distributes only under these terms.
  */
 
 
@@ -103,7 +71,7 @@ static void ufstw_lifetime_work_fn(struct work_struct *work)
 			       &tw->tw_lifetime_est))
 		goto out;
 
-#if defined(CONFIG_UFSTW_IGNORE_GUARANTEE_BIT)
+#if defined(CONFIG_SCSI_UFS_TW_IGNORE_GUARANTEE_BIT)
 	if (tw->tw_lifetime_est & MASK_UFSTW_LIFETIME_NOT_GUARANTEE) {
 		WARNING_MSG("warn: lun %d - dTurboWriteBufferLifeTimeEst[31] == 1", tw->lun);
 		WARNING_MSG("Device not guarantee the lifetime of Turbo Write Buffer");
@@ -800,7 +768,7 @@ static void ufstw_lu_init(struct ufsf_feature *ufsf, unsigned int lun)
 	/* Read Flag, Attribute */
 	ufstw_lu_update(tw);
 
-#if defined(CONFIG_UFSTW_IGNORE_GUARANTEE_BIT)
+#if defined(CONFIG_SCSI_UFS_TW_IGNORE_GUARANTEE_BIT)
 	if (tw->tw_lifetime_est & MASK_UFSTW_LIFETIME_NOT_GUARANTEE) {
 		WARNING_MSG("warn: lun %d - dTurboWriteBufferLifeTimeEst[31] == 1", lun);
 		WARNING_MSG("Device not guarantee the lifetime of Turbo Write Buffer");
@@ -1117,6 +1085,18 @@ void ufstw_reset_work_fn(struct work_struct *work)
 	int ret;
 
 	ufsf = container_of(work, struct ufsf_feature, tw_reset_work);
+
+	/*
+	 * If down eh_sem and runtime resume fail, it will block eh_work and
+	 * cause deadlock.
+	 * 1. eh_work wait eh_sem
+	 * 2. tw_reset_work wait runtime resume
+	 * 3. rumtime resume wait eh_work do link recovery
+	 * Here make sure runtime resume success.
+	 */
+	pm_runtime_get_sync(ufsf->hba->dev);
+
+	down(&ufsf->hba->eh_sem);
 	TW_DEBUG(ufsf, "reset tw_kref.refcount=%d",
 		 atomic_read(&ufsf->tw_kref.refcount.refs));
 
@@ -1128,12 +1108,18 @@ void ufstw_reset_work_fn(struct work_struct *work)
 	if (ret == 0) {
 		ERR_MSG("UFSTW kref is not init_value(=1). kref count = %d ret = %d. So, TW_RESET_FAIL",
 			atomic_read(&ufsf->tw_kref.refcount.refs), ret);
+		up(&ufsf->hba->eh_sem);
+
+		pm_runtime_put_sync(ufsf->hba->dev);
 		return;
 	}
 
 	INIT_INFO("TW_RESET_START");
 
 	ufstw_reset(ufsf);
+	up(&ufsf->hba->eh_sem);
+
+	pm_runtime_put_sync(ufsf->hba->dev);
 }
 
 /* protected by mutex mode_lock  */

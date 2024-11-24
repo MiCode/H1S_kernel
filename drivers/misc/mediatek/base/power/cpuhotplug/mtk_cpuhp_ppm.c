@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) "cpuhp: " fmt
@@ -29,6 +21,18 @@ static DEFINE_MUTEX(ppm_mutex);
 
 #ifdef CONFIG_PM_SLEEP
 static struct wakeup_source *hps_ws;
+#endif
+
+#ifdef CONFIG_ARM
+#define CPU_DOWN	cpu_down
+#define CPU_UP		cpu_up
+#else
+#define CPU_DOWN(i)	\
+	(get_cpu_device(i) == NULL ? false \
+	: device_offline(get_cpu_device(i)))
+#define CPU_UP(i)	\
+	(get_cpu_device(i) == NULL ? false \
+	: device_online(get_cpu_device(i)))
 #endif
 
 #define HPS_RETRY	10
@@ -65,7 +69,7 @@ static int ppm_thread_fn(void *data)
 
 		/* process the request of up each CPUs from PPM */
 		for_each_possible_cpu(i) {
-			struct device *cpu_dev;
+
 
 			request_cpu_up = cpumask_test_cpu(i, &ppm_cpus_req);
 
@@ -75,13 +79,7 @@ static int ppm_thread_fn(void *data)
 				pr_debug_ratelimited("CPU%d: ppm-request=%d, offline->powerup\n",
 					 i, request_cpu_up);
 Retry_ON:
-				cpu_dev = get_cpu_device(i);
-				if (!cpu_dev) {
-					pr_info("get cpu%d fail!\n", i);
-					continue;
-				}
-
-				rc = device_online(cpu_dev);
+				rc = CPU_UP(i);
 				if (rc)	{
 					if (retry > HPS_RETRY) {
 						pr_debug_ratelimited(
@@ -99,8 +97,6 @@ Retry_ON:
 
 		/* process the request of down each CPUs from PPM */
 		for_each_possible_cpu(i) {
-			struct device *cpu_dev;
-
 			request_cpu_up = cpumask_test_cpu(i, &ppm_cpus_req);
 
 			if (!request_cpu_up && cpu_online(i)) {
@@ -109,13 +105,8 @@ Retry_ON:
 				pr_debug_ratelimited("CPU%d: ppm-request=%d, online->powerdown\n",
 					 i, request_cpu_up);
 Retry_OFF:
-				cpu_dev = get_cpu_device(i);
-				if (!cpu_dev) {
-					pr_info("get cpu%d fail!\n", i);
-					continue;
-				}
 
-				rc = device_offline(cpu_dev);
+				rc = CPU_DOWN(i);
 				if (rc) {
 					if (retry > HPS_RETRY) {
 						pr_debug_ratelimited(
@@ -156,6 +147,7 @@ void ppm_notifier(void)
 	unsigned int cpu;
 	struct device_node *dn = 0;
 	const char *smp_method = 0;
+
 	cpumask_copy(&ppm_online_cpus, cpu_online_mask);
 
 	for_each_present_cpu(cpu) {

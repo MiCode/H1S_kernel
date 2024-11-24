@@ -119,13 +119,13 @@
 
 #include <linux/fs.h>
 #include <linux/wait.h>
-
+#include <linux/atomic.h>
 
 /*
  * the semaphore definition
  */
 struct ld_semaphore {
-	long			count;
+	atomic_long_t		count;
 	raw_spinlock_t		wait_lock;
 	unsigned int		wait_readers;
 	struct list_head	read_wait;
@@ -187,7 +187,7 @@ struct tty_ldisc_ops {
 	long	(*compat_ioctl)(struct tty_struct *tty, struct file *file,
 				unsigned int cmd, unsigned long arg);
 	void	(*set_termios)(struct tty_struct *tty, struct ktermios *old);
-	unsigned int (*poll)(struct tty_struct *, struct file *,
+	__poll_t (*poll)(struct tty_struct *, struct file *,
 			     struct poll_table_struct *);
 	int	(*hangup)(struct tty_struct *tty);
 

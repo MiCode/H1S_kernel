@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2016 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) "cpuhp: " fmt
@@ -21,17 +13,51 @@
 
 #include "mtk_cpuhp_private.h"
 
+static int arch_get_nr_clusters(void)
+{
+	return arch_nr_clusters();
+}
+
+static int arch_get_cluster_id(unsigned int cpu)
+{
+	return arch_cpu_cluster_id(cpu);
+}
+
+#ifdef CONFIG_ARM64
+static void arch_get_cluster_cpus(struct cpumask *cpus, int cluster_id)
+{
+	unsigned int cpu;
+
+	cpumask_clear(cpus);
+	for_each_possible_cpu(cpu) {
+		struct cpu_topology *cpu_topo = &cpu_topology[cpu];
+
+		if (cpu_topo->package_id == cluster_id)
+			cpumask_set_cpu(cpu, cpus);
+	}
+}
+# else
+static void arch_get_cluster_cpus(struct cpumask *cpus, int cluster_id)
+{
+	unsigned int cpu;
+
+	cpumask_clear(cpus);
+	for_each_possible_cpu(cpu) {
+		struct cputopo_arm *cpu_topo = &cpu_topology[cpu];
+
+		if (cpu_topo->socket_id == cluster_id)
+			cpumask_set_cpu(cpu, cpus);
+	}
+}
+#endif
+
 static int is_multi_cluster(void)
 {
-#if defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893)
-	return 0;
-#else
 	struct device_node *cn, *map;
 
 	cn = of_find_node_by_path("/cpus");
 	if (!cn) {
-		pr_err("No CPU information found in DT\n");
+		pr_debug("No CPU information found in DT\n");
 		return 0;
 	}
 
@@ -45,7 +71,6 @@ static int is_multi_cluster(void)
 	}
 
 	return 0;
-#endif
 }
 
 static int get_cpu_topology(int cpu, int *isalone)
@@ -120,42 +145,6 @@ static int cpuhp_cpu_up(unsigned int cpu)
 	return rc;
 }
 
-#if 0 /* obsolete */
-static int cpuhp_callback(struct notifier_block *nb,
-			  unsigned long action, void *hcpu)
-{
-	int cluster;
-	int isalone;
-
-	ulong cpu = (ulong)hcpu;
-	int rc = 0;
-
-	/* do platform-depend hotplug implementation */
-	switch (action) {
-	case CPU_UP_PREPARE:
-	case CPU_UP_PREPARE_FROZEN:
-		cluster = get_cpu_topology(cpu, &isalone);
-
-		pr_debug("cluster=%d, cpu=%d, isalone=%d\n",
-			 cluster, (int)cpu, isalone);
-
-		rc = cpuhp_platform_cpuon(cluster, cpu, isalone, action);
-		break;
-	case CPU_DEAD:
-	case CPU_DEAD_FROZEN:
-		cluster = get_cpu_topology(cpu, &isalone);
-
-		pr_debug("cluster=%d, cpu=%d, isalone=%d\n",
-			 cluster, (int)cpu, isalone);
-
-		rc = cpuhp_platform_cpuoff(cluster, cpu, isalone, action);
-		break;
-	}
-
-	return notifier_from_errno(rc);
-}
-#endif /* obsolete */
-
 #ifdef CONFIG_PM_SLEEP
 static int cpuhp_pm_callback(struct notifier_block *nb,
 			     unsigned long action, void *ptr)
@@ -182,10 +171,6 @@ static int __init cpuhp_init(void)
 	int rc;
 
 	pr_debug("%s+\n", __func__);
-
-#if 0 /* obsolete */
-	hotcpu_notifier(cpuhp_callback, 0);
-#endif /* obsolete */
 
 	cpuhp_setup_state_nocalls(CPUHP_BP_PREPARE_DYN,
 				"hps/cpuhotplug",

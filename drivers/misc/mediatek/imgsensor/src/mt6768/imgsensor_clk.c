@@ -1,20 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 #include "imgsensor_common.h"
 
 #include <linux/clk.h>
 #include "imgsensor_clk.h"
-
+#include <linux/soc/mediatek/mtk-pm-qos.h> 
 
 /*by platform settings and elements should not be reordered */
 char *gimgsensor_mclk_name[IMGSENSOR_CCF_MAX_NUM] = {
@@ -67,7 +60,7 @@ enum {
 };
 
 #ifdef IMGSENSOR_DFS_CTRL_ENABLE
-struct pm_qos_request imgsensor_qos;
+struct mtk_pm_qos_request imgsensor_qos;
 
 int imgsensor_dfs_ctrl(enum DFS_OPTION option, void *pbuff)
 {
@@ -84,24 +77,24 @@ int imgsensor_dfs_ctrl(enum DFS_OPTION option, void *pbuff)
 
 	switch (option) {
 	case DFS_CTRL_ENABLE:
-		pm_qos_add_request(&imgsensor_qos, PM_QOS_CAM_FREQ, 0);
+		mtk_pm_qos_add_request(&imgsensor_qos, PM_QOS_CAM_FREQ, 0);
 		pr_debug("seninf PMQoS turn on\n");
 		break;
 	case DFS_CTRL_DISABLE:
-		pm_qos_remove_request(&imgsensor_qos);
+		mtk_pm_qos_remove_request(&imgsensor_qos);
 		pr_debug("seninf PMQoS turn off\n");
 		break;
 	case DFS_UPDATE:
 		pr_debug(
 			"seninf Set isp clock level:%d\n",
 			*(unsigned int *)pbuff);
-		pm_qos_update_request(&imgsensor_qos, *(unsigned int *)pbuff);
+		mtk_pm_qos_update_request(&imgsensor_qos, *(unsigned int *)pbuff);
 
 		break;
 	case DFS_RELEASE:
 		pr_debug(
 			"seninf release and set isp clk request to 0\n");
-		pm_qos_update_request(&imgsensor_qos, 0);
+		mtk_pm_qos_update_request(&imgsensor_qos, 0);
 
 		break;
 	case DFS_SUPPORTED_ISP_CLOCKS:
@@ -205,7 +198,6 @@ int imgsensor_clk_set(
 			break;
 	}
 	if (pmclk->TG >= IMGSENSOR_CCF_MCLK_TG_MAX_NUM ||
-		pmclk->TG < IMGSENSOR_CCF_MCLK_TG_MIN_NUM ||
 		mclk_index == MCLK_MAX) {
 		pr_err(
 		    "[CAMERA SENSOR]kdSetSensorMclk out of range, tg=%d, freq= %d\n",

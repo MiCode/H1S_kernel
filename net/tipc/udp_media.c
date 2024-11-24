@@ -47,6 +47,8 @@
 #include <net/addrconf.h>
 #include <linux/tipc_netlink.h>
 #include "core.h"
+#include "addr.h"
+#include "net.h"
 #include "bearer.h"
 #include "netlink.h"
 #include "msg.h"
@@ -125,8 +127,11 @@ static int tipc_udp_addr2str(struct tipc_media_addr *a, char *buf, int size)
 		snprintf(buf, size, "%pI4:%u", &ua->ipv4, ntohs(ua->port));
 	else if (ntohs(ua->proto) == ETH_P_IPV6)
 		snprintf(buf, size, "%pI6:%u", &ua->ipv6, ntohs(ua->port));
-	else
+	else {
 		pr_err("Invalid UDP media address\n");
+		return 1;
+	}
+
 	return 0;
 }
 
@@ -646,6 +651,7 @@ static int tipc_udp_enable(struct net *net, struct tipc_bearer *b,
 	struct udp_port_cfg udp_conf = {0};
 	struct udp_tunnel_sock_cfg tuncfg = {NULL};
 	struct nlattr *opts[TIPC_NLA_UDP_MAX + 1];
+	u8 node_id[NODE_ID_LEN] = {0,};
 
 	ub = kzalloc(sizeof(*ub), GFP_ATOMIC);
 	if (!ub)
@@ -681,6 +687,17 @@ static int tipc_udp_enable(struct net *net, struct tipc_bearer *b,
 		goto err;
 	}
 
+	/* Autoconfigure own node identity if needed */
+	if (!tipc_own_id(net)) {
+		memcpy(node_id, local.ipv6.in6_u.u6_addr8, 16);
+		tipc_net_init(net, node_id, 0);
+	}
+	if (!tipc_own_id(net)) {
+		pr_warn("Failed to set node id, please configure manually\n");
+		err = -EINVAL;
+		goto err;
+	}
+
 	b->bcast_addr.media_id = TIPC_MEDIA_TYPE_UDP;
 	b->bcast_addr.broadcast = TIPC_BROADCAST_SUPPORT;
 	rcu_assign_pointer(b->media_ptr, ub);
@@ -703,8 +720,7 @@ static int tipc_udp_enable(struct net *net, struct tipc_bearer *b,
 			err = -EINVAL;
 			goto err;
 		}
-		b->mtu = dev->mtu - sizeof(struct iphdr)
-			- sizeof(struct udphdr);
+		b->mtu = b->media->mtu;
 #if IS_ENABLED(CONFIG_IPV6)
 	} else if (local.proto == htons(ETH_P_IPV6)) {
 		udp_conf.family = AF_INET6;
@@ -793,6 +809,7 @@ struct tipc_media udp_media_info = {
 	.priority	= TIPC_DEF_LINK_PRI,
 	.tolerance	= TIPC_DEF_LINK_TOL,
 	.window		= TIPC_DEF_LINK_WIN,
+	.mtu		= TIPC_DEF_LINK_UDP_MTU,
 	.type_id	= TIPC_MEDIA_TYPE_UDP,
 	.hwaddr_len	= 0,
 	.name		= "udp"

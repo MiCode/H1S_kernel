@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -41,9 +33,6 @@
 #if defined(CONFIG_MTK_PMIC) || defined(CONFIG_MTK_PMIC_NEW_ARCH)
 #include <mt-plat/upmu_common.h>
 #endif
-#ifdef CONFIG_MTK_TINYSYS_SCP_SUPPORT
-#include <scp_dvfs.h>
-#endif /* CONFIG_MTK_TINYSYS_SCP_SUPPORT */
 #if defined(CONFIG_MACH_MT6739)
 #include <mt-plat/mtk_secure_api.h>
 #endif /* CONFIG_MACH_MT6739 */
@@ -368,8 +357,8 @@ void spm_set_dummy_read_addr(int debug)
 		spm_crit("dummy read addr(4GB: %d): rank0: 0x%llx, rank1: 0x%llx\n",
 				enable_4G(), rank0_addr, rank1_addr);
 
-	mt_secure_call(MTK_SIP_KERNEL_SPM_DUMMY_READ,
-		       rank0_addr, rank1_addr, 0, 0);
+	SMC_CALL(MTK_SIP_KERNEL_SPM_DUMMY_READ,
+		       rank0_addr, rank1_addr, 0);
 #endif /* CONFIG_MACH_MT6739 */
 }
 

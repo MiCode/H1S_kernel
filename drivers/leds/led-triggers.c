@@ -103,15 +103,16 @@ ssize_t led_trigger_show(struct device *dev, struct device_attribute *attr,
 EXPORT_SYMBOL_GPL(led_trigger_show);
 
 /* Caller must ensure led_cdev->trigger_lock held */
-void led_trigger_set(struct led_classdev *led_cdev, struct led_trigger *trig)
+int led_trigger_set(struct led_classdev *led_cdev, struct led_trigger *trig)
 {
 	unsigned long flags;
 	char *event = NULL;
 	char *envp[2];
 	const char *name;
+	int ret;
 
 	if (!led_cdev->trigger && !trig)
-		return;
+		return 0;
 
 	name = trig ? trig->name : "none";
 	event = kasprintf(GFP_KERNEL, "TRIGGER=%s", name);
@@ -124,9 +125,12 @@ void led_trigger_set(struct led_classdev *led_cdev, struct led_trigger *trig)
 			flags);
 		cancel_work_sync(&led_cdev->set_brightness_work);
 		led_stop_software_blink(led_cdev);
+		device_remove_groups(led_cdev->dev, led_cdev->trigger->groups);
 		if (led_cdev->trigger->deactivate)
 			led_cdev->trigger->deactivate(led_cdev);
 		led_cdev->trigger = NULL;
+		led_cdev->trigger_data = NULL;
+		led_cdev->activated = false;
 		led_set_brightness(led_cdev, LED_OFF);
 	}
 	if (trig) {
@@ -134,8 +138,20 @@ void led_trigger_set(struct led_classdev *led_cdev, struct led_trigger *trig)
 		list_add_tail(&led_cdev->trig_list, &trig->led_cdevs);
 		write_unlock_irqrestore(&trig->leddev_list_lock, flags);
 		led_cdev->trigger = trig;
+
 		if (trig->activate)
-			trig->activate(led_cdev);
+			ret = trig->activate(led_cdev);
+		else
+			ret = 0;
+
+		if (ret)
+			goto err_activate;
+
+		ret = device_add_groups(led_cdev->dev, trig->groups);
+		if (ret) {
+			dev_err(led_cdev->dev, "Failed to add trigger attributes\n");
+			goto err_add_groups;
+		}
 	}
 
 	if (event) {
@@ -146,6 +162,24 @@ void led_trigger_set(struct led_classdev *led_cdev, struct led_trigger *trig)
 				"%s: Error sending uevent\n", __func__);
 		kfree(event);
 	}
+
+	return 0;
+
+err_add_groups:
+
+	if (trig->deactivate)
+		trig->deactivate(led_cdev);
+err_activate:
+
+	write_lock_irqsave(&led_cdev->trigger->leddev_list_lock, flags);
+	list_del(&led_cdev->trig_list);
+	write_unlock_irqrestore(&led_cdev->trigger->leddev_list_lock, flags);
+	led_cdev->trigger = NULL;
+	led_cdev->trigger_data = NULL;
+	led_set_brightness(led_cdev, LED_OFF);
+	kfree(event);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(led_trigger_set);
 
@@ -283,14 +317,15 @@ void led_trigger_event(struct led_trigger *trig,
 			enum led_brightness brightness)
 {
 	struct led_classdev *led_cdev;
+	unsigned long flags;
 
 	if (!trig)
 		return;
 
-	read_lock(&trig->leddev_list_lock);
+	read_lock_irqsave(&trig->leddev_list_lock, flags);
 	list_for_each_entry(led_cdev, &trig->led_cdevs, trig_list)
 		led_set_brightness(led_cdev, brightness);
-	read_unlock(&trig->leddev_list_lock);
+	read_unlock_irqrestore(&trig->leddev_list_lock, flags);
 }
 EXPORT_SYMBOL_GPL(led_trigger_event);
 
@@ -301,11 +336,12 @@ static void led_trigger_blink_setup(struct led_trigger *trig,
 			     int invert)
 {
 	struct led_classdev *led_cdev;
+	unsigned long flags;
 
 	if (!trig)
 		return;
 
-	read_lock(&trig->leddev_list_lock);
+	read_lock_irqsave(&trig->leddev_list_lock, flags);
 	list_for_each_entry(led_cdev, &trig->led_cdevs, trig_list) {
 		if (oneshot)
 			led_blink_set_oneshot(led_cdev, delay_on, delay_off,
@@ -313,7 +349,7 @@ static void led_trigger_blink_setup(struct led_trigger *trig,
 		else
 			led_blink_set(led_cdev, delay_on, delay_off);
 	}
-	read_unlock(&trig->leddev_list_lock);
+	read_unlock_irqrestore(&trig->leddev_list_lock, flags);
 }
 
 void led_trigger_blink(struct led_trigger *trig,

@@ -51,10 +51,10 @@
  *
  * 1) epmutex (mutex)
  * 2) ep->mtx (mutex)
- * 3) ep->lock (spinlock)
+ * 3) ep->wq.lock (spinlock)
  *
  * The acquire order is the one listed above, from 1 to 3.
- * We need a spinlock (ep->lock) because we manipulate objects
+ * We need a spinlock (ep->wq.lock) because we manipulate objects
  * from inside the poll callback, that might be triggered from
  * a wake_up() that in turn might be called from IRQ context.
  * So we can't sleep inside the poll callback and hence we need
@@ -86,7 +86,7 @@
  * of epoll file descriptors, we use the current recursion depth as
  * the lockdep subkey.
  * It is possible to drop the "ep->mtx" and to use the global
- * mutex "epmutex" (together with "ep->lock") to have it working,
+ * mutex "epmutex" (together with "ep->wq.lock") to have it working,
  * but having "ep->mtx" will make the interface more scalable.
  * Events that require holding "epmutex" are very rare, while for
  * normal operations the epoll private "ep->mtx" will guarantee
@@ -96,9 +96,9 @@
 /* Epoll private bits inside the event mask */
 #define EP_PRIVATE_BITS (EPOLLWAKEUP | EPOLLONESHOT | EPOLLET | EPOLLEXCLUSIVE)
 
-#define EPOLLINOUT_BITS (POLLIN | POLLOUT)
+#define EPOLLINOUT_BITS (EPOLLIN | EPOLLOUT)
 
-#define EPOLLEXCLUSIVE_OK_BITS (EPOLLINOUT_BITS | POLLERR | POLLHUP | \
+#define EPOLLEXCLUSIVE_OK_BITS (EPOLLINOUT_BITS | EPOLLERR | EPOLLHUP | \
 				EPOLLWAKEUP | EPOLLET | EPOLLEXCLUSIVE)
 
 /* Maximum number of nesting allowed inside epoll sets */
@@ -183,11 +183,10 @@ struct epitem {
  * This structure is stored inside the "private_data" member of the file
  * structure and represents the main data structure for the eventpoll
  * interface.
+ *
+ * Access to it is protected by the lock inside wq.
  */
 struct eventpoll {
-	/* Protect the access to this structure */
-	spinlock_t lock;
-
 	/*
 	 * This mutex is used to ensure that files are not removed
 	 * while epoll is using them. This is held during the event
@@ -211,7 +210,7 @@ struct eventpoll {
 	/*
 	 * This is a single linked list that chains all the "struct epitem" that
 	 * happened while transferring ready events to userspace w/out
-	 * holding ->lock.
+	 * holding ->wq.lock.
 	 */
 	struct epitem *ovflist;
 
@@ -224,8 +223,7 @@ struct eventpoll {
 	struct file *file;
 
 	/* used to optimize loop detection check */
-	int visited;
-	struct list_head visited_list_link;
+	u64 gen;
 
 #ifdef CONFIG_NET_RX_BUSY_POLL
 	/* used to track busy poll napi_id */
@@ -261,6 +259,7 @@ struct ep_pqueue {
 struct ep_send_events_data {
 	int maxevents;
 	struct epoll_event __user *events;
+	int res;
 };
 
 /*
@@ -274,23 +273,16 @@ static long max_user_watches __read_mostly;
  */
 static DEFINE_MUTEX(epmutex);
 
+static u64 loop_check_gen = 0;
+
 /* Used to check for epoll file descriptor inclusion loops */
 static struct nested_calls poll_loop_ncalls;
-
-/* Used for safe wake up implementation */
-static struct nested_calls poll_safewake_ncalls;
-
-/* Used to call file's f_op->poll() under the nested calls boundaries */
-static struct nested_calls poll_readywalk_ncalls;
 
 /* Slab cache used to allocate "struct epitem" */
 static struct kmem_cache *epi_cache __read_mostly;
 
 /* Slab cache used to allocate "struct eppoll_entry" */
 static struct kmem_cache *pwq_cache __read_mostly;
-
-/* Visited nodes during ep_loop_check(), so we can unset them when we finish */
-static LIST_HEAD(visited_list);
 
 /*
  * List of files with newly added links, where we may need to limit the number
@@ -343,9 +335,9 @@ static inline int ep_cmp_ffd(struct epoll_filefd *p1,
 }
 
 /* Tells us if the item is currently linked */
-static inline int ep_is_linked(struct list_head *p)
+static inline int ep_is_linked(struct epitem *epi)
 {
-	return !list_empty(p);
+	return !list_empty(&epi->rdllink);
 }
 
 static inline struct eppoll_entry *ep_pwq_from_wait(wait_queue_entry_t *p)
@@ -398,7 +390,6 @@ static bool ep_busy_loop_end(void *p, unsigned long start_time)
 
 	return ep_events_available(ep) || busy_loop_timeout(start_time);
 }
-#endif /* CONFIG_NET_RX_BUSY_POLL */
 
 /*
  * Busy poll if globally on and supporting sockets found && no events,
@@ -408,20 +399,16 @@ static bool ep_busy_loop_end(void *p, unsigned long start_time)
  */
 static void ep_busy_loop(struct eventpoll *ep, int nonblock)
 {
-#ifdef CONFIG_NET_RX_BUSY_POLL
 	unsigned int napi_id = READ_ONCE(ep->napi_id);
 
 	if ((napi_id >= MIN_NAPI_ID) && net_busy_loop_on())
 		napi_busy_loop(napi_id, nonblock ? NULL : ep_busy_loop_end, ep);
-#endif
 }
 
 static inline void ep_reset_busy_poll_napi_id(struct eventpoll *ep)
 {
-#ifdef CONFIG_NET_RX_BUSY_POLL
 	if (ep->napi_id)
 		ep->napi_id = 0;
-#endif
 }
 
 /*
@@ -429,7 +416,6 @@ static inline void ep_reset_busy_poll_napi_id(struct eventpoll *ep)
  */
 static inline void ep_set_busy_poll_napi_id(struct epitem *epi)
 {
-#ifdef CONFIG_NET_RX_BUSY_POLL
 	struct eventpoll *ep;
 	unsigned int napi_id;
 	struct socket *sock;
@@ -459,8 +445,23 @@ static inline void ep_set_busy_poll_napi_id(struct epitem *epi)
 
 	/* record NAPI ID for use in next busy poll */
 	ep->napi_id = napi_id;
-#endif
 }
+
+#else
+
+static inline void ep_busy_loop(struct eventpoll *ep, int nonblock)
+{
+}
+
+static inline void ep_reset_busy_poll_napi_id(struct eventpoll *ep)
+{
+}
+
+static inline void ep_set_busy_poll_napi_id(struct epitem *epi)
+{
+}
+
+#endif /* CONFIG_NET_RX_BUSY_POLL */
 
 /**
  * ep_call_nested - Perform a bound (possibly) nested call, by checking
@@ -552,40 +553,21 @@ out_unlock:
  * this special case of epoll.
  */
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
-static inline void ep_wake_up_nested(wait_queue_head_t *wqueue,
-				     unsigned long events, int subclass)
-{
-	unsigned long flags;
 
-	spin_lock_irqsave_nested(&wqueue->lock, flags, subclass);
-	wake_up_locked_poll(wqueue, events);
-	spin_unlock_irqrestore(&wqueue->lock, flags);
-}
-#else
-static inline void ep_wake_up_nested(wait_queue_head_t *wqueue,
-				     unsigned long events, int subclass)
-{
-	wake_up_poll(wqueue, events);
-}
-#endif
+static struct nested_calls poll_safewake_ncalls;
 
 static int ep_poll_wakeup_proc(void *priv, void *cookie, int call_nests)
 {
-	ep_wake_up_nested((wait_queue_head_t *) cookie, POLLIN,
-			  1 + call_nests);
+	unsigned long flags;
+	wait_queue_head_t *wqueue = (wait_queue_head_t *)cookie;
+
+	spin_lock_irqsave_nested(&wqueue->lock, flags, call_nests + 1);
+	wake_up_locked_poll(wqueue, EPOLLIN);
+	spin_unlock_irqrestore(&wqueue->lock, flags);
+
 	return 0;
 }
 
-/*
- * Perform a safe wake up of the poll wait list. The problem is that
- * with the new callback'd wake up system, it is possible that the
- * poll callback is reentered from inside the call to wake_up() done
- * on the poll wait queue head. The rule is that we cannot reenter the
- * wake up code from the same task more than EP_MAX_NESTS times,
- * and we cannot reenter the same wait queue head at all. This will
- * enable to have a hierarchy of epoll file descriptor of no more than
- * EP_MAX_NESTS deep.
- */
 static void ep_poll_safewake(wait_queue_head_t *wq)
 {
 	int this_cpu = get_cpu();
@@ -595,6 +577,15 @@ static void ep_poll_safewake(wait_queue_head_t *wq)
 
 	put_cpu();
 }
+
+#else
+
+static void ep_poll_safewake(wait_queue_head_t *wq)
+{
+	wake_up_poll(wq, EPOLLIN);
+}
+
+#endif
 
 static void ep_remove_wait_queue(struct eppoll_entry *pwq)
 {
@@ -677,15 +668,17 @@ static inline void ep_pm_stay_awake_rcu(struct epitem *epi)
  *
  * Returns: The same integer error code returned by the @sproc callback.
  */
-static int ep_scan_ready_list(struct eventpoll *ep,
-			      int (*sproc)(struct eventpoll *,
+static __poll_t ep_scan_ready_list(struct eventpoll *ep,
+			      __poll_t (*sproc)(struct eventpoll *,
 					   struct list_head *, void *),
 			      void *priv, int depth, bool ep_locked)
 {
-	int error, pwake = 0;
-	unsigned long flags;
+	__poll_t res;
+	int pwake = 0;
 	struct epitem *epi, *nepi;
 	LIST_HEAD(txlist);
+
+	lockdep_assert_irqs_enabled();
 
 	/*
 	 * We need to lock this because we could be hit by
@@ -703,17 +696,17 @@ static int ep_scan_ready_list(struct eventpoll *ep,
 	 * because we want the "sproc" callback to be able to do it
 	 * in a lockless way.
 	 */
-	spin_lock_irqsave(&ep->lock, flags);
+	spin_lock_irq(&ep->wq.lock);
 	list_splice_init(&ep->rdllist, &txlist);
 	ep->ovflist = NULL;
-	spin_unlock_irqrestore(&ep->lock, flags);
+	spin_unlock_irq(&ep->wq.lock);
 
 	/*
 	 * Now call the callback function.
 	 */
-	error = (*sproc)(ep, &txlist, priv);
+	res = (*sproc)(ep, &txlist, priv);
 
-	spin_lock_irqsave(&ep->lock, flags);
+	spin_lock_irq(&ep->wq.lock);
 	/*
 	 * During the time we spent inside the "sproc" callback, some
 	 * other events might have been queued by the poll callback.
@@ -727,7 +720,7 @@ static int ep_scan_ready_list(struct eventpoll *ep,
 		 * queued into ->ovflist but the "txlist" might already
 		 * contain them, and the list_splice() below takes care of them.
 		 */
-		if (!ep_is_linked(&epi->rdllink)) {
+		if (!ep_is_linked(epi)) {
 			list_add_tail(&epi->rdllink, &ep->rdllist);
 			ep_pm_stay_awake(epi);
 		}
@@ -755,7 +748,7 @@ static int ep_scan_ready_list(struct eventpoll *ep,
 		if (waitqueue_active(&ep->poll_wait))
 			pwake++;
 	}
-	spin_unlock_irqrestore(&ep->lock, flags);
+	spin_unlock_irq(&ep->wq.lock);
 
 	if (!ep_locked)
 		mutex_unlock(&ep->mtx);
@@ -764,7 +757,7 @@ static int ep_scan_ready_list(struct eventpoll *ep,
 	if (pwake)
 		ep_poll_safewake(&ep->poll_wait);
 
-	return error;
+	return res;
 }
 
 static void epi_rcu_free(struct rcu_head *head)
@@ -779,16 +772,12 @@ static void epi_rcu_free(struct rcu_head *head)
  */
 static int ep_remove(struct eventpoll *ep, struct epitem *epi)
 {
-	unsigned long flags;
 	struct file *file = epi->ffd.file;
 
+	lockdep_assert_irqs_enabled();
+
 	/*
-	 * Removes poll wait queue hooks. We _have_ to do this without holding
-	 * the "ep->lock" otherwise a deadlock might occur. This because of the
-	 * sequence of the lock acquisition. Here we do "ep->lock" then the wait
-	 * queue head lock when unregistering the wait queue. The wakeup callback
-	 * will run by holding the wait queue head lock and will call our callback
-	 * that will try to get "ep->lock".
+	 * Removes poll wait queue hooks.
 	 */
 	ep_unregister_pollwait(ep, epi);
 
@@ -799,10 +788,10 @@ static int ep_remove(struct eventpoll *ep, struct epitem *epi)
 
 	rb_erase_cached(&epi->rbn, &ep->rbr);
 
-	spin_lock_irqsave(&ep->lock, flags);
-	if (ep_is_linked(&epi->rdllink))
+	spin_lock_irq(&ep->wq.lock);
+	if (ep_is_linked(epi))
 		list_del_init(&epi->rdllink);
-	spin_unlock_irqrestore(&ep->lock, flags);
+	spin_unlock_irq(&ep->wq.lock);
 
 	wakeup_source_unregister(ep_wakeup_source(epi));
 	/*
@@ -852,7 +841,7 @@ static void ep_free(struct eventpoll *ep)
 	 * Walks through the whole tree by freeing each "struct epitem". At this
 	 * point we are sure no poll callbacks will be lingering around, and also by
 	 * holding "epmutex" we can be sure that no file cleanup code will hit
-	 * us during this operation. So we can avoid the lock on "ep->lock".
+	 * us during this operation. So we can avoid the lock on "ep->wq.lock".
 	 * We do not need to lock ep->mtx, either, we only do it to prevent
 	 * a lockdep warning.
 	 */
@@ -881,25 +870,49 @@ static int ep_eventpoll_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static inline unsigned int ep_item_poll(struct epitem *epi, poll_table *pt)
-{
-	pt->_key = epi->event.events;
+static __poll_t ep_read_events_proc(struct eventpoll *ep, struct list_head *head,
+			       void *priv);
+static void ep_ptable_queue_proc(struct file *file, wait_queue_head_t *whead,
+				 poll_table *pt);
 
-	return epi->ffd.file->f_op->poll(epi->ffd.file, pt) & epi->event.events;
+/*
+ * Differs from ep_eventpoll_poll() in that internal callers already have
+ * the ep->mtx so we need to start from depth=1, such that mutex_lock_nested()
+ * is correctly annotated.
+ */
+static __poll_t ep_item_poll(const struct epitem *epi, poll_table *pt,
+				 int depth)
+{
+	struct eventpoll *ep;
+	bool locked;
+
+	pt->_key = epi->event.events;
+	if (!is_file_epoll(epi->ffd.file))
+		return vfs_poll(epi->ffd.file, pt) & epi->event.events;
+
+	ep = epi->ffd.file->private_data;
+	poll_wait(epi->ffd.file, &ep->poll_wait, pt);
+	locked = pt && (pt->_qproc == ep_ptable_queue_proc);
+
+	return ep_scan_ready_list(epi->ffd.file->private_data,
+				  ep_read_events_proc, &depth, depth,
+				  locked) & epi->event.events;
 }
 
-static int ep_read_events_proc(struct eventpoll *ep, struct list_head *head,
+static __poll_t ep_read_events_proc(struct eventpoll *ep, struct list_head *head,
 			       void *priv)
 {
 	struct epitem *epi, *tmp;
 	poll_table pt;
+	int depth = *(int *)priv;
 
 	init_poll_funcptr(&pt, NULL);
+	depth++;
 
 	list_for_each_entry_safe(epi, tmp, head, rdllink) {
-		if (ep_item_poll(epi, &pt))
-			return POLLIN | POLLRDNORM;
-		else {
+		if (ep_item_poll(epi, &pt, depth)) {
+			return EPOLLIN | EPOLLRDNORM;
+		} else {
 			/*
 			 * Item has been dropped into the ready list by the poll
 			 * callback, but it's not actually ready, as far as
@@ -913,48 +926,20 @@ static int ep_read_events_proc(struct eventpoll *ep, struct list_head *head,
 	return 0;
 }
 
-static void ep_ptable_queue_proc(struct file *file, wait_queue_head_t *whead,
-				 poll_table *pt);
-
-struct readyevents_arg {
-	struct eventpoll *ep;
-	bool locked;
-};
-
-static int ep_poll_readyevents_proc(void *priv, void *cookie, int call_nests)
+static __poll_t ep_eventpoll_poll(struct file *file, poll_table *wait)
 {
-	struct readyevents_arg *arg = priv;
-
-	return ep_scan_ready_list(arg->ep, ep_read_events_proc, NULL,
-				  call_nests + 1, arg->locked);
-}
-
-static unsigned int ep_eventpoll_poll(struct file *file, poll_table *wait)
-{
-	int pollflags;
 	struct eventpoll *ep = file->private_data;
-	struct readyevents_arg arg;
-
-	/*
-	 * During ep_insert() we already hold the ep->mtx for the tfile.
-	 * Prevent re-aquisition.
-	 */
-	arg.locked = wait && (wait->_qproc == ep_ptable_queue_proc);
-	arg.ep = ep;
+	int depth = 0;
 
 	/* Insert inside our poll wait queue */
 	poll_wait(file, &ep->poll_wait, wait);
 
 	/*
 	 * Proceed to find out if wanted events are really available inside
-	 * the ready list. This need to be done under ep_call_nested()
-	 * supervision, since the call to f_op->poll() done on listed files
-	 * could re-enter here.
+	 * the ready list.
 	 */
-	pollflags = ep_call_nested(&poll_readywalk_ncalls, EP_MAX_NESTS,
-				   ep_poll_readyevents_proc, &arg, ep, current);
-
-	return pollflags != -1 ? pollflags : 0;
+	return ep_scan_ready_list(ep, ep_read_events_proc,
+				  &depth, depth, false);
 }
 
 #ifdef CONFIG_PROC_FS
@@ -1036,7 +1021,6 @@ static int ep_alloc(struct eventpoll **pep)
 	if (unlikely(!ep))
 		goto free_uid;
 
-	spin_lock_init(&ep->lock);
 	mutex_init(&ep->mtx);
 	init_waitqueue_head(&ep->wq);
 	init_waitqueue_head(&ep->poll_wait);
@@ -1138,9 +1122,10 @@ static int ep_poll_callback(wait_queue_entry_t *wait, unsigned mode, int sync, v
 	unsigned long flags;
 	struct epitem *epi = ep_item_from_wait(wait);
 	struct eventpoll *ep = epi->ep;
+	__poll_t pollflags = key_to_poll(key);
 	int ewake = 0;
 
-	spin_lock_irqsave(&ep->lock, flags);
+	spin_lock_irqsave(&ep->wq.lock, flags);
 
 	ep_set_busy_poll_napi_id(epi);
 
@@ -1159,7 +1144,7 @@ static int ep_poll_callback(wait_queue_entry_t *wait, unsigned mode, int sync, v
 	 * callback. We need to be able to handle both cases here, hence the
 	 * test for "key" != NULL before the event match test.
 	 */
-	if (key && !((unsigned long) key & epi->event.events))
+	if (pollflags && !(pollflags & epi->event.events))
 		goto out_unlock;
 
 	/*
@@ -1185,7 +1170,7 @@ static int ep_poll_callback(wait_queue_entry_t *wait, unsigned mode, int sync, v
 	}
 
 	/* If this file is already in the ready list we exit soon */
-	if (!ep_is_linked(&epi->rdllink)) {
+	if (!ep_is_linked(epi)) {
 		list_add_tail(&epi->rdllink, &ep->rdllist);
 		ep_pm_stay_awake_rcu(epi);
 	}
@@ -1196,14 +1181,14 @@ static int ep_poll_callback(wait_queue_entry_t *wait, unsigned mode, int sync, v
 	 */
 	if (waitqueue_active(&ep->wq)) {
 		if ((epi->event.events & EPOLLEXCLUSIVE) &&
-					!((unsigned long)key & POLLFREE)) {
-			switch ((unsigned long)key & EPOLLINOUT_BITS) {
-			case POLLIN:
-				if (epi->event.events & POLLIN)
+					!(pollflags & POLLFREE)) {
+			switch (pollflags & EPOLLINOUT_BITS) {
+			case EPOLLIN:
+				if (epi->event.events & EPOLLIN)
 					ewake = 1;
 				break;
-			case POLLOUT:
-				if (epi->event.events & POLLOUT)
+			case EPOLLOUT:
+				if (epi->event.events & EPOLLOUT)
 					ewake = 1;
 				break;
 			case 0:
@@ -1217,7 +1202,7 @@ static int ep_poll_callback(wait_queue_entry_t *wait, unsigned mode, int sync, v
 		pwake++;
 
 out_unlock:
-	spin_unlock_irqrestore(&ep->lock, flags);
+	spin_unlock_irqrestore(&ep->wq.lock, flags);
 
 	/* We have to call this outside the lock */
 	if (pwake)
@@ -1226,7 +1211,7 @@ out_unlock:
 	if (!(epi->event.events & EPOLLEXCLUSIVE))
 		ewake = 1;
 
-	if ((unsigned long)key & POLLFREE) {
+	if (pollflags & POLLFREE) {
 		/*
 		 * If we race with ep_remove_wait_queue() it can miss
 		 * ->whead = NULL and do another remove_wait_queue() after
@@ -1392,7 +1377,7 @@ static int reverse_path_check(void)
 
 static int ep_create_wakeup_source(struct epitem *epi)
 {
-	const char *name;
+	struct name_snapshot n;
 	struct wakeup_source *ws;
 
 	if (!epi->ep->ws) {
@@ -1401,8 +1386,9 @@ static int ep_create_wakeup_source(struct epitem *epi)
 			return -ENOMEM;
 	}
 
-	name = epi->ffd.file->f_path.dentry->d_name.name;
-	ws = wakeup_source_register(NULL, name);
+	take_dentry_name_snapshot(&n, epi->ffd.file->f_path.dentry);
+	ws = wakeup_source_register(NULL, n.name);
+	release_dentry_name_snapshot(&n);
 
 	if (!ws)
 		return -ENOMEM;
@@ -1430,14 +1416,16 @@ static noinline void ep_destroy_wakeup_source(struct epitem *epi)
 /*
  * Must be called with "mtx" held.
  */
-static int ep_insert(struct eventpoll *ep, struct epoll_event *event,
+static int ep_insert(struct eventpoll *ep, const struct epoll_event *event,
 		     struct file *tfile, int fd, int full_check)
 {
-	int error, revents, pwake = 0;
-	unsigned long flags;
+	int error, pwake = 0;
+	__poll_t revents;
 	long user_watches;
 	struct epitem *epi;
 	struct ep_pqueue epq;
+
+	lockdep_assert_irqs_enabled();
 
 	user_watches = atomic_long_read(&ep->user->epoll_watches);
 	if (unlikely(user_watches >= max_user_watches))
@@ -1462,28 +1450,6 @@ static int ep_insert(struct eventpoll *ep, struct epoll_event *event,
 		RCU_INIT_POINTER(epi->ws, NULL);
 	}
 
-	/* Initialize the poll table using the queue callback */
-	epq.epi = epi;
-	init_poll_funcptr(&epq.pt, ep_ptable_queue_proc);
-
-	/*
-	 * Attach the item to the poll hooks and get current event bits.
-	 * We can safely use the file* here because its usage count has
-	 * been increased by the caller of this function. Note that after
-	 * this operation completes, the poll callback can start hitting
-	 * the new item.
-	 */
-	revents = ep_item_poll(epi, &epq.pt);
-
-	/*
-	 * We have to check if something went wrong during the poll wait queue
-	 * install process. Namely an allocation for a wait queue failed due
-	 * high memory pressure.
-	 */
-	error = -ENOMEM;
-	if (epi->nwait < 0)
-		goto error_unregister;
-
 	/* Add the current item to the list of active epoll hook for this file */
 	spin_lock(&tfile->f_lock);
 	list_add_tail_rcu(&epi->fllink, &tfile->f_ep_links);
@@ -1500,14 +1466,36 @@ static int ep_insert(struct eventpoll *ep, struct epoll_event *event,
 	if (full_check && reverse_path_check())
 		goto error_remove_epi;
 
+	/* Initialize the poll table using the queue callback */
+	epq.epi = epi;
+	init_poll_funcptr(&epq.pt, ep_ptable_queue_proc);
+
+	/*
+	 * Attach the item to the poll hooks and get current event bits.
+	 * We can safely use the file* here because its usage count has
+	 * been increased by the caller of this function. Note that after
+	 * this operation completes, the poll callback can start hitting
+	 * the new item.
+	 */
+	revents = ep_item_poll(epi, &epq.pt, 1);
+
+	/*
+	 * We have to check if something went wrong during the poll wait queue
+	 * install process. Namely an allocation for a wait queue failed due
+	 * high memory pressure.
+	 */
+	error = -ENOMEM;
+	if (epi->nwait < 0)
+		goto error_unregister;
+
 	/* We have to drop the new item inside our item list to keep track of it */
-	spin_lock_irqsave(&ep->lock, flags);
+	spin_lock_irq(&ep->wq.lock);
 
 	/* record NAPI ID of new item if present */
 	ep_set_busy_poll_napi_id(epi);
 
 	/* If the file is already "ready" we drop it inside the ready list */
-	if ((revents & event->events) && !ep_is_linked(&epi->rdllink)) {
+	if (revents && !ep_is_linked(epi)) {
 		list_add_tail(&epi->rdllink, &ep->rdllist);
 		ep_pm_stay_awake(epi);
 
@@ -1518,7 +1506,7 @@ static int ep_insert(struct eventpoll *ep, struct epoll_event *event,
 			pwake++;
 	}
 
-	spin_unlock_irqrestore(&ep->lock, flags);
+	spin_unlock_irq(&ep->wq.lock);
 
 	atomic_long_inc(&ep->user->epoll_watches);
 
@@ -1528,6 +1516,8 @@ static int ep_insert(struct eventpoll *ep, struct epoll_event *event,
 
 	return 0;
 
+error_unregister:
+	ep_unregister_pollwait(ep, epi);
 error_remove_epi:
 	spin_lock(&tfile->f_lock);
 	list_del_rcu(&epi->fllink);
@@ -1535,19 +1525,16 @@ error_remove_epi:
 
 	rb_erase_cached(&epi->rbn, &ep->rbr);
 
-error_unregister:
-	ep_unregister_pollwait(ep, epi);
-
 	/*
 	 * We need to do this because an event could have been arrived on some
 	 * allocated wait queue. Note that we don't care about the ep->ovflist
 	 * list, since that is used/cleaned only inside a section bound by "mtx".
 	 * And ep_insert() is called with "mtx" held.
 	 */
-	spin_lock_irqsave(&ep->lock, flags);
-	if (ep_is_linked(&epi->rdllink))
+	spin_lock_irq(&ep->wq.lock);
+	if (ep_is_linked(epi))
 		list_del_init(&epi->rdllink);
-	spin_unlock_irqrestore(&ep->lock, flags);
+	spin_unlock_irq(&ep->wq.lock);
 
 	wakeup_source_unregister(ep_wakeup_source(epi));
 
@@ -1561,11 +1548,13 @@ error_create_wakeup_source:
  * Modify the interest event mask by dropping an event if the new mask
  * has a match in the current file status. Must be called with "mtx" held.
  */
-static int ep_modify(struct eventpoll *ep, struct epitem *epi, struct epoll_event *event)
+static int ep_modify(struct eventpoll *ep, struct epitem *epi,
+		     const struct epoll_event *event)
 {
 	int pwake = 0;
-	unsigned int revents;
 	poll_table pt;
+
+	lockdep_assert_irqs_enabled();
 
 	init_poll_funcptr(&pt, NULL);
 
@@ -1589,9 +1578,9 @@ static int ep_modify(struct eventpoll *ep, struct epitem *epi, struct epoll_even
 	 * 1) Flush epi changes above to other CPUs.  This ensures
 	 *    we do not miss events from ep_poll_callback if an
 	 *    event occurs immediately after we call f_op->poll().
-	 *    We need this because we did not take ep->lock while
+	 *    We need this because we did not take ep->wq.lock while
 	 *    changing epi above (but ep_poll_callback does take
-	 *    ep->lock).
+	 *    ep->wq.lock).
 	 *
 	 * 2) We also need to ensure we do not miss _past_ events
 	 *    when calling f_op->poll().  This barrier also
@@ -1606,16 +1595,12 @@ static int ep_modify(struct eventpoll *ep, struct epitem *epi, struct epoll_even
 	/*
 	 * Get current event bits. We can safely use the file* here because
 	 * its usage count has been increased by the caller of this function.
-	 */
-	revents = ep_item_poll(epi, &pt);
-
-	/*
 	 * If the item is "hot" and it is not registered inside the ready
 	 * list, push it inside.
 	 */
-	if (revents & event->events) {
-		spin_lock_irq(&ep->lock);
-		if (!ep_is_linked(&epi->rdllink)) {
+	if (ep_item_poll(epi, &pt, 1)) {
+		spin_lock_irq(&ep->wq.lock);
+		if (!ep_is_linked(epi)) {
 			list_add_tail(&epi->rdllink, &ep->rdllist);
 			ep_pm_stay_awake(epi);
 
@@ -1625,7 +1610,7 @@ static int ep_modify(struct eventpoll *ep, struct epitem *epi, struct epoll_even
 			if (waitqueue_active(&ep->poll_wait))
 				pwake++;
 		}
-		spin_unlock_irq(&ep->lock);
+		spin_unlock_irq(&ep->wq.lock);
 	}
 
 	/* We have to call this outside the lock */
@@ -1635,12 +1620,11 @@ static int ep_modify(struct eventpoll *ep, struct epitem *epi, struct epoll_even
 	return 0;
 }
 
-static int ep_send_events_proc(struct eventpoll *ep, struct list_head *head,
+static __poll_t ep_send_events_proc(struct eventpoll *ep, struct list_head *head,
 			       void *priv)
 {
 	struct ep_send_events_data *esed = priv;
-	int eventcnt;
-	unsigned int revents;
+	__poll_t revents;
 	struct epitem *epi;
 	struct epoll_event __user *uevent;
 	struct wakeup_source *ws;
@@ -1653,8 +1637,8 @@ static int ep_send_events_proc(struct eventpoll *ep, struct list_head *head,
 	 * Items cannot vanish during the loop because ep_scan_ready_list() is
 	 * holding "mtx" during this call.
 	 */
-	for (eventcnt = 0, uevent = esed->events;
-	     !list_empty(head) && eventcnt < esed->maxevents;) {
+	for (esed->res = 0, uevent = esed->events;
+	     !list_empty(head) && esed->res < esed->maxevents;) {
 		epi = list_first_entry(head, struct epitem, rdllink);
 
 		/*
@@ -1675,7 +1659,7 @@ static int ep_send_events_proc(struct eventpoll *ep, struct list_head *head,
 
 		list_del_init(&epi->rdllink);
 
-		revents = ep_item_poll(epi, &pt);
+		revents = ep_item_poll(epi, &pt, 1);
 
 		/*
 		 * If the event mask intersect the caller-requested one,
@@ -1688,9 +1672,11 @@ static int ep_send_events_proc(struct eventpoll *ep, struct list_head *head,
 			    __put_user(epi->event.data, &uevent->data)) {
 				list_add(&epi->rdllink, head);
 				ep_pm_stay_awake(epi);
-				return eventcnt ? eventcnt : -EFAULT;
+				if (!esed->res)
+					esed->res = -EFAULT;
+				return 0;
 			}
-			eventcnt++;
+			esed->res++;
 			uevent++;
 			if (epi->event.events & EPOLLONESHOT)
 				epi->event.events &= EP_PRIVATE_BITS;
@@ -1712,7 +1698,7 @@ static int ep_send_events_proc(struct eventpoll *ep, struct list_head *head,
 		}
 	}
 
-	return eventcnt;
+	return 0;
 }
 
 static int ep_send_events(struct eventpoll *ep,
@@ -1723,7 +1709,8 @@ static int ep_send_events(struct eventpoll *ep,
 	esed.maxevents = maxevents;
 	esed.events = events;
 
-	return ep_scan_ready_list(ep, ep_send_events_proc, &esed, 0, false);
+	ep_scan_ready_list(ep, ep_send_events_proc, &esed, 0, false);
+	return esed.res;
 }
 
 static inline struct timespec64 ep_set_mstimeout(long ms)
@@ -1758,10 +1745,11 @@ static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
 		   int maxevents, long timeout)
 {
 	int res = 0, eavail, timed_out = 0;
-	unsigned long flags;
 	u64 slack = 0;
 	wait_queue_entry_t wait;
 	ktime_t expires, *to = NULL;
+
+	lockdep_assert_irqs_enabled();
 
 	if (timeout > 0) {
 		struct timespec64 end_time = ep_set_mstimeout(timeout);
@@ -1775,7 +1763,7 @@ static int ep_poll(struct eventpoll *ep, struct epoll_event __user *events,
 		 * caller specified a non blocking operation.
 		 */
 		timed_out = 1;
-		spin_lock_irqsave(&ep->lock, flags);
+		spin_lock_irq(&ep->wq.lock);
 		goto check_events;
 	}
 
@@ -1784,7 +1772,7 @@ fetch_events:
 	if (!ep_events_available(ep))
 		ep_busy_loop(ep, timed_out);
 
-	spin_lock_irqsave(&ep->lock, flags);
+	spin_lock_irq(&ep->wq.lock);
 
 	if (!ep_events_available(ep)) {
 		/*
@@ -1826,12 +1814,12 @@ fetch_events:
 				break;
 			}
 
-			spin_unlock_irqrestore(&ep->lock, flags);
+			spin_unlock_irq(&ep->wq.lock);
 			if (!freezable_schedule_hrtimeout_range(to, slack,
 								HRTIMER_MODE_ABS))
 				timed_out = 1;
 
-			spin_lock_irqsave(&ep->lock, flags);
+			spin_lock_irq(&ep->wq.lock);
 		}
 
 		__remove_wait_queue(&ep->wq, &wait);
@@ -1841,7 +1829,7 @@ check_events:
 	/* Is it worth to try to dig for events ? */
 	eavail = ep_events_available(ep);
 
-	spin_unlock_irqrestore(&ep->lock, flags);
+	spin_unlock_irq(&ep->wq.lock);
 
 	/*
 	 * Try to transfer events to user space. In case we get 0 events and
@@ -1880,13 +1868,12 @@ static int ep_loop_check_proc(void *priv, void *cookie, int call_nests)
 	struct epitem *epi;
 
 	mutex_lock_nested(&ep->mtx, call_nests + 1);
-	ep->visited = 1;
-	list_add(&ep->visited_list_link, &visited_list);
+	ep->gen = loop_check_gen;
 	for (rbp = rb_first_cached(&ep->rbr); rbp; rbp = rb_next(rbp)) {
 		epi = rb_entry(rbp, struct epitem, rbn);
 		if (unlikely(is_file_epoll(epi->ffd.file))) {
 			ep_tovisit = epi->ffd.file->private_data;
-			if (ep_tovisit->visited)
+			if (ep_tovisit->gen == loop_check_gen)
 				continue;
 			error = ep_call_nested(&poll_loop_ncalls, EP_MAX_NESTS,
 					ep_loop_check_proc, epi->ffd.file,
@@ -1903,9 +1890,9 @@ static int ep_loop_check_proc(void *priv, void *cookie, int call_nests)
 			 * during ep_insert().
 			 */
 			if (list_empty(&epi->ffd.file->f_tfile_llink)) {
-				get_file(epi->ffd.file);
-				list_add(&epi->ffd.file->f_tfile_llink,
-					 &tfile_check_list);
+				if (get_file_rcu(epi->ffd.file))
+					list_add(&epi->ffd.file->f_tfile_llink,
+						 &tfile_check_list);
 			}
 		}
 	}
@@ -1927,18 +1914,8 @@ static int ep_loop_check_proc(void *priv, void *cookie, int call_nests)
  */
 static int ep_loop_check(struct eventpoll *ep, struct file *file)
 {
-	int ret;
-	struct eventpoll *ep_cur, *ep_next;
-
-	ret = ep_call_nested(&poll_loop_ncalls, EP_MAX_NESTS,
+	return ep_call_nested(&poll_loop_ncalls, EP_MAX_NESTS,
 			      ep_loop_check_proc, file, ep, current);
-	/* clear visited list */
-	list_for_each_entry_safe(ep_cur, ep_next, &visited_list,
-							visited_list_link) {
-		ep_cur->visited = 0;
-		list_del(&ep_cur->visited_list_link);
-	}
-	return ret;
 }
 
 static void clear_tfile_check_list(void)
@@ -1958,7 +1935,7 @@ static void clear_tfile_check_list(void)
 /*
  * Open an eventpoll file descriptor.
  */
-SYSCALL_DEFINE1(epoll_create1, int, flags)
+static int do_epoll_create(int flags)
 {
 	int error, fd;
 	struct eventpoll *ep = NULL;
@@ -2001,12 +1978,17 @@ out_free_ep:
 	return error;
 }
 
+SYSCALL_DEFINE1(epoll_create1, int, flags)
+{
+	return do_epoll_create(flags);
+}
+
 SYSCALL_DEFINE1(epoll_create, int, size)
 {
 	if (size <= 0)
 		return -EINVAL;
 
-	return sys_epoll_create1(0);
+	return do_epoll_create(0);
 }
 
 /*
@@ -2042,7 +2024,7 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
 
 	/* The target file descriptor must support poll */
 	error = -EPERM;
-	if (!tf.file->f_op->poll)
+	if (!file_can_poll(tf.file))
 		goto error_tgt_fput;
 
 	/* Check if EPOLLWAKEUP is allowed */
@@ -2095,6 +2077,7 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
 	mutex_lock_nested(&ep->mtx, 0);
 	if (op == EPOLL_CTL_ADD) {
 		if (!list_empty(&f.file->f_ep_links) ||
+				ep->gen == loop_check_gen ||
 						is_file_epoll(tf.file)) {
 			full_check = 1;
 			mutex_unlock(&ep->mtx);
@@ -2127,7 +2110,7 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
 	switch (op) {
 	case EPOLL_CTL_ADD:
 		if (!epi) {
-			epds.events |= POLLERR | POLLHUP;
+			epds.events |= EPOLLERR | EPOLLHUP;
 			error = ep_insert(ep, &epds, tf.file, fd, full_check);
 		} else
 			error = -EEXIST;
@@ -2141,7 +2124,7 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
 	case EPOLL_CTL_MOD:
 		if (epi) {
 			if (!(epi->event.events & EPOLLEXCLUSIVE)) {
-				epds.events |= POLLERR | POLLHUP;
+				epds.events |= EPOLLERR | EPOLLHUP;
 				error = ep_modify(ep, epi, &epds);
 			}
 		} else
@@ -2155,6 +2138,7 @@ SYSCALL_DEFINE4(epoll_ctl, int, epfd, int, op, int, fd,
 error_tgt_fput:
 	if (full_check) {
 		clear_tfile_check_list();
+		loop_check_gen++;
 		mutex_unlock(&epmutex);
 	}
 
@@ -2170,8 +2154,8 @@ error_return:
  * Implement the event wait interface for the eventpoll file. It is the kernel
  * part of the user space epoll_wait(2).
  */
-SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,
-		int, maxevents, int, timeout)
+static int do_epoll_wait(int epfd, struct epoll_event __user *events,
+			 int maxevents, int timeout)
 {
 	int error;
 	struct fd f;
@@ -2212,6 +2196,12 @@ error_fput:
 	return error;
 }
 
+SYSCALL_DEFINE4(epoll_wait, int, epfd, struct epoll_event __user *, events,
+		int, maxevents, int, timeout)
+{
+	return do_epoll_wait(epfd, events, maxevents, timeout);
+}
+
 /*
  * Implement the event wait interface for the eventpoll file. It is the kernel
  * part of the user space epoll_pwait(2).
@@ -2236,7 +2226,7 @@ SYSCALL_DEFINE6(epoll_pwait, int, epfd, struct epoll_event __user *, events,
 		set_current_blocked(&ksigmask);
 	}
 
-	error = sys_epoll_wait(epfd, events, maxevents, timeout);
+	error = do_epoll_wait(epfd, events, maxevents, timeout);
 
 	/*
 	 * If we changed the signal mask, we need to restore the original one.
@@ -2264,7 +2254,6 @@ COMPAT_SYSCALL_DEFINE6(epoll_pwait, int, epfd,
 			compat_size_t, sigsetsize)
 {
 	long err;
-	compat_sigset_t csigmask;
 	sigset_t ksigmask, sigsaved;
 
 	/*
@@ -2274,14 +2263,13 @@ COMPAT_SYSCALL_DEFINE6(epoll_pwait, int, epfd,
 	if (sigmask) {
 		if (sigsetsize != sizeof(compat_sigset_t))
 			return -EINVAL;
-		if (copy_from_user(&csigmask, sigmask, sizeof(csigmask)))
+		if (get_compat_sigset(&ksigmask, sigmask))
 			return -EFAULT;
-		sigset_from_compat(&ksigmask, &csigmask);
 		sigsaved = current->blocked;
 		set_current_blocked(&ksigmask);
 	}
 
-	err = sys_epoll_wait(epfd, events, maxevents, timeout);
+	err = do_epoll_wait(epfd, events, maxevents, timeout);
 
 	/*
 	 * If we changed the signal mask, we need to restore the original one.
@@ -2320,11 +2308,10 @@ static int __init eventpoll_init(void)
 	 */
 	ep_nested_calls_init(&poll_loop_ncalls);
 
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
 	/* Initialize the structure used to perform safe poll wait head wake ups */
 	ep_nested_calls_init(&poll_safewake_ncalls);
-
-	/* Initialize the structure used to perform file's f_op->poll() calls */
-	ep_nested_calls_init(&poll_readywalk_ncalls);
+#endif
 
 	/*
 	 * We can have many thousands of epitems, so prevent this from
@@ -2334,11 +2321,11 @@ static int __init eventpoll_init(void)
 
 	/* Allocates slab cache used to allocate "struct epitem" items */
 	epi_cache = kmem_cache_create("eventpoll_epi", sizeof(struct epitem),
-			0, SLAB_HWCACHE_ALIGN | SLAB_PANIC, NULL);
+			0, SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, NULL);
 
 	/* Allocates slab cache used to allocate "struct eppoll_entry" */
 	pwq_cache = kmem_cache_create("eventpoll_pwq",
-			sizeof(struct eppoll_entry), 0, SLAB_PANIC, NULL);
+		sizeof(struct eppoll_entry), 0, SLAB_PANIC|SLAB_ACCOUNT, NULL);
 
 	return 0;
 }

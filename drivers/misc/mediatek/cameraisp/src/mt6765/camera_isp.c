@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /******************************************************************************
@@ -21,19 +13,6 @@
 #define MyTag "[ISP]"
 #define IRQTag "KEEPER"
 #define pr_fmt(fmt) MyTag "[%s] " fmt, __func__
-
-#define ISP_DEBUG
-#ifdef ISP_DEBUG
-#define LOG_DBG(format, args...)    pr_info(MyTag "[%s] " format, \
-	 __func__, ##args)
-#else
-#define LOG_DBG(format, args...)
-#endif
-
-#define LOG_INF(format, args...)       pr_info(MyTag "[%s] " format, \
-	 __func__, ##args)
-#define LOG_NOTICE(format, args...)    pr_notice(MyTag "[%s] " format, \
-	 __func__, ##args)
 
 /* MET: define to enable MET*/
 //#define ISP_MET_READY
@@ -50,7 +29,6 @@
 #include <linux/uaccess.h>
 #include <linux/atomic.h>
 #include <linux/sched.h>
-#include <linux/sched/clock.h>
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
 #include <linux/of_platform.h>
@@ -60,6 +38,7 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/printk.h>
+#include <linux/ktime.h>
 
 #include <mt-plat/sync_write.h> /* For mt65xx_reg_sync_writel(). */
 
@@ -78,7 +57,7 @@
 #include <smi_public.h>
 
 /*for kernel log count*/
-#define _K_LOG_ADJUST (1)//wait log owner rdy
+#define _K_LOG_ADJUST (0)//wait log owner rdy
 
 #ifdef CONFIG_COMPAT
 /* 64 bit */
@@ -88,6 +67,8 @@
 
 #ifdef CONFIG_PM_SLEEP
 #include <linux/pm_wakeup.h>
+#else
+#include <linux/wakelock.h>
 #endif
 
 #ifdef CONFIG_OF
@@ -111,13 +92,14 @@
 
 #include "inc/camera_isp.h"
 
+
 #ifndef EP_NO_PMQOS /* EP_NO_PMQOS is equivalent to EP_MARK_MMDVFS */
 #include <mmdvfs_mgr.h>
 #include <mmdvfs_pmqos.h>
-#include <linux/pm_qos.h>
+#include <linux/soc/mediatek/mtk-pm-qos.h>
 /* Use this qos request to control camera dynamic frequency change */
-struct pm_qos_request isp_qos;
-struct pm_qos_request camsys_qos_request[ISP_IRQ_TYPE_INT_CAM_B_ST+1];
+struct mtk_pm_qos_request isp_qos;
+struct mtk_pm_qos_request camsys_qos_request[ISP_IRQ_TYPE_INT_CAM_B_ST+1];
 static struct ISP_PM_QOS_STRUCT G_PM_QOS[ISP_IRQ_TYPE_INT_CAM_B_ST+1];
 static u32 PMQoS_BW_value;
 static u32 target_clk;
@@ -488,7 +470,8 @@ struct ISP_CLK_STRUCT {
 	struct clk *ISP_IMG_DIP;
 	struct clk *ISP_CAM_CAMSYS;
 	struct clk *ISP_CAM_CAMTG;
-	struct clk *ISP_CAM_SENINF;
+	/*No need to control this any more , seninf will handle this CLK*/
+	//struct clk *ISP_CAM_SENINF;
 	struct clk *ISP_CAM_CAMSV0;
 	struct clk *ISP_CAM_CAMSV1;
 	struct clk *ISP_CAM_CAMSV2;
@@ -506,8 +489,17 @@ struct isp_device {
 	int irq;
 };
 
+struct isp_sec_dapc_reg {
+	unsigned int CAM_REG_CTL_EN[ISP_DEV_NODE_NUM];
+	unsigned int CAM_REG_CTL_DMA_EN[ISP_DEV_NODE_NUM];
+	unsigned int CAM_REG_CTL_SEL[ISP_DEV_NODE_NUM];
+	unsigned int CAM_REG_CTL_EN2[ISP_DEV_NODE_NUM];
+};
+
 static struct isp_device *isp_devs;
 static int nr_isp_devs;
+static struct isp_sec_dapc_reg lock_reg;
+static unsigned int sec_on;
 #endif
 
 #define AEE_DUMP_BY_USING_ION_MEMORY
@@ -566,7 +558,9 @@ static struct ISP_MEM_INFO_STRUCT g_CmdqBaseAddrInfo = {0x0, 0x0, NULL, 0x0};
 static unsigned int m_CurrentPPB;
 
 #ifdef CONFIG_PM_SLEEP
-struct wakeup_source isp_wake_lock;
+struct wakeup_source *isp_wake_lock;
+#else
+struct wake_lock isp_wake_lock;
 #endif
 static int g_WaitLockCt;
 /*
@@ -651,20 +645,20 @@ static spinlock_t      SpinLock_P2FrameList;
 	(_MAX_SUPPORT_P2_FRAME_NUM_/_MAX_SUPPORT_P2_BURSTQ_NUM_)
 struct ISP_P2_BUFQUE_IDX_STRUCT {
 	/* starting index for frames in the ring list */
-	/*volatile */signed int start;
+	signed int start;
 	/* current index for running frame in the ring list */
-	/*volatile */signed int curr;
+	signed int curr;
 	/* ending index for frames in the ring list */
-	/*volatile */signed int end;
+	signed int end;
 };
 
 struct ISP_P2_FRAME_UNIT_STRUCT {
-	/*volatile */unsigned int           processID; /* caller process ID */
-	/*volatile */unsigned int           callerID; /* caller thread ID */
+	unsigned int           processID; /* caller process ID */
+	unsigned int           callerID; /* caller thread ID */
 	/* QQ. optional -> to judge cq combination(for judging frame) */
-	/*volatile */unsigned int           cqMask;
+	unsigned int           cqMask;
 
-	/*volatile */enum ISP_P2_BUF_STATE_ENUM  bufSts; /* buffer status */
+	enum ISP_P2_BUF_STATE_ENUM  bufSts; /* buffer status */
 };
 
 static /*volatile */struct ISP_P2_BUFQUE_IDX_STRUCT
@@ -674,13 +668,13 @@ static /*volatile */struct ISP_P2_FRAME_UNIT_STRUCT
 		[_MAX_SUPPORT_P2_FRAME_NUM_];
 
 struct ISP_P2_FRAME_PACKAGE_STRUCT {
-	/*volatile */unsigned int           processID;/* caller process ID */
-	/*volatile */unsigned int           callerID; /* caller thread ID */
+	unsigned int           processID;/* caller process ID */
+	unsigned int           callerID; /* caller thread ID */
 	/* to judge it belongs to which frame package */
-	/*volatile */unsigned int           dupCQIdx;
-	/*volatile */signed int             frameNum;
+	unsigned int           dupCQIdx;
+	signed int             frameNum;
 	/* number of dequed buffer no matter deque success or fail */
-	/*volatile */signed int             dequedNum;
+	signed int             dequedNum;
 };
 static /*volatile */struct ISP_P2_BUFQUE_IDX_STRUCT
 	P2_FramePack_List_Idx[ISP_P2_BUFQUE_PROPERTY_NUM];
@@ -832,7 +826,6 @@ struct ISP_IRQ_ERR_WAN_CNT_STRUCT {
 };
 
 static signed int FirstUnusedIrqUserKey = 1;
-#define USERKEY_STR_LEN 128
 
 struct UserKeyInfo {
 	/* for the user that register a userKey */
@@ -844,7 +837,7 @@ struct UserKeyInfo {
 static struct UserKeyInfo IrqUserKey_UserInfo[IRQ_USER_NUM_MAX];
 
 struct ISP_IRQ_INFO_STRUCT {
-	/* Add an extra index for status type in mt6797 -> signal or dma */
+	/* Add an extra index for status type -> signal or dma */
 	unsigned int    Status[ISP_IRQ_TYPE_AMOUNT][ISP_IRQ_ST_AMOUNT]
 				[IRQ_USER_NUM_MAX];
 	unsigned int    Mask[ISP_IRQ_TYPE_AMOUNT][ISP_IRQ_ST_AMOUNT];
@@ -943,12 +936,10 @@ struct ISP_INFO_STRUCT {
 	spinlock_t                      SpinLockRTBC;
 	spinlock_t                      SpinLockClock;
 	wait_queue_head_t               WaitQueueHead[ISP_IRQ_TYPE_AMOUNT];
-	wait_queue_head_t	WaitQHeadCam[
-						CAM_AMOUNT][
-						ISP_WAITQ_HEAD_IRQ_AMOUNT];
-	wait_queue_head_t	WaitQHeadCamsv[
-						CAMSV_AMOUNT][
-						ISP_WAITQ_HEAD_IRQ_SV_AMOUNT];
+	wait_queue_head_t	WaitQHeadCam
+				[CAM_AMOUNT][ISP_WAITQ_HEAD_IRQ_AMOUNT];
+	wait_queue_head_t	WaitQHeadCamsv
+				[CAMSV_AMOUNT][ISP_WAITQ_HEAD_IRQ_SV_AMOUNT];
 	unsigned int                         UserCount;
 	unsigned int                         DebugMask;
 	signed int							IrqNum;
@@ -990,22 +981,31 @@ static void *pLog_kmalloc;
 static struct SV_LOG_STR gSvLog[ISP_IRQ_TYPE_AMOUNT];
 
 /**
- *   for irq used, keep log until IRQ_LOG_PRINTER being involked.
+ *   for irq used,keep log until IRQ_LOG_PRINTER being involked,
  *   limited:
- *   each log must shorter than 512 bytes,
- *   total log length in each irq/logtype can't over 1024 bytes.
+ *   each log must shorter than 512 bytes
+ *   total log length in each irq/logtype can't over 1024 bytes
+ * -------------------------------------------------------------------
+ *   NOTE:
+ *   IRQ_LOG error log, PLEASE use
+ *   "IRQ_LOG_KEEPER_PR_ERR" & "IRQ_LOG_PRINTER_PR_ERR"
  */
 #define IRQ_LOG_KEEPER_T(sec, usec) {\
-	sec = ktime_get();     \
+	ktime_t time;           \
+	time = ktime_get();     \
+	sec = time;             \
 	do_div(sec, 1000);    \
 	usec = do_div(sec, 1000000);\
 }
 
 #if 1
-#define IRQ_LOG_KEEPER(irq, ppb, logT, fmt, ...) do {\
+#define IRQ_LOG_KEEPER(irq_in, ppb_in, logT_in, fmt, ...) do {\
 	char *ptr; \
 	char *pDes;\
 	signed int avaLen;\
+	unsigned int irq = irq_in;\
+	unsigned int ppb = ppb_in;\
+	unsigned int logT = logT_in;\
 	unsigned int *ptr2 = &gSvLog[irq]._cnt[ppb][logT];\
 	unsigned int str_leng;\
 	unsigned int i;\
@@ -1023,10 +1023,12 @@ static struct SV_LOG_STR gSvLog[ISP_IRQ_TYPE_AMOUNT];
 		&(gSvLog[irq]._str[ppb][logT][gSvLog[irq]._cnt[ppb][logT]]);  \
 	avaLen = str_leng - 1 - gSvLog[irq]._cnt[ppb][logT];\
 	if (avaLen > 1) {\
-		snprintf((char *)(pDes), avaLen, "[%d.%06d]" fmt,\
+		if (snprintf((char *)(pDes), avaLen, "[%d.%06d]" fmt,\
 			gSvLog[irq]._lastIrqTime.sec, \
 			gSvLog[irq]._lastIrqTime.usec,\
-			##__VA_ARGS__);   \
+			##__VA_ARGS__) < 0) { \
+			pr_info("[Error] snprintf failed\n");\
+		} \
 		if ('\0' != gSvLog[irq]._str[ppb][logT][str_leng - 1]) {\
 			pr_info("log str over flow(%d)", irq);\
 		} \
@@ -1045,7 +1047,7 @@ static struct SV_LOG_STR gSvLog[ISP_IRQ_TYPE_AMOUNT];
 							'\0';\
 						pr_info("%s", \
 						  &ptr[NORMAL_STR_LEN*i]);\
-					} else{\
+					} else {\
 						pr_info("%s", \
 						  &ptr[NORMAL_STR_LEN*i]);\
 						break;\
@@ -1060,7 +1062,7 @@ static struct SV_LOG_STR gSvLog[ISP_IRQ_TYPE_AMOUNT];
 							'\0';\
 						pr_info("%s", \
 						  &ptr[NORMAL_STR_LEN*i]);\
-					} else{\
+					} else {\
 						pr_info("%s", \
 						  &ptr[NORMAL_STR_LEN*i]);\
 						break;\
@@ -1076,7 +1078,80 @@ static struct SV_LOG_STR gSvLog[ISP_IRQ_TYPE_AMOUNT];
 			ptr = pDes = (char *)\
 			    &(pSrc->_str[ppb][logT][pSrc->_cnt[ppb][logT]]);\
 			ptr2 = &(pSrc->_cnt[ppb][logT]);\
-			snprintf((char *)(pDes), avaLen, fmt, ##__VA_ARGS__);  \
+			if (snprintf((char *)(pDes), avaLen,\
+					fmt, ##__VA_ARGS__) < 0) { \
+				pr_info("[Error] snprintf failed\n");\
+			} \
+			while (*ptr++ != '\0') {\
+				(*ptr2)++;\
+			} \
+		} \
+	} \
+} while (0)
+/*for keep IRQ err log*/
+#define IRQ_LOG_KEEPER_PR_ERR(irq_in, ppb_in, logT_in, fmt, ...) do {\
+	char *ptr; \
+	char *pDes;\
+	signed int avaLen;\
+	unsigned int irq = irq_in;\
+	unsigned int ppb = ppb_in;\
+	unsigned int logT = logT_in;\
+	unsigned int *ptr2 = &gSvLog[irq]._cnt[ppb][logT];\
+	unsigned int str_leng;\
+	unsigned int i;\
+	struct SV_LOG_STR *pSrc = &gSvLog[irq];\
+	if (logT == _LOG_ERR) {\
+		str_leng = NORMAL_STR_LEN*ERR_PAGE; \
+	} else {\
+		str_leng = 0;\
+	} \
+	ptr = pDes = (char *)\
+		&(gSvLog[irq]._str[ppb][logT][gSvLog[irq]._cnt[ppb][logT]]);\
+	avaLen = str_leng - 1 - gSvLog[irq]._cnt[ppb][logT];\
+	if (avaLen > 1) {\
+		if (snprintf((char *)(pDes), avaLen, "[%d.%06d]" fmt,\
+			gSvLog[irq]._lastIrqTime.sec, gSvLog[irq]._lastIrqTime.usec,\
+			##__VA_ARGS__) < 0) { \
+			pr_info("[Error] snprintf failed\n");\
+		} \
+		if ('\0' != gSvLog[irq]._str[ppb][logT][str_leng - 1]) {\
+			pr_notice("error:log str over flow(%d)", irq);\
+		} \
+		while (*ptr++ != '\0') {        \
+			(*ptr2)++;\
+		}     \
+	} else { \
+		pr_info("(%d)(%d)log str avalible=0, print log\n", irq, logT);\
+		ptr = pSrc->_str[ppb][logT];\
+		if (pSrc->_cnt[ppb][logT] != 0) {\
+			if (logT == _LOG_ERR) {\
+				for (i = 0; i < ERR_PAGE; i++) {\
+					if (ptr[NORMAL_STR_LEN*(i+1) - 1] \
+					!= '\0') {\
+						ptr[NORMAL_STR_LEN*(i+1) - 1] =\
+							'\0';\
+						pr_err("%s", \
+						  &ptr[NORMAL_STR_LEN*i]);\
+					} else {\
+						pr_err("%s", \
+						  &ptr[NORMAL_STR_LEN*i]);\
+						break;\
+					} \
+				} \
+			} \
+			else {\
+				pr_info("N.S.%d", logT);\
+			} \
+			ptr[0] = '\0';\
+			pSrc->_cnt[ppb][logT] = 0;\
+			avaLen = str_leng - 1;\
+			ptr = pDes = (char *)\
+			  &(pSrc->_str[ppb][logT][pSrc->_cnt[ppb][logT]]);\
+			ptr2 = &(pSrc->_cnt[ppb][logT]);\
+			if (snprintf((char *)(pDes), avaLen,\
+					fmt, ##__VA_ARGS__) < 0) { \
+				pr_info("[Error] snprintf failed\n");\
+			} \
 			while (*ptr++ != '\0') {\
 				(*ptr2)++;\
 			} \
@@ -1086,6 +1161,8 @@ static struct SV_LOG_STR gSvLog[ISP_IRQ_TYPE_AMOUNT];
 #else
 #define IRQ_LOG_KEEPER(irq, ppb, logT, fmt, args...) \
 		pr_info(IRQTag fmt,  ##args)
+#define IRQ_LOG_KEEPER_PR_ERR(irq, ppb, logT, fmt, args...) \
+		pr_err(IRQTag fmt,  ##args)
 #endif
 
 #if 1
@@ -1093,16 +1170,16 @@ static struct SV_LOG_STR gSvLog[ISP_IRQ_TYPE_AMOUNT];
 	struct SV_LOG_STR *pSrc = &gSvLog[irq];\
 	char *ptr;\
 	unsigned int i;\
-	signed int ppb = 0;\
-	signed int logT = 0;\
+	unsigned int ppb = 0;\
+	unsigned int logT = 0;\
 	if (ppb_in > 1) {\
 		ppb = 1;\
-	} else{\
+	} else {\
 		ppb = ppb_in;\
 	} \
 	if (logT_in > _LOG_ERR) {\
 		logT = _LOG_ERR;\
-	} else{\
+	} else {\
 		logT = logT_in;\
 	} \
 	ptr = pSrc->_str[ppb][logT];\
@@ -1112,7 +1189,7 @@ static struct SV_LOG_STR gSvLog[ISP_IRQ_TYPE_AMOUNT];
 				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 					pr_info("%s", &ptr[NORMAL_STR_LEN*i]);\
-				} else{\
+				} else {\
 					pr_info("%s", &ptr[NORMAL_STR_LEN*i]);\
 					break;\
 				} \
@@ -1123,8 +1200,45 @@ static struct SV_LOG_STR gSvLog[ISP_IRQ_TYPE_AMOUNT];
 				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 					pr_info("%s", &ptr[NORMAL_STR_LEN*i]);\
-				} else{\
+				} else {\
 					pr_info("%s", &ptr[NORMAL_STR_LEN*i]);\
+					break;\
+				} \
+			} \
+		} \
+		else {\
+			pr_info("N.S.%d", logT);\
+		} \
+		ptr[0] = '\0';\
+		pSrc->_cnt[ppb][logT] = 0;\
+	} \
+} while (0)
+/*for print IRQ err log*/
+#define IRQ_LOG_PRINTER_PR_ERR(irq, ppb_in, logT_in) do {\
+	struct SV_LOG_STR *pSrc = &gSvLog[irq];\
+	char *ptr;\
+	unsigned int i;\
+	unsigned int ppb = 0;\
+	unsigned int logT = 0;\
+	if (ppb_in > 1) {\
+		ppb = 1;\
+	} else {\
+		ppb = ppb_in;\
+	} \
+	if (logT_in > _LOG_ERR) {\
+		logT = _LOG_ERR;\
+	} else {\
+		logT = logT_in;\
+	} \
+	ptr = pSrc->_str[ppb][logT];\
+	if (pSrc->_cnt[ppb][logT] != 0) {\
+		if (logT == _LOG_ERR) {\
+			for (i = 0; i < ERR_PAGE; i++) {\
+				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
+					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
+					pr_err("%s", &ptr[NORMAL_STR_LEN*i]);\
+				} else {\
+					pr_err("%s", &ptr[NORMAL_STR_LEN*i]);\
 					break;\
 				} \
 			} \
@@ -1139,6 +1253,7 @@ static struct SV_LOG_STR gSvLog[ISP_IRQ_TYPE_AMOUNT];
 
 #else
 #define IRQ_LOG_PRINTER(irq, ppb, logT)
+#define IRQ_LOG_PRINTER_PR_ERR(irq, ppb, logT)
 #endif
 
 /* //////////////////////////////////////////////////// */
@@ -1177,7 +1292,7 @@ struct _isp_bk_reg_t {
 
 static struct _isp_bk_reg_t g_BkReg[ISP_IRQ_TYPE_AMOUNT];
 
-/* mt6797 top registers */
+/* top registers */
 #define CAMSYS_REG_CG_CON               (ISP_CAMSYS_CONFIG_BASE + 0x0)
 #define IMGSYS_REG_CG_CON               (ISP_IMGSYS_CONFIG_BASE + 0x0)
 #define CAMSYS_REG_CG_SET               (ISP_CAMSYS_CONFIG_BASE + 0x4)
@@ -1185,7 +1300,7 @@ static struct _isp_bk_reg_t g_BkReg[ISP_IRQ_TYPE_AMOUNT];
 #define CAMSYS_REG_CG_CLR               (ISP_CAMSYS_CONFIG_BASE + 0x8)
 #define IMGSYS_REG_CG_CLR               (ISP_IMGSYS_CONFIG_BASE + 0x8)
 
-/* mt6797 CAM registers */
+/* CAM registers */
 #define CAM_REG_CTL_START(module)  (isp_devs[module].regs + 0x0000)
 #define CAM_REG_CTL_EN(module)  (isp_devs[module].regs + 0x0004)
 #define CAM_REG_CTL_DMA_EN(module)  (isp_devs[module].regs + 0x0008)
@@ -2376,7 +2491,7 @@ static void ISP_DumpDmaDeepDbg(enum ISP_IRQ_TYPE_ENUM module)
 		regModule = ISP_CAM_B_IDX;
 		break;
 	default:
-		LOG_NOTICE("unsupported module:0x%x\n",
+		pr_err("unsupported module:0x%x\n",
 			module);
 		return;
 	}
@@ -2426,7 +2541,7 @@ static void ISP_DumpDmaDeepDbg(enum ISP_IRQ_TYPE_ENUM module)
 			ISP_RD32(CAM_UNI_REG_B_RAWI_ERR_STAT(ISP_UNI_A_IDX));
 	}
 
-	IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+	IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 		"mmsys:0x%x, imgsys:0x%x, camsys:0x%x",
 		ISP_RD32(ISP_MMSYS_CONFIG_BASE + 0x100),
 		ISP_RD32(ISP_IMGSYS_CONFIG_BASE),
@@ -2442,7 +2557,7 @@ static void ISP_DumpDmaDeepDbg(enum ISP_IRQ_TYPE_ENUM module)
 
 	switch (module) {
 	case ISP_IRQ_TYPE_INT_CAM_A_ST:
-		IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+		IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 	"CAM_A:IMGO:0x%x,RRZO:0x%x,AAO=0x%x,AFO=0x%x,LCSO=0x%x,UFEO=0x%x,PDO=0x%x,PSO=0x%x\n",
 			dmaerr[_imgo_],
 			dmaerr[_rrzo_],
@@ -2452,18 +2567,18 @@ static void ISP_DumpDmaDeepDbg(enum ISP_IRQ_TYPE_ENUM module)
 			dmaerr[_ufeo_],
 			dmaerr[_pdo_],
 			dmaerr[_pso_]);
-		IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+		IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 	"CAM_A:BPCI:0x%x,LSCI=0x%x,PDI=0x%x\n",
 			dmaerr[_bpci_],
 			dmaerr[_lsci_],
 			dmaerr[_pdi_]);
 		if (flk2_sel == 0) {
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"CAM_A+UNI: FLKO:0x%x, RAWI:0x%x\n",
 				dmaerr[_flko_], dmaerr[_rawi_]);
 		}
 		if (hds2_sel == 0) {
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"CAM_A+UNI: EISO:0x%x, RSSO_A:0x%x, RAWI:0x%x\n",
 				dmaerr[_eiso_], dmaerr[_rsso_], dmaerr[_rawi_]);
 		}
@@ -2484,7 +2599,7 @@ static void ISP_DumpDmaDeepDbg(enum ISP_IRQ_TYPE_ENUM module)
 		g_DmaErr_CAM[module][_pdi_] |= dmaerr[_pdi_];
 		break;
 	case ISP_IRQ_TYPE_INT_CAM_B_ST:
-		IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+		IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 	"CAM_B:IMGO:0x%x,RRZO:0x%x,AAO=0x%x,AFO=0x%x,LCSO=0x%x,UFEO=0x%x,PDO=0x%x,PSO=0x%x\n",
 			dmaerr[_imgo_],
 			dmaerr[_rrzo_],
@@ -2494,18 +2609,18 @@ static void ISP_DumpDmaDeepDbg(enum ISP_IRQ_TYPE_ENUM module)
 			dmaerr[_ufeo_],
 			dmaerr[_pdo_],
 			dmaerr[_pso_]);
-		IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+		IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 	"CAM_B:BPCI:0x%x,LSCI=0x%x,PDI=0x%x\n",
 			dmaerr[_bpci_],
 			dmaerr[_lsci_],
 			dmaerr[_pdi_]);
 		if (flk2_sel == 1) {
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"CAM_B+UNI: FLKO:0x%x, RAWI:0x%x\n",
 				dmaerr[_flko_], dmaerr[_rawi_]);
 		}
 		if (hds2_sel == 1) {
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"CAM_B+UNI: EISO:0x%x, RSSO_A:0x%x, RAWI:0x%x\n",
 				dmaerr[_eiso_], dmaerr[_rsso_], dmaerr[_rawi_]);
 		}
@@ -2526,7 +2641,7 @@ static void ISP_DumpDmaDeepDbg(enum ISP_IRQ_TYPE_ENUM module)
 		g_DmaErr_CAM[module][_pdi_] |= dmaerr[_pdi_];
 		break;
 	default:
-		LOG_NOTICE("unsupported module:0x%x\n", module);
+		pr_err("unsupported module:0x%x\n", module);
 		break;
 	}
 }
@@ -3735,48 +3850,48 @@ static inline void Prepare_Enable_ccf_clock(void)
 	/* enable through smi API */
 	/* pr_info("enable CG/MTCMOS through SMI CLK API\n"); */
 	smi_bus_prepare_enable(SMI_LARB3, ISP_DEV_NAME);
+
 	smi_bus_prepare_enable(SMI_LARB2, ISP_DEV_NAME);
+
 	#endif
 
 	ret = clk_prepare_enable(isp_clk.ISP_SCP_SYS_DIS);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_SCP_SYS_DIS clock\n");
+		pr_err("cannot pre-en ISP_SCP_SYS_DIS clock\n");
 
 	ret = clk_prepare_enable(isp_clk.ISP_SCP_SYS_ISP);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_SCP_SYS_ISP clock\n");
+		pr_err("cannot pre-en ISP_SCP_SYS_ISP clock\n");
 
 	ret = clk_prepare_enable(isp_clk.ISP_SCP_SYS_CAM);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_SCP_SYS_CAM clock\n");
+		pr_err("cannot pre-en ISP_SCP_SYS_CAM clock\n");
 
 	ret = clk_prepare_enable(isp_clk.ISP_IMG_DIP);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_IMG_DIP clock\n");
+		pr_err("cannot pre-en ISP_IMG_DIP clock\n");
 
 	ret = clk_prepare_enable(isp_clk.ISP_CAM_CAMSYS);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_CAM_CAMSYS clock\n");
+		pr_err("cannot pre-en ISP_CAM_CAMSYS clock\n");
 
 	ret = clk_prepare_enable(isp_clk.ISP_CAM_CAMTG);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_CAM_CAMTG clock\n");
+		pr_err("cannot pre-en ISP_CAM_CAMTG clock\n");
 
-	ret = clk_prepare_enable(isp_clk.ISP_CAM_SENINF);
-	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_CAM_SENINF clock\n");
+	/*No need to control this any more , seninf will handle this CLK*/
 
 	ret = clk_prepare_enable(isp_clk.ISP_CAM_CAMSV0);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_CAM_CAMSV0 clock\n");
+		pr_err("cannot pre-en ISP_CAM_CAMSV0 clock\n");
 
 	ret = clk_prepare_enable(isp_clk.ISP_CAM_CAMSV1);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_CAM_CAMSV1 clock\n");
+		pr_err("cannot pre-en ISP_CAM_CAMSV1 clock\n");
 
 	ret = clk_prepare_enable(isp_clk.ISP_CAM_CAMSV2);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_CAM_CAMSV2 clock\n");
+		pr_err("cannot pre-en ISP_CAM_CAMSV2 clock\n");
 }
 
 static inline void Disable_Unprepare_ccf_clock(void)
@@ -3787,7 +3902,8 @@ static inline void Disable_Unprepare_ccf_clock(void)
 	clk_disable_unprepare(isp_clk.ISP_CAM_CAMSV2);
 	clk_disable_unprepare(isp_clk.ISP_CAM_CAMSV1);
 	clk_disable_unprepare(isp_clk.ISP_CAM_CAMSV0);
-	clk_disable_unprepare(isp_clk.ISP_CAM_SENINF);
+	/*No need to control this any more , seninf will handle this CLK*/
+	//clk_disable_unprepare(isp_clk.ISP_CAM_SENINF);
 	clk_disable_unprepare(isp_clk.ISP_CAM_CAMTG);
 	clk_disable_unprepare(isp_clk.ISP_CAM_CAMSYS);
 	clk_disable_unprepare(isp_clk.ISP_IMG_DIP);
@@ -3814,32 +3930,32 @@ static inline void Prepare_Enable_cg_clock(void)
 
 	ret = clk_prepare_enable(isp_clk.ISP_IMG_DIP);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_IMG_DIP clock\n");
+		pr_err("cannot pre-en ISP_IMG_DIP clock\n");
 
 	ret = clk_prepare_enable(isp_clk.ISP_CAM_CAMSYS);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_CAM_CAMSYS clock\n");
+		pr_err("cannot pre-en ISP_CAM_CAMSYS clock\n");
 
 /*	ret = clk_prepare_enable(isp_clk.ISP_CAM_CAMTG);
  *	if (ret)
- *		LOG_NOTICE("cannot pre-en ISP_CAM_CAMTG clock\n");
+ *		pr_err("cannot pre-en ISP_CAM_CAMTG clock\n");
  *
  *	ret = clk_prepare_enable(isp_clk.ISP_CAM_SENINF);
  *	if (ret)
- *		LOG_NOTICE("cannot pre-en ISP_CAM_SENINF clock\n");
+ *		pr_err("cannot pre-en ISP_CAM_SENINF clock\n");
  */
 
 	ret = clk_prepare_enable(isp_clk.ISP_CAM_CAMSV0);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_CAM_CAMSV0 clock\n");
+		pr_err("cannot pre-en ISP_CAM_CAMSV0 clock\n");
 
 	ret = clk_prepare_enable(isp_clk.ISP_CAM_CAMSV1);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_CAM_CAMSV1 clock\n");
+		pr_err("cannot pre-en ISP_CAM_CAMSV1 clock\n");
 
 	ret = clk_prepare_enable(isp_clk.ISP_CAM_CAMSV2);
 	if (ret)
-		LOG_NOTICE("cannot pre-en ISP_CAM_CAMSV2 clock\n");
+		pr_err("cannot pre-en ISP_CAM_CAMSV2 clock\n");
 
 }
 
@@ -3906,7 +4022,7 @@ static void ISP_EnableClock(bool En)
 			setReg = 0xFFFFFFFF;
 			ISP_WR32(CAMSYS_REG_CG_CLR, setReg);
 			ISP_WR32(IMGSYS_REG_CG_CLR, setReg);
-#else /* mt6797 not support CLKMGR, only CCF!!*/
+#else /* not support CLKMGR, only CCF!!*/
 			/*pr_info("MTK_LEGACY:enable clk");*/
 			enable_clock(MT_CG_DISP0_SMI_COMMON, "CAMERA");
 			enable_clock(MT_CG_IMAGE_CAM_SMI, "CAMERA");
@@ -4073,7 +4189,7 @@ static inline void ISP_Reset(signed int module)
 		break;
 	}
 	default:
-		LOG_NOTICE("Not support reset module:%d\n", module);
+		pr_err("Not support reset module:%d\n", module);
 		break;
 	}
 
@@ -4090,14 +4206,23 @@ static signed int ISP_ReadReg(struct ISP_REG_IO_STRUCT *pRegIo)
 	unsigned int module;
 	void __iomem *regBase;
 
-
 	/*  */
 	struct ISP_REG_STRUCT reg;
 	/* unsigned int* pData = (unsigned int*)pRegIo->Data; */
 	struct ISP_REG_STRUCT *pData = (struct ISP_REG_STRUCT *)pRegIo->pData;
 
+	if ((pRegIo->pData == NULL) ||
+			(pRegIo->Count == 0) ||
+			(pRegIo->Count > ISP_REG_RANGE)) {
+		pr_err(
+			"pRegIo->pData is NULL, Count:%d!!\n",
+			pRegIo->Count);
+		Ret = -EFAULT;
+		goto EXIT;
+	}
+
 	if (get_user(module, (unsigned int *)&pData->module) != 0) {
-		LOG_NOTICE("get_user failed\n");
+		pr_err("get_user failed\n");
 		Ret = -EFAULT;
 		goto EXIT;
 	}
@@ -4140,7 +4265,7 @@ static signed int ISP_ReadReg(struct ISP_REG_IO_STRUCT *pRegIo)
 		regBase = ISP_SENINF1_BASE;
 		break;
 	default:
-		LOG_NOTICE("Unsupported module(%x) !!!\n", module);
+		pr_err("Unsupported module(%x) !!!\n", module);
 		Ret = -EFAULT;
 		goto EXIT;
 	}
@@ -4148,7 +4273,7 @@ static signed int ISP_ReadReg(struct ISP_REG_IO_STRUCT *pRegIo)
 
 	for (i = 0; i < pRegIo->Count; i++) {
 		if (get_user(reg.Addr, (unsigned int *)&pData->Addr) != 0) {
-			LOG_NOTICE("get_user failed\n");
+			pr_err("get_user failed\n");
 			Ret = -EFAULT;
 			goto EXIT;
 		}
@@ -4158,13 +4283,17 @@ static signed int ISP_ReadReg(struct ISP_REG_IO_STRUCT *pRegIo)
 			&& ((reg.Addr & 0x3) == 0)) {
 			reg.Val = ISP_RD32(regBase + reg.Addr);
 		} else {
-			LOG_NOTICE("Wrong address(0x%lx)\n",
+			pr_err("Wrong address(0x%lx)\n",
 			(unsigned long)(regBase + reg.Addr));
 			reg.Val = 0;
 		}
+		/*  */
+		/* printk("[KernelRDReg]addr(0x%x),value()0x%x\n",
+		 *         ISP_ADDR_CAMINF + reg.Addr,reg.Val);
+		 */
 
 		if (put_user(reg.Val, (unsigned int *) &(pData->Val)) != 0) {
-			LOG_NOTICE("put_user failed\n");
+			pr_err("put_user failed\n");
 			Ret = -EFAULT;
 			goto EXIT;
 		}
@@ -4241,7 +4370,7 @@ static signed int ISP_WriteRegToHw(
 		regBase = ISP_SENINF1_BASE;
 		break;
 	default:
-		LOG_NOTICE("Unsupported module(%x) !!!\n", module);
+		pr_err("Unsupported module(%x) !!!\n", module);
 		return -EFAULT;
 	}
 
@@ -4286,7 +4415,7 @@ static signed int ISP_WriteReg(struct ISP_REG_IO_STRUCT *pRegIo)
 	struct ISP_REG_STRUCT *pData = NULL;
 
 	if (pRegIo->Count > 0xFFFFFFFF) {
-		LOG_NOTICE("pRegIo->Count error");
+		pr_err("pRegIo->Count error");
 		Ret = -EFAULT;
 		goto EXIT;
 	}
@@ -4311,7 +4440,7 @@ static signed int ISP_WriteReg(struct ISP_REG_IO_STRUCT *pRegIo)
 	}
 
 	if ((void __user *)(pRegIo->pData) == NULL) {
-		LOG_NOTICE("NULL pData");
+		pr_err("NULL pData");
 		Ret = -EFAULT;
 		goto EXIT;
 	}
@@ -4319,7 +4448,7 @@ static signed int ISP_WriteReg(struct ISP_REG_IO_STRUCT *pRegIo)
 	/*  */
 	if (copy_from_user(pData, (void __user *)(pRegIo->pData),
 	    pRegIo->Count * sizeof(struct ISP_REG_STRUCT)) != 0) {
-		LOG_NOTICE("copy_from_user failed\n");
+		pr_err("copy_from_user failed\n");
 		Ret = -EFAULT;
 		goto EXIT;
 	}
@@ -4474,13 +4603,13 @@ static signed int isp_allocbuf(struct isp_imem_memory *pMemInfo)
 	struct ion_handle *handle = NULL;
 
 	if (pMemInfo == NULL) {
-		LOG_NOTICE("pMemInfo is NULL!!\n");
+		pr_err("pMemInfo is NULL!!\n");
 		ret = -ENOMEM;
 		goto isp_allocbuf_exit;
 	}
 
 	if (isp_p2_ion_client == NULL) {
-		LOG_NOTICE("isp_p2_ion_client is NULL!!\n");
+		pr_err("isp_p2_ion_client is NULL!!\n");
 		ret = -ENOMEM;
 		goto isp_allocbuf_exit;
 	}
@@ -4488,7 +4617,7 @@ static signed int isp_allocbuf(struct isp_imem_memory *pMemInfo)
 	handle = ion_alloc(isp_p2_ion_client, pMemInfo->length, 0,
 				ION_HEAP_MULTIMEDIA_MASK, 0);
 	if (handle == NULL) {
-		LOG_NOTICE("fail to alloc ion buffer, ret=%d\n", ret);
+		pr_err("fail to alloc ion buffer, ret=%d\n", ret);
 		ret = -ENOMEM;
 		goto isp_allocbuf_exit;
 	}
@@ -4496,7 +4625,7 @@ static signed int isp_allocbuf(struct isp_imem_memory *pMemInfo)
 
 	pMemInfo->va = (uintptr_t) ion_map_kernel(isp_p2_ion_client, handle);
 	if (pMemInfo->va == 0) {
-		LOG_NOTICE("fail to map va of buffer!\n");
+		pr_err("fail to map va of buffer!\n");
 		ret = -ENOMEM;
 		goto isp_allocbuf_exit;
 	}
@@ -4509,7 +4638,7 @@ static signed int isp_allocbuf(struct isp_imem_memory *pMemInfo)
 	ret = ion_kernel_ioctl(isp_p2_ion_client, ION_CMD_MULTIMEDIA,
 				(unsigned long)&mm_data);
 	if (ret) {
-		LOG_NOTICE("fail to config ion buffer, ret=%d\n", ret);
+		pr_err("fail to config ion buffer, ret=%d\n", ret);
 		ret = -ENOMEM;
 		goto isp_allocbuf_exit;
 	}
@@ -4538,7 +4667,7 @@ static void isp_freebuf(struct isp_imem_memory *pMemInfo)
 	struct ion_handle *handle;
 
 	if (pMemInfo == NULL) {
-		LOG_NOTICE("pMemInfo is NULL!!\n");
+		pr_err("pMemInfo is NULL!!\n");
 		return;
 	}
 
@@ -4559,13 +4688,13 @@ static signed int ISP_DumpBuffer(struct ISP_DUMP_BUFFER_STRUCT *pDumpBufStruct)
 	signed int Ret = 0;
 
 	if (pDumpBufStruct->BytesofBufferSize > 0xFFFFFFFF) {
-		LOG_NOTICE("pDumpTuningBufStruct->BytesofBufferSize error");
+		pr_err("pDumpTuningBufStruct->BytesofBufferSize error");
 		Ret = -EFAULT;
 		goto EXIT;
 	}
 	/*  */
 	if ((void __user *)(pDumpBufStruct->pBuffer) == NULL) {
-		LOG_NOTICE("NULL pDumpBufStruct->pBuffer");
+		pr_err("NULL pDumpBufStruct->pBuffer");
 		Ret = -EFAULT;
 		goto EXIT;
 	}
@@ -4574,7 +4703,7 @@ static signed int ISP_DumpBuffer(struct ISP_DUMP_BUFFER_STRUCT *pDumpBufStruct)
 	case ISP_DUMP_TPIPEBUF_CMD:
 		if (pDumpBufStruct->BytesofBufferSize >
 		    MAX_ISP_TILE_TDR_HEX_NO) {
-			LOG_NOTICE("tpipe size error");
+			pr_err("tpipe size error");
 			Ret = -EFAULT;
 			goto EXIT;
 		}
@@ -4584,20 +4713,20 @@ static signed int ISP_DumpBuffer(struct ISP_DUMP_BUFFER_STRUCT *pDumpBufStruct)
 				g_pTpipeBuffer =
 					vmalloc(MAX_ISP_TILE_TDR_HEX_NO);
 			else
-				LOG_NOTICE("g_pTpipeBuffer:0x%pK is not NULL!!",
+				pr_err("g_pTpipeBuffer:0x%pK is not NULL!!",
 					g_pTpipeBuffer);
 		}
 		if (g_pTpipeBuffer != NULL) {
 			if (copy_from_user(g_pTpipeBuffer,
 			    (void __user *)(pDumpBufStruct->pBuffer),
 			    pDumpBufStruct->BytesofBufferSize) != 0) {
-				LOG_NOTICE(
+				pr_err(
 				"copy_from_user g_pTpipeBuffer failed\n");
 				Ret = -EFAULT;
 				goto EXIT;
 			}
 		} else {
-			LOG_NOTICE(
+			pr_err(
 			"g_pTpipeBuffer kmalloc failed, g_bIonBufAllocated:%d\n"
 				, g_bIonBufferAllocated);
 		}
@@ -4605,7 +4734,7 @@ static signed int ISP_DumpBuffer(struct ISP_DUMP_BUFFER_STRUCT *pDumpBufStruct)
 		if (copy_from_user(g_TpipeBuffer,
 		    (void __user *)(pDumpBufStruct->pBuffer),
 		    pDumpBufStruct->BytesofBufferSize) != 0) {
-			LOG_NOTICE("copy_from_user g_TpipeBuffer failed\n");
+			pr_err("copy_from_user g_TpipeBuffer failed\n");
 			Ret = -EFAULT;
 			goto EXIT;
 		}
@@ -4616,7 +4745,7 @@ static signed int ISP_DumpBuffer(struct ISP_DUMP_BUFFER_STRUCT *pDumpBufStruct)
 		break;
 	case ISP_DUMP_TUNINGBUF_CMD:
 		if (pDumpBufStruct->BytesofBufferSize > ISP_DIP_REG_SIZE) {
-			LOG_NOTICE("tuning buf size error, size:0x%x",
+			pr_err("tuning buf size error, size:0x%x",
 				pDumpBufStruct->BytesofBufferSize);
 			Ret = -EFAULT;
 			goto EXIT;
@@ -4626,26 +4755,25 @@ static signed int ISP_DumpBuffer(struct ISP_DUMP_BUFFER_STRUCT *pDumpBufStruct)
 			if (g_pTuningBuffer == NULL)
 				g_pTuningBuffer = vmalloc(ISP_DIP_REG_SIZE);
 			else
-				LOG_NOTICE("g_TuningBuffer:0x%pK is not NULL!!",
+				pr_err("g_TuningBuffer:0x%pK is not NULL!!",
 					g_pTuningBuffer);
 		}
 		if (g_pTuningBuffer != NULL) {
 			if (copy_from_user(g_pTuningBuffer,
 			    (void __user *)(pDumpBufStruct->pBuffer),
 			    pDumpBufStruct->BytesofBufferSize) != 0) {
-				LOG_NOTICE(
-					"copy_from_user g_pTuningBuffer failed\n");
+				pr_err("copy_from_user g_pTuningBuffer failed\n");
 				Ret = -EFAULT;
 				goto EXIT;
 			}
 		} else {
-			LOG_NOTICE("ERROR: g_TuningBuffer kmalloc failed\n");
+			pr_err("ERROR: g_TuningBuffer kmalloc failed\n");
 		}
 #else
 		if (copy_from_user(g_TuningBuffer,
 		    (void __user *)(pDumpBufStruct->pBuffer),
 		    pDumpBufStruct->BytesofBufferSize) != 0) {
-			LOG_NOTICE("copy_from_user g_TuningBuffer failed\n");
+			pr_err("copy_from_user g_TuningBuffer failed\n");
 			Ret = -EFAULT;
 			goto EXIT;
 		}
@@ -4656,7 +4784,7 @@ static signed int ISP_DumpBuffer(struct ISP_DUMP_BUFFER_STRUCT *pDumpBufStruct)
 		break;
 	case ISP_DUMP_ISPVIRBUF_CMD:
 		if (pDumpBufStruct->BytesofBufferSize > ISP_DIP_REG_SIZE) {
-			LOG_NOTICE("vir isp buffer size error, size:0x%x",
+			pr_err("vir isp buffer size error, size:0x%x",
 				pDumpBufStruct->BytesofBufferSize);
 			Ret = -EFAULT;
 			goto EXIT;
@@ -4666,27 +4794,25 @@ static signed int ISP_DumpBuffer(struct ISP_DUMP_BUFFER_STRUCT *pDumpBufStruct)
 			if (g_pVirISPBuffer == NULL)
 				g_pVirISPBuffer = vmalloc(ISP_DIP_REG_SIZE);
 			else
-				LOG_NOTICE(
-					"g_pVirISPBuffer:0x%pK is not NULL!!",
+				pr_err("g_pVirISPBuffer:0x%pK is not NULL!!",
 					g_pVirISPBuffer);
 		}
 		if (g_pVirISPBuffer != NULL) {
 			if (copy_from_user(g_pVirISPBuffer,
 			    (void __user *)(pDumpBufStruct->pBuffer),
 			    pDumpBufStruct->BytesofBufferSize) != 0) {
-				LOG_NOTICE(
-					"copy_from_user g_pVirISPBuffer failed\n");
+				pr_err("copy_from_user g_pVirISPBuffer failed\n");
 				Ret = -EFAULT;
 				goto EXIT;
 			}
 		} else {
-			LOG_NOTICE("ERROR: g_pVirISPBuffer kmalloc failed\n");
+			pr_err("ERROR: g_pVirISPBuffer kmalloc failed\n");
 		}
 #else
 		if (copy_from_user(g_VirISPBuffer,
 		    (void __user *)(pDumpBufStruct->pBuffer),
 		    pDumpBufStruct->BytesofBufferSize) != 0) {
-			LOG_NOTICE("copy_from_user g_VirISPBuffer failed\n");
+			pr_err("copy_from_user g_VirISPBuffer failed\n");
 			Ret = -EFAULT;
 			goto EXIT;
 		}
@@ -4698,7 +4824,7 @@ static signed int ISP_DumpBuffer(struct ISP_DUMP_BUFFER_STRUCT *pDumpBufStruct)
 	case ISP_DUMP_CMDQVIRBUF_CMD:
 		if (pDumpBufStruct->BytesofBufferSize >
 		    MAX_ISP_CMDQ_BUFFER_SIZE) {
-			LOG_NOTICE("cmdq buffer size error, size:0x%x",
+			pr_err("cmdq buffer size error, size:0x%x",
 				pDumpBufStruct->BytesofBufferSize);
 			Ret = -EFAULT;
 			goto EXIT;
@@ -4709,26 +4835,25 @@ static signed int ISP_DumpBuffer(struct ISP_DUMP_BUFFER_STRUCT *pDumpBufStruct)
 				g_pCmdqBuffer =
 					vmalloc(MAX_ISP_CMDQ_BUFFER_SIZE);
 			else
-				LOG_NOTICE("g_pCmdqBuffer:0x%pK is not NULL!!",
+				pr_err("g_pCmdqBuffer:0x%pK is not NULL!!",
 					g_pCmdqBuffer);
 		}
 		if (g_pCmdqBuffer != NULL) {
 			if (copy_from_user(g_pCmdqBuffer,
 			    (void __user *)(pDumpBufStruct->pBuffer),
 			    pDumpBufStruct->BytesofBufferSize) != 0) {
-				LOG_NOTICE(
-					"copy_from_user g_pCmdqBuffer failed\n");
+				pr_err("copy_from_user g_pCmdqBuffer failed\n");
 				Ret = -EFAULT;
 				goto EXIT;
 			}
 		} else {
-			LOG_NOTICE("ERROR: g_pCmdqBuffer kmalloc failed\n");
+			pr_err("ERROR: g_pCmdqBuffer kmalloc failed\n");
 		}
 #else
 		if (copy_from_user(g_CmdqBuffer,
 		    (void __user *)(pDumpBufStruct->pBuffer),
 		    pDumpBufStruct->BytesofBufferSize) != 0) {
-			LOG_NOTICE("copy_from_user g_VirISPBuffer failed\n");
+			pr_err("copy_from_user g_VirISPBuffer failed\n");
 			Ret = -EFAULT;
 			goto EXIT;
 		}
@@ -4738,7 +4863,7 @@ static signed int ISP_DumpBuffer(struct ISP_DUMP_BUFFER_STRUCT *pDumpBufStruct)
 		DumpBufferField = DumpBufferField | 0x8;
 		break;
 	default:
-		LOG_NOTICE("error dump buffer cmd:%d", pDumpBufStruct->DumpCmd);
+		pr_err("error dump buffer cmd:%d", pDumpBufStruct->DumpCmd);
 		break;
 	}
 	if (g_bUserBufIsReady == MFALSE) {
@@ -4764,7 +4889,7 @@ static signed int ISP_SetMemInfo(struct ISP_MEM_INFO_STRUCT *pMemInfoStruct)
 	signed int Ret = 0;
 	/*  */
 	if ((void __user *)(pMemInfoStruct->MemVa) == NULL) {
-		LOG_NOTICE("NULL pMemInfoStruct->MemVa");
+		pr_err("NULL pMemInfoStruct->MemVa");
 		Ret = -EFAULT;
 		goto EXIT;
 	}
@@ -4780,7 +4905,7 @@ static signed int ISP_SetMemInfo(struct ISP_MEM_INFO_STRUCT *pMemInfoStruct)
 		pr_info("set comq memory info is done!!\n");
 		break;
 	default:
-		LOG_NOTICE("error set memory info cmd:%d",
+		pr_err("error set memory info cmd:%d",
 			pMemInfoStruct->MemInfoCmd);
 		break;
 	}
@@ -4814,7 +4939,7 @@ static long ISP_REF_CNT_CTRL_FUNC(unsigned long Param)
 
 	/*  */
 	if (NULL == (void __user *)Param)  {
-		LOG_NOTICE("[rc]NULL Param");
+		pr_err("[rc]NULL Param");
 		/* //////////////////---add unlock here */
 		/* spin_unlock_irqrestore(&(IspInfo.SpinLock), flags); */
 		/* ////////////////// */
@@ -4887,22 +5012,22 @@ static long ISP_REF_CNT_CTRL_FUNC(unsigned long Param)
 
 			/*  */
 			if ((void __user *)(ref_cnt_ctrl.data_ptr) == NULL) {
-				LOG_NOTICE("NULL data_ptr");
+				pr_err("NULL data_ptr");
 				return -EFAULT;
 			}
 			if (put_user(imem_ref_cnt,
 			    (signed int *)ref_cnt_ctrl.data_ptr) != 0) {
-				LOG_NOTICE("[rc][GET]:copy_to_user failed");
+				pr_err("[rc][GET]:copy_to_user failed");
 				Ret = -EFAULT;
 			}
 		} else {
-			LOG_NOTICE("[rc]:id(%d) exceed", ref_cnt_ctrl.id);
+			pr_err("[rc]:id(%d) exceed", ref_cnt_ctrl.id);
 			Ret = -EFAULT;
 		}
 
 
 	} else {
-		LOG_NOTICE("[rc]copy_from_user failed");
+		pr_err("[rc]copy_from_user failed");
 		Ret = -EFAULT;
 	}
 
@@ -4968,27 +5093,29 @@ static long ISP_Buf_CTRL_FUNC(unsigned long Param)
 	/*    bool CurVF_En = MFALSE;*/
 	/*  */
 	if ((void __user *)Param == NULL)  {
-		LOG_NOTICE("[rtbc]NULL Param");
+		pr_err("[rtbc]NULL Param");
 		return -EFAULT;
 	}
 	/*  */
 	if (copy_from_user(&rt_buf_ctrl, (void __user *)Param,
 	    sizeof(struct ISP_BUFFER_CTRL_STRUCT)) == 0) {
-		if (rt_buf_ctrl.module >= ISP_IRQ_TYPE_AMOUNT) {
-			LOG_NOTICE("[rtbc]not supported module:0x%x\n",
+		if (rt_buf_ctrl.module >= ISP_IRQ_TYPE_AMOUNT ||
+		    rt_buf_ctrl.module < 0) {
+			pr_err("[rtbc]not supported module:0x%x\n",
 				rt_buf_ctrl.module);
 			return -EFAULT;
 		}
 
 		if (pstRTBuf[rt_buf_ctrl.module] == NULL)  {
-			LOG_NOTICE("[rtbc]NULL pstRTBuf, module:0x%x\n",
+			pr_err("[rtbc]NULL pstRTBuf, module:0x%x\n",
 				rt_buf_ctrl.module);
 			return -EFAULT;
 		}
 
 		rt_dma = rt_buf_ctrl.buf_id;
-		if (rt_dma >= _cam_max_) {
-			LOG_NOTICE("[rtbc]buf_id error:0x%x\n", rt_dma);
+		if (rt_dma >= _cam_max_ ||
+		    rt_dma < 0) {
+			pr_err("[rtbc]buf_id error:0x%x\n", rt_dma);
 			return -EFAULT;
 		}
 
@@ -5021,54 +5148,54 @@ static long ISP_Buf_CTRL_FUNC(unsigned long Param)
 				&pstRTBuf[rt_buf_ctrl.module]->ring_buf[rt_dma],
 				0x00,
 				sizeof(struct ISP_RT_RING_BUF_INFO_STRUCT));
-/* init. frmcnt before vf_en */
-for (i = 0; i < ISP_RT_BUF_SIZE; i++)
-	pstRTBuf[rt_buf_ctrl.module]->ring_buf[rt_dma].data[i].image.frm_cnt
-	= _INVALID_FRM_CNT_;
+			/* init. frmcnt before vf_en */
+			for (i = 0; i < ISP_RT_BUF_SIZE; i++)
+				pstRTBuf[rt_buf_ctrl.module]->
+					ring_buf[rt_dma].data[i].image.frm_cnt =
+					_INVALID_FRM_CNT_;
 
 			switch (rt_buf_ctrl.module) {
 			case ISP_IRQ_TYPE_INT_CAM_A_ST:
 			case ISP_IRQ_TYPE_INT_CAM_B_ST:
-		if ((pstRTBuf[rt_buf_ctrl.module]->ring_buf[_imgo_].active
-		== MFALSE) &&
-		(pstRTBuf[rt_buf_ctrl.module]->ring_buf[_rrzo_].active
-		== MFALSE)) {
-			sof_count[rt_buf_ctrl.module] = 0;
-			g1stSof[rt_buf_ctrl.module] = MTRUE;
-			#if (TSTMP_SUBSAMPLE_INTPL == 1)
-			g1stSwP1Done[rt_buf_ctrl.module] =
-				MTRUE;
-			gPrevSofTimestp[rt_buf_ctrl.module] = 0;
-			#endif
-			g_ISPIntErr[rt_buf_ctrl.module] = 0;
-			g_ISPIntErr_SMI[rt_buf_ctrl.module] = 0;
-			pstRTBuf[rt_buf_ctrl.module]->dropCnt =
-				0;
-			pstRTBuf[rt_buf_ctrl.module]->state = 0;
-		}
+				if ((pstRTBuf[rt_buf_ctrl.module]->
+				     ring_buf[_imgo_].active == MFALSE) &&
+				    (pstRTBuf[rt_buf_ctrl.module]->
+				      ring_buf[_rrzo_].active == MFALSE)) {
+					sof_count[rt_buf_ctrl.module] = 0;
+					g1stSof[rt_buf_ctrl.module] = MTRUE;
+					#if (TSTMP_SUBSAMPLE_INTPL == 1)
+					g1stSwP1Done[rt_buf_ctrl.module] =
+						MTRUE;
+					gPrevSofTimestp[rt_buf_ctrl.module] = 0;
+					#endif
+					g_ISPIntErr[rt_buf_ctrl.module] = 0;
+					g_ISPIntErr_SMI[rt_buf_ctrl.module] = 0;
+					pstRTBuf[rt_buf_ctrl.module]->dropCnt =
+						0;
+					pstRTBuf[rt_buf_ctrl.module]->state = 0;
+				}
 
-		memset((void *)g_DmaErr_CAM[rt_buf_ctrl.module],
-			0, sizeof(unsigned int)*_cam_max_);
-		break;
+				memset((void *)g_DmaErr_CAM[rt_buf_ctrl.module],
+					0, sizeof(unsigned int)*_cam_max_);
+				break;
 			case ISP_IRQ_TYPE_INT_CAMSV_0_ST:
 			case ISP_IRQ_TYPE_INT_CAMSV_1_ST:
 			case ISP_IRQ_TYPE_INT_CAMSV_2_ST:
 			case ISP_IRQ_TYPE_INT_CAMSV_3_ST:
 			case ISP_IRQ_TYPE_INT_CAMSV_4_ST:
 			case ISP_IRQ_TYPE_INT_CAMSV_5_ST:
-		if (
-		pstRTBuf[rt_buf_ctrl.module]->ring_buf[_camsv_imgo_].active
-		== MFALSE) {
-			sof_count[rt_buf_ctrl.module] = 0;
-			g1stSof[rt_buf_ctrl.module] = MTRUE;
-			g_ISPIntErr[rt_buf_ctrl.module] = 0;
-			g_ISPIntErr_SMI[rt_buf_ctrl.module] = 0;
-			pstRTBuf[rt_buf_ctrl.module]->dropCnt =
-				0;
-			pstRTBuf[rt_buf_ctrl.module]->state = 0;
-		}
+				if (pstRTBuf[rt_buf_ctrl.module]->
+				    ring_buf[_camsv_imgo_].active == MFALSE) {
+					sof_count[rt_buf_ctrl.module] = 0;
+					g1stSof[rt_buf_ctrl.module] = MTRUE;
+					g_ISPIntErr[rt_buf_ctrl.module] = 0;
+					g_ISPIntErr_SMI[rt_buf_ctrl.module] = 0;
+					pstRTBuf[rt_buf_ctrl.module]->dropCnt =
+						0;
+					pstRTBuf[rt_buf_ctrl.module]->state = 0;
+				}
 
-		break;
+				break;
 			case ISP_IRQ_TYPE_INT_DIP_A_ST:
 			case ISP_IRQ_TYPE_INT_UNI_A_ST:
 				sof_count[rt_buf_ctrl.module] = 0;
@@ -5079,7 +5206,7 @@ for (i = 0; i < ISP_RT_BUF_SIZE; i++)
 				pstRTBuf[rt_buf_ctrl.module]->state = 0;
 				break;
 			default:
-				LOG_NOTICE("unsupported module:0x%x\n",
+				pr_err("unsupported module:0x%x\n",
 					rt_buf_ctrl.module);
 				break;
 			}
@@ -5099,30 +5226,30 @@ for (i = 0; i < ISP_RT_BUF_SIZE; i++)
 			unsigned char *pExt;
 
 			if (rt_buf_ctrl.pExtend == NULL) {
-				LOG_NOTICE("NULL pExtend");
+				pr_err("NULL pExtend");
 				Ret = -EFAULT;
 				break;
 			}
 
 			pExt = (unsigned char *)(rt_buf_ctrl.pExtend);
-	for (z = 0; z < _cam_max_; z++) {
-		if (get_user(array[z],
-		(unsigned char *)pExt) == 0) {
-			pstRTBuf[rt_buf_ctrl.module]->ring_buf[z].active
-				= array[z];
-			if (IspInfo.DebugMask &
-			    ISP_DBG_BUF_CTRL)
-				pr_info(
-				"[rtbc][DMA_EN]:dma_%d:%d",
-					z, array[z]);
-		} else {
-			LOG_NOTICE(
-			"[rtbc][DMA_EN]:get_user failed(%d)",
-				z);
-			Ret = -EFAULT;
-		}
-		pExt++;
-	}
+			for (z = 0; z < _cam_max_; z++) {
+				if (get_user(array[z],
+				(unsigned char *)pExt) == 0) {
+					pstRTBuf[rt_buf_ctrl.module]->
+						ring_buf[z].active = array[z];
+					if (IspInfo.DebugMask &
+					    ISP_DBG_BUF_CTRL)
+						pr_info(
+						"[rtbc][DMA_EN]:dma_%d:%d",
+							z, array[z]);
+				} else {
+					pr_err(
+					"[rtbc][DMA_EN]:get_user failed(%d)",
+						z);
+					Ret = -EFAULT;
+				}
+				pExt++;
+			}
 		}
 		break;
 		case ISP_RT_BUF_CTRL_MAX:/* Add this to remove build warning */
@@ -5131,7 +5258,7 @@ for (i = 0; i < ISP_RT_BUF_SIZE; i++)
 
 		}
 	} else {
-		LOG_NOTICE("[rtbc]copy_from_user failed");
+		pr_err("[rtbc]copy_from_user failed");
 		Ret = -EFAULT;
 	}
 
@@ -5158,11 +5285,11 @@ static int ISP_SetPMQOS(unsigned int cmd, unsigned int module)
 		break;
 	}
 	default:
-		LOG_NOTICE("unsupport cmd:%d", cmd);
+		pr_err("unsupport cmd:%d", cmd);
 		Ret = -1;
 		break;
 	}
-	pm_qos_update_request(&camsys_qos_request[module], bw_cal);
+	mtk_pm_qos_update_request(&camsys_qos_request[module], bw_cal);
 
 	if (PMQoS_BW_value != bw_cal) {
 		pr_info(
@@ -5180,7 +5307,7 @@ static int ISP_SetPMQOS(unsigned int cmd, unsigned int module)
  * update current idnex to working frame
  *****************************************************************************/
 static signed int ISP_P2_BufQue_Update_ListCIdx(
-	enum ISP_P2_BUFQUE_PROPERTY property,
+	enum ISP_P2_BUFQUE_PROPERTY propertyU,
 	enum ISP_P2_BUFQUE_LIST_TAG listTag)
 {
 	signed int ret = 0;
@@ -5188,7 +5315,9 @@ static signed int ISP_P2_BufQue_Update_ListCIdx(
 	signed int cnt = 0;
 	bool stop = false;
 	int i = 0;
+	unsigned int property = 0;
 	enum ISP_P2_BUF_STATE_ENUM cIdxSts = ISP_P2_BUF_STATE_NONE;
+	property = propertyU;
 
 	switch (listTag) {
 	case ISP_P2_BUFQUE_LIST_TAG_UNIT:
@@ -5227,28 +5356,28 @@ static signed int ISP_P2_BufQue_Update_ListCIdx(
 				ISP_P2_BUF_STATE_RUNNING;
 			break;
 		case ISP_P2_BUF_STATE_DEQUE_SUCCESS:
-		do { /* to find the newest cur index */
-			tmpIdx = (tmpIdx + 1) %
-				_MAX_SUPPORT_P2_FRAME_NUM_;
-			switch (
-			P2_FrameUnit_List[property][tmpIdx].bufSts) {
-			case ISP_P2_BUF_STATE_ENQUE:
-			case ISP_P2_BUF_STATE_RUNNING:
-				P2_FrameUnit_List[property][tmpIdx].bufSts
-					= ISP_P2_BUF_STATE_RUNNING;
-				P2_FrameUnit_List_Idx[property].curr
-					= tmpIdx;
-				stop = true;
-				break;
-			case ISP_P2_BUF_STATE_WAIT_DEQUE_FAIL:
-			case ISP_P2_BUF_STATE_DEQUE_SUCCESS:
-			case ISP_P2_BUF_STATE_DEQUE_FAIL:
-			case ISP_P2_BUF_STATE_NONE:
-			default:
-				break;
-			}
-			i++;
-		} while ((i < cnt) && (!stop));
+			do { /* to find the newest cur index */
+				tmpIdx = (tmpIdx + 1) %
+					_MAX_SUPPORT_P2_FRAME_NUM_;
+				switch (
+				P2_FrameUnit_List[property][tmpIdx].bufSts) {
+				case ISP_P2_BUF_STATE_ENQUE:
+				case ISP_P2_BUF_STATE_RUNNING:
+					P2_FrameUnit_List[property][tmpIdx].
+					    bufSts = ISP_P2_BUF_STATE_RUNNING;
+					P2_FrameUnit_List_Idx[property].curr =
+						tmpIdx;
+					stop = true;
+					break;
+				case ISP_P2_BUF_STATE_WAIT_DEQUE_FAIL:
+				case ISP_P2_BUF_STATE_DEQUE_SUCCESS:
+				case ISP_P2_BUF_STATE_DEQUE_FAIL:
+				case ISP_P2_BUF_STATE_NONE:
+				default:
+					break;
+				}
+				i++;
+			} while ((i < cnt) && (!stop));
 			/* ///////////////////////////////////////////////// */
 			/* Assume we have the buffer list in the */
 			/* following situation */
@@ -5281,7 +5410,7 @@ static signed int ISP_P2_BufQue_Update_ListCIdx(
 		break;
 	case ISP_P2_BUFQUE_LIST_TAG_PACKAGE:
 	default:
-		LOG_NOTICE("Wrong List tag(%d)\n", listTag);
+		pr_err("Wrong List tag(%d)\n", listTag);
 		break;
 	}
 	return ret;
@@ -5289,14 +5418,23 @@ static signed int ISP_P2_BufQue_Update_ListCIdx(
 /******************************************************************************
  *
  *****************************************************************************/
-static signed int ISP_P2_BufQue_Erase(enum ISP_P2_BUFQUE_PROPERTY property,
-enum ISP_P2_BUFQUE_LIST_TAG listTag, signed int idx)
+static signed int ISP_P2_BufQue_Erase(enum ISP_P2_BUFQUE_PROPERTY propertyU,
+enum ISP_P2_BUFQUE_LIST_TAG listTag, signed int idxU)
 {
 	signed int ret =  -1;
 	bool stop = false;
 	int i = 0;
 	signed int cnt = 0;
 	int tmpIdx = 0;
+	unsigned int property = 0;
+	unsigned int idx = 0;
+
+	if (idxU < 0) {
+		pr_info("idxU abnormal error(%d)\n", idxU);
+		return ret;
+	}
+	idx = idxU;
+	property = propertyU;
 
 	switch (listTag) {
 	case ISP_P2_BUFQUE_LIST_TAG_PACKAGE:
@@ -5308,42 +5446,44 @@ enum ISP_P2_BUFQUE_LIST_TAG listTag, signed int idx)
 		P2_FramePackage_List[property][idx].frameNum = 0;
 		P2_FramePackage_List[property][idx].dequedNum = 0;
 		/* [2] update first index */
-		if (P2_FramePackage_List[property][tmpIdx].dupCQIdx == -1) {
-			/* traverse count needed, cuz user may erase the */
-			/* element but not the one at first idx */
-			/* (pip or vss scenario) */
-			if (P2_FramePack_List_Idx[property].start <=
-			P2_FramePack_List_Idx[property].end) {
-				cnt = P2_FramePack_List_Idx[property].end -
-					P2_FramePack_List_Idx[property].start;
-			} else {
-				cnt = _MAX_SUPPORT_P2_PACKAGE_NUM_ -
-					P2_FramePack_List_Idx[property].start;
-				cnt += P2_FramePack_List_Idx[property].end;
-			}
-		do { /* to find the newest first lindex */
-			tmpIdx = (tmpIdx + 1) %
-				_MAX_SUPPORT_P2_PACKAGE_NUM_;
-			switch (
-			P2_FramePackage_List[property][tmpIdx].dupCQIdx){
-			case (-1):
-				break;
-			default:
-				stop = true;
-				P2_FramePack_List_Idx[property].start =
-					tmpIdx;
-				break;
-			}
-			i++;
-		} while ((i < cnt) && (!stop));
-			/* current last erased element in list is the one */
-			/* firstBufindex point at and all the buffer node */
-			/* are deque done in the current moment, should */
-			/* update first index to the last node */
-			if ((!stop) && (i == cnt))
-				P2_FramePack_List_Idx[property].start =
-					P2_FramePack_List_Idx[property].end;
+		if (tmpIdx >= 0) {
+			if (P2_FramePackage_List[property][tmpIdx].dupCQIdx == -1) {
+				/* traverse count needed, cuz user may erase the */
+				/* element but not the one at first idx */
+				/* (pip or vss scenario) */
+				if (P2_FramePack_List_Idx[property].start <=
+				P2_FramePack_List_Idx[property].end) {
+					cnt = P2_FramePack_List_Idx[property].end -
+						P2_FramePack_List_Idx[property].start;
+				} else {
+					cnt = _MAX_SUPPORT_P2_PACKAGE_NUM_ -
+						P2_FramePack_List_Idx[property].start;
+					cnt += P2_FramePack_List_Idx[property].end;
+				}
+				do { /* to find the newest first lindex */
+					tmpIdx = (tmpIdx + 1) %
+						_MAX_SUPPORT_P2_PACKAGE_NUM_;
+					switch (
+					P2_FramePackage_List[property][tmpIdx].dupCQIdx){
+					case (-1):
+						break;
+					default:
+						stop = true;
+						P2_FramePack_List_Idx[property].start =
+							tmpIdx;
+						break;
+					}
+					i++;
+				} while ((i < cnt) && (!stop));
+				/* current last erased element in list is the one */
+				/* firstBufindex point at and all the buffer node */
+				/* are deque done in the current moment, should */
+				/* update first index to the last node */
+				if ((!stop) && (i == cnt))
+					P2_FramePack_List_Idx[property].start =
+						P2_FramePack_List_Idx[property].end;
 
+			}
 		}
 		break;
 	case ISP_P2_BUFQUE_LIST_TAG_UNIT:
@@ -5354,50 +5494,51 @@ enum ISP_P2_BUFQUE_LIST_TAG listTag, signed int idx)
 		P2_FrameUnit_List[property][idx].cqMask =  0x0;
 		P2_FrameUnit_List[property][idx].bufSts = ISP_P2_BUF_STATE_NONE;
 		/* [2]update first index */
-		if (P2_FrameUnit_List[property][tmpIdx].bufSts ==
-		ISP_P2_BUF_STATE_NONE) {
-			/* traverse count needed, cuz user may erase the */
-			/* element but not the one at first idx */
-			if (P2_FrameUnit_List_Idx[property].start <=
-			P2_FrameUnit_List_Idx[property].end) {
-				cnt = P2_FrameUnit_List_Idx[property].end -
-					P2_FrameUnit_List_Idx[property].start;
-			} else {
-				cnt = _MAX_SUPPORT_P2_FRAME_NUM_ -
-					P2_FrameUnit_List_Idx[property].start;
-				cnt += P2_FrameUnit_List_Idx[property].end;
-			}
-			/* to find the newest first lindex */
-			do {
-				tmpIdx = (tmpIdx + 1) %
-					_MAX_SUPPORT_P2_FRAME_NUM_;
-				switch (
-				P2_FrameUnit_List[property][tmpIdx].bufSts) {
-				case ISP_P2_BUF_STATE_ENQUE:
-				case ISP_P2_BUF_STATE_RUNNING:
-				case ISP_P2_BUF_STATE_DEQUE_SUCCESS:
-					stop = true;
-					P2_FrameUnit_List_Idx[property].start =
-						tmpIdx;
-					break;
-				case ISP_P2_BUF_STATE_WAIT_DEQUE_FAIL:
-				case ISP_P2_BUF_STATE_DEQUE_FAIL:
-					/* ASSERT */
-					break;
-				case ISP_P2_BUF_STATE_NONE:
-				default:
-					break;
+		if (tmpIdx >= 0) {
+			if (P2_FrameUnit_List[property][tmpIdx].bufSts ==
+			ISP_P2_BUF_STATE_NONE) {
+				/* traverse count needed, cuz user may erase the */
+				/* element but not the one at first idx */
+				if (P2_FrameUnit_List_Idx[property].start <=
+				P2_FrameUnit_List_Idx[property].end) {
+					cnt = P2_FrameUnit_List_Idx[property].end -
+						P2_FrameUnit_List_Idx[property].start;
+				} else {
+					cnt = _MAX_SUPPORT_P2_FRAME_NUM_ -
+						P2_FrameUnit_List_Idx[property].start;
+					cnt += P2_FrameUnit_List_Idx[property].end;
 				}
-				i++;
-			} while ((i < cnt) && (!stop));
-			/* current last erased element in list is the one */
-			/* firstBufindex point at and all the buffer node are */
-			/* deque done in the current moment, should */
-			/* update first index to the last node */
-			if ((!stop) && (i == (cnt)))
-				P2_FrameUnit_List_Idx[property].start =
-					P2_FrameUnit_List_Idx[property].end;
-
+				/* to find the newest first lindex */
+				do {
+					tmpIdx = (tmpIdx + 1) %
+						_MAX_SUPPORT_P2_FRAME_NUM_;
+					switch (
+					P2_FrameUnit_List[property][tmpIdx].bufSts) {
+					case ISP_P2_BUF_STATE_ENQUE:
+					case ISP_P2_BUF_STATE_RUNNING:
+					case ISP_P2_BUF_STATE_DEQUE_SUCCESS:
+						stop = true;
+						P2_FrameUnit_List_Idx[property].start =
+							tmpIdx;
+						break;
+					case ISP_P2_BUF_STATE_WAIT_DEQUE_FAIL:
+					case ISP_P2_BUF_STATE_DEQUE_FAIL:
+						/* ASSERT */
+						break;
+					case ISP_P2_BUF_STATE_NONE:
+					default:
+						break;
+					}
+					i++;
+				} while ((i < cnt) && (!stop));
+				/* current last erased element in list is the one */
+				/* firstBufindex point at and all the buffer node are */
+				/* deque done in the current moment, should */
+				/* update first index to the last node */
+				if ((!stop) && (i == (cnt)))
+					P2_FrameUnit_List_Idx[property].start =
+						P2_FrameUnit_List_Idx[property].end;
+			}
 		}
 		break;
 	default:
@@ -5415,121 +5556,72 @@ static signed int ISP_P2_BufQue_GetMatchIdx(struct ISP_P2_BUFQUE_STRUCT param,
 {
 	int idx = -1;
 	int i = 0;
-	int property;
+	unsigned int property;
 
 	if (param.property >= ISP_P2_BUFQUE_PROPERTY_NUM) {
-		LOG_NOTICE("property err(%d)\n", param.property);
+		pr_err("property err(%d)\n", param.property);
 		return idx;
 	}
 	property = param.property;
 
 	switch (matchType) {
 	case ISP_P2_BUFQUE_MATCH_TYPE_WAITDQ:
-	/* traverse for finding the frame unit which had not beed */
-	/* dequeued of the process */
-	if (P2_FrameUnit_List_Idx[property].start <=
-	P2_FrameUnit_List_Idx[property].end) {
-		for (i = P2_FrameUnit_List_Idx[property].start;
-		i <= P2_FrameUnit_List_Idx[property].end; i++) {
-			if ((P2_FrameUnit_List[property][i].processID ==
-			    param.processID) &&
-			((P2_FrameUnit_List[property][i].bufSts ==
-			    ISP_P2_BUF_STATE_ENQUE) ||
-			(P2_FrameUnit_List[property][i].bufSts ==
-			    ISP_P2_BUF_STATE_RUNNING))) {
-				idx = i;
-				break;
-			}
-		}
-	} else {
-		for (i = P2_FrameUnit_List_Idx[property].start;
-		i < _MAX_SUPPORT_P2_FRAME_NUM_; i++) {
-			if ((P2_FrameUnit_List[property][i].processID ==
-			    param.processID) &&
-			((P2_FrameUnit_List[property][i].bufSts ==
-			    ISP_P2_BUF_STATE_ENQUE) ||
-			(P2_FrameUnit_List[property][i].bufSts ==
-			    ISP_P2_BUF_STATE_RUNNING))) {
-				idx = i;
-				break;
-			}
-		}
-		if (idx !=  -1) {
-			/*get in the first for loop*/
-		} else {
-			for (i = 0;
+		/* traverse for finding the frame unit which had not beed */
+		/* dequeued of the process */
+		if (P2_FrameUnit_List_Idx[property].start <=
+		P2_FrameUnit_List_Idx[property].end) {
+			for (i = P2_FrameUnit_List_Idx[property].start;
 			i <= P2_FrameUnit_List_Idx[property].end; i++) {
-				if ((P2_FrameUnit_List[property][i].processID
-					== param.processID) &&
-				((P2_FrameUnit_List[property][i].bufSts
-				    == ISP_P2_BUF_STATE_ENQUE) ||
-				(P2_FrameUnit_List[property][i].bufSts
-				    == ISP_P2_BUF_STATE_RUNNING))) {
+				if ((P2_FrameUnit_List[property][i].processID ==
+				    param.processID) &&
+				((P2_FrameUnit_List[property][i].bufSts ==
+				    ISP_P2_BUF_STATE_ENQUE) ||
+				(P2_FrameUnit_List[property][i].bufSts ==
+				    ISP_P2_BUF_STATE_RUNNING))) {
 					idx = i;
 					break;
 				}
 			}
-		}
-	}
-	break;
-	case ISP_P2_BUFQUE_MATCH_TYPE_WAITFM:
-	if (P2_FramePack_List_Idx[property].start <=
-	P2_FramePack_List_Idx[property].end) {
-		for (i = P2_FramePack_List_Idx[property].start;
-		i <= P2_FramePack_List_Idx[property].end; i++) {
-			if ((P2_FramePackage_List[property][i].processID
-			== param.processID) &&
-			(P2_FramePackage_List[property][i].callerID ==
-			param.callerID)) {
-				idx = i;
-				break;
-			}
-		}
-	} else {
-		for (i = P2_FramePack_List_Idx[property].start;
-		i < _MAX_SUPPORT_P2_PACKAGE_NUM_; i++) {
-			if ((P2_FramePackage_List[property][i].processID
-			== param.processID) &&
-			(P2_FramePackage_List[property][i].callerID
-			== param.callerID)) {
-				idx = i;
-				break;
-			}
-		}
-		if (idx !=  -1) {
-			/*get in the first for loop*/
 		} else {
-			for (i = 0;
-			i <= P2_FramePack_List_Idx[property].end; i++) {
-				if ((P2_FramePackage_List[property][i].processID
-				== param.processID) &&
-				(P2_FramePackage_List[property][i].callerID
-				== param.callerID)) {
+			for (i = P2_FrameUnit_List_Idx[property].start;
+			i < _MAX_SUPPORT_P2_FRAME_NUM_; i++) {
+				if ((P2_FrameUnit_List[property][i].processID ==
+				    param.processID) &&
+				((P2_FrameUnit_List[property][i].bufSts ==
+				    ISP_P2_BUF_STATE_ENQUE) ||
+				(P2_FrameUnit_List[property][i].bufSts ==
+				    ISP_P2_BUF_STATE_RUNNING))) {
 					idx = i;
 					break;
 				}
 			}
+			if (idx !=  -1) {
+				/*get in the first for loop*/
+			} else {
+				for (i = 0;
+				i <= P2_FrameUnit_List_Idx[property].end; i++) {
+					if ((P2_FrameUnit_List[property][i].
+					    processID == param.processID) &&
+					((P2_FrameUnit_List[property][i].bufSts
+					    == ISP_P2_BUF_STATE_ENQUE) ||
+					(P2_FrameUnit_List[property][i].bufSts
+					    == ISP_P2_BUF_STATE_RUNNING))) {
+						idx = i;
+						break;
+					}
+				}
+			}
 		}
-	}
-	break;
-	case ISP_P2_BUFQUE_MATCH_TYPE_FRAMEOP:
-	/* deque done notify */
-	if (listTag == ISP_P2_BUFQUE_LIST_TAG_PACKAGE) {
+		break;
+	case ISP_P2_BUFQUE_MATCH_TYPE_WAITFM:
 		if (P2_FramePack_List_Idx[property].start <=
 		P2_FramePack_List_Idx[property].end) {
-			/* avoid race that dupCQ_1 of buffer2 enqued */
-			/* while dupCQ_1 of buffer1 have beend deque */
-			/* done but not been erased yet */
 			for (i = P2_FramePack_List_Idx[property].start;
 			i <= P2_FramePack_List_Idx[property].end; i++) {
 				if ((P2_FramePackage_List[property][i].processID
 				== param.processID) &&
-				(P2_FramePackage_List[property][i].callerID
-				== param.callerID) &&
-				(P2_FramePackage_List[property][i].dupCQIdx
-				== param.dupCQIdx) &&
-				(P2_FramePackage_List[property][i].dequedNum <
-				P2_FramePackage_List[property][i].frameNum)) {
+				(P2_FramePackage_List[property][i].callerID ==
+				param.callerID)) {
 					idx = i;
 					break;
 				}
@@ -5539,77 +5631,132 @@ static signed int ISP_P2_BufQue_GetMatchIdx(struct ISP_P2_BUFQUE_STRUCT param,
 			i < _MAX_SUPPORT_P2_PACKAGE_NUM_; i++) {
 				if ((P2_FramePackage_List[property][i].processID
 				== param.processID) &&
-				(P2_FramePackage_List[property][i].callerID
-				== param.callerID) &&
-				(P2_FramePackage_List[property][i].dupCQIdx
-				== param.dupCQIdx) &&
-				(P2_FramePackage_List[property][i].dequedNum <
-				P2_FramePackage_List[property][i].frameNum)) {
+				(P2_FramePackage_List[property][i].callerID ==
+				param.callerID)) {
 					idx = i;
 					break;
 				}
 			}
 			if (idx !=  -1) {
 				/*get in the first for loop*/
-				break;
-			}
-			for (i = 0;
-			i <= P2_FramePack_List_Idx[property].end; i++) {
-				if (
-				(P2_FramePackage_List[property][i].processID
-				== param.processID) &&
-				(P2_FramePackage_List[property][i].callerID
-				== param.callerID) &&
-				(P2_FramePackage_List[property][i].dupCQIdx
-				== param.dupCQIdx) &&
-				(P2_FramePackage_List[property][i].dequedNum <
-				P2_FramePackage_List[property][i].frameNum)) {
-					idx = i;
-					break;
+			} else {
+				for (i = 0;
+				i <= P2_FramePack_List_Idx[property].end; i++) {
+					if ((P2_FramePackage_List[property][i].
+					    processID == param.processID) &&
+					(P2_FramePackage_List[property][i].
+					    callerID == param.callerID)) {
+						idx = i;
+						break;
+					}
 				}
 			}
 		}
-	} else {
-		if (P2_FrameUnit_List_Idx[property].start <=
-		    P2_FrameUnit_List_Idx[property].end) {
-			for (i = P2_FrameUnit_List_Idx[property].start;
-			i <= P2_FrameUnit_List_Idx[property].end; i++) {
-				if ((P2_FrameUnit_List[property][i].processID
-				== param.processID) &&
-				(P2_FrameUnit_List[property][i].callerID
-				== param.callerID)) {
-					idx = i;
+		break;
+	case ISP_P2_BUFQUE_MATCH_TYPE_FRAMEOP:
+		/* deque done notify */
+		if (listTag == ISP_P2_BUFQUE_LIST_TAG_PACKAGE) {
+			if (P2_FramePack_List_Idx[property].start <=
+			P2_FramePack_List_Idx[property].end) {
+				/* avoid race that dupCQ_1 of buffer2 enqued */
+				/* while dupCQ_1 of buffer1 have beend deque */
+				/* done but not been erased yet */
+				for (i = P2_FramePack_List_Idx[property].start;
+				i <= P2_FramePack_List_Idx[property].end; i++) {
+					if ((P2_FramePackage_List[property][i].
+					    processID == param.processID) &&
+					(P2_FramePackage_List[property][i].
+					    callerID == param.callerID) &&
+					(P2_FramePackage_List[property][i].
+					    dupCQIdx == param.dupCQIdx) &&
+					(P2_FramePackage_List[property][i].
+					    dequedNum <
+					P2_FramePackage_List[property][i].
+					     frameNum)) {
+						idx = i;
+						break;
+					}
+				}
+			} else {
+				for (i = P2_FramePack_List_Idx[property].start;
+				i < _MAX_SUPPORT_P2_PACKAGE_NUM_; i++) {
+					if ((P2_FramePackage_List[property][i].
+					    processID == param.processID) &&
+					(P2_FramePackage_List[property][i].
+					    callerID == param.callerID) &&
+					(P2_FramePackage_List[property][i].
+					    dupCQIdx == param.dupCQIdx) &&
+					(P2_FramePackage_List[property][i].
+					    dequedNum <
+					P2_FramePackage_List[property][i].
+					    frameNum)) {
+						idx = i;
+						break;
+					}
+				}
+				if (idx !=  -1) {
+					/*get in the first for loop*/
 					break;
+				}
+				for (i = 0;
+				i <= P2_FramePack_List_Idx[property].end; i++) {
+					if (
+					(P2_FramePackage_List[property][i].
+					  processID == param.processID) &&
+					(P2_FramePackage_List[property][i].
+					  callerID == param.callerID) &&
+					(P2_FramePackage_List[property][i].
+					  dupCQIdx == param.dupCQIdx) &&
+					(P2_FramePackage_List[property][i].
+					  dequedNum <
+					 P2_FramePackage_List[property][i].
+					   frameNum)) {
+						idx = i;
+						break;
+					}
 				}
 			}
 		} else {
-			for (i = P2_FrameUnit_List_Idx[property].start;
-			     i < _MAX_SUPPORT_P2_FRAME_NUM_; i++) {
-				if ((P2_FrameUnit_List[property][i].processID
-				== param.processID) &&
-				(P2_FrameUnit_List[property][i].callerID
-				== param.callerID)) {
-					idx = i;
+			if (P2_FrameUnit_List_Idx[property].start <=
+			    P2_FrameUnit_List_Idx[property].end) {
+				for (i = P2_FrameUnit_List_Idx[property].start;
+				i <= P2_FrameUnit_List_Idx[property].end; i++) {
+					if ((P2_FrameUnit_List[property][i].
+					processID == param.processID) &&
+					(P2_FrameUnit_List[property][i].callerID
+					== param.callerID)) {
+						idx = i;
+						break;
+					}
+				}
+			} else {
+				for (i = P2_FrameUnit_List_Idx[property].start;
+				     i < _MAX_SUPPORT_P2_FRAME_NUM_; i++) {
+					if ((P2_FrameUnit_List[property][i].
+					processID == param.processID) &&
+					(P2_FrameUnit_List[property][i].callerID
+					== param.callerID)) {
+						idx = i;
+						break;
+					}
+				}
+				if (idx !=  -1) {
+					/*get in the first for loop*/
 					break;
 				}
+				for (i = 0; i <=
+				P2_FrameUnit_List_Idx[property].end; i++) {
+					if ((P2_FrameUnit_List[property][i].
+					processID == param.processID) &&
+					(P2_FrameUnit_List[property][i].callerID
+					== param.callerID)) {
+						idx = i;
+						break;
+					}
+				}
 			}
-if (idx !=  -1) {
-	/*get in the first for loop*/
-	break;
-}
-for (i = 0; i <=
-P2_FrameUnit_List_Idx[property].end; i++) {
-	if ((P2_FrameUnit_List[property][i].processID
-	== param.processID) &&
-	(P2_FrameUnit_List[property][i].callerID
-	== param.callerID)) {
-		idx = i;
-		break;
-	}
-}
 		}
-	}
-	break;
+		break;
 	default:
 		break;
 	}
@@ -5626,29 +5773,42 @@ static inline unsigned int ISP_P2_BufQue_WaitEventState(
 {
 	unsigned int ret = MFALSE;
 	signed int index = -1;
-	enum ISP_P2_BUFQUE_PROPERTY property;
+	unsigned int local_idx = 0;
+	unsigned int property;
 
 	if (param.property >= ISP_P2_BUFQUE_PROPERTY_NUM) {
-		LOG_NOTICE("property err(%d)\n", param.property);
+		pr_err("property err(%d)\n", param.property);
 		return ret;
 	}
+
 	property = param.property;
+
 	/*  */
 	switch (type) {
 	case ISP_P2_BUFQUE_MATCH_TYPE_WAITDQ:
-		spin_lock(&(SpinLock_P2FrameList));
 		index = *idx;
-		if (P2_FrameUnit_List[property][index].bufSts ==
+		if (index < 0) {
+			pr_info("index abnormal error(%d) 1\n", index);
+			return ret;
+		}
+		spin_lock(&(SpinLock_P2FrameList));
+		local_idx = index;
+		if (P2_FrameUnit_List[property][local_idx].bufSts ==
 		    ISP_P2_BUF_STATE_RUNNING)
 			ret = MTRUE;
 
 		spin_unlock(&(SpinLock_P2FrameList));
 		break;
 	case ISP_P2_BUFQUE_MATCH_TYPE_WAITFM:
-		spin_lock(&(SpinLock_P2FrameList));
 		index = *idx;
-		if (P2_FramePackage_List[property][index].dequedNum ==
-		    P2_FramePackage_List[property][index].frameNum)
+		if (index < 0) {
+			pr_info("index abnormal error(%d) 2\n", index);
+			return ret;
+		}
+		spin_lock(&(SpinLock_P2FrameList));
+		local_idx = index;
+		if (P2_FramePackage_List[property][local_idx].dequedNum ==
+		    P2_FramePackage_List[property][local_idx].frameNum)
 			ret = MTRUE;
 
 		spin_unlock(&(SpinLock_P2FrameList));
@@ -5695,10 +5855,10 @@ static signed int ISP_P2_BufQue_CTRL_FUNC(struct ISP_P2_BUFQUE_STRUCT param)
 	int i = 0, q = 0;
 	int idx =  -1, idx2 =  -1;
 	signed int restTime = 0;
-	int property;
+	unsigned int property;
 
 	if (param.property >= ISP_P2_BUFQUE_PROPERTY_NUM) {
-		LOG_NOTICE("property err(%d)\n", param.property);
+		pr_err("property err(%d)\n", param.property);
 		ret = -EFAULT;
 		return ret;
 	}
@@ -5713,7 +5873,7 @@ static signed int ISP_P2_BufQue_CTRL_FUNC(struct ISP_P2_BUFQUE_STRUCT param)
 		_MAX_SUPPORT_P2_PACKAGE_NUM_) ==
 		P2_FramePack_List_Idx[property].start &&
 		(P2_FramePack_List_Idx[property].end !=  -1)) {
-			LOG_NOTICE(
+			pr_err(
 			"pty(%d), F/L(%d_%d,%d), dCQ(%d,%d), RF/C/L(%d,%d,%d), sts(%d,%d,%d)",
 				property, param.frameNum,
 				P2_FramePack_List_Idx[property].start,
@@ -5737,8 +5897,7 @@ static signed int ISP_P2_BufQue_CTRL_FUNC(struct ISP_P2_BUFQUE_STRUCT param)
 					[P2_FrameUnit_List_Idx[property].end].
 					bufSts);
 			spin_unlock(&(SpinLock_P2FrameList));
-			LOG_NOTICE(
-				"p2 frame package list is full, enque Fail.");
+			pr_err("p2 frame package list is full, enque Fail.");
 			ret =  -EFAULT;
 			return ret;
 		}
@@ -5901,7 +6060,7 @@ static signed int ISP_P2_BufQue_CTRL_FUNC(struct ISP_P2_BUFQUE_STRUCT param)
 			ISP_P2_BUFQUE_LIST_TAG_UNIT);
 		spin_unlock(&(SpinLock_P2FrameList));
 		if (idx ==  -1) {
-			LOG_NOTICE(
+			pr_err(
 			"Do not find match buffer (pty/pid/cid: %d/0x%x/0x%x) to deque!",
 			    param.property, param.processID, param.callerID);
 			ret =  -EFAULT;
@@ -5916,13 +6075,13 @@ static signed int ISP_P2_BufQue_CTRL_FUNC(struct ISP_P2_BUFQUE_STRUCT param)
 					   ISP_UsToJiffies(15 * 1000000));
 					/* wait 15s */
 			if (restTime == 0) {
-				LOG_NOTICE(
+				pr_err(
 				"Wait Deque fail, idx(%d), pty(%d), pID(0x%x),cID(0x%x)",
 				idx, param.property, param.processID,
 				param.callerID);
 				ret =  -EFAULT;
 			} else if (restTime == -512) {
-				LOG_NOTICE("be stopped, restime(%d)", restTime);
+				pr_err("be stopped, restime(%d)", restTime);
 				ret =  -EFAULT;
 				break;
 			}
@@ -5956,8 +6115,7 @@ static signed int ISP_P2_BufQue_CTRL_FUNC(struct ISP_P2_BUFQUE_STRUCT param)
 				ISP_P2_BUFQUE_LIST_TAG_UNIT);
 		if (idx2 ==  -1) {
 			spin_unlock(&(SpinLock_P2FrameList));
-			LOG_NOTICE(
-				"ERRRRRRRRRRR findmatch index 2 fail (%d_0x%x_0x%x_%d, %d_%d)",
+			pr_err("ERRRRRRRRRRR findmatch index 2 fail (%d_0x%x_0x%x_%d, %d_%d)",
 				param.property, param.processID, param.callerID,
 				param.frameNum, param.cQIdx, param.dupCQIdx);
 			ret =  -EFAULT;
@@ -5976,7 +6134,7 @@ static signed int ISP_P2_BufQue_CTRL_FUNC(struct ISP_P2_BUFQUE_STRUCT param)
 			ISP_P2_BUFQUE_LIST_TAG_PACKAGE);
 		if (idx ==  -1) {
 			spin_unlock(&(SpinLock_P2FrameList));
-			LOG_NOTICE(
+			pr_err(
 			"ERRRRRRRRRRR findmatch index 1 fail (%d_0x%x_0x%x_%d, %d_%d)",
 				param.property, param.processID, param.callerID,
 				param.frameNum, param.cQIdx, param.dupCQIdx);
@@ -6018,14 +6176,14 @@ static signed int ISP_P2_BufQue_CTRL_FUNC(struct ISP_P2_BUFQUE_STRUCT param)
 				   ISP_UsToJiffies(15 * 1000000));
 				/* wait 15s to get paired frame */
 		if (restTime == 0) {
-			LOG_NOTICE(
+			pr_err(
 			"could not find match buffer restTime(%d), pty/pID/cID (%d/0x%x/0x%x),idx(%d)",
 				restTime, property, param.processID,
 				param.callerID, idx);
 			ret =  -EFAULT;
 			return ret;
 		} else if (restTime == -512) {
-			LOG_NOTICE("be stopped, restime(%d)", restTime);
+			pr_err("be stopped, restime(%d)", restTime);
 			ret =  -EFAULT;
 			return ret;
 		}
@@ -6036,6 +6194,15 @@ static signed int ISP_P2_BufQue_CTRL_FUNC(struct ISP_P2_BUFQUE_STRUCT param)
 #endif
 		spin_lock(&(SpinLock_P2FrameList));
 		/* [2]check the buffer is dequeued or not */
+		if (idx ==  -1) {
+			pr_err(
+			"Do not find match buffer (pty/pid/cid: %d/0x%x/0x%x) to deque!",
+			    param.property, param.processID, param.callerID);
+			spin_unlock(&(SpinLock_P2FrameList));
+			ret =  -EFAULT;
+			return ret;
+		}
+
 		if (P2_FramePackage_List[property][idx].dequedNum ==
 		    P2_FramePackage_List[property][idx].frameNum) {
 			ISP_P2_BufQue_Erase(property,
@@ -6056,7 +6223,7 @@ static signed int ISP_P2_BufQue_CTRL_FUNC(struct ISP_P2_BUFQUE_STRUCT param)
 					property, param.processID,
 					param.callerID, idx, param.timeoutIns);
 
-			/* [3]if not,
+			/* [3] condition is not,
 			 *    goto wait event and wait for a signal to check
 			 */
 			restTime = wait_event_interruptible_timeout(
@@ -6065,15 +6232,14 @@ static signed int ISP_P2_BufQue_CTRL_FUNC(struct ISP_P2_BUFQUE_STRUCT param)
 					ISP_P2_BUFQUE_MATCH_TYPE_WAITFM, &idx),
 				ISP_UsToJiffies(param.timeoutIns * 1000000));
 			if (restTime == 0) {
-				LOG_NOTICE(
+				pr_err(
 				"Dequeue Buffer fail, rT(%d),idx(%d) pty(%d), pID(0x%x),cID(0x%x)\n",
 					restTime, idx, property,
 					param.processID, param.callerID);
 				ret =  -EFAULT;
 				break;
-			}
-			if (restTime == -512) {
-				LOG_NOTICE("be stopped, restime(%d)", restTime);
+			} else if (restTime == -512) {
+				pr_err("be stopped, restime(%d)", restTime);
 				ret =  -EFAULT;
 				break;
 			}
@@ -6122,7 +6288,7 @@ static signed int ISP_P2_BufQue_CTRL_FUNC(struct ISP_P2_BUFQUE_STRUCT param)
 		spin_unlock(&(SpinLock_P2FrameList));
 		break;
 	default:
-		LOG_NOTICE("do not support this ctrl cmd(%d)", param.ctrl);
+		pr_err("do not support this ctrl cmd(%d)", param.ctrl);
 		break;
 	}
 	return ret;
@@ -6186,14 +6352,25 @@ static signed int ISP_MARK_IRQ(struct ISP_WAIT_IRQ_STRUCT *irqinfo)
 	unsigned long       usec = 0;
 
 	if (irqinfo->Type >= ISP_IRQ_TYPE_AMOUNT) {
-		LOG_NOTICE("MARK_IRQ: type error(%d)", irqinfo->Type);
+		pr_err("MARK_IRQ: type error(%d)", irqinfo->Type);
+		return -EFAULT;
+	}
+
+	if (irqinfo->EventInfo.St_type >= ISP_IRQ_ST_AMOUNT) {
+		pr_err("MARK_IRQ: st_type error(%d)",
+			irqinfo->EventInfo.St_type);
 		return -EFAULT;
 	}
 
 	if (irqinfo->EventInfo.UserKey >= IRQ_USER_NUM_MAX ||
 	    irqinfo->EventInfo.UserKey < 0) {
-		LOG_NOTICE("MARK_IRQ: userkey error(%d)",
+		pr_err("MARK_IRQ: userkey error(%d)",
 			irqinfo->EventInfo.UserKey);
+		return -EFAULT;
+	}
+
+	if ((idx < 0) || (idx >= 32)) {
+		pr_info("[Error] %s : Invalid idx = %d",  __func__, idx);
 		return -EFAULT;
 	}
 
@@ -6231,8 +6408,7 @@ static signed int ISP_MARK_IRQ(struct ISP_WAIT_IRQ_STRUCT *irqinfo)
 		irqinfo->EventInfo.Status, idx, (int)sec, (int)usec);
 
 	} else {
-		LOG_NOTICE(
-			"Not support DMA interrupt type(%d), Only support signal interrupt!!!",
+		pr_err("Not support DMA interrupt type(%d), Only support signal interrupt!!!",
 			irqinfo->EventInfo.St_type);
 		return -EFAULT;
 	}
@@ -6257,6 +6433,7 @@ static signed int ISP_GET_MARKtoQEURY_TIME(struct ISP_WAIT_IRQ_STRUCT *irqinfo)
 #if 0
 	if (irqinfo->EventInfo.St_type == SIGNAL_INT) {
 
+
 		/* do_gettimeofday(&time_ready2return); */
 		sec = cpu_clock(0);     /* ns */
 		do_div(sec, 1000);    /* usec */
@@ -6264,74 +6441,79 @@ static signed int ISP_GET_MARKtoQEURY_TIME(struct ISP_WAIT_IRQ_STRUCT *irqinfo)
 		time_ready2return.tv_usec = usec;
 		time_ready2return.tv_sec = sec;
 
-		int idx = my_get_pow_idx(irqinfo->EventInfo.Status);
+		unsigned int idx = my_get_pow_idx(irqinfo->EventInfo.Status);
 
 
-spin_lock_irqsave(&(IspInfo.SpinLockIrq[irqinfo->Type]), flags);
-if (irqinfo->EventInfo.Status & IspInfo.IrqInfo.MarkedFlag
-		[irqinfo->Type][irqinfo->EventInfo.UserKey]) {
-	/*  */
-	irqinfo->EventInfo.TimeInfo.passedbySigcnt =
-	IspInfo.IrqInfo.PassedBySigCnt[irqinfo->Type][idx]
-				[irqinfo->EventInfo.UserKey];
-	/*  */
-	irqinfo->EventInfo.TimeInfo.tMark2WaitSig_usec =
-	(time_ready2return.tv_usec -
-	IspInfo.IrqInfo.MarkedTime_usec[irqinfo->Type]
-			[idx][irqinfo->EventInfo.UserKey]);
-	irqinfo->EventInfo.TimeInfo.tMark2WaitSig_sec =
-	(time_ready2return.tv_sec -
-	IspInfo.IrqInfo.MarkedTime_sec[irqinfo->Type][idx]
-				[irqinfo->EventInfo.UserKey]);
-	if ((int)(irqinfo->EventInfo.TimeInfo.tMark2WaitSig_usec) < 0) {
-		irqinfo->EventInfo.TimeInfo.tMark2WaitSig_sec =
-		irqinfo->EventInfo.TimeInfo.tMark2WaitSig_sec - 1;
-		if ((int)(irqinfo->EventInfo.TimeInfo.tMark2WaitSig_sec)
-		< 0)
-			irqinfo->EventInfo.TimeInfo.tMark2WaitSig_sec
-			= 0;
+		spin_lock_irqsave(&(IspInfo.SpinLockIrq[irqinfo->Type]), flags);
+		if (irqinfo->EventInfo.Status & IspInfo.IrqInfo.MarkedFlag
+		    [irqinfo->Type][irqinfo->EventInfo.UserKey]) {
+			/*  */
+			irqinfo->EventInfo.TimeInfo.passedbySigcnt =
+			IspInfo.IrqInfo.PassedBySigCnt[irqinfo->Type][idx]
+						[irqinfo->EventInfo.UserKey];
+			/*  */
+			irqinfo->EventInfo.TimeInfo.tMark2WaitSig_usec =
+			(time_ready2return.tv_usec -
+			IspInfo.IrqInfo.MarkedTime_usec[irqinfo->Type]
+					[idx][irqinfo->EventInfo.UserKey]);
+			irqinfo->EventInfo.TimeInfo.tMark2WaitSig_sec =
+			(time_ready2return.tv_sec -
+			IspInfo.IrqInfo.MarkedTime_sec[irqinfo->Type][idx]
+						[irqinfo->EventInfo.UserKey]);
+			if ((int)(irqinfo->EventInfo.TimeInfo.
+			    tMark2WaitSig_usec) < 0) {
+				irqinfo->EventInfo.TimeInfo.tMark2WaitSig_sec =
+				irqinfo->EventInfo.TimeInfo.tMark2WaitSig_sec
+				- 1;
+				if ((int)(irqinfo->EventInfo.TimeInfo.
+				    tMark2WaitSig_sec) < 0)
+					irqinfo->EventInfo.TimeInfo.
+						tMark2WaitSig_sec = 0;
 
-		irqinfo->EventInfo.TimeInfo.tMark2WaitSig_usec =
-		1 * 1000000 +
-		irqinfo->EventInfo.TimeInfo.tMark2WaitSig_usec;
-	}
-	/*  */
-	if (irqinfo->EventInfo.TimeInfo.passedbySigcnt > 0) {
-		irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_usec
-		= (time_ready2return.tv_usec -
-		IspInfo.IrqInfo.LastestSigTime_usec
-			[irqinfo->Type][idx]);
-		irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_sec
-		= (time_ready2return.tv_sec -
-		IspInfo.IrqInfo.LastestSigTime_sec
-			[irqinfo->Type][idx]);
-		if ((int)(irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_usec)
-		    < 0) {
-			irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_sec =
-			irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_sec - 1;
-			if ((int)
-			    (irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_sec)
-			    < 0)
+				irqinfo->EventInfo.TimeInfo.tMark2WaitSig_usec =
+				1 * 1000000 +
+				irqinfo->EventInfo.TimeInfo.tMark2WaitSig_usec;
+			}
+			/*  */
+			if (irqinfo->EventInfo.TimeInfo.passedbySigcnt > 0) {
+				irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_usec
+				= (time_ready2return.tv_usec -
+				   IspInfo.IrqInfo.LastestSigTime_usec
+					[irqinfo->Type][idx]);
 				irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_sec
-				= 0;
+				= (time_ready2return.tv_sec -
+				   IspInfo.IrqInfo.LastestSigTime_sec
+					[irqinfo->Type][idx]);
+				if ((int)(irqinfo->EventInfo.TimeInfo.
+				    tLastSig2GetSig_usec) < 0) {
+					irqinfo->EventInfo.TimeInfo.
+					    tLastSig2GetSig_sec =
+						irqinfo->EventInfo.TimeInfo.
+						tLastSig2GetSig_sec - 1;
+					if ((int)(irqinfo->EventInfo.TimeInfo.
+					    tLastSig2GetSig_sec) < 0)
+						irqinfo->EventInfo.TimeInfo.
+						    tLastSig2GetSig_sec = 0;
 
-			irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_usec
-			= 1 * 1000000 +
-			irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_usec;
+					irqinfo->EventInfo.TimeInfo.
+						tLastSig2GetSig_usec
+						= 1 * 1000000 +
+						irqinfo->EventInfo.TimeInfo.
+						    tLastSig2GetSig_usec;
+				}
+			} else {
+				irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_usec
+									= 0;
+				irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_sec
+									= 0;
+			}
+		} else {
+			pr_err(
+				"plz mark irq first, userKey/Type/Status (%d/%d/0x%x)",
+				irqinfo->EventInfo.UserKey, irqinfo->Type,
+				irqinfo->EventInfo.Status);
+			Ret = -EFAULT;
 		}
-	} else {
-		irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_usec
-		= 0;
-		irqinfo->EventInfo.TimeInfo.tLastSig2GetSig_sec
-		= 0;
-	}
-} else {
-	LOG_NOTICE(
-		"plz mark irq first, userKey/Type/Status (%d/%d/0x%x)",
-		irqinfo->EventInfo.UserKey, irqinfo->Type,
-		irqinfo->EventInfo.Status);
-	Ret = -EFAULT;
-}
 		spin_unlock_irqrestore(
 			&(IspInfo.SpinLockIrq[irqinfo->Type]), flags);
 		pr_debug(
@@ -6350,12 +6532,11 @@ if (irqinfo->EventInfo.Status & IspInfo.IrqInfo.MarkedFlag
 		return Ret;
 	}
 	{
-		LOG_NOTICE(
+		pr_err(
 			"Not support DMA interrupt type(%d), Only support signal interrupt!!!",
 			irqinfo->EventInfo.St_type);
 		Ret = -EFAULT;
 	}
-
 #endif
 
 	return Ret;
@@ -6373,20 +6554,22 @@ static signed int ISP_FLUSH_IRQ(struct ISP_WAIT_IRQ_STRUCT *irqinfo)
 		irqinfo->Type, irqinfo->EventInfo.UserKey,
 		irqinfo->EventInfo.St_type, irqinfo->EventInfo.Status);
 
-	if (irqinfo->Type >= ISP_IRQ_TYPE_AMOUNT) {
-		LOG_NOTICE("FLUSH_IRQ: type error(%d)", irqinfo->Type);
+	if (irqinfo->Type >= ISP_IRQ_TYPE_AMOUNT ||
+	    irqinfo->Type < 0) {
+		pr_err("FLUSH_IRQ: type error(%d)", irqinfo->Type);
 		return -EFAULT;
 	}
 
-	if (irqinfo->EventInfo.St_type >= ISP_IRQ_ST_AMOUNT) {
-		LOG_NOTICE("FLUSH_IRQ: st_type error(%d)",
+	if (irqinfo->EventInfo.St_type >= ISP_IRQ_ST_AMOUNT ||
+	    irqinfo->EventInfo.St_type < 0) {
+		pr_err("FLUSH_IRQ: st_type error(%d)",
 			irqinfo->EventInfo.St_type);
 		return -EFAULT;
 	}
 
 	if (irqinfo->EventInfo.UserKey >= IRQ_USER_NUM_MAX ||
 	    irqinfo->EventInfo.UserKey < 0) {
-		LOG_NOTICE("FLUSH_IRQ: userkey error(%d)",
+		pr_err("FLUSH_IRQ: userkey error(%d)",
 			irqinfo->EventInfo.UserKey);
 		return -EFAULT;
 	}
@@ -6436,6 +6619,13 @@ static signed int ISP_WaitIrq(struct ISP_WAIT_IRQ_STRUCT *WaitIrq)
 	unsigned int irqStatus;
 	int idx;
 	bool freeze_passbysigcnt = false;
+
+	if ((WaitIrq->Type >= ISP_IRQ_TYPE_AMOUNT) ||
+	    (WaitIrq->Type < 0)) {
+		pr_info("invalid Type(%d), max(%d)\n",
+			WaitIrq->Type, ISP_IRQ_TYPE_AMOUNT);
+		return -EINVAL;
+	}
 
 	if ((WaitIrq->EventInfo.St_type >= ISP_IRQ_ST_AMOUNT) ||
 	    (WaitIrq->EventInfo.St_type < 0)) {
@@ -6667,7 +6857,7 @@ static signed int ISP_WaitIrq(struct ISP_WAIT_IRQ_STRUCT *WaitIrq)
 		spin_unlock_irqrestore(&(IspInfo.SpinLockIrq[WaitIrq->Type]),
 					flags);
 
-		LOG_NOTICE(
+		pr_err(
 		"ERRRR WaitIrq Clear(%d) Type(%d) StType(%d) Status(0x%08X) WaitStatus(0x%08X) Timeout(%d) key(%d)\n",
 		WaitIrq->EventInfo.Clear,
 		WaitIrq->Type,
@@ -6734,6 +6924,11 @@ EXIT:
 				      [WaitIrq->EventInfo.St_type]
 				      [WaitIrq->EventInfo.UserKey]) {
 		idx = my_get_pow_idx(WaitIrq->EventInfo.Status);
+		if ((idx < 0) || (idx >= 32)) {
+			pr_info("[Error] : Invalid idx = %d", idx);
+			Ret = -EFAULT;
+			return Ret;
+		}
 		IspInfo.IrqInfo.MarkedFlag[WaitIrq->Type]
 					  [WaitIrq->EventInfo.St_type]
 					  [WaitIrq->EventInfo.UserKey] &=
@@ -6762,12 +6957,12 @@ static void ISP_ion_init(void)
 		pIon_client = ion_client_create(g_ion_device, "camera_isp");
 
 	if (!pIon_client) {
-		LOG_NOTICE("invalid ion client!\n");
+		pr_err("invalid ion client!\n");
 		return;
 	}
 
 	if (IspInfo.DebugMask & ISP_DBG_ION_CTRL)
-		pr_info("create ion client 0x%pK\n", pIon_client);
+		pr_info("create ion client 0x%p\n", pIon_client);
 }
 
 /******************************************************************************
@@ -6776,7 +6971,7 @@ static void ISP_ion_init(void)
 static void ISP_ion_uninit(void)
 {
 	if (!pIon_client) {
-		LOG_NOTICE("invalid ion client!\n");
+		pr_err("invalid ion client!\n");
 		return;
 	}
 
@@ -6797,18 +6992,18 @@ static struct ion_handle *ISP_ion_import_handle(struct ion_client *client,
 	struct ion_handle *handle = NULL;
 
 	if (!client) {
-		LOG_NOTICE("invalid ion client!\n");
+		pr_err("invalid ion client!\n");
 		return handle;
 	}
 	if (fd == -1) {
-		LOG_NOTICE("invalid ion fd!\n");
+		pr_err("invalid ion fd!\n");
 		return handle;
 	}
 
 	handle = ion_import_dma_buf_fd(client, fd);
 
 	if (IS_ERR(handle)) {
-		LOG_NOTICE("import ion handle failed!\n");
+		pr_err("import ion handle failed!\n");
 		return NULL;
 	}
 
@@ -6824,7 +7019,7 @@ static void ISP_ion_free_handle(struct ion_client *client,
 				struct ion_handle *handle)
 {
 	if (!client) {
-		LOG_NOTICE("invalid ion client!\n");
+		pr_err("invalid ion client!\n");
 		return;
 	}
 	if (!handle)
@@ -6891,6 +7086,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 	/*  */
 	/*    bool   HoldEnable = MFALSE;*/
 	unsigned int DebugFlag[3] = {0};
+	unsigned int Dapc_Reg[6] = {0};
 	/*    unsigned int pid = 0;*/
 	struct ISP_REG_IO_STRUCT       RegIo;
 	struct ISP_DUMP_BUFFER_STRUCT DumpBufStruct;
@@ -6916,8 +7112,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 	unsigned int lv = 0;
 	/*  */
 	if (pFile->private_data == NULL) {
-		LOG_NOTICE(
-			"private_data is NULL,(process, pid, tgid)=(%s, %d, %d)\n",
+		pr_err("private_data is NULL,(process, pid, tgid)=(%s, %d, %d)\n",
 			current->comm, current->pid, current->tgid);
 		return -EFAULT;
 	}
@@ -6928,7 +7123,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 	case ISP_WAKELOCK_CTRL:
 		if (copy_from_user(&wakelock_ctrl, (void *)Param,
 		    sizeof(unsigned int)) != 0) {
-			LOG_NOTICE("get ISP_WAKELOCK_CTRL from user fail\n");
+			pr_err("get ISP_WAKELOCK_CTRL from user fail\n");
 			Ret = -EFAULT;
 		} else {
 			if (wakelock_ctrl == 1) {/* Enable wakelock */
@@ -6938,7 +7133,9 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 						g_WaitLockCt);
 				} else {
 #ifdef CONFIG_PM_SLEEP
-					__pm_stay_awake(&isp_wake_lock);
+					__pm_stay_awake(isp_wake_lock);
+#else
+					wake_lock(&isp_wake_lock);
 #endif
 					g_WaitLockCt++;
 					pr_info("wakelock enable!! cnt(%d)\n",
@@ -6953,7 +7150,9 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 						g_WaitLockCt);
 				else {
 #ifdef CONFIG_PM_SLEEP
-					__pm_relax(&isp_wake_lock);
+					__pm_relax(isp_wake_lock);
+#else
+					wake_unlock(&isp_wake_lock);
 #endif
 					pr_info("wakelock disable!! cnt(%d)\n",
 						g_WaitLockCt);
@@ -6964,7 +7163,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 	case ISP_GET_DROP_FRAME:
 		if (copy_from_user(&DebugFlag[0], (void *)Param,
 		    sizeof(unsigned int)) != 0) {
-			LOG_NOTICE("get irq from user fail\n");
+			pr_err("get irq from user fail\n");
 			Ret = -EFAULT;
 		} else {
 			switch (DebugFlag[0]) {
@@ -7001,13 +7200,13 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 					  ISP_IRQ_TYPE_INT_CAMSV_1_ST]), flags);
 				break;
 			default:
-				LOG_NOTICE("err TG(0x%x)\n", DebugFlag[0]);
+				pr_err("err TG(0x%x)\n", DebugFlag[0]);
 				Ret = -EFAULT;
 				break;
 			}
 			if (copy_to_user((void *)Param, &DebugFlag[1],
 			    sizeof(unsigned int)) != 0) {
-				LOG_NOTICE("copy to user fail\n");
+				pr_err("copy to user fail\n");
 				Ret = -EFAULT;
 			}
 		}
@@ -7015,7 +7214,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 	case ISP_GET_INT_ERR:
 		if (copy_to_user((void *)Param, (void *)g_ISPIntErr,
 		    sizeof(unsigned int)*ISP_IRQ_TYPE_AMOUNT) != 0)
-			LOG_NOTICE("get int err fail\n");
+			pr_err("get int err fail\n");
 		else
 			memset((void *)g_ISPIntErr, 0, sizeof(g_ISPIntErr));
 
@@ -7023,25 +7222,25 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 	case ISP_GET_DMA_ERR:
 		if (copy_from_user(&DebugFlag[0], (void *)Param,
 		    sizeof(unsigned int)) != 0) {
-			LOG_NOTICE("get module fail\n");
+			pr_err("get module fail\n");
 			Ret = -EFAULT;
 		} else {
 			if (DebugFlag[0] >= (ISP_IRQ_TYPE_AMOUNT)) {
-				LOG_NOTICE("module error(%d)\n", DebugFlag[0]);
+				pr_err("module error(%d)\n", DebugFlag[0]);
 				Ret = -EFAULT;
 				break;
 			}
 			if (copy_to_user((void *)Param,
 			    &g_DmaErr_CAM[DebugFlag[0]],
 				sizeof(unsigned int)*_cam_max_) != 0)
-				LOG_NOTICE("get dma_err fail\n");
+				pr_err("get dma_err fail\n");
 
 		}
 		break;
 	case ISP_GET_CUR_SOF:
 		if (copy_from_user(&DebugFlag[0], (void *)Param,
 		    sizeof(unsigned int)) != 0) {
-			LOG_NOTICE("get cur sof from user fail\n");
+			pr_err("get cur sof from user fail\n");
 			Ret = -EFAULT;
 		} else {
 #if 0
@@ -7063,13 +7262,13 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 				  ISP_IRQ_TYPE_INT_CAMSV_1_ST, ISP_CAMSV1_IDX);
 				break;
 			default:
-				LOG_NOTICE("err TG(0x%x)\n", DebugFlag[0]);
+				pr_err("err TG(0x%x)\n", DebugFlag[0]);
 				Ret = -EFAULT;
 				break;
 			}
 #else
 			if (DebugFlag[0] >= ISP_IRQ_TYPE_AMOUNT) {
-				LOG_NOTICE("cursof: error type(%d)\n",
+				pr_err("cursof: error type(%d)\n",
 					DebugFlag[0]);
 				Ret = -EFAULT;
 				break;
@@ -7079,14 +7278,14 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 		}
 		if (copy_to_user((void *)Param, &DebugFlag[1],
 		    sizeof(unsigned int)) != 0) {
-			LOG_NOTICE("copy to user fail\n");
+			pr_err("copy to user fail\n");
 			Ret = -EFAULT;
 		}
 		break;
 	case ISP_RESET_BY_HWMODULE: {
 		if (copy_from_user(&module, (void *)Param,
 		    sizeof(unsigned int)) != 0) {
-			LOG_NOTICE("get hwmodule from user fail\n");
+			pr_err("get hwmodule from user fail\n");
 			Ret = -EFAULT;
 		} else {
 			ISP_Reset(module);
@@ -7101,7 +7300,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			 */
 			Ret = ISP_ReadReg(&RegIo);
 		} else {
-			LOG_NOTICE("copy_from_user failed\n");
+			pr_err("copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -7114,7 +7313,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			 */
 			Ret = ISP_WriteReg(&RegIo);
 		} else {
-			LOG_NOTICE("copy_from_user failed\n");
+			pr_err("copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -7126,13 +7325,13 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			if ((IrqInfo.Type >= ISP_IRQ_TYPE_AMOUNT) ||
 			    (IrqInfo.Type < 0)) {
 				Ret = -EFAULT;
-				LOG_NOTICE("invalid type(%d)\n", IrqInfo.Type);
+				pr_err("invalid type(%d)\n", IrqInfo.Type);
 				goto EXIT;
 			}
 
 			if ((IrqInfo.EventInfo.St_type >= ISP_IRQ_ST_AMOUNT) ||
 			    (IrqInfo.EventInfo.St_type < 0)) {
-				LOG_NOTICE(
+				pr_err(
 					"invalid St_type(%d), max(%d), force St_type = 0\n",
 					IrqInfo.EventInfo.St_type,
 					ISP_IRQ_ST_AMOUNT);
@@ -7141,7 +7340,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 			if ((IrqInfo.EventInfo.UserKey >= IRQ_USER_NUM_MAX) ||
 			    (IrqInfo.EventInfo.UserKey < 0)) {
-				LOG_NOTICE(
+				pr_err(
 					"invalid userKey(%d), max(%d), force userkey = 0\n",
 					IrqInfo.EventInfo.UserKey,
 					IRQ_USER_NUM_MAX);
@@ -7158,7 +7357,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 #endif
 			Ret = ISP_WaitIrq(&IrqInfo);
 		} else {
-			LOG_NOTICE("copy_from_user failed\n");
+			pr_err("copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -7173,13 +7372,13 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			if ((ClearIrq.Type >= ISP_IRQ_TYPE_AMOUNT) ||
 			    (ClearIrq.Type < 0)) {
 				Ret = -EFAULT;
-				LOG_NOTICE("invalid type(%d)\n", ClearIrq.Type);
+				pr_err("invalid type(%d)\n", ClearIrq.Type);
 				goto EXIT;
 			}
 
 			if ((ClearIrq.EventInfo.St_type >= ISP_IRQ_ST_AMOUNT) ||
 			    (ClearIrq.EventInfo.St_type < 0)) {
-				LOG_NOTICE(
+				pr_err(
 					"invalid St_type(%d), max(%d), force St_type = 0\n",
 					ClearIrq.EventInfo.St_type,
 					ISP_IRQ_ST_AMOUNT);
@@ -7189,7 +7388,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			/*  */
 			if ((ClearIrq.EventInfo.UserKey >= IRQ_USER_NUM_MAX) ||
 			    (ClearIrq.EventInfo.UserKey < 0)) {
-				LOG_NOTICE("errUserEnum(%d)",
+				pr_err("errUserEnum(%d)",
 				ClearIrq.EventInfo.UserKey);
 				Ret = -EFAULT;
 				goto EXIT;
@@ -7212,7 +7411,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			spin_unlock_irqrestore(
 				&(IspInfo.SpinLockIrq[ClearIrq.Type]), flags);
 		} else {
-			LOG_NOTICE("copy_from_user failed\n");
+			pr_err("copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -7223,18 +7422,19 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 		if (copy_from_user(&RegUserKey, (void *)Param,
 		    sizeof(struct ISP_REGISTER_USERKEY_STRUCT)) == 0) {
+			RegUserKey.userName[sizeof(RegUserKey.userName) - 1] = '\0';
 			userKey = ISP_REGISTER_IRQ_USERKEY(RegUserKey.userName);
 			RegUserKey.userKey = userKey;
 			if (copy_to_user((void *)Param, &RegUserKey,
 			    sizeof(struct ISP_REGISTER_USERKEY_STRUCT)) != 0)
-				LOG_NOTICE("copy_to_user failed\n");
+				pr_err("copy_to_user failed\n");
 
 			if (RegUserKey.userKey < 0) {
-				LOG_NOTICE("query irq user key fail\n");
+				pr_err("query irq user key fail\n");
 				Ret = -1;
 			}
 		} else {
-			LOG_NOTICE("copy from user fail\n");
+			pr_err("copy from user fail\n");
 		}
 
 		break;
@@ -7245,7 +7445,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 		    sizeof(struct ISP_WAIT_IRQ_STRUCT)) == 0) {
 			if ((IrqInfo.EventInfo.UserKey >= IRQ_USER_NUM_MAX) ||
 			    (IrqInfo.EventInfo.UserKey < 1)) {
-				LOG_NOTICE("invalid userKey(%d), max(%d)\n",
+				pr_err("invalid userKey(%d), max(%d)\n",
 					IrqInfo.EventInfo.UserKey,
 					IRQ_USER_NUM_MAX);
 				Ret = -EFAULT;
@@ -7253,7 +7453,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			}
 			if ((IrqInfo.Type >= ISP_IRQ_TYPE_AMOUNT) ||
 			    (IrqInfo.Type < 0)) {
-				LOG_NOTICE("invalid type(%d), max(%d)\n",
+				pr_err("invalid type(%d), max(%d)\n",
 					IrqInfo.Type, ISP_IRQ_TYPE_AMOUNT);
 				Ret = -EFAULT;
 				break;
@@ -7261,7 +7461,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 			if ((IrqInfo.EventInfo.St_type >= ISP_IRQ_ST_AMOUNT) ||
 			    (IrqInfo.EventInfo.St_type < 0)) {
-				LOG_NOTICE(
+				pr_err(
 					"invalid St_type(%d), max(%d), force St_type = 0\n",
 					IrqInfo.EventInfo.St_type,
 					ISP_IRQ_ST_AMOUNT);
@@ -7269,7 +7469,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			}
 			Ret = ISP_MARK_IRQ(&IrqInfo);
 		} else {
-			LOG_NOTICE("ISP_MARK_IRQ, copy_from_user failed\n");
+			pr_err("ISP_MARK_IRQ, copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -7279,7 +7479,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 		    sizeof(struct ISP_WAIT_IRQ_STRUCT)) == 0) {
 			if ((IrqInfo.EventInfo.UserKey >= IRQ_USER_NUM_MAX) ||
 			    (IrqInfo.EventInfo.UserKey < 1)) {
-				LOG_NOTICE("invalid userKey(%d), max(%d)\n",
+				pr_err("invalid userKey(%d), max(%d)\n",
 					IrqInfo.EventInfo.UserKey,
 					IRQ_USER_NUM_MAX);
 				Ret = -EFAULT;
@@ -7287,7 +7487,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			}
 			if ((IrqInfo.Type >= ISP_IRQ_TYPE_AMOUNT) ||
 			    (IrqInfo.Type < 0)) {
-				LOG_NOTICE("invalid type(%d), max(%d)\n",
+				pr_err("invalid type(%d), max(%d)\n",
 					IrqInfo.Type, ISP_IRQ_TYPE_AMOUNT);
 				Ret = -EFAULT;
 				break;
@@ -7296,11 +7496,11 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			/*  */
 			if (copy_to_user((void *)Param, &IrqInfo,
 			    sizeof(struct ISP_WAIT_IRQ_STRUCT)) != 0) {
-				LOG_NOTICE("copy_to_user failed\n");
+				pr_err("copy_to_user failed\n");
 				Ret = -EFAULT;
 			}
 		} else {
-			LOG_NOTICE(
+			pr_err(
 				"ISP_GET_MARK2QUERY_TIME, copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
@@ -7311,7 +7511,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 		    sizeof(struct ISP_WAIT_IRQ_STRUCT)) == 0) {
 			if ((IrqInfo.EventInfo.UserKey >= IRQ_USER_NUM_MAX) ||
 			    (IrqInfo.EventInfo.UserKey < 0)) {
-				LOG_NOTICE("invalid userKey(%d), max(%d)\n",
+				pr_err("invalid userKey(%d), max(%d)\n",
 					IrqInfo.EventInfo.UserKey,
 					IRQ_USER_NUM_MAX);
 				Ret = -EFAULT;
@@ -7319,7 +7519,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			}
 			if ((IrqInfo.Type >= ISP_IRQ_TYPE_AMOUNT) ||
 			    (IrqInfo.Type < 0)) {
-				LOG_NOTICE("invalid type(%d), max(%d)\n",
+				pr_err("invalid type(%d), max(%d)\n",
 					IrqInfo.Type, ISP_IRQ_TYPE_AMOUNT);
 				Ret = -EFAULT;
 				break;
@@ -7343,7 +7543,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			p2QueBuf.processID = pUserInfo->Pid;
 			Ret = ISP_P2_BufQue_CTRL_FUNC(p2QueBuf);
 		} else {
-			LOG_NOTICE("copy_from_user failed\n");
+			pr_err("copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -7355,7 +7555,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			g_regScen = regScenInfo_value;
 			spin_unlock((spinlock_t *)(&SpinLockRegScen));
 		} else {
-			LOG_NOTICE("copy_from_user failed\n");
+			pr_err("copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -7366,7 +7566,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 		/*      */
 		if (copy_to_user((void *)Param, &regScenInfo_value,
 		    sizeof(unsigned int)) != 0) {
-			LOG_NOTICE("copy_to_user failed\n");
+			pr_err("copy_to_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -7380,7 +7580,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			spin_unlock(&SpinLockRegScen);
 			pr_info("new BurstQNum(%d)", P2_Support_BurstQNum);
 		} else {
-			LOG_NOTICE("copy_from_user failed");
+			pr_err("copy_from_user failed");
 			Ret = -EFAULT;
 		}
 #endif
@@ -7393,14 +7593,14 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 		/*  */
 		if (copy_to_user((void *)Param, &burstQNum,
 		    sizeof(unsigned int)) != 0) {
-			LOG_NOTICE("copy_to_user failed");
+			pr_err("copy_to_user failed");
 			Ret = -EFAULT;
 		}
 #endif
 		break;
 	/*  */
 	case ISP_DUMP_REG:
-		/* TODO: modify this... to mt6797 */
+		/* TODO: modify this... */
 		Ret = ISP_DumpReg();
 		break;
 	case ISP_DEBUG_FLAG:
@@ -7413,7 +7613,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			 *          IspInfo.DebugMask);
 			 */
 		} else {
-			LOG_NOTICE("copy_from_user failed\n");
+			pr_err("copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -7429,8 +7629,13 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			unsigned int currentPPB = m_CurrentPPB;
 			unsigned int lock_key = ISP_IRQ_TYPE_AMOUNT;
 
+			if (currentPPB < 0) {
+				Ret = -EFAULT;
+				break;
+			}
+
 			if (DebugFlag[0] >= ISP_IRQ_TYPE_AMOUNT) {
-				LOG_NOTICE("unsupported module:0x%x\n",
+				pr_err("unsupported module:0x%x\n",
 					DebugFlag[0]);
 				Ret = -EFAULT;
 				break;
@@ -7448,11 +7653,11 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 						flags);
 
 			IRQ_LOG_PRINTER(DebugFlag[0], currentPPB, _LOG_INF);
-			IRQ_LOG_PRINTER(DebugFlag[0], currentPPB,
+			IRQ_LOG_PRINTER_PR_ERR(DebugFlag[0], currentPPB,
 						_LOG_ERR);
 
 		} else {
-			LOG_NOTICE("copy_from_user failed\n");
+			pr_err("copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -7476,9 +7681,20 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 					hds2_sel = ((ISP_RD32(
 						CAM_UNI_REG_TOP_PATH_SEL(
 						  ISP_UNI_A_IDX))) & 0x3);
-					pr_info("CAM_A viewFinder is ON\n");
-					cam_dmao = ISP_RD32(CAM_REG_CTL_DMA_EN(
+					pr_info("CAM_A viewFinder is ON (SecOn:0x%x)\n",
+						sec_on);
+
+					if (sec_on) {
+						cam_dmao =
+						    lock_reg.CAM_REG_CTL_DMA_EN
+						    [ISP_CAM_A_IDX];
+					} else {
+						cam_dmao =
+						    ISP_RD32(
+						    CAM_REG_CTL_DMA_EN(
 							ISP_CAM_A_IDX));
+					}
+
 					pr_info("CAM_A:[DMA_EN]:0x%x\n",
 						cam_dmao);
 					vf = ISP_RD32(CAM_REG_TG_VF_CON(
@@ -7585,7 +7801,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 					break;
 				default:
-					LOG_NOTICE("unsupported module:0x%x\n",
+					pr_err("unsupported module:0x%x\n",
 						DebugFlag[1]);
 					break;
 				}
@@ -7626,7 +7842,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 							ISP_CAM_B_IDX);
 					break;
 				default:
-					LOG_NOTICE("unsupported module:0x%x\n",
+					pr_err("unsupported module:0x%x\n",
 						DebugFlag[1]);
 					break;
 				}
@@ -7742,7 +7958,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 					module = ISP_IRQ_TYPE_INT_CAMSV_5_ST;
 					break;
 				default:
-					LOG_NOTICE("unsupported module:0x%x\n",
+					pr_err("unsupported module:0x%x\n",
 						DebugFlag[1]);
 					break;
 				}
@@ -7828,7 +8044,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 							ISP_CAMSV5_IDX);
 					break;
 				default:
-					LOG_NOTICE("unsupported module:0x%x\n",
+					pr_err("unsupported module:0x%x\n",
 						DebugFlag[1]);
 					break;
 				}
@@ -7836,7 +8052,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			}
 			}
 		} else {
-			LOG_NOTICE("copy_from_user failed\n");
+			pr_err("copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -7864,8 +8080,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 				if (ISP_PopBufTimestamp(DebugFlag[0], dma_id,
 				    pTstp) != 0)
-					LOG_NOTICE(
-						"Get Buf sof timestamp fail");
+					pr_err("Get Buf sof timestamp fail");
 
 				break;
 			case ISP_IRQ_TYPE_INT_CAMSV_0_ST:
@@ -7877,7 +8092,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 				pTstp = &gSTime[DebugFlag[0]];
 				break;
 			default:
-				LOG_NOTICE("unsupported module:0x%x\n",
+				pr_err("unsupported module:0x%x\n",
 					DebugFlag[0]);
 				Ret = -EFAULT;
 				break;
@@ -7904,12 +8119,12 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			case ISP_IRQ_TYPE_INT_CAMSV_5_ST:
 				if (copy_to_user((void *)Param, pTstp,
 				    sizeof(struct S_START_T)) != 0) {
-					LOG_NOTICE("copy_to_user failed");
+					pr_err("copy_to_user failed");
 					Ret = -EFAULT;
 				}
 				break;
 			default:
-				LOG_NOTICE("unsupported module:0x%x\n",
+				pr_err("unsupported module:0x%x\n",
 					DebugFlag[0]);
 				Ret = -EFAULT;
 				break;
@@ -7979,7 +8194,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 		if (copy_to_user((void *)Param, &ispclks,
 		    sizeof(struct ISP_CLK_INFO)) != 0) {
-			LOG_NOTICE("copy_to_user failed");
+			pr_err("copy_to_user failed");
 			Ret = -EFAULT;
 		}
 		break;
@@ -7993,21 +8208,21 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			    sizeof(unsigned int)) == 0) {
 				if (dfs_ctrl == MTRUE) {
 					if (++camsys_qos == 1) {
-						pm_qos_add_request(
+						mtk_pm_qos_add_request(
 						  &isp_qos, PM_QOS_CAM_FREQ, 0);
 						pr_debug(
 						  "CAMSYS PMQoS turn on");
 					}
 				} else {
 					if (--camsys_qos == 0) {
-						pm_qos_remove_request(&isp_qos);
+						mtk_pm_qos_remove_request(
+						  &isp_qos);
 						pr_debug(
 							"CAMSYS PMQoS turn off");
 					}
 				}
 			} else {
-				LOG_NOTICE(
-					"ISP_DFS_CTRL copy_from_user failed\n");
+				pr_err("ISP_DFS_CTRL copy_from_user failed\n");
 				Ret = -EFAULT;
 			}
 		}
@@ -8018,12 +8233,11 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 			if (copy_from_user(&dfs_update, (void *)Param,
 			    sizeof(unsigned int)) == 0) {
-				pm_qos_update_request(&isp_qos, dfs_update);
+				mtk_pm_qos_update_request(&isp_qos, dfs_update);
 				target_clk = dfs_update;
 				pr_debug("Set clock level:%d", dfs_update);
 			} else {
-				LOG_NOTICE(
-					"ISP_DFS_UPDATE copy_from_user failed");
+				pr_err("ISP_DFS_UPDATE copy_from_user failed");
 				Ret = -EFAULT;
 			}
 		}
@@ -8031,7 +8245,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 	case ISP_GET_SUPPORTED_ISP_CLOCKS:
 		{
 			int result = 0;
-			u64 freq_steps[ISP_CLK_LEVEL_CNT];
+			u64 freq_steps[ISP_CLK_LEVEL_CNT] = {0};
 
 			/* Call mmdvfs_qos_get_freq_steps
 			 * to get supported frequency
@@ -8040,7 +8254,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 				    freq_steps, (u32 *)&ispclks.clklevelcnt);
 
 			if (result < 0) {
-				LOG_NOTICE(
+				pr_err(
 					"get MMDVFS freq steps failed, result: %d\n",
 					result);
 				Ret = -EFAULT;
@@ -8048,7 +8262,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			}
 
 			if (ispclks.clklevelcnt > ISP_CLK_LEVEL_CNT) {
-				LOG_NOTICE("clklevelcnt is exceeded");
+			pr_err("clklevelcnt is exceeded");
 				Ret = -EFAULT;
 				break;
 			}
@@ -8064,7 +8278,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 			if (copy_to_user((void *)Param, &ispclks,
 			    sizeof(struct ISP_CLK_INFO)) != 0) {
-				LOG_NOTICE("copy_to_user failed");
+				pr_err("copy_to_user failed");
 				Ret = -EFAULT;
 			}
 		}
@@ -8082,7 +8296,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 			if (copy_to_user((void *)Param, &getclk,
 			    sizeof(struct ISP_GET_CLK_INFO)) != 0) {
-				LOG_NOTICE("copy_to_user failed");
+				pr_err("copy_to_user failed");
 				Ret = -EFAULT;
 			}
 		}
@@ -8098,7 +8312,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 				      ISP_IRQ_TYPE_INT_CAM_A_ST ||
 				    pm_qos_info.module >
 				      ISP_IRQ_TYPE_INT_CAM_B_ST) {
-					LOG_NOTICE("HW_module error:%d",
+					pr_err("HW_module error:%d",
 						pm_qos_info.module);
 					Ret = -EFAULT;
 					break;
@@ -8108,7 +8322,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 				G_PM_QOS[pm_qos_info.module].fps =
 							pm_qos_info.fps/10;
 			} else {
-				LOG_NOTICE(
+				pr_err(
 					"ISP_SET_PM_QOS_INFO copy_from_user failed\n");
 				Ret = -EFAULT;
 			}
@@ -8123,17 +8337,17 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 				if (DebugFlag[1] < ISP_IRQ_TYPE_INT_CAM_A_ST ||
 				    DebugFlag[1] > ISP_IRQ_TYPE_INT_CAM_B_ST) {
-					LOG_NOTICE("HW_module error:%d",
+					pr_err("HW_module error:%d",
 						DebugFlag[1]);
 					Ret = -EFAULT;
 					break;
 				}
 				if (DebugFlag[0] == 1) {
 					if (++bw_request[DebugFlag[1]] == 1) {
-						pm_qos_add_request(
+						mtk_pm_qos_add_request(
 						  &camsys_qos_request[
 							DebugFlag[1]],
-						  PM_QOS_MM_MEMORY_BANDWIDTH,
+						  MTK_PM_QOS_MEMORY_BANDWIDTH,
 						  PM_QOS_DEFAULT_VALUE);
 					}
 					Ret = ISP_SetPMQOS(DebugFlag[0],
@@ -8143,13 +8357,12 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 						break;
 					Ret = ISP_SetPMQOS(DebugFlag[0],
 							   DebugFlag[1]);
-					pm_qos_remove_request(
+					mtk_pm_qos_remove_request(
 					    &camsys_qos_request[DebugFlag[1]]);
 					bw_request[DebugFlag[1]] = 0;
 				}
 			} else {
-				LOG_NOTICE(
-					"ISP_SET_PM_QOS copy_from_user failed\n");
+				pr_err("ISP_SET_PM_QOS copy_from_user failed\n");
 				Ret = -EFAULT;
 			}
 		}
@@ -8158,7 +8371,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 	case ISP_GET_VSYNC_CNT:
 		if (copy_from_user(&DebugFlag[0], (void *)Param,
 		    sizeof(unsigned int)) != 0) {
-			LOG_NOTICE("get cur sof from user fail");
+			pr_err("get cur sof from user fail");
 			Ret = -EFAULT;
 		} else {
 			switch (DebugFlag[0]) {
@@ -8169,14 +8382,14 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 				DebugFlag[1] = Vsync_cnt[1];
 				break;
 			default:
-				LOG_NOTICE("err TG(0x%x)\n", DebugFlag[0]);
+				pr_err("err TG(0x%x)\n", DebugFlag[0]);
 				Ret = -EFAULT;
 				break;
 			}
 		}
 		if (copy_to_user((void *)Param, &DebugFlag[1],
 		    sizeof(unsigned int)) != 0) {
-			LOG_NOTICE("copy to user fail");
+			pr_err("copy to user fail");
 			Ret = -EFAULT;
 		}
 		break;
@@ -8191,13 +8404,13 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			unsigned int jump;
 
 			if (!pIon_client) {
-				LOG_NOTICE("ion_import: invalid ion client!\n");
+				pr_err("ion_import: invalid ion client!\n");
 				Ret = -EFAULT;
 				break;
 			}
 
 			if (IonNode.devNode >= ISP_DEV_NODE_NUM) {
-				LOG_NOTICE(
+				pr_err(
 					"[ISP_ION_IMPORT]devNode should be smaller than ISP_DEV_NODE_NUM");
 				Ret = -EFAULT;
 				break;
@@ -8205,23 +8418,21 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 			ptbl = &gION_TBL[IonNode.devNode];
 			if (ptbl->node != IonNode.devNode) {
-				LOG_NOTICE(
-					"ion_import: devNode not support(%d)!\n",
+				pr_err("ion_import: devNode not support(%d)!\n",
 					IonNode.devNode);
 				Ret = -EFAULT;
 				break;
 			}
 			if (IonNode.dmaPort < 0 ||
 			    IonNode.dmaPort >= _dma_max_wr_) {
-				LOG_NOTICE(
-					"ion_import: dmaport error:%d(0~%d)\n",
+				pr_err("ion_import: dmaport error:%d(0~%d)\n",
 					IonNode.dmaPort, _dma_max_wr_);
 				Ret = -EFAULT;
 				break;
 			}
 			jump = IonNode.dmaPort*_ion_keep_max_;
 			if (IonNode.memID <= 0) {
-				LOG_NOTICE(
+				pr_err(
 					"ion_import: dma(%d)invalid ion fd(%d)\n",
 					IonNode.dmaPort, IonNode.memID);
 				Ret = -EFAULT;
@@ -8289,7 +8500,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			spin_unlock(&(ptbl->pLock[IonNode.dmaPort]));
 			/* */
 			if (i == _ion_keep_max_) {
-				LOG_NOTICE(
+				pr_err(
 					"ion_import: dma(%d)no empty space in list(%d_%d)\n",
 					IonNode.dmaPort, IonNode.memID,
 					_ion_keep_max_);
@@ -8298,7 +8509,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 				Ret = -EFAULT;
 			}
 		} else {
-			LOG_NOTICE("[ion import]copy_from_user failed\n");
+			pr_err("[ion import]copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -8309,13 +8520,13 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			unsigned int jump;
 
 			if (!pIon_client) {
-				LOG_NOTICE("ion_free: invalid ion client!\n");
+				pr_err("ion_free: invalid ion client!\n");
 				Ret = -EFAULT;
 				break;
 			}
 
 			if (IonNode.devNode >= ISP_DEV_NODE_NUM) {
-				LOG_NOTICE(
+				pr_err(
 					"[ISP_ION_FREE]devNode should be smaller than ISP_DEV_NODE_NUM");
 				Ret = -EFAULT;
 				break;
@@ -8323,24 +8534,21 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 			ptbl = &gION_TBL[IonNode.devNode];
 			if (ptbl->node != IonNode.devNode) {
-				LOG_NOTICE(
-					"ion_free: devNode not support(%d)!\n",
+				pr_err("ion_free: devNode not support(%d)!\n",
 					IonNode.devNode);
 				Ret = -EFAULT;
 				break;
 			}
 			if (IonNode.dmaPort < 0 ||
 			    IonNode.dmaPort >= _dma_max_wr_) {
-				LOG_NOTICE(
-					"ion_free: dmaport error:%d(0~%d)\n",
+				pr_err("ion_free: dmaport error:%d(0~%d)\n",
 					IonNode.dmaPort, _dma_max_wr_);
 				Ret = -EFAULT;
 				break;
 			}
 			jump = IonNode.dmaPort*_ion_keep_max_;
 			if (IonNode.memID <= 0) {
-				LOG_NOTICE(
-					"ion_free: invalid ion fd(%d)\n",
+				pr_err("ion_free: invalid ion fd(%d)\n",
 					IonNode.memID);
 				Ret = -EFAULT;
 				break;
@@ -8354,7 +8562,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			}
 			if (i == _ion_keep_max_) {
 				spin_unlock(&(ptbl->pLock[IonNode.dmaPort]));
-				LOG_NOTICE(
+				pr_err(
 					"ion_free: can't find ion: dev(%d)dma(%d)fd(%d) in list\n",
 					IonNode.devNode, IonNode.dmaPort,
 					IonNode.memID);
@@ -8380,7 +8588,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 				break;
 			} else if (ptbl->pIonCt[jump + i] < 0) {
 				spin_unlock(&(ptbl->pLock[IonNode.dmaPort]));
-				LOG_NOTICE(
+				pr_err(
 					"ion_free: free more than import (%d):dev(%d)dma(%d)i(%d)fd(%d)\n",
 						ptbl->pIonCt[jump + i],
 						IonNode.devNode,
@@ -8406,7 +8614,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			/* can't in spin_lock*/
 			ISP_ion_free_handle(pIon_client, p_IonHnd);
 		} else {
-			LOG_NOTICE("[ion free]copy_from_user failed\n");
+			pr_err("[ion free]copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -8414,21 +8622,20 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 		if (copy_from_user(&module, (void *)Param,
 		    sizeof(unsigned int)) == 0) {
 			if (module >= ISP_DEV_NODE_NUM) {
-				LOG_NOTICE(
+				pr_err(
 					"[ISP_ION_FREE_BY_HWMODULE]module should be smaller than ISP_DEV_NODE_NUM");
 				Ret = -EFAULT;
 				break;
 			}
 			if (gION_TBL[module].node != module) {
-				LOG_NOTICE("module error(%d)\n", module);
+				pr_err("module error(%d)\n", module);
 				Ret = -EFAULT;
 				break;
 			}
 
 			ISP_ion_free_handle_by_module(module);
 		} else {
-			LOG_NOTICE(
-				"[ion free by module]copy_from_user failed\n");
+			pr_err("[ion free by module]copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
@@ -8446,7 +8653,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 					Addr[1] = DebugFlag[1];
 					break;
 				default:
-					LOG_NOTICE("unsupported module:0x%x\n",
+					pr_err("unsupported module:0x%x\n",
 						DebugFlag[0]);
 					break;
 				}
@@ -8483,7 +8690,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 
 		if (copy_from_user(&larbInfo, (void *)Param,
 		    sizeof(struct ISP_LARB_MMU_STRUCT)) != 0) {
-			LOG_NOTICE("copy_from_user LARB_MMU_CTL failed\n");
+			pr_err("copy_from_user LARB_MMU_CTL failed\n");
 			Ret = -EFAULT;
 			goto EXIT;
 		}
@@ -8495,16 +8702,14 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 		case 6:
 			break;
 		default:
-			LOG_NOTICE(
-				"Wrong SMI_LARB port=%d\n",
-				larbInfo.LarbNum);
+			pr_err("Wrong SMI_LARB port=%d\n", larbInfo.LarbNum);
 			Ret = -EFAULT;
 			goto EXIT;
 		}
 
 		if ((SMI_LARB_BASE[larbInfo.LarbNum] == NULL) ||
 		    (larbInfo.regOffset >= 0x1000)) {
-			LOG_NOTICE(
+			pr_err(
 				"Wrong SMI_LARB port=%d base addr=%p offset=0x%x\n",
 				larbInfo.LarbNum,
 				SMI_LARB_BASE[larbInfo.LarbNum],
@@ -8522,7 +8727,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 	case ISP_GET_DUMP_INFO: {
 		if (copy_to_user((void *)Param, &g_dumpInfo,
 		    sizeof(struct ISP_GET_DUMP_INFO_STRUCT)) != 0) {
-			LOG_NOTICE("ISP_GET_DUMP_INFO copy to user fail");
+			pr_err("ISP_GET_DUMP_INFO copy to user fail");
 			Ret = -EFAULT;
 		}
 		break;
@@ -8535,7 +8740,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			 */
 			Ret = ISP_DumpBuffer(&DumpBufStruct);
 		} else {
-			LOG_NOTICE(
+			pr_err(
 			    "ISP_DUMP_TUNING_BUFFER copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
@@ -8549,14 +8754,54 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			 */
 			Ret = ISP_SetMemInfo(&MemInfoStruct);
 		} else {
-			LOG_NOTICE("ISP_SET_MEM_INFO copy_from_user failed\n");
+			pr_err("ISP_SET_MEM_INFO copy_from_user failed\n");
 			Ret = -EFAULT;
 		}
 		break;
 	}
+	case  ISP_SET_SEC_DAPC_REG:
+		pr_info("ISP_SET_SEC_DAPC_REG = %d\n", ISP_SET_SEC_DAPC_REG);
+		if (copy_from_user(
+		    Dapc_Reg,
+		    (void *)Param,
+		    sizeof(unsigned int) * 6) != 0) {
+			pr_err("get DAPC_REG from user fail\n");
+			Ret = -EFAULT;
+		} else {
+			if (Dapc_Reg[0] < ISP_CAMSYS_CONFIG_IDX ||
+				Dapc_Reg[0] >= ISP_DEV_NODE_NUM) {
+				pr_err("module index(0x%x) error\n",
+					Dapc_Reg[0]);
+				Ret = -EFAULT;
+				break;
+			}
+
+			if (Dapc_Reg[1] == MTRUE) {
+				sec_on = Dapc_Reg[1];
+				lock_reg.CAM_REG_CTL_EN[Dapc_Reg[0]] =
+								Dapc_Reg[2];
+				lock_reg.CAM_REG_CTL_DMA_EN[Dapc_Reg[0]] =
+								Dapc_Reg[3];
+				lock_reg.CAM_REG_CTL_SEL[Dapc_Reg[0]] =
+								Dapc_Reg[4];
+				lock_reg.CAM_REG_CTL_EN2[Dapc_Reg[0]] =
+								Dapc_Reg[5];
+
+				pr_info(
+				"[DAPC]EN:0x%x DMA_EN:0x%x SEL:0x%x\n",
+				    lock_reg.CAM_REG_CTL_EN[Dapc_Reg[0]],
+				    lock_reg.CAM_REG_CTL_DMA_EN[Dapc_Reg[0]],
+				    lock_reg.CAM_REG_CTL_SEL[Dapc_Reg[0]]);
+			} else {
+				pr_err("get wrong sec status (0x%x)\n",
+					Dapc_Reg[1]);
+				Ret = -EFAULT;
+			}
+		}
+		break;
 	default:
 	{
-		LOG_NOTICE("Unknown Cmd(%d)\n", Cmd);
+		pr_err("Unknown Cmd(%d)\n", Cmd);
 		Ret = -EPERM;
 		break;
 	}
@@ -8564,7 +8809,7 @@ static long ISP_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 	/*  */
 EXIT:
 	if (Ret != 0)
-		LOG_NOTICE(
+		pr_err(
 			"Fail, Cmd(%d), Pid(%d), (process, pid, tgid)=(%s, %d, %d)\n",
 			Cmd, pUserInfo->Pid, current->comm, current->pid,
 			current->tgid);
@@ -9039,6 +9284,7 @@ static long ISP_ioctl_compat(struct file *filp, unsigned int cmd,
 	case ISP_GET_CUR_ISP_CLOCK:
 	case ISP_SET_PM_QOS_INFO:
 	case ISP_SET_PM_QOS:
+	case ISP_SET_SEC_DAPC_REG:
 		return filp->f_op->unlocked_ioctl(filp, cmd, arg);
 	default:
 		return -ENOIOCTLCMD;
@@ -9112,7 +9358,7 @@ static signed int ISP_open(
 			current->tgid);
 	#endif
 	}
-
+pr_info("- E. register IRQ:\n");
 	/* do wait queue head init when re-enter in camera */
 	/*  */
 	for (i = 0; i < IRQ_USER_NUM_MAX; i++) {
@@ -9121,6 +9367,7 @@ static signed int ISP_open(
 			"DefaultUserNametoAllocMem", USERKEY_STR_LEN);
 		IrqUserKey_UserInfo[i].userKey = -1;
 	}
+pr_info("- E. register IRQ: done\n");
 	/*  */
 	spin_lock(&(SpinLock_P2FrameList));
 	for (q = 0; q < ISP_P2_BUFQUE_PROPERTY_NUM; q++) {
@@ -9175,7 +9422,7 @@ static signed int ISP_open(
 	if ((isp_p2_ion_client == NULL) && (g_ion_device))
 		isp_p2_ion_client = ion_client_create(g_ion_device, "isp_p2");
 	if (isp_p2_ion_client == NULL) {
-		LOG_NOTICE("invalid isp_p2_ion_client client!\n");
+		pr_err("invalid isp_p2_ion_client client!\n");
 	} else {
 		if (isp_allocbuf(&g_isp_p2_imem_buf) >= 0)
 			g_bIonBufferAllocated = MTRUE;
@@ -9235,27 +9482,27 @@ static signed int ISP_open(
 	for (i = 0; i < ISP_REF_CNT_ID_MAX; i++)
 		atomic_set(&g_imem_ref_cnt[i], 0);
 
-/*  */
-for (i = 0; i < ISP_IRQ_TYPE_AMOUNT; i++) {
-	for (j = 0; j < ISP_IRQ_ST_AMOUNT; j++) {
-		for (q = 0; q < IRQ_USER_NUM_MAX; q++) {
-			IspInfo.IrqInfo.Status[i][j][q] = 0;
-			IspInfo.IrqInfo.MarkedFlag[i][j][q] = 0;
-			for (p = 0; p < 32; p++) {
-				IspInfo.IrqInfo.MarkedTime_sec[i][p][q]
-					= 0;
-				IspInfo.IrqInfo.MarkedTime_usec[i][p][q]
-					= 0;
-				IspInfo.IrqInfo.PassedBySigCnt[i][p][q]
-					= 0;
-				IspInfo.IrqInfo.LastestSigTime_sec[i][p]
-					= 0;
-				IspInfo.IrqInfo.LastestSigTime_usec[i][p]
-					= 0;
+	/*  */
+	for (i = 0; i < ISP_IRQ_TYPE_AMOUNT; i++) {
+		for (j = 0; j < ISP_IRQ_ST_AMOUNT; j++) {
+			for (q = 0; q < IRQ_USER_NUM_MAX; q++) {
+				IspInfo.IrqInfo.Status[i][j][q] = 0;
+				IspInfo.IrqInfo.MarkedFlag[i][j][q] = 0;
+				for (p = 0; p < 32; p++) {
+					IspInfo.IrqInfo.
+					    MarkedTime_sec[i][p][q] = 0;
+					IspInfo.IrqInfo.
+					    MarkedTime_usec[i][p][q] = 0;
+					IspInfo.IrqInfo.
+					    PassedBySigCnt[i][p][q] = 0;
+					IspInfo.IrqInfo.
+					    LastestSigTime_sec[i][p] = 0;
+					IspInfo.IrqInfo.
+					    LastestSigTime_usec[i][p] = 0;
+				}
 			}
 		}
 	}
-}
 	/* reset backup regs*/
 	memset(g_BkReg, 0, sizeof(struct _isp_bk_reg_t) * ISP_IRQ_TYPE_AMOUNT);
 
@@ -9278,6 +9525,20 @@ EXIT:
 		/* Enable clock */
 		ISP_EnableClock(MTRUE);
 	}
+	/*  */
+	if (g_WaitLockCt) {
+		g_WaitLockCt++;
+		pr_info("add wakelock cnt(%d)\n", g_WaitLockCt);
+	} else {
+#ifdef CONFIG_PM_WAKELOCKS
+		__pm_stay_awake(isp_wake_lock);
+#else
+		wake_lock(&isp_wake_lock);
+#endif
+		g_WaitLockCt++;
+		pr_info("wakelock enable!! cnt(%d)\n", g_WaitLockCt);
+	}
+	/*  */
 	mutex_unlock(&gDipMutex);
 
 	pr_info("- X. Ret: %d. UserCount: %d. G_u4EnableClockCount:%d\n", Ret,
@@ -9294,8 +9555,8 @@ static inline void ISP_StopHW(signed int module)
 	unsigned int regTGSt, loopCnt;
 	signed int ret = 0;
 	struct ISP_WAIT_IRQ_STRUCT waitirq;
-	unsigned long long	sec = 0, m_sec = 0;
-	unsigned long long	timeoutMs = 500000000;/*500ms*/
+	unsigned long long  sec = 0, usec = 0, m_sec = 0, m_usec = 0;
+	unsigned long long  timeoutMs = 500000000;/*500ms*/
 	char moduleName[128];
 
 	if (module == ISP_CAM_A_IDX)
@@ -9317,7 +9578,7 @@ static inline void ISP_StopHW(signed int module)
 	do {
 		regTGSt = (ISP_RD32(CAM_REG_TG_INTER_ST(module)) & 0x00003F00)
 			   >> 8;
-		if (regTGSt == 1)
+		if (regTGSt == 1 || regTGSt == 0)
 			break;
 
 		pr_info("%s: wait 1VD (%d)\n", moduleName, loopCnt);
@@ -9330,19 +9591,14 @@ static inline void ISP_StopHW(signed int module)
 		pr_info("%s: interrupt by system signal, wait idle\n",
 			moduleName);
 		/* timer*/
-		m_sec = ktime_get();
+		m_sec = ktime_get(); /* ns */
+		do_div(m_sec, 1000); /* usec */
+		m_usec = do_div(m_sec, 1000000); /* sec and usec */
 
-		while (regTGSt != 1) {
-			regTGSt = (ISP_RD32(CAM_REG_TG_INTER_ST(module))
-				   & 0x00003F00) >> 8;
-			/*timer*/
-			sec = ktime_get();
-			/* wait time>timeoutMs, break */
-			if ((sec - m_sec) > timeoutMs)
-				break;
-		}
 		if (regTGSt == 1)
 			pr_info("%s: wait idle done\n", moduleName);
+		else if (regTGSt == 0)
+			pr_info("plz check regTGSt value");
 		else
 			pr_info("%s: wait idle timeout(%lld)\n", moduleName,
 				(sec - m_sec));
@@ -9351,14 +9607,18 @@ static inline void ISP_StopHW(signed int module)
 	if (-EFAULT == ret || regTGSt != 1) {
 		pr_info("%s: reset\n", moduleName);
 		/* timer*/
-		m_sec = ktime_get();
+		m_sec = ktime_get(); /* ns */
+		do_div(m_sec, 1000); /* usec */
+		m_usec = do_div(m_sec, 1000000); /* sec and usec */
 
 		/* Reset*/
 		ISP_WR32(CAM_REG_CTL_SW_CTL(module), 0x1);
 		while (ISP_RD32(CAM_REG_CTL_SW_CTL(module)) != 0x2) {
 			/*pr_info("%s resetting...\n", moduleName);*/
 			/*timer*/
-			sec = ktime_get();
+			sec = ktime_get(); /* ns */
+			do_div(sec, 1000); /* sec */
+			usec = do_div(sec, 1000000); /* sec and usec */
 			/* wait time>timeoutMs, break */
 			if ((sec  - m_sec) > timeoutMs) {
 				pr_info("%s: wait SW idle timeout\n",
@@ -9452,14 +9712,15 @@ static signed int ISP_release(
 	 * It will encounter err when run single path
 	 * and other module dmx_sel = 1
 	 */
-	Reg = ISP_RD32(CAM_REG_CTL_SEL(ISP_CAM_A_IDX));
-	Reg &= 0xfffffff8;/* set dmx to 0 */
-	ISP_WR32(CAM_REG_CTL_SEL(ISP_CAM_A_IDX), Reg);
+	if (!sec_on) {
+		Reg = ISP_RD32(CAM_REG_CTL_SEL(ISP_CAM_A_IDX));
+		Reg &= 0xfffffff8;/* set dmx to 0 */
+		ISP_WR32(CAM_REG_CTL_SEL(ISP_CAM_A_IDX), Reg);
 
-	Reg = ISP_RD32(CAM_REG_CTL_SEL(ISP_CAM_B_IDX));
-	Reg &= 0xfffffff8;/* set dmx to 0 */
-	ISP_WR32(CAM_REG_CTL_SEL(ISP_CAM_B_IDX), Reg);
-
+		Reg = ISP_RD32(CAM_REG_CTL_SEL(ISP_CAM_B_IDX));
+		Reg &= 0xfffffff8;/* set dmx to 0 */
+		ISP_WR32(CAM_REG_CTL_SEL(ISP_CAM_B_IDX), Reg);
+	}
 	/* Reset Twin status.
 	 * If previous camera run in twin mode,
 	 * then mediaserver died, no one clear this status.
@@ -9476,7 +9737,9 @@ static signed int ISP_release(
 	if (g_WaitLockCt) {
 		pr_info("wakelock disable!! cnt(%d)\n", g_WaitLockCt);
 #ifdef CONFIG_PM_SLEEP
-		__pm_relax(&isp_wake_lock);
+		__pm_relax(isp_wake_lock);
+#else
+		wake_unlock(&isp_wake_lock);
 #endif
 		g_WaitLockCt = 0;
 	}
@@ -9559,11 +9822,17 @@ static signed int ISP_release(
 		ion_client_destroy(isp_p2_ion_client);
 		isp_p2_ion_client = NULL;
 	} else {
-		LOG_NOTICE("isp_p2_ion_client is NULL!!\n");
+		pr_err("isp_p2_ion_client is NULL!!\n");
 	}
 #endif
 	/* reset backup regs*/
 	memset(g_BkReg, 0, sizeof(struct _isp_bk_reg_t) * ISP_IRQ_TYPE_AMOUNT);
+
+	/* reset secure cam info*/
+	if (sec_on) {
+		memset(&lock_reg, 0, sizeof(struct isp_sec_dapc_reg));
+		sec_on = 0;
+	}
 
 	/*  */
 	ISP_StopHW(ISP_CAM_A_IDX);
@@ -9639,7 +9908,7 @@ static signed int ISP_mmap(struct file *pFile, struct vm_area_struct *pVma)
 	case CAMSV_5_BASE_HW:
 	case UNI_A_BASE_HW:
 		if (length > ISP_REG_RANGE) {
-			LOG_NOTICE(
+			pr_err(
 				"mmap range error :module(0x%x) length(0x%lx), ISP_REG_RANGE(0x%lx)!\n",
 				pfn, length, ISP_REG_RANGE);
 			return -EAGAIN;
@@ -9647,7 +9916,7 @@ static signed int ISP_mmap(struct file *pFile, struct vm_area_struct *pVma)
 		break;
 	case DIP_A_BASE_HW:
 		if (length > ISP_REG_PER_DIP_RANGE) {
-			LOG_NOTICE(
+			pr_err(
 				"mmap range error :module(0x%x),length(0x%lx), ISP_REG_PER_DIP_RANGE(0x%lx)!\n",
 				pfn, length, ISP_REG_PER_DIP_RANGE);
 			return -EAGAIN;
@@ -9655,7 +9924,7 @@ static signed int ISP_mmap(struct file *pFile, struct vm_area_struct *pVma)
 		break;
 	case SENINF_BASE_HW:
 		if (length > 0x8000) {
-			LOG_NOTICE(
+			pr_err(
 				"mmap range error :module(0x%x),length(0x%lx), SENINF_BASE_RANGE(0x%x)!\n",
 				pfn, length, 0x4000);
 			return -EAGAIN;
@@ -9663,7 +9932,7 @@ static signed int ISP_mmap(struct file *pFile, struct vm_area_struct *pVma)
 		break;
 	case MIPI_RX_BASE_HW:
 		if (length > 0x6000) {
-			LOG_NOTICE(
+			pr_err(
 				"mmap range error :module(0x%x),length(0x%lx), MIPI_RX_RANGE(0x%x)!\n",
 				pfn, length, 0x6000);
 			return -EAGAIN;
@@ -9671,14 +9940,14 @@ static signed int ISP_mmap(struct file *pFile, struct vm_area_struct *pVma)
 		break;
 	case GPIO_BASE_HW:
 		if (length > 0x1000) {
-			LOG_NOTICE(
+			pr_err(
 				"mmap range error :module(0x%x),length(0x%lx), GPIO_RX_RANGE(0x%x)!\n",
 				pfn, length, 0x1000);
 			return -EAGAIN;
 		}
 		break;
 	default:
-		LOG_NOTICE("Illegal starting HW addr for mmap!\n");
+		pr_err("Illegal starting HW addr for mmap!\n");
 		return -EAGAIN;
 	}
 	if (remap_pfn_range(pVma, pVma->vm_start, pVma->vm_pgoff,
@@ -9736,13 +10005,13 @@ static inline signed int ISP_RegCharDev(void)
 	/*  */
 	Ret = alloc_chrdev_region(&IspDevNo, 0, 1, ISP_DEV_NAME);
 	if ((Ret) < 0) {
-		LOG_NOTICE("alloc_chrdev_region failed, %d\n", Ret);
+		pr_err("alloc_chrdev_region failed, %d\n", Ret);
 		return Ret;
 	}
 	/* Allocate driver */
 	pIspCharDrv = cdev_alloc();
 	if (pIspCharDrv == NULL) {
-		LOG_NOTICE("cdev_alloc failed\n");
+		pr_err("cdev_alloc failed\n");
 		Ret = -ENOMEM;
 		goto EXIT;
 	}
@@ -9753,7 +10022,7 @@ static inline signed int ISP_RegCharDev(void)
 	/* Add to system */
 	Ret = cdev_add(pIspCharDrv, IspDevNo, 1);
 	if ((Ret) < 0) {
-		LOG_NOTICE("Attatch file operation failed, %d\n", Ret);
+		pr_err("Attatch file operation failed, %d\n", Ret);
 		goto EXIT;
 	}
 	/*  */
@@ -9910,7 +10179,7 @@ static signed int ISP_probe(struct platform_device *pDev)
 		pIspClass = class_create(THIS_MODULE, "ispdrv");
 		if (IS_ERR(pIspClass)) {
 			Ret = PTR_ERR(pIspClass);
-			LOG_NOTICE("Unable to create class, err = %d\n", Ret);
+			pr_err("Unable to create class, err = %d\n", Ret);
 			goto EXIT;
 		}
 		dev = device_create(pIspClass, NULL, IspDevNo, NULL,
@@ -9953,7 +10222,7 @@ static signed int ISP_probe(struct platform_device *pDev)
 #ifdef CONFIG_MTK_CLKMGR
 #else
 		/*CCF: Grab clock pointer (struct clk*) */
-
+pr_info("CONFIG_MTK_CLKMGR get clock pointer \n");
 		isp_clk.ISP_SCP_SYS_DIS =
 			devm_clk_get(&pDev->dev, "ISP_SCP_SYS_DIS");
 		isp_clk.ISP_SCP_SYS_ISP =
@@ -9966,8 +10235,7 @@ static signed int ISP_probe(struct platform_device *pDev)
 			devm_clk_get(&pDev->dev, "ISP_CLK_CAM");
 		isp_clk.ISP_CAM_CAMTG =
 			devm_clk_get(&pDev->dev, "ISP_CLK_CAMTG");
-		isp_clk.ISP_CAM_SENINF =
-			devm_clk_get(&pDev->dev, "ISP_CLK_CAM_SENINF");
+		/*No need to control this any more , seninf will handle this CLK*/
 		isp_clk.ISP_CAM_CAMSV0 =
 			devm_clk_get(&pDev->dev, "ISP_CLK_CAMSV0");
 		isp_clk.ISP_CAM_CAMSV1 =
@@ -9976,64 +10244,64 @@ static signed int ISP_probe(struct platform_device *pDev)
 			devm_clk_get(&pDev->dev, "ISP_CLK_CAMSV2");
 
 		if (IS_ERR(isp_clk.ISP_SCP_SYS_DIS)) {
-			LOG_NOTICE("cannot get ISP_SCP_SYS_DIS clock\n");
+			pr_err("cannot get ISP_SCP_SYS_DIS clock\n");
 			return PTR_ERR(isp_clk.ISP_SCP_SYS_DIS);
 		}
 		if (IS_ERR(isp_clk.ISP_SCP_SYS_ISP)) {
-			LOG_NOTICE("cannot get ISP_SCP_SYS_ISP clock\n");
+			pr_err("cannot get ISP_SCP_SYS_ISP clock\n");
 			return PTR_ERR(isp_clk.ISP_SCP_SYS_ISP);
 		}
 		if (IS_ERR(isp_clk.ISP_SCP_SYS_CAM)) {
-			LOG_NOTICE("cannot get ISP_SCP_SYS_CAM clock\n");
+			pr_err("cannot get ISP_SCP_SYS_CAM clock\n");
 			return PTR_ERR(isp_clk.ISP_SCP_SYS_CAM);
 		}
 		if (IS_ERR(isp_clk.ISP_IMG_DIP)) {
-			LOG_NOTICE("cannot get IMG_DIP clock\n");
+			pr_err("cannot get IMG_DIP clock\n");
 			return PTR_ERR(isp_clk.ISP_IMG_DIP);
 		}
 		if (IS_ERR(isp_clk.ISP_CAM_CAMSYS)) {
-			LOG_NOTICE("cannot get ISP_CLK_CAM clock\n");
+			pr_err("cannot get ISP_CLK_CAM clock\n");
 			return PTR_ERR(isp_clk.ISP_CAM_CAMSYS);
 		}
 		if (IS_ERR(isp_clk.ISP_CAM_CAMTG)) {
-			LOG_NOTICE("cannot get ISP_CLK_CAMTG clock\n");
+			pr_err("cannot get ISP_CLK_CAMTG clock\n");
 			return PTR_ERR(isp_clk.ISP_CAM_CAMTG);
 		}
-		if (IS_ERR(isp_clk.ISP_CAM_SENINF)) {
-			LOG_NOTICE("cannot get ISP_CLK_CAM_SENINF clock\n");
-			return PTR_ERR(isp_clk.ISP_CAM_SENINF);
-		}
+		/*No need to control this any more , seninf will handle this CLK*/
 		if (IS_ERR(isp_clk.ISP_CAM_CAMSV0)) {
-			LOG_NOTICE("cannot get ISP_CLK_CAMSV0 clock\n");
+			pr_err("cannot get ISP_CLK_CAMSV0 clock\n");
 			return PTR_ERR(isp_clk.ISP_CAM_CAMSV0);
 		}
 		if (IS_ERR(isp_clk.ISP_CAM_CAMSV1)) {
-			LOG_NOTICE("cannot get ISP_CLK_CAMSV1 clock\n");
+			pr_err("cannot get ISP_CLK_CAMSV1 clock\n");
 			return PTR_ERR(isp_clk.ISP_CAM_CAMSV1);
 		}
 		if (IS_ERR(isp_clk.ISP_CAM_CAMSV2)) {
-			LOG_NOTICE("cannot get ISP_CLK_CAMSV2 clock\n");
+			pr_err("cannot get ISP_CLK_CAMSV2 clock\n");
 			return PTR_ERR(isp_clk.ISP_CAM_CAMSV2);
 		}
 
 #endif
 #endif
-	/*  */
-	for (i = 0 ; i < ISP_IRQ_TYPE_AMOUNT; i++)
-		init_waitqueue_head(&IspInfo.WaitQueueHead[i]);
-	/*	*/
-	for (i = 0 ; i < CAM_AMOUNT ; i++) {
+		/*  */
+		for (i = 0 ; i < ISP_IRQ_TYPE_AMOUNT; i++)
+			init_waitqueue_head(&IspInfo.WaitQueueHead[i]);
+		/*	*/
+		for (i = 0 ; i < CAM_AMOUNT ; i++) {
 		for (j = 0 ; j < ISP_WAITQ_HEAD_IRQ_AMOUNT ; j++)
 			init_waitqueue_head(&IspInfo.WaitQHeadCam[i][j]);
 		}
-	/*	*/
-	for (i = 0 ; i < CAMSV_AMOUNT ; i++) {
+		/*	*/
+		for (i = 0 ; i < CAMSV_AMOUNT ; i++) {
 		for (j = 0 ; j < ISP_WAITQ_HEAD_IRQ_SV_AMOUNT ; j++)
 			init_waitqueue_head(&IspInfo.WaitQHeadCamsv[i][j]);
 		}
 
 #ifdef CONFIG_PM_SLEEP
-		wakeup_source_init(&isp_wake_lock, "isp_lock_wakelock");
+		isp_wake_lock = wakeup_source_register(&pDev->dev, "isp_lock_wakelock");
+#else
+		wake_lock_init(&isp_wake_lock, WAKE_LOCK_SUSPEND,
+				"isp_lock_wakelock");
 #endif
 
 		/* enqueue/dequeue control in ihalpipe wrapper */
@@ -10191,18 +10459,20 @@ static signed int ISP_suspend(
 	pm_message_t            Mesg
 )
 {
-	unsigned int regVal;
-	signed int IrqType, ret, module;
-	char moduleName[128];
+	unsigned int regVal, IrqType;
+	signed int ret, module;
+	char moduleName[128] = {'\0'};
 
 	unsigned int regTGSt, loopCnt;
 	struct ISP_WAIT_IRQ_STRUCT waitirq;
+	ktime_t             time;
 	unsigned long long  sec = 0, m_sec = 0;
 	unsigned long long  timeoutMs = 500000000;/*500ms*/
 
 	ret = 0;
 	module = -1;
-	strncpy(moduleName, pDev->dev.of_node->name, 127);
+	strncpy(moduleName, pDev->dev.of_node->name, sizeof(moduleName)-1);
+	moduleName[sizeof(moduleName)-1] = '\0';
 
 	/* update device node count*/
 	atomic_dec(&G_u4DevNodeCt);
@@ -10263,7 +10533,7 @@ static signed int ISP_suspend(
 		module = ISP_CAMSV5_IDX;
 		break;
 	case ISP_IRQ_TYPE_AMOUNT:
-		LOG_NOTICE("dev name is not found (%s)", moduleName);
+		pr_err("dev name is not found (%s)", moduleName);
 		break;
 	case ISP_IRQ_TYPE_INT_UNI_A_ST:
 	default:
@@ -10313,13 +10583,15 @@ static signed int ISP_suspend(
 			pr_info("%s: interrupt by system signal, wait idle\n",
 				moduleName);
 			/* timer*/
-			m_sec = ktime_get();
+			time = ktime_get();
+			m_sec = time;
 
 			while (regTGSt != 1) {
 				regTGSt = (ISP_RD32(CAM_REG_TG_INTER_ST(module))
 					   & 0x00003F00) >> 8;
 				/*timer*/
-				sec = ktime_get();
+				time = ktime_get();
+				sec = time;
 				/* wait time>timeoutMs, break */
 				if ((sec - m_sec) > timeoutMs)
 					break;
@@ -10370,13 +10642,14 @@ EXIT:
  *****************************************************************************/
 static int ISP_resume(struct platform_device *pDev)
 {
-	unsigned int regVal;
-	signed int IrqType, ret, module;
-	char moduleName[128];
+	unsigned int regVal, IrqType;
+	signed int ret, module;
+	char moduleName[128] = {'\0'};
 
 	ret = 0;
 	module = -1;
-	strncpy(moduleName, pDev->dev.of_node->name, 127);
+	strncpy(moduleName, pDev->dev.of_node->name, sizeof(moduleName)-1);
+	moduleName[sizeof(moduleName)-1] = '\0';
 
 	/* update device node count*/
 	atomic_inc(&G_u4DevNodeCt);
@@ -10421,7 +10694,7 @@ static int ISP_resume(struct platform_device *pDev)
 		module = ISP_CAMSV5_IDX;
 		break;
 	case ISP_IRQ_TYPE_AMOUNT:
-		LOG_NOTICE("dev name is not found (%s)", moduleName);
+		pr_err("dev name is not found (%s)", moduleName);
 		break;
 	case ISP_IRQ_TYPE_INT_UNI_A_ST:
 	default:
@@ -10545,7 +10818,7 @@ static ssize_t ISP_DumpRegToProc(
 	size_t off,
 	loff_t *Count)
 {
-	LOG_NOTICE("%s : Not implement", __func__);
+	pr_err("ISP_DumpRegToProc: Not implement");
 	return 0;
 }
 
@@ -10561,7 +10834,7 @@ static ssize_t ISP_RegDebug(
 	size_t Count,
 	loff_t *pData)
 {
-	LOG_NOTICE("%s : Not implement", __func__);
+	pr_err("ISP_RegDebug: Not implement");
 	return 0;
 }
 
@@ -10574,7 +10847,7 @@ static ssize_t CAMIO_DumpRegToProc(
 	size_t off,
 	loff_t *Count)
 {
-	LOG_NOTICE("%s : Not implement", __func__);
+	pr_err("CAMIO_DumpRegToProc: Not implement");
 	return 0;
 }
 
@@ -10591,7 +10864,7 @@ static ssize_t CAMIO_RegDebug(
 	size_t Count,
 	loff_t *pData)
 {
-	LOG_NOTICE("%s : Not implement", __func__);
+	pr_err("CAMIO_RegDebug: Not implement");
 	return 0;
 }
 
@@ -10723,6 +10996,7 @@ static const struct file_operations isp_p2_ke_dump_proc_fops = {
 	.owner = THIS_MODULE,
 	.open = proc_isp_p2_ke_dump_open,
 	.read = seq_read,
+	.release = single_release,
 };
 
 /******************************************************************************
@@ -10906,6 +11180,7 @@ static const struct file_operations isp_p2_dump_proc_fops = {
 	.owner = THIS_MODULE,
 	.open = proc_isp_p2_dump_open,
 	.read = seq_read,
+	.release = single_release,
 };
 /******************************************************************************
  *
@@ -10937,7 +11212,7 @@ static signed int __init ISP_Init(void)
 	/*  */
 	Ret = platform_driver_register(&IspDriver);
 	if ((Ret) < 0) {
-		LOG_NOTICE("platform_driver_register fail");
+		pr_err("platform_driver_register fail");
 		return Ret;
 	}
 	/*  */
@@ -10956,20 +11231,21 @@ static signed int __init ISP_Init(void)
 
 		for (i = 0; i < ARRAY_SIZE(SMI_LARB_BASE); i++) {
 
-			snprintf(comp_str, 64, "mediatek,smi_larb%d", i);
+			if (snprintf(comp_str, 64,
+				     "mediatek,smi_larb%d", i) < 0) {
+				pr_info("[Error] snprintf failed\n");
+			}
 			pr_info("Finding SMI_LARB compatible: %s\n", comp_str);
 
 			node = of_find_compatible_node(NULL, NULL, comp_str);
 			if (!node) {
-				LOG_NOTICE(
-					"find %s node failed!!!\n", comp_str);
+				pr_err("find %s node failed!!!\n", comp_str);
 				SMI_LARB_BASE[i] = 0;
 				continue;
 			}
 			SMI_LARB_BASE[i] = of_iomap(node, 0);
 			if (!SMI_LARB_BASE[i]) {
-				LOG_NOTICE(
-					"unable to map ISP_SENINF0_BASE registers!!!\n");
+				pr_err("unable to map ISP_SENINF0_BASE registers!!!\n");
 				break;
 			}
 			pr_info("SMI_LARB%d_BASE: %p\n", i, SMI_LARB_BASE[i]);
@@ -10981,73 +11257,72 @@ static signed int __init ISP_Init(void)
 	#endif
 	node = of_find_compatible_node(NULL, NULL, "mediatek,seninf1");
 	if (!node) {
-		LOG_NOTICE("find mediatek,seninf1 node failed!!!\n");
+		pr_err("find mediatek,seninf1 node failed!!!\n");
 		return -ENODEV;
 	}
 	ISP_SENINF0_BASE = of_iomap(node, 0);
 	if (!ISP_SENINF0_BASE) {
-		LOG_NOTICE("unable to map ISP_SENINF0_BASE registers!!!\n");
+		pr_err("unable to map ISP_SENINF0_BASE registers!!!\n");
 		return -ENODEV;
 	}
 	pr_info("ISP_SENINF0_BASE: %p\n", ISP_SENINF0_BASE);
 
 	node = of_find_compatible_node(NULL, NULL, "mediatek,seninf2");
 	if (!node) {
-		LOG_NOTICE("find mediatek,seninf2 node failed!!!\n");
+		pr_err("find mediatek,seninf2 node failed!!!\n");
 		return -ENODEV;
 	}
 	ISP_SENINF1_BASE = of_iomap(node, 0);
 	if (!ISP_SENINF1_BASE) {
-		LOG_NOTICE("unable to map ISP_SENINF1_BASE registers!!!\n");
+		pr_err("unable to map ISP_SENINF1_BASE registers!!!\n");
 		return -ENODEV;
 	}
 	pr_info("ISP_SENINF1_BASE: %p\n", ISP_SENINF1_BASE);
 
 	node = of_find_compatible_node(NULL, NULL, "mediatek,seninf3");
 	if (!node) {
-		LOG_NOTICE("find mediatek,seninf3 node failed!!!\n");
+		pr_err("find mediatek,seninf3 node failed!!!\n");
 		return -ENODEV;
 	}
 	ISP_SENINF2_BASE = of_iomap(node, 0);
 	if (!ISP_SENINF2_BASE) {
-		LOG_NOTICE("unable to map ISP_SENINF2_BASE registers!!!\n");
+		pr_err("unable to map ISP_SENINF2_BASE registers!!!\n");
 		return -ENODEV;
 	}
 	pr_info("ISP_SENINF2_BASE: %p\n", ISP_SENINF2_BASE);
 
 	node = of_find_compatible_node(NULL, NULL, "mediatek,seninf4");
 	if (!node) {
-		LOG_NOTICE("find mediatek,seninf4 node failed!!!\n");
+		pr_err("find mediatek,seninf4 node failed!!!\n");
 		return -ENODEV;
 	}
 	ISP_SENINF3_BASE = of_iomap(node, 0);
 	if (!ISP_SENINF3_BASE) {
-		LOG_NOTICE("unable to map ISP_SENINF3_BASE registers!!!\n");
+		pr_err("unable to map ISP_SENINF3_BASE registers!!!\n");
 		return -ENODEV;
 	}
 	pr_info("ISP_SENINF3_BASE: %p\n", ISP_SENINF3_BASE);
 
-	node = of_find_compatible_node(NULL, NULL, "mediatek,apmixed");
+	node = of_find_compatible_node(NULL, NULL, "mediatek,mt6765-apmixedsys");
 	if (!node) {
-		LOG_NOTICE("find mediatek,apmixed node failed!!!\n");
+		pr_err("find mediatek,mt6765-apmixedsys node failed!!!\n");
 		return -ENODEV;
 	}
 	CLOCK_CELL_BASE = of_iomap(node, 0);
 	if (!CLOCK_CELL_BASE) {
-		LOG_NOTICE("unable to map CLOCK_CELL_BASE registers!!!\n");
+		pr_err("unable to map CLOCK_CELL_BASE registers!!!\n");
 		return -ENODEV;
 	}
 	pr_info("CLOCK_CELL_BASE: %p\n", CLOCK_CELL_BASE);
 
 	node = of_find_compatible_node(NULL, NULL, "mediatek,mmsys_config");
 	if (!node) {
-		LOG_NOTICE("find mmsys_config node failed!!!\n");
+		pr_err("find mmsys_config node failed!!!\n");
 		return -ENODEV;
 	}
 	ISP_MMSYS_CONFIG_BASE = of_iomap(node, 0);
 	if (!ISP_MMSYS_CONFIG_BASE) {
-		LOG_NOTICE(
-			"unable to map ISP_MMSYS_CONFIG_BASE registers!!!\n");
+		pr_err("unable to map ISP_MMSYS_CONFIG_BASE registers!!!\n");
 		return -ENODEV;
 	}
 	pr_info("ISP_MMSYS_CONFIG_BASE: %p\n", ISP_MMSYS_CONFIG_BASE);
@@ -11058,7 +11333,7 @@ static signed int __init ISP_Init(void)
 
 	isp_p2_dir = proc_mkdir("isp_p2", NULL);
 	if (!isp_p2_dir) {
-		LOG_NOTICE("fail to mkdir /proc/isp_p2\n");
+		pr_err("fail to mkdir /proc/isp_p2\n");
 		return 0;
 	}
 	proc_entry = proc_create("isp_p2_dump", 0444, isp_p2_dir,
@@ -11084,7 +11359,7 @@ static signed int __init ISP_Init(void)
 				pBuf_kmalloc[j] = kmalloc(
 					i + 2 * PAGE_SIZE, GFP_KERNEL);
 				if ((pBuf_kmalloc[j]) == NULL) {
-					LOG_NOTICE("mem not enough\n");
+					pr_err("mem not enough\n");
 					return -ENOMEM;
 				}
 				memset(pBuf_kmalloc[j], 0x00, i);
@@ -11094,7 +11369,7 @@ static signed int __init ISP_Init(void)
 					(RT_BUF_TBL_NPAGES + 2) * PAGE_SIZE,
 					GFP_KERNEL);
 				if ((pBuf_kmalloc[j]) == NULL) {
-					LOG_NOTICE("mem not enough\n");
+					pr_err("mem not enough\n");
 					return -ENOMEM;
 				}
 				memset(pBuf_kmalloc[j], 0x00,
@@ -11130,7 +11405,7 @@ static signed int __init ISP_Init(void)
 	}
 	pLog_kmalloc = kmalloc(i, GFP_KERNEL);
 	if ((pLog_kmalloc) == NULL) {
-		LOG_NOTICE("mem not enough\n");
+		pr_err("mem not enough\n");
 		return -ENOMEM;
 	}
 	memset(pLog_kmalloc, 0x00, i);
@@ -11365,7 +11640,7 @@ int32_t ISP_EndGCECallback(uint32_t taskID, uint32_t regCount,
 				ion_client_create(g_ion_device, "isp_p2");
 		}
 		if (isp_p2_ion_client == NULL)
-			LOG_NOTICE("invalid isp_p2_ion_client client!\n");
+			pr_err("invalid isp_p2_ion_client client!\n");
 		if (isp_allocbuf(&isp_p2GCEdump_imem_buf) >= 0) {
 			pMapVa = (int *)isp_p2GCEdump_imem_buf.va;
 		pr_info("ctlStart(0x%x),tpipePA(0x%x)", ctlStart, tpipePA);
@@ -11466,7 +11741,7 @@ void IRQ_INT_ERR_CHECK_CAM(unsigned int WarnStatus, unsigned int ErrStatus,
 			g_ISPIntErr_SMI[ISP_IRQ_TYPE_INT_CAM_A_ST] =
 				g_ISPIntErr[ISP_IRQ_TYPE_INT_CAM_A_ST];
 
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"CAM_A:int_err:0x%x_0x%x\n",
 				WarnStatus, ErrStatus);
 
@@ -11481,7 +11756,7 @@ void IRQ_INT_ERR_CHECK_CAM(unsigned int WarnStatus, unsigned int ErrStatus,
 			g_ISPIntErr_SMI[ISP_IRQ_TYPE_INT_CAM_B_ST] =
 				g_ISPIntErr[ISP_IRQ_TYPE_INT_CAM_B_ST];
 
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"CAM_B:int_err:0x%x_0x%x\n",
 				WarnStatus, ErrStatus);
 
@@ -11495,7 +11770,7 @@ void IRQ_INT_ERR_CHECK_CAM(unsigned int WarnStatus, unsigned int ErrStatus,
 				(ErrStatus|WarnStatus);
 			g_ISPIntErr_SMI[ISP_IRQ_TYPE_INT_CAMSV_0_ST] =
 				g_ISPIntErr[ISP_IRQ_TYPE_INT_CAMSV_0_ST];
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"CAMSV0:int_err:0x%x_0x%x\n",
 				WarnStatus, ErrStatus);
 			break;
@@ -11504,7 +11779,7 @@ void IRQ_INT_ERR_CHECK_CAM(unsigned int WarnStatus, unsigned int ErrStatus,
 				(ErrStatus|WarnStatus);
 			g_ISPIntErr_SMI[ISP_IRQ_TYPE_INT_CAMSV_1_ST] =
 				g_ISPIntErr[ISP_IRQ_TYPE_INT_CAMSV_1_ST];
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"CAMSV1:int_err:0x%x_0x%x\n",
 				WarnStatus, ErrStatus);
 			break;
@@ -11513,7 +11788,7 @@ void IRQ_INT_ERR_CHECK_CAM(unsigned int WarnStatus, unsigned int ErrStatus,
 				(ErrStatus|WarnStatus);
 			g_ISPIntErr_SMI[ISP_IRQ_TYPE_INT_CAMSV_2_ST] =
 				g_ISPIntErr[ISP_IRQ_TYPE_INT_CAMSV_2_ST];
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"CAMSV2:int_err:0x%x_0x%x\n",
 				WarnStatus, ErrStatus);
 			break;
@@ -11522,7 +11797,7 @@ void IRQ_INT_ERR_CHECK_CAM(unsigned int WarnStatus, unsigned int ErrStatus,
 				(ErrStatus|WarnStatus);
 			g_ISPIntErr_SMI[ISP_IRQ_TYPE_INT_CAMSV_3_ST] =
 				g_ISPIntErr[ISP_IRQ_TYPE_INT_CAMSV_3_ST];
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"CAMSV3:int_err:0x%x_0x%x\n",
 				WarnStatus, ErrStatus);
 			break;
@@ -11531,7 +11806,7 @@ void IRQ_INT_ERR_CHECK_CAM(unsigned int WarnStatus, unsigned int ErrStatus,
 				(ErrStatus|WarnStatus);
 			g_ISPIntErr_SMI[ISP_IRQ_TYPE_INT_CAMSV_4_ST] =
 				g_ISPIntErr[ISP_IRQ_TYPE_INT_CAMSV_4_ST];
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"CAMSV4:int_err:0x%x_0x%x\n",
 				WarnStatus, ErrStatus);
 			break;
@@ -11540,12 +11815,12 @@ void IRQ_INT_ERR_CHECK_CAM(unsigned int WarnStatus, unsigned int ErrStatus,
 				(ErrStatus|WarnStatus);
 			g_ISPIntErr_SMI[ISP_IRQ_TYPE_INT_CAMSV_5_ST] =
 				g_ISPIntErr[ISP_IRQ_TYPE_INT_CAMSV_5_ST];
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"CAMSV5:int_err:0x%x_0x%x\n",
 				WarnStatus, ErrStatus);
 			break;
 		case ISP_IRQ_TYPE_INT_DIP_A_ST:
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"DIP_A:int_err:0x%x_0x%x\n",
 				WarnStatus, ErrStatus);
 			break;
@@ -11559,25 +11834,25 @@ void IRQ_INT_ERR_CHECK_CAM(unsigned int WarnStatus, unsigned int ErrStatus,
 enum CAM_FrameST Irq_CAM_FrameStatus(enum ISP_DEV_NODE_ENUM module,
 	enum ISP_IRQ_TYPE_ENUM irq_mod, unsigned int delayCheck)
 {
-	signed int dma_arry_map[_cam_max_] = {
+	unsigned int dma_arry_map[_cam_max_] = {
 		/*      0,  1,  2,  3,  4,  5,  6,  7,  8,  9,*/
 		 0, /* _imgo_*/
 		 1, /* _rrzo_ */
 		 2, /* _ufeo_ */
-		-1, /* _aao_ */
-		-1, /* _afo_ */
+	 _cam_max_, /* _aao_ */
+	 _cam_max_, /* _afo_ */
 		 3, /* _lcso_ */
-		-1, /* _pdo_ */
+	 _cam_max_, /* _pdo_ */
 		 4, /* _eiso_ */
-		-1, /* _flko_ */
+	 _cam_max_, /* _flko_ */
 		 5, /* _rsso_ */
-		-1  /* _pso_ */
+	 _cam_max_  /* _pso_ */
 	};
 
 	unsigned int dma_en;
 	unsigned int uni_dma_en;
-	union FBC_CTRL_1 fbc_ctrl1[6];
-	union FBC_CTRL_2 fbc_ctrl2[6];
+	union FBC_CTRL_1 fbc_ctrl1[_cam_max_ + 1];
+	union FBC_CTRL_2 fbc_ctrl2[_cam_max_ + 1];
 	unsigned int hds2_sel;
 	bool bQueMode = MFALSE;
 	unsigned int product = 1;
@@ -11591,11 +11866,14 @@ enum CAM_FrameST Irq_CAM_FrameStatus(enum ISP_DEV_NODE_ENUM module,
 			    & 0x3);
 
 	if ((module != ISP_CAM_A_IDX) && (module != ISP_CAM_B_IDX)) {
-		LOG_NOTICE("unsupported module:0x%x\n", module);
+		pr_err("unsupported module:0x%x\n", module);
 		return CAM_FST_DROP_FRAME;
 	}
 
-	dma_en = ISP_RD32(CAM_REG_CTL_DMA_EN(module));
+	if (sec_on)
+		dma_en = lock_reg.CAM_REG_CTL_DMA_EN[module];
+	else
+		dma_en = ISP_RD32(CAM_REG_CTL_DMA_EN(module));
 
 	if (dma_en & 0x1) {
 		fbc_ctrl1[dma_arry_map[_imgo_]].Raw =
@@ -11690,7 +11968,7 @@ enum CAM_FrameST Irq_CAM_FrameStatus(enum ISP_DEV_NODE_ENUM module,
 	}
 
 	for (i = 0; i < _cam_max_; i++) {
-		if (dma_arry_map[i] >= 0) {
+		if (dma_arry_map[i] != _cam_max_) {
 			if (fbc_ctrl1[dma_arry_map[i]].Raw != 0) {
 				bQueMode =
 				    fbc_ctrl1[dma_arry_map[i]].Bits.FBC_MODE;
@@ -11701,7 +11979,7 @@ enum CAM_FrameST Irq_CAM_FrameStatus(enum ISP_DEV_NODE_ENUM module,
 
 	if (bQueMode) {
 		for (i = 0; i < _cam_max_; i++) {
-			if (dma_arry_map[i] < 0)
+			if (dma_arry_map[i] == _cam_max_)
 				continue;
 
 			if (fbc_ctrl1[dma_arry_map[i]].Raw != 0) {
@@ -11714,7 +11992,7 @@ enum CAM_FrameST Irq_CAM_FrameStatus(enum ISP_DEV_NODE_ENUM module,
 		}
 	} else {
 		for (i = 0; i < _cam_max_; i++) {
-			if (dma_arry_map[i] < 0)
+			if (dma_arry_map[i] == _cam_max_)
 				continue;
 
 			if (fbc_ctrl1[dma_arry_map[i]].Raw != 0) {
@@ -11826,20 +12104,18 @@ static enum CAM_FrameST Irq_CAM_SttFrameStatus(enum ISP_DEV_NODE_ENUM module,
 	case ISP_CAM_A_IDX:
 	case ISP_CAM_B_IDX:
 		if (dma_id >= _cam_max_) {
-			LOG_NOTICE(
-				"LINE_%d ERROR: unsupported module:0x%x dma:%d\n"
+			pr_err("LINE_%d ERROR: unsupported module:0x%x dma:%d\n"
 				, __LINE__, module, dma_id);
 			return CAM_FST_DROP_FRAME;
 		}
 		if (dma_arry_map[dma_id] < 0) {
-			LOG_NOTICE(
-				"LINE_%d ERROR: unsupported module:0x%x dma:%d\n"
+			pr_err("LINE_%d ERROR: unsupported module:0x%x dma:%d\n"
 				, __LINE__, module, dma_id);
 			return CAM_FST_DROP_FRAME;
 		}
 		break;
 	default:
-		LOG_NOTICE("LINE_%d ERROR: unsupported module:0x%x dma:%d\n",
+		pr_err("LINE_%d ERROR: unsupported module:0x%x dma:%d\n",
 			__LINE__, module, dma_id);
 		return CAM_FST_DROP_FRAME;
 	}
@@ -11847,7 +12123,10 @@ static enum CAM_FrameST Irq_CAM_SttFrameStatus(enum ISP_DEV_NODE_ENUM module,
 	fbc_ctrl1.Raw = 0x0;
 	fbc_ctrl2.Raw = 0x0;
 
-	dma_en = ISP_RD32(CAM_REG_CTL_DMA_EN(module));
+	if (sec_on)
+		dma_en = lock_reg.CAM_REG_CTL_DMA_EN[module];
+	else
+		dma_en = ISP_RD32(CAM_REG_CTL_DMA_EN(module));
 
 	if (_aao_ == dma_id) {
 		if (dma_en & 0x20) {
@@ -11945,7 +12224,7 @@ static int32_t ISP_PushBufTimestamp(unsigned int module, unsigned int dma_id,
 		reg_module = ISP_CAM_B_IDX;
 		break;
 	default:
-		LOG_NOTICE("Unsupport module:x%x\n", module);
+		pr_err("Unsupport module:x%x\n", module);
 		return -EFAULT;
 	}
 
@@ -12010,7 +12289,7 @@ static int32_t ISP_PushBufTimestamp(unsigned int module, unsigned int dma_id,
 				ISP_RD32(CAM_REG_FBC_PSO_CTL2(reg_module));
 			break;
 		default:
-			LOG_NOTICE("Unsupport dma:x%x\n", dma_id);
+			pr_err("Unsupport dma:x%x\n", dma_id);
 			return -EFAULT;
 		}
 		break;
@@ -12073,7 +12352,7 @@ static int32_t ISP_PopBufTimestamp(unsigned int module, unsigned int dma_id,
 		case _pso_:
 			break;
 		default:
-			LOG_NOTICE("Unsupport dma:x%x\n", dma_id);
+			pr_err("Unsupport dma:x%x\n", dma_id);
 			return -EFAULT;
 		}
 		break;
@@ -12087,18 +12366,18 @@ static int32_t ISP_PopBufTimestamp(unsigned int module, unsigned int dma_id,
 		case _camsv_imgo_:
 			break;
 		default:
-			LOG_NOTICE("Unsupport dma:x%x\n", dma_id);
+			pr_err("Unsupport dma:x%x\n", dma_id);
 			return -EFAULT;
 		}
 		break;
 	default:
-		LOG_NOTICE("Unsupport module:x%x\n", module);
+		pr_err("Unsupport module:x%x\n", module);
 		return -EFAULT;
 	}
 
 	if (pTstp)
-		*pTstp = IspInfo.TstpQInfo[module].Dmao[dma_id].TimeQue
-		[IspInfo.TstpQInfo[module].Dmao[dma_id].RdIndex];
+		*pTstp = IspInfo.TstpQInfo[module].Dmao[dma_id].
+			TimeQue[IspInfo.TstpQInfo[module].Dmao[dma_id].RdIndex];
 
 	if (IspInfo.TstpQInfo[module].Dmao[dma_id].RdIndex >=
 	    (ISP_TIMESTPQ_DEPTH-1))
@@ -12150,7 +12429,7 @@ static int32_t ISP_WaitTimestampReady(unsigned int module, unsigned int dma_id)
 			module, dma_id, wait_cnt);
 	}
 	if (wait_cnt == 0) {
-		LOG_NOTICE("ERROR: cam:%d dma:%d wait timestamp timeout!!!\n",
+		pr_err("ERROR: cam:%d dma:%d wait timestamp timeout!!!\n",
 			module, dma_id);
 		return -EFAULT;
 	}
@@ -12160,23 +12439,23 @@ static int32_t ISP_WaitTimestampReady(unsigned int module, unsigned int dma_id)
 
 		msleep(20);
 
-if ((wait_cnt & 0x7) == 0x7)
-	pr_info("WARNING: module:%d dma:%d wait long %d W/R:%d/%d\n",
-		module, dma_id, wait_cnt,
-		(unsigned int)
-		IspInfo.TstpQInfo[module].Dmao[dma_id].TotalWrCnt,
-		(unsigned int)
-		IspInfo.TstpQInfo[module].Dmao[dma_id].TotalRdCnt);
+		if ((wait_cnt & 0x7) == 0x7)
+			pr_info("WARNING: module:%d dma:%d wait long %d W/R:%d/%d\n",
+				module, dma_id, wait_cnt,
+				(unsigned int)IspInfo.TstpQInfo[module].
+				    Dmao[dma_id].TotalWrCnt,
+				(unsigned int)IspInfo.TstpQInfo[module].
+				    Dmao[dma_id].TotalRdCnt);
 
-if (wait_cnt > 3000) {
-	pr_info("ERROR: module:%d dma:%d wait timeout %d W/R:%d/%d\n",
-		module, dma_id, wait_cnt,
-		(unsigned int)
-		IspInfo.TstpQInfo[module].Dmao[dma_id].TotalWrCnt,
-		(unsigned int)
-		IspInfo.TstpQInfo[module].Dmao[dma_id].TotalRdCnt);
-	break;
-}
+		if (wait_cnt > 3000) {
+			pr_info("ERROR: module:%d dma:%d wait timeout %d W/R:%d/%d\n",
+				module, dma_id, wait_cnt,
+				(unsigned int)IspInfo.TstpQInfo[module].
+				    Dmao[dma_id].TotalWrCnt,
+				(unsigned int)IspInfo.TstpQInfo[module].
+				    Dmao[dma_id].TotalRdCnt);
+			break;
+		}
 
 		wait_cnt++;
 	}
@@ -12265,7 +12544,7 @@ static int32_t ISP_CompensateMissingSofTime(enum ISP_DEV_NODE_ENUM reg_module,
 				ISP_RD32(CAM_REG_FBC_PSO_CTL2(reg_module));
 			break;
 		default:
-			LOG_NOTICE("Unsupport dma:x%x\n", dma_id);
+			pr_err("Unsupport dma:x%x\n", dma_id);
 			return -EFAULT;
 		}
 		break;
@@ -12276,7 +12555,7 @@ static int32_t ISP_CompensateMissingSofTime(enum ISP_DEV_NODE_ENUM reg_module,
 	case ISP_IRQ_TYPE_INT_CAMSV_4_ST:
 	case ISP_IRQ_TYPE_INT_CAMSV_5_ST:
 	default:
-		LOG_NOTICE("Unsupport module:x%x\n", module);
+		pr_err("Unsupport module:x%x\n", module);
 		return -EFAULT;
 	}
 
@@ -12305,7 +12584,7 @@ static int32_t ISP_CompensateMissingSofTime(enum ISP_DEV_NODE_ENUM reg_module,
 
 	if (delta_wcnt > 255) {
 		if (dmao_mask)
-			LOG_NOTICE("ERROR: Cam:%d dma:%d WRONG WCNT:%d_%d_%d\n",
+			pr_err("ERROR: Cam:%d dma:%d WRONG WCNT:%d_%d_%d\n",
 			    module, dma_id, delta_wcnt,
 			    IspInfo.TstpQInfo[module].Dmao[dma_id].PrevFbcWCnt,
 			    fbc_ctrl2.Bits.WCNT);
@@ -12328,15 +12607,15 @@ static int32_t ISP_CompensateMissingSofTime(enum ISP_DEV_NODE_ENUM reg_module,
 	wridx_prev2 = (wridx_prev1 == 0) ?
 			(ISP_TIMESTPQ_DEPTH - 1) : (wridx_prev1 - 1);
 
-time_prev1.sec =
-	IspInfo.TstpQInfo[module].Dmao[dma_id].TimeQue[wridx_prev1].sec;
-time_prev1.usec =
-	IspInfo.TstpQInfo[module].Dmao[dma_id].TimeQue[wridx_prev1].usec;
+	time_prev1.sec = IspInfo.TstpQInfo[module].Dmao[dma_id].
+			TimeQue[wridx_prev1].sec;
+	time_prev1.usec = IspInfo.TstpQInfo[module].Dmao[dma_id].
+			TimeQue[wridx_prev1].usec;
 
-time_prev2.sec =
-	IspInfo.TstpQInfo[module].Dmao[dma_id].TimeQue[wridx_prev2].sec;
-time_prev2.usec =
-	IspInfo.TstpQInfo[module].Dmao[dma_id].TimeQue[wridx_prev2].usec;
+	time_prev2.sec = IspInfo.TstpQInfo[module].Dmao[dma_id].
+			TimeQue[wridx_prev2].sec;
+	time_prev2.usec = IspInfo.TstpQInfo[module].Dmao[dma_id].
+			TimeQue[wridx_prev2].usec;
 
 	if ((sec > time_prev1.sec) ||
 		((sec == time_prev1.sec) && (usec > time_prev1.usec))) {
@@ -12435,30 +12714,31 @@ static int32_t ISP_PatchTimestamp(unsigned int module, unsigned int dma_id,
 		(int)(cur_tstp - prev_tstp));
 
 	i = 0;
-while (target_wridx != curr_wridx) {
+	while (target_wridx != curr_wridx) {
 
-	if (i > frmPeriod) {
-		LOG_NOTICE("Error: too many intpl in sub-sample period %d_%d\n",
-			target_wridx, curr_wridx);
-		return -EFAULT;
+		if (i > frmPeriod) {
+			pr_err("Error: too many intpl in sub-sample period %d_%d\n",
+				target_wridx, curr_wridx);
+			return -EFAULT;
+		}
+
+		IspInfo.TstpQInfo[module].Dmao[dma_id].
+		    TimeQue[target_wridx].usec += (frm_dt * i);
+
+		while (IspInfo.TstpQInfo[module].Dmao[dma_id].
+		    TimeQue[target_wridx].usec >= 1000000) {
+
+			IspInfo.TstpQInfo[module].Dmao[dma_id].
+			    TimeQue[target_wridx].usec -= 1000000;
+			IspInfo.TstpQInfo[module].Dmao[dma_id].
+			    TimeQue[target_wridx].sec++;
+		}
+
+		i++;
+		target_wridx++; /* patch from 2nd time */
+		if (target_wridx >= ISP_TIMESTPQ_DEPTH)
+			target_wridx = 0;
 	}
-
-	IspInfo.TstpQInfo[module].Dmao[dma_id].TimeQue[target_wridx].usec
-		+= (frm_dt * i);
-
-while (IspInfo.TstpQInfo[module].Dmao[dma_id].TimeQue[target_wridx].usec
-	>= 1000000) {
-
-	IspInfo.TstpQInfo[module].Dmao[dma_id].TimeQue[target_wridx].usec
-		-= 1000000;
-	IspInfo.TstpQInfo[module].Dmao[dma_id].TimeQue[target_wridx].sec++;
-}
-
-	i++;
-	target_wridx++; /* patch from 2nd time */
-	if (target_wridx >= ISP_TIMESTPQ_DEPTH)
-		target_wridx = 0;
-}
 
 	return 0;
 }
@@ -12523,6 +12803,7 @@ irqreturn_t ISP_Irq_CAMSV_0(signed int  Irq, void *DeviceId)
 	struct timeval time_frmb;
 	unsigned long long  sec = 0;
 	unsigned long       usec = 0;
+	ktime_t             time;
 
 	/* Avoid touch hwmodule when clock is disable. DEVAPC will moniter this
 	 * kind of err
@@ -12600,9 +12881,10 @@ irqreturn_t ISP_Irq_CAMSV_0(signed int  Irq, void *DeviceId)
 	}
 
 	if (IrqStatus & SV_SOF_INT_ST) {
-		sec = ktime_get();
-		do_div(sec, 1000);    /* usec */
-		usec = do_div(sec, 1000000);    /* sec and usec */
+		time = ktime_get(); /* ns */
+		sec = time;
+		do_div(sec, 1000);	   /* usec */
+		usec = do_div(sec, 1000000); /* sec and usec */
 
 #if 0 /* always return CAM_FST_DROP_FRAME for CAMSV0~CAMSV5 */
 		/* chk this frame have EOF or not, dynimic dma port chk */
@@ -12748,6 +13030,7 @@ irqreturn_t ISP_Irq_CAMSV_1(signed int  Irq, void *DeviceId)
 	struct timeval time_frmb;
 	unsigned long long  sec = 0;
 	unsigned long       usec = 0;
+	ktime_t             time;
 
 	/* Avoid touch hwmodule when clock is disable. DEVAPC will moniter this
 	 * kind of err
@@ -12824,7 +13107,8 @@ irqreturn_t ISP_Irq_CAMSV_1(signed int  Irq, void *DeviceId)
 	}
 
 	if (IrqStatus & SV_SOF_INT_ST) {
-		sec = ktime_get();
+		time = ktime_get();     /* ns */
+		sec = time;
 		do_div(sec, 1000);    /* usec */
 		usec = do_div(sec, 1000000);    /* sec and usec */
 
@@ -12971,6 +13255,7 @@ irqreturn_t ISP_Irq_CAMSV_2(signed int  Irq, void *DeviceId)
 	struct timeval time_frmb;
 	unsigned long long  sec = 0;
 	unsigned long       usec = 0;
+	ktime_t             time;
 
 	/* Avoid touch hwmodule when clock is disable. DEVAPC will moniter this
 	 * kind of err
@@ -13047,7 +13332,8 @@ irqreturn_t ISP_Irq_CAMSV_2(signed int  Irq, void *DeviceId)
 	}
 
 	if (IrqStatus & SV_SOF_INT_ST) {
-		sec = ktime_get();
+		time = ktime_get();     /* ns */
+		sec = time;
 		do_div(sec, 1000);    /* usec */
 		usec = do_div(sec, 1000000);    /* sec and usec */
 
@@ -13194,6 +13480,7 @@ irqreturn_t ISP_Irq_CAMSV_3(signed int  Irq, void *DeviceId)
 	struct timeval time_frmb;
 	unsigned long long  sec = 0;
 	unsigned long       usec = 0;
+	ktime_t             time;
 
 	/* Avoid touch hwmodule when clock is disable.
 	 * DEVAPC will moniter this kind of err
@@ -13270,7 +13557,8 @@ irqreturn_t ISP_Irq_CAMSV_3(signed int  Irq, void *DeviceId)
 	}
 
 	if (IrqStatus & SV_SOF_INT_ST) {
-		sec = ktime_get();
+		time = ktime_get();     /* ns */
+		sec = time;
 		do_div(sec, 1000);    /* usec */
 		usec = do_div(sec, 1000000);    /* sec and usec */
 
@@ -13416,6 +13704,7 @@ irqreturn_t ISP_Irq_CAMSV_4(signed int  Irq, void *DeviceId)
 	struct timeval time_frmb;
 	unsigned long long  sec = 0;
 	unsigned long       usec = 0;
+	ktime_t             time;
 
 	/* Avoid touch hwmodule when clock is disable. DEVAPC will moniter
 	 * this kind of err
@@ -13492,7 +13781,8 @@ irqreturn_t ISP_Irq_CAMSV_4(signed int  Irq, void *DeviceId)
 	}
 
 	if (IrqStatus & SV_SOF_INT_ST) {
-		sec = ktime_get();
+		time = ktime_get();     /* ns */
+		sec = time;
 		do_div(sec, 1000);    /* usec */
 		usec = do_div(sec, 1000000);    /* sec and usec */
 
@@ -13639,6 +13929,7 @@ irqreturn_t ISP_Irq_CAMSV_5(signed int  Irq, void *DeviceId)
 	struct timeval time_frmb;
 	unsigned long long  sec = 0;
 	unsigned long       usec = 0;
+	ktime_t             time;
 
 	/* Avoid touch hwmodule when clock is disable.
 	 * DEVAPC will moniter this kind of err
@@ -13715,7 +14006,8 @@ irqreturn_t ISP_Irq_CAMSV_5(signed int  Irq, void *DeviceId)
 	}
 
 	if (IrqStatus & SV_SOF_INT_ST) {
-		sec = ktime_get();
+		time = ktime_get();     /* ns */
+		sec = time;
 		do_div(sec, 1000);    /* usec */
 		usec = do_div(sec, 1000000);    /* sec and usec */
 
@@ -13858,6 +14150,7 @@ irqreturn_t ISP_Irq_CAM_A(signed int Irq, void *DeviceId)
 	struct timeval time_frmb;
 	unsigned long long  sec = 0;
 	unsigned long       usec = 0;
+	ktime_t             time;
 	unsigned int IrqEnableOrig, IrqEnableNew;
 
 	/* Avoid touch hwmodule when clock is disable. DEVAPC will moniter this
@@ -13981,7 +14274,8 @@ irqreturn_t ISP_Irq_CAM_A(signed int Irq, void *DeviceId)
 		/*pr_info("CAMA N3D:0x%x\n", Vsync_cnt[0]);*/
 	}
 	if (IrqStatus & SW_PASS1_DON_ST) {
-		sec = ktime_get();
+		time = ktime_get(); /* ns */
+		sec = time;
 		do_div(sec, 1000);	  /* usec */
 		usec = do_div(sec, 1000000);	/* sec and usec */
 		/* update pass1 done time stamp for eis user(need match with
@@ -14053,12 +14347,13 @@ irqreturn_t ISP_Irq_CAM_A(signed int Irq, void *DeviceId)
 			 & 0x1F) + 1;
 		unsigned int irqDelay = 0;
 
-		sec = ktime_get();
+		time = ktime_get(); /* ns */
+		sec = time;
 		do_div(sec, 1000);    /* usec */
 		usec = do_div(sec, 1000000);    /* sec and usec */
 
 		if (frmPeriod == 0) {
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"ERROR: Wrong sub-sample period: 0");
 			goto LB_CAMA_SOF_IGNORE;
 		}
@@ -14197,77 +14492,89 @@ irqreturn_t ISP_Irq_CAM_A(signed int Irq, void *DeviceId)
 				ISP_CompensateMissingSofTime(reg_module,
 					module, _pso_, sec, usec, 1);
 
-if (FrameStatus[module] != CAM_FST_DROP_FRAME) {
-	for (subFrm = 0; subFrm < frmPeriod; subFrm++) {
-		/* Current frame is NOT DROP FRAME */
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_imgo_])
-			ISP_PushBufTimestamp(module,
-			  _imgo_, sec, usec, frmPeriod);
+			if (FrameStatus[module] != CAM_FST_DROP_FRAME) {
+				for (subFrm = 0; subFrm < frmPeriod; subFrm++) {
+					/* Current frame is NOT DROP FRAME */
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_imgo_])
+						ISP_PushBufTimestamp(module,
+						  _imgo_, sec, usec, frmPeriod);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_rrzo_])
-			ISP_PushBufTimestamp(module,
-			  _rrzo_, sec, usec, frmPeriod);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_rrzo_])
+						ISP_PushBufTimestamp(module,
+						  _rrzo_, sec, usec, frmPeriod);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_ufeo_])
-			ISP_PushBufTimestamp(module,
-			  _ufeo_, sec, usec, frmPeriod);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_ufeo_])
+						ISP_PushBufTimestamp(module,
+						  _ufeo_, sec, usec, frmPeriod);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_eiso_])
-			ISP_PushBufTimestamp(module,
-			  _eiso_, sec, usec, frmPeriod);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_eiso_])
+						ISP_PushBufTimestamp(module,
+						  _eiso_, sec, usec, frmPeriod);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_rsso_])
-			ISP_PushBufTimestamp(module,
-			  _rsso_, sec, usec, frmPeriod);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_rsso_])
+						ISP_PushBufTimestamp(module,
+						  _rsso_, sec, usec, frmPeriod);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_lcso_])
-			ISP_PushBufTimestamp(module,
-			  _lcso_, sec, usec, frmPeriod);
-	}
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_lcso_])
+						ISP_PushBufTimestamp(module,
+						  _lcso_, sec, usec, frmPeriod);
+				}
 
-	/* for slow motion sub-sample */
-	/* must after current ISP_PushBufTimestamp() */
-	#if (TSTMP_SUBSAMPLE_INTPL == 1)
-	if ((frmPeriod > 1) &&
-	    (g1stSwP1Done[module] == MFALSE)) {
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_imgo_])
-			ISP_PatchTimestamp(module,
-			    _imgo_, frmPeriod,
-			    cur_timestp,
-			    gPrevSofTimestp[module]);
+				/* for slow motion sub-sample */
+				/* must after current ISP_PushBufTimestamp() */
+				#if (TSTMP_SUBSAMPLE_INTPL == 1)
+				if ((frmPeriod > 1) &&
+				    (g1stSwP1Done[module] == MFALSE)) {
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_imgo_])
+						ISP_PatchTimestamp(module,
+						    _imgo_, frmPeriod,
+						    cur_timestp,
+						    gPrevSofTimestp[module]);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_rrzo_])
-			ISP_PatchTimestamp(module,
-			    _rrzo_, frmPeriod,
-			    cur_timestp,
-			    gPrevSofTimestp[module]);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_rrzo_])
+						ISP_PatchTimestamp(module,
+						    _rrzo_, frmPeriod,
+						    cur_timestp,
+						    gPrevSofTimestp[module]);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_ufeo_])
-			ISP_PatchTimestamp(module,
-			    _ufeo_, frmPeriod,
-			    cur_timestp,
-			    gPrevSofTimestp[module]);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_ufeo_])
+						ISP_PatchTimestamp(module,
+						    _ufeo_, frmPeriod,
+						    cur_timestp,
+						    gPrevSofTimestp[module]);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_eiso_])
-			ISP_PatchTimestamp(module,
-			    _eiso_, frmPeriod,
-			    cur_timestp,
-			    gPrevSofTimestp[module]);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_eiso_])
+						ISP_PatchTimestamp(module,
+						    _eiso_, frmPeriod,
+						    cur_timestp,
+						    gPrevSofTimestp[module]);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_rsso_])
-			ISP_PatchTimestamp(module,
-			    _rsso_, frmPeriod,
-			    cur_timestp,
-			    gPrevSofTimestp[module]);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_rsso_])
+						ISP_PatchTimestamp(module,
+						    _rsso_, frmPeriod,
+						    cur_timestp,
+						    gPrevSofTimestp[module]);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_lcso_])
-			ISP_PatchTimestamp(module,
-			  _lcso_, frmPeriod,
-			  cur_timestp,
-			  gPrevSofTimestp[module]);
-	}
-	#endif
-}
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_lcso_])
+						ISP_PatchTimestamp(module,
+						  _lcso_, frmPeriod,
+						  cur_timestp,
+						  gPrevSofTimestp[module]);
+				}
+				#endif
+			}
 
 			if (IspInfo.TstpQInfo[module].DmaEnStatus[_aao_])
 				if (FrmStat_aao != CAM_FST_DROP_FRAME)
@@ -14471,6 +14778,7 @@ irqreturn_t ISP_Irq_CAM_B(signed int  Irq, void *DeviceId)
 	struct timeval time_frmb;
 	unsigned long long  sec = 0;
 	unsigned long       usec = 0;
+	ktime_t             time;
 	unsigned int IrqEnableOrig, IrqEnableNew;
 
 	/* Avoid touch hwmodule when clock is disable. DEVAPC will moniter this
@@ -14595,7 +14903,8 @@ irqreturn_t ISP_Irq_CAM_B(signed int  Irq, void *DeviceId)
 		/* pr_info("CAMB N3D:0x%x\n",Vsync_cnt[1]); */
 	}
 	if (IrqStatus & SW_PASS1_DON_ST) {
-		sec = ktime_get();
+		time = ktime_get(); /* ns */
+		sec = time;
 		do_div(sec, 1000); /* usec */
 		usec = do_div(sec, 1000000); /* sec and usec */
 		/* update pass1 done time stamp for eis user(need match with
@@ -14665,12 +14974,13 @@ irqreturn_t ISP_Irq_CAM_B(signed int  Irq, void *DeviceId)
 			 & 0x1F) + 1;
 		unsigned int irqDelay = 0;
 
-		sec = ktime_get();
+		time = ktime_get(); /* ns */
+		sec = time;
 		do_div(sec, 1000);    /* usec */
 		usec = do_div(sec, 1000000);    /* sec and usec */
 
 		if (frmPeriod == 0) {
-			IRQ_LOG_KEEPER(module, m_CurrentPPB, _LOG_ERR,
+			IRQ_LOG_KEEPER_PR_ERR(module, m_CurrentPPB, _LOG_ERR,
 				"ERROR: Wrong sub-sample period: 0");
 			goto LB_CAMB_SOF_IGNORE;
 		}
@@ -14807,77 +15117,89 @@ irqreturn_t ISP_Irq_CAM_B(signed int  Irq, void *DeviceId)
 				ISP_CompensateMissingSofTime(reg_module, module,
 					_pso_, sec, usec, 1);
 
-if (FrameStatus[module] != CAM_FST_DROP_FRAME) {
-	for (subFrm = 0; subFrm < frmPeriod; subFrm++) {
-		/* Current frame is NOT DROP FRAME */
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_imgo_])
-			ISP_PushBufTimestamp(module,
-			  _imgo_, sec, usec, frmPeriod);
+			if (FrameStatus[module] != CAM_FST_DROP_FRAME) {
+				for (subFrm = 0; subFrm < frmPeriod; subFrm++) {
+					/* Current frame is NOT DROP FRAME */
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_imgo_])
+						ISP_PushBufTimestamp(module,
+						  _imgo_, sec, usec, frmPeriod);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_rrzo_])
-			ISP_PushBufTimestamp(module,
-			  _rrzo_, sec, usec, frmPeriod);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_rrzo_])
+						ISP_PushBufTimestamp(module,
+						  _rrzo_, sec, usec, frmPeriod);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_ufeo_])
-			ISP_PushBufTimestamp(module,
-			  _ufeo_, sec, usec, frmPeriod);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_ufeo_])
+						ISP_PushBufTimestamp(module,
+						  _ufeo_, sec, usec, frmPeriod);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_eiso_])
-			ISP_PushBufTimestamp(module,
-			  _eiso_, sec, usec, frmPeriod);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_eiso_])
+						ISP_PushBufTimestamp(module,
+						  _eiso_, sec, usec, frmPeriod);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_rsso_])
-			ISP_PushBufTimestamp(module,
-			  _rsso_, sec, usec, frmPeriod);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_rsso_])
+						ISP_PushBufTimestamp(module,
+						  _rsso_, sec, usec, frmPeriod);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_lcso_])
-			ISP_PushBufTimestamp(module,
-			  _lcso_, sec, usec, frmPeriod);
-	}
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_lcso_])
+						ISP_PushBufTimestamp(module,
+						  _lcso_, sec, usec, frmPeriod);
+				}
 
-	/* for slow motion sub-sample */
-	/* must after current ISP_PushBufTimestamp() */
-	#if (TSTMP_SUBSAMPLE_INTPL == 1)
-	if ((frmPeriod > 1) &&
-	    (g1stSwP1Done[module] == MFALSE)) {
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_imgo_])
-			ISP_PatchTimestamp(module,
-			    _imgo_, frmPeriod,
-			    cur_timestp,
-			    gPrevSofTimestp[module]);
+				/* for slow motion sub-sample */
+				/* must after current ISP_PushBufTimestamp() */
+				#if (TSTMP_SUBSAMPLE_INTPL == 1)
+				if ((frmPeriod > 1) &&
+				    (g1stSwP1Done[module] == MFALSE)) {
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_imgo_])
+						ISP_PatchTimestamp(module,
+						    _imgo_, frmPeriod,
+						    cur_timestp,
+						    gPrevSofTimestp[module]);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_rrzo_])
-			ISP_PatchTimestamp(module,
-			    _rrzo_, frmPeriod,
-			    cur_timestp,
-			    gPrevSofTimestp[module]);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_rrzo_])
+						ISP_PatchTimestamp(module,
+						    _rrzo_, frmPeriod,
+						    cur_timestp,
+						    gPrevSofTimestp[module]);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_ufeo_])
-			ISP_PatchTimestamp(module,
-			    _ufeo_, frmPeriod,
-			    cur_timestp,
-			    gPrevSofTimestp[module]);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_ufeo_])
+						ISP_PatchTimestamp(module,
+						    _ufeo_, frmPeriod,
+						    cur_timestp,
+						    gPrevSofTimestp[module]);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_eiso_])
-			ISP_PatchTimestamp(module,
-			    _eiso_, frmPeriod,
-			    cur_timestp,
-			    gPrevSofTimestp[module]);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_eiso_])
+						ISP_PatchTimestamp(module,
+						    _eiso_, frmPeriod,
+						    cur_timestp,
+						    gPrevSofTimestp[module]);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_rsso_])
-			ISP_PatchTimestamp(module,
-			    _rsso_, frmPeriod,
-			    cur_timestp,
-			    gPrevSofTimestp[module]);
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_rsso_])
+						ISP_PatchTimestamp(module,
+						    _rsso_, frmPeriod,
+						    cur_timestp,
+						    gPrevSofTimestp[module]);
 
-		if (IspInfo.TstpQInfo[module].DmaEnStatus[_lcso_])
-			ISP_PatchTimestamp(module,
-			    _lcso_, frmPeriod,
-			    cur_timestp,
-			    gPrevSofTimestp[module]);
-	}
-	#endif
-}
+					if (IspInfo.TstpQInfo[module].
+					    DmaEnStatus[_lcso_])
+						ISP_PatchTimestamp(module,
+						    _lcso_, frmPeriod,
+						    cur_timestp,
+						    gPrevSofTimestp[module]);
+				}
+				#endif
+			}
 
 			if (IspInfo.TstpQInfo[module].DmaEnStatus[_aao_])
 				if (FrmStat_aao != CAM_FST_DROP_FRAME)
@@ -15081,7 +15403,8 @@ static void SMI_INFO_DUMP(enum ISP_IRQ_TYPE_ENUM irq_module)
 		if (g_ISPIntErr_SMI[irq_module] &
 			(DMA_ERR_ST | INT_ST_MASK_CAM_WARN | CQ_VS_ERR_ST)) {
 			pr_info("ERR:SMI_DUMP by module:%d\n", irq_module);
-			smi_debug_bus_hang_detect(false, ISP_DEV_NAME);
+		/*	smi_debug_bus_hang_detect(
+				SMI_PARAM_BUS_OPTIMIZATION, 1, 0, 1); */
 			g_ISPIntErr_SMI[irq_module] = 0;
 		}
 		break;
@@ -15094,7 +15417,9 @@ static void SMI_INFO_DUMP(enum ISP_IRQ_TYPE_ENUM irq_module)
 		if (g_ISPIntErr_SMI[irq_module] &
 			(SV_IMGO_ERR | SV_IMGO_OVERRUN)) {
 			pr_info("ERR:SMI_DUMP by module:%d\n", irq_module);
-			smi_debug_bus_hang_detect(false, ISP_DEV_NAME);
+			/* smi_debug_bus_hang_detect(
+				SMI_PARAM_BUS_OPTIMIZATION, 1, 0, 1); */
+
 			g_ISPIntErr_SMI[irq_module] = 0;
 		}
 		break;
@@ -15159,6 +15484,7 @@ static void ISP_BH_Workqueue(struct work_struct *pWork)
 	struct IspWorkqueTable *pWorkTable =
 		container_of(pWork, struct IspWorkqueTable, isp_bh_work);
 
+	IRQ_LOG_PRINTER_PR_ERR(pWorkTable->module, m_CurrentPPB, _LOG_ERR);
 	IRQ_LOG_PRINTER(pWorkTable->module, m_CurrentPPB, _LOG_INF);
 	SMI_INFO_DUMP(pWorkTable->module);
 }

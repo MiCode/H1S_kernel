@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 #ifndef __DRAMC_H__
 #define __DRAMC_H__
@@ -19,7 +12,7 @@
 //#define SW_ZQCS
 //#define SW_TX_TRACKING
 //#define DVFS_READY
-#if 0 /* def CONFIG_MTK_EMI */
+#ifdef CONFIG_MEDIATEK_EMI /* def CONFIG_MEDIATEK_EMI */
 #define EMI_READY
 #endif
 //#define RUNTIME_SHMOO
@@ -143,7 +136,9 @@ unsigned int read_dram_temperature(unsigned char channel);
 /*unsigned int is_one_pll_mode(void);*/
 int dram_steps_freq(unsigned int step);
 unsigned int get_shuffle_status(void);
+
 int get_ddr_type(void);
+unsigned int mtk_dramc_get_ddr_type(void);
 int get_emi_ch_num(void);
 int dram_can_support_fh(void);
 unsigned int ucDram_Register_Read(unsigned int u4reg_addr);
@@ -155,7 +150,9 @@ int exit_pasr_dpd_config(void);
 enum DDRTYPE {
 	TYPE_LPDDR3 = 1,
 	TYPE_LPDDR4,
-	TYPE_LPDDR4X
+	TYPE_LPDDR4X,
+	TYPE_LPDDR4P,
+	TYPE_LPDDR5
 };
 
 enum DRAM_MODE {

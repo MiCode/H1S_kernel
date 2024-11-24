@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #include <linux/ktime.h>
@@ -22,6 +14,7 @@
 #include <linux/spinlock.h>
 #include <linux/vmalloc.h>
 #include <linux/module.h>
+#include <sched/sched.h>
 
 #include "mtk_upower.h"
 #include <trace/events/fpsgo.h>
@@ -32,7 +25,7 @@
 #include <linux/cpufreq.h>
 #include "mtk_ppm_api.h"
 
-#include <mt-plat/mtk_gpu_utility.h>
+#include "mtk_gpu_utility.h"
 #include <mtk_gpufreq.h>
 
 #include "rs_usage.h"
@@ -43,25 +36,26 @@
 #define TAG "RSUsage"
 
 //#define __BW_USE_EMIALL__ 1
-
-#define RSU_SYSTRACE_LIST(macro) \
-	macro(MANDATORY, 0), \
-	macro(QOS, 1), \
-	macro(CPU, 2), \
-	macro(GPU, 3), \
-	macro(APU, 4), \
-	macro(MDLA, 5), \
-	macro(VPU, 6), \
-	macro(MAX, 7), \
-
-#define RSU_GENERATE_ENUM(name, shft) RSU_DEBUG_##name = 1U << shft
 enum {
-	RSU_SYSTRACE_LIST(RSU_GENERATE_ENUM)
+	RSU_DEBUG_MANDATORY = 1U << 0,
+	RSU_DEBUG_QOS       = 1U << 1,
+	RSU_DEBUG_CPU       = 1U << 2,
+	RSU_DEBUG_GPU       = 1U << 3,
+	RSU_DEBUG_APU       = 1U << 4,
+	RSU_DEBUG_MDLA      = 1U << 5,
+	RSU_DEBUG_VPU       = 1U << 6,
+	RSU_DEBUG_MAX       = 1U << 7,
 };
 
-#define RSU_GENERATE_STRING(name, unused) #name
 static const char * const mask_string[] = {
-	RSU_SYSTRACE_LIST(RSU_GENERATE_STRING)
+	"MANDATORY",
+	"QOS",
+	"CPU",
+	"GPU",
+	"APU",
+	"MDLA",
+	"VPU",
+	"MAX",
 };
 
 #define rsu_systrace_c(mask, pid, val, fmt...) \
@@ -157,32 +151,84 @@ static int *mdla_opp;
 
 static uint32_t rsu_systrace_mask;
 
+static int arch_get_nr_clusters(void)
+{
+	int cpu;
+	int nr_clusters = 0;
+	int cluster_id, prev_cluster_id = -1;
+
+	for_each_possible_cpu(cpu) {
+		cluster_id = topology_physical_package_id(cpu);
+		if (cluster_id != prev_cluster_id) {
+			nr_clusters++;
+			prev_cluster_id = cluster_id;
+		}
+	}
+	return nr_clusters;
+	//return arch_nr_clusters();
+}
+
+
+#ifdef CONFIG_ARM64
+static void arch_get_cluster_cpus(struct cpumask *cpus, int cluster_id)
+{
+	unsigned int cpu;
+
+	cpumask_clear(cpus);
+	for_each_possible_cpu(cpu) {
+		struct cpu_topology *cpu_topo = &cpu_topology[cpu];
+
+		if (cpu_topo->package_id == cluster_id)
+			cpumask_set_cpu(cpu, cpus);
+	}
+}
+# else
+static void arch_get_cluster_cpus(struct cpumask *cpus, int socket_id)
+{
+	unsigned int cpu;
+
+	cpumask_clear(cpus);
+	for_each_possible_cpu(cpu) {
+		struct cputopo_arm *cpu_topo = &cpu_topology[cpu];
+
+		if (cpu_topo->socket_id == socket_id)
+			cpumask_set_cpu(cpu, cpus);
+	}
+}
+#endif
+
 static void rsu_cpu_update_pwd_tbl(void)
 {
 	int cluster, opp;
-	struct cpumask cluster_cpus;
 	int cpu;
-	const struct sched_group_energy *core_energy = NULL;
-	unsigned long long cap = 0ULL;
 	unsigned int temp;
+	struct cpumask cluster_cpus;
+	unsigned long long cap = 0ULL;
+	unsigned long long cap_orig = 0ULL;
 
 	for (cluster = 0; cluster < nr_cpuclusters; cluster++) {
+
+		for_each_possible_cpu(cpu) {
+			if (arch_cpu_cluster_id(cpu) == cluster)
+				cap_orig = capacity_orig_of(cpu);
+		}
+
+
 		for (opp = 0; opp < NR_FREQ_CPU; opp++) {
 			cpucluster_info[cluster].power[opp] =
 				mt_cpufreq_get_freq_by_idx(cluster, opp);
 
 			arch_get_cluster_cpus(&cluster_cpus, cluster);
 			for_each_cpu(cpu, &cluster_cpus) {
-				core_energy = cpu_core_energy(cpu);
 				cpu_info[cpu].cluster =
 					&cpucluster_info[cluster];
 			}
 
-			if (!core_energy)
-				break;
 
-			cap = core_energy->cap_states[
-				NR_FREQ_CPU - opp - 1].cap;
+			cap = cap_orig * cpucluster_info[cluster].power[opp];
+			if (cpucluster_info[cluster].power[0])
+				do_div(cap, cpucluster_info[cluster].power[0]);
+
 			cap = (cap * 100) >> 10;
 			temp = (unsigned int)cap;
 			temp = clamp(temp, 1U, 100U);
@@ -224,23 +270,20 @@ static int rsu_get_cpu_usage(__u32 pid)
 	int opp;
 	int ret = 0;
 	struct cpufreq_policy *policy;
-	struct cpumask *cpus_mask;
+	struct cpumask cpus_mask;
 
 	ceiling_idx =
 		kcalloc(nr_cpuclusters, sizeof(unsigned int), GFP_KERNEL);
-
 	if (!ceiling_idx)
 		return -1;
 
 	for (i = 0; i < nr_cpuclusters; i++) {
-		if (mt_ppm_userlimit_freq_limit_by_others)
+		if (mt_ppm_userlimit_freq_limit_by_others) {
 			clus_max_idx = mt_ppm_userlimit_freq_limit_by_others(i);
-		else {
-
-			arch_get_cluster_cpus(cpus_mask, i);
+		} else {
+			arch_get_cluster_cpus(&cpus_mask, i);
 			policy = cpufreq_cpu_get(
-				cpumask_first(cpus_mask));
-
+				cpumask_first(&cpus_mask));
 			for (opp = 0; opp < NR_FREQ_CPU; opp++)
 				if (policy->max ==
 					mt_cpufreq_get_freq_by_idx(i, opp)) {
@@ -251,16 +294,13 @@ static int rsu_get_cpu_usage(__u32 pid)
 		}
 
 		clus_max_idx = clamp(clus_max_idx, 0, NR_FREQ_CPU - 1);
-
 		ceiling_idx[i] =
 			cpucluster_info[i].capacity_ratio[clus_max_idx];
-
 		rsu_systrace_c(RSU_DEBUG_CPU, pid, ceiling_idx[i],
 				"RSU_CEILING_IDX[%d]", i);
 	}
 
 	spin_lock_irqsave(&freq_slock, flags);
-
 	for (i = 0; i < nr_cpuclusters; i++) {
 
 		rsu_systrace_c_log(pid, cpucluster_info[i].lastfreq,
@@ -282,7 +322,6 @@ static int rsu_get_cpu_usage(__u32 pid)
 		rsu_systrace_c(RSU_DEBUG_CPU, pid, (unsigned int) curr_obv,
 				"CEILING_OBV[%d]", i);
 	}
-
 	for_each_online_cpu(cpu) {
 		cur_idle_time_i = get_cpu_idle_time(cpu, &cur_wall_time_i, 1);
 
@@ -307,7 +346,6 @@ static int rsu_get_cpu_usage(__u32 pid)
 	}
 
 	spin_unlock_irqrestore(&freq_slock, flags);
-
 	kfree(ceiling_idx);
 
 	rsu_systrace_c(RSU_DEBUG_CPU, pid, cpu_cnt, "CPU_CNT");

@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/file.h>
 #include <linux/fs.h>
@@ -180,17 +171,14 @@ static void timeline_fence_release(struct dma_fence *dma_fence)
 {
 	struct sync_pt *pt = fence_to_sync_pt(dma_fence);
 	struct sync_timeline *parent = fence_parent(dma_fence);
+	unsigned long flags;
 
-	if (!list_empty(&pt->link)) {
-		unsigned long flags;
-
-		spin_lock_irqsave(dma_fence->lock, flags);
-		if (!list_empty(&pt->link)) {
-			list_del(&pt->link);
-			rb_erase(&pt->node, &parent->pt_tree);
-		}
-		spin_unlock_irqrestore(dma_fence->lock, flags);
+	spin_lock_irqsave(dma_fence->lock, flags);
+	if (pt && !list_empty(&pt->link)) {
+		list_del(&pt->link);
+		rb_erase(&pt->node, &parent->pt_tree);
 	}
+	spin_unlock_irqrestore(dma_fence->lock, flags);
 
 	sync_timeline_put(parent);
 	dma_fence_free(dma_fence);
@@ -314,7 +302,8 @@ static struct sync_pt *sync_pt_create(struct sync_timeline *obj,
 				p = &parent->rb_left;
 			} else {
 				if (dma_fence_get_rcu(&other->base)) {
-					dma_fence_put(&pt->base);
+					sync_timeline_put(obj);
+					kfree(pt);
 					pt = other;
 					goto unlock;
 				}
@@ -361,8 +350,18 @@ static int mdp_sync_open(struct inode *inode, struct file *file)
 static int mdp_sync_release(struct inode *inode, struct file *file)
 {
 	struct sync_timeline *obj = file->private_data;
+	struct sync_pt *pt, *next;
 
-	smp_wmb();/*memory barrier*/
+	spin_lock_irq(&obj->lock);
+
+	list_for_each_entry_safe(pt, next, &obj->pt_list, link) {
+		dma_fence_set_error(&pt->base, -ENOENT);
+		dma_fence_signal_locked(&pt->base);
+	}
+
+	spin_unlock_irq(&obj->lock);
+
+	//smp_wmb();/*memory barrier*/
 
 	sync_timeline_put(obj);
 	return 0;

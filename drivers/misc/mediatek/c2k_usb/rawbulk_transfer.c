@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 /* #define DEBUG */
@@ -31,10 +23,14 @@
 #endif
 #include "viatel_rawbulk.h"
 /* #include "modem_sdio.h" */
+#include "usb_boost.h"
 
 #ifdef CONFIG_MTK_ECCCI_C2K
 #define FS_CH_C2K 4
 #endif
+
+#define DATA_IN_ASCII	0
+#define DATA_IN_TAIL	1
 
 #define terr(t, fmt, args...) \
 	pr_notice("[Error] Rawbulk [%s]:" fmt "\n", t->name, ##args)
@@ -188,7 +184,7 @@ static inline void dump_data(struct rawbulk_transfer *trans,
 			trans->id, str, size);
 
 	/* data in ascii */
-#if 0
+#if DATA_IN_ASCII
 	for (i = 0; i < size; ++i) {
 		char c = data[i];
 
@@ -211,12 +207,13 @@ static inline void dump_data(struct rawbulk_transfer *trans,
 		}
 	}
 	if (full_dump || size < 8) {
-		/* buf to printk */
+		/* dump buffer */
 		C2K_ERR("%s\n", verb);
 		return;
 	}
-	/* data in tail */
-#if 1
+
+	/* data in tail  */
+#if DATA_IN_TAIL
 	else if (i < size - 8) {
 		pbuf += snprintf(pbuf, pbuf_end-pbuf, "... ");
 		i = size - 8;
@@ -224,7 +221,8 @@ static inline void dump_data(struct rawbulk_transfer *trans,
 	for (; i < size; ++i)
 		pbuf += snprintf(pbuf, pbuf_end-pbuf, "%.2x ", data[i]);
 #endif
-	/* buf to printk */
+
+	/* dump buffer */
 	C2K_ERR("%s\n", verb);
 }
 
@@ -261,9 +259,10 @@ static struct upstream_transaction *alloc_upstream_transaction(
 	t->name[0] = 0;
 	ret = snprintf(t->name, sizeof(t->name), "U%d ( G:%s)",
 		transfer->upstream.ntrans, transfer->upstream.ep->name);
-	if (ret < 0 || ret >= sizeof(t->name))
-		C2K_ERR("%s-%d:snprintf fail, ret=%d\n",
-			__func__, __LINE__, ret);
+
+	if (ret >= sizeof(t->name))
+		goto failto_copy_ep_name;
+
 	INIT_LIST_HEAD(&t->tlist);
 	list_add_tail(&t->tlist, &transfer->upstream.transactions);
 	transfer->upstream.ntrans++;
@@ -271,6 +270,9 @@ static struct upstream_transaction *alloc_upstream_transaction(
 	t->state = UPSTREAM_STAT_FREE;
 	return t;
 
+failto_copy_ep_name:
+	/* return -ENOMEM will be better */
+	usb_ep_free_request(transfer->upstream.ep, t->req);
 failto_alloc_usb_request:
 	/* kfree(t->buffer); */
 	free_page((unsigned long)t->buffer);
@@ -417,6 +419,8 @@ static void upstream_complete(struct usb_ep *ep, struct usb_request *req)
 
 	C2K_DBG("%s\n", __func__);
 
+	usb_boost();
+
 	t->state = UPSTREAM_STAT_FREE;
 
 	if (req->status < 0) {
@@ -531,7 +535,7 @@ int rawbulk_push_upstream_buffer(int transfer_id, const void *buffer,
 		total_drop[transfer_id] += length;
 
 		if (time_after(jiffies, drop_check_timeout)) {
-			C2K_NOTE("cahce full, t<%d>, drop<%d>, tota_drop<%d>\n"
+			C2K_NOTE("cache full, t<%d>, drop<%d>, tota_drop<%d>\n"
 			     , transfer_id, length, total_drop[transfer_id]);
 
 			C2K_NOTE("trans<%d>, alloc_fail<%d>, upstream<%d,%d>\n"
@@ -756,6 +760,8 @@ static void downstream_complete(struct usb_ep *ep, struct usb_request *req)
 	struct rawbulk_transfer *transfer = t->transfer;
 
 	C2K_DBG("%s\n", __func__);
+
+	usb_boost();
 
 	t->state = DOWNSTREAM_STAT_FREE;
 
@@ -1336,16 +1342,18 @@ static __init int rawbulk_init(void)
 		INIT_LIST_HEAD(&t->repush2modem.transactions);
 		INIT_LIST_HEAD(&t->cache_buf_lists.transactions);
 		INIT_DELAYED_WORK(&t->delayed, downstream_delayed_work);
+
 		memset(name, 0, 20);
 		ret = snprintf(name, sizeof(name), "%s_flow_ctrl",
-			 transfer_name[n]);
+				transfer_name[n]);
 		if (ret >= sizeof(name))
 			return -ENOMEM;
 
 		INIT_WORK(&t->write_work, start_upstream);
+
 		memset(name, 0, 20);
 		ret = snprintf(name, sizeof(name), "%s_tx_wq",
-			       transfer_name[n]);
+				transfer_name[n]);
 		if (ret >= sizeof(name))
 			return -ENOMEM;
 

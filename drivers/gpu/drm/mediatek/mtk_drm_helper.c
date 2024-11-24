@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/of.h>
 #include <linux/of_irq.h>
@@ -72,7 +64,11 @@ static struct mtk_drm_helper help_info[] = {
 	{MTK_DRM_OPT_LAYER_REC, 0, "MTK_DRM_OPT_LAYER_REC"},
 	{MTK_DRM_OPT_CLEAR_LAYER, 0, "MTK_DRM_OPT_CLEAR_LAYER"},
 	{MTK_DRM_OPT_VDS_PATH_SWITCH, 0, "MTK_DRM_OPT_VDS_PATH_SWITCH"},
+	{MTK_DRM_OPT_LFR, 0, "MTK_DRM_OPT_LFR"},
 	{MTK_DRM_OPT_SF_PF, 0, "MTK_DRM_OPT_SF_PF"},
+	{MTK_DRM_OPT_PRIM_DUAL_PIPE, 0, "MTK_DRM_OPT_PRIM_DUAL_PIPE"},
+	{MTK_DRM_OPT_DYN_MIPI_CHANGE, 0, "MTK_DRM_OPT_DYN_MIPI_CHANGE"},
+	{MTK_DRM_OPT_PQ_34_COLOR_MATRIX, 0, "MTK_DRM_OPT_PQ_34_COLOR_MATRIX"},
 };
 
 static const char *mtk_drm_helper_opt_spy(struct mtk_drm_helper *helper_opt,

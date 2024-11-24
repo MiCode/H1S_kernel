@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2019 MediaTek Inc.
- * Author: Yong Wu <yong.wu@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (C) 2019 MediaTek Inc.
  */
 #include <linux/bootmem.h>
 #include <linux/bug.h>
@@ -38,7 +29,11 @@
 #include <asm/dma-iommu.h>
 #endif
 #include "mtk_lpae.h"
-#include "mtk_secure_api.h"
+//smccc related include
+//#include "mtk_secure_api.h" //old
+#include <linux/soc/mediatek/mtk_sip_svc.h>
+#include <linux/arm-smccc.h>
+
 #include "io-pgtable.h"
 #include "mtk_iommu.h"
 #include "mach/mt_iommu.h"
@@ -205,9 +200,6 @@ static unsigned int mtk_iommu_get_domain_id(
 
 int mtk_iommu_get_port_id(struct device *dev)
 {
-	struct iommu_fwspec *fwspec;
-	unsigned int larbid, portid, domain_id = 0;
-
 	if (!dev)
 		return -ENODEV;
 
@@ -351,6 +343,7 @@ int __mtk_iommu_atf_call(unsigned int cmd, unsigned int m4u_id,
 #ifdef IOMMU_DESIGN_OF_BANK
 	unsigned int atf_cmd = 0;
 	int ret = 0;
+	struct arm_smccc_res res;
 
 	if (cmd >= IOMMU_ATF_CMD_COUNT ||
 	    m4u_id >= MTK_IOMMU_M4U_COUNT ||
@@ -361,11 +354,12 @@ int __mtk_iommu_atf_call(unsigned int cmd, unsigned int m4u_id,
 	}
 	atf_cmd = IOMMU_ATF_SET_COMMAND(m4u_id, bank, cmd);
 	/*pr_notice("%s, M4U CALL ATF CMD:0x%x\n", __func__, atf_cmd);*/
-#ifndef CONFIG_FPGA_EARLY_PORTING
-	ret = mt_secure_call_ret4(MTK_M4U_DEBUG_DUMP,
-				atf_cmd, 0, 0, 0, tf_port,
-				tf_iova, tf_int);
-#endif
+	arm_smccc_smc(MTK_M4U_DEBUG_DUMP, atf_cmd,
+			      0, 0, 0, 0, 0, 0, &res);
+	ret = res.a0;
+	*tf_port = res.a1;
+	*tf_iova = res.a2;
+	*tf_int = res.a3;
 	return ret;
 #else
 	return 0;
@@ -382,35 +376,11 @@ int mtk_iommu_atf_call(unsigned int cmd, unsigned int m4u_id,
 }
 
 #ifndef SMI_LARB_SEC_CON_EN
-#if 0 /*for security concern, normal world is forbiden to config secure/domain*/
-int mtk_iommu_set_sec_larb(int larb, int port,
-		int sec_en, int dom)
-{
-	unsigned int atf_cmd = 0;
-	int ret;
-
-	if (larb >= SMI_LARB_NR ||
-	    port >= ONE_SMI_PORT_NR) {
-		pr_notice("%s, %d, invalid larb:%d, port:%d\n",
-			  __func__, larb, port);
-		return -1;
-	}
-	atf_cmd = IOMMU_ATF_SET_COMMAND(0, 0, IOMMU_ATF_SET_SMI_SEC_LARB);
-
-	ret = mt_secure_call_ret4(MTK_M4U_DEBUG_DUMP,
-				atf_cmd, MTK_M4U_ID(larb, port),
-				sec_en, dom, 0, 0, 0);
-	if (ret)
-		pr_notice("%s, %d, fail!! larb:%d, port:%d, dom:%d\n",
-			  __func__, __LINE__, larb, port, dom);
-
-	return ret;
-}
-#endif
 int mtk_iommu_dump_sec_larb(int larb, int port)
 {
 	unsigned int atf_cmd = 0;
 	int ret = 0;
+	struct arm_smccc_res res;
 
 	if (larb >= SMI_LARB_NR ||
 	    port >= ONE_SMI_PORT_NR) {
@@ -420,15 +390,10 @@ int mtk_iommu_dump_sec_larb(int larb, int port)
 	}
 
 	atf_cmd = IOMMU_ATF_SET_COMMAND(0, 0, IOMMU_ATF_DUMP_SMI_SEC_LARB);
-	ret = mt_secure_call_ret4(MTK_M4U_DEBUG_DUMP,
-				atf_cmd, MTK_M4U_ID(larb, port), 0, 0,
-				0, 0, 0);
+	arm_smccc_smc(MTK_M4U_DEBUG_DUMP, atf_cmd,
+			      MTK_M4U_ID(larb, port), 0, 0, 0, 0, 0, &res);
+	ret = res.a0;
 
-#ifdef IOMMU_DESIGN_OF_BANK
-	if (!ret)
-		pr_notice("%s, fail!! larb:%d, port:%d\n",
-			  __func__,  larb, port);
-#endif
 	return ret;
 }
 #endif
@@ -1258,7 +1223,7 @@ static inline void mtk_iommu_intr_modify_all(unsigned long enable)
 	}
 }
 
-static void mtk_iommu_isr_restart(unsigned long unused)
+static void mtk_iommu_isr_restart(struct timer_list *t)
 {
 	mtk_iommu_intr_modify_all(1);
 	mtk_iommu_debug_reset();
@@ -1266,8 +1231,7 @@ static void mtk_iommu_isr_restart(unsigned long unused)
 
 static int mtk_iommu_isr_pause_timer_init(struct mtk_iommu_data *data)
 {
-	init_timer(&data->iommu_isr_pause_timer);
-	data->iommu_isr_pause_timer.function = mtk_iommu_isr_restart;
+	timer_setup(&data->iommu_isr_pause_timer, mtk_iommu_isr_restart, 0);
 	return 0;
 }
 
@@ -1678,7 +1642,6 @@ irqreturn_t MTK_M4U_isr_sec(int irq, void *dev_id)
 
 	ret = IRQ_HANDLED;
 
-out:
 	spin_lock_irqsave(&data->reg_lock, flags);
 	data->isr_ref--;
 	spin_unlock_irqrestore(&data->reg_lock, flags);
@@ -2040,7 +2003,8 @@ static int mtk_iommu_create_mapping(struct device *dev)
 		if (start >> 32 != end >> 32 ||
 		    start >> 32 != mtk_domain_array[dom->id].boundary) {
 			pr_notice("%s, %d, err start:0x%lx, end:0x%lx, boundary:%d\n",
-				  __func__, __LINE__, start, end, boundary);
+				  __func__, __LINE__, start, end,
+				  mtk_domain_array[dom->id].boundary);
 			return -EINVAL;
 		}
 #endif
@@ -2146,7 +2110,8 @@ static int mtk_iommu_attach_device(struct iommu_domain *domain,
 				   struct device *dev)
 {
 	struct mtk_iommu_data *data = dev->iommu_fwspec->iommu_priv;
-#ifndef CONFIG_ARM64
+#if 0
+	ifndef CONFIG_ARM64 case but not required for now.
 	struct mtk_iommu_domain *dom = to_mtk_domain(domain);
 #endif
 
@@ -2154,7 +2119,8 @@ static int mtk_iommu_attach_device(struct iommu_domain *domain,
 		return -ENODEV;
 
 	mtk_iommu_config(data, dev, true);
-#ifndef CONFIG_ARM64
+#if 0
+	ifndef CONFIG_ARM64 case but not require for now.
 	/* reserve IOVA region after pgTable ready */
 	mtk_iova_reserve_iommu_regions(dom, dev);
 #endif
@@ -2349,10 +2315,9 @@ static struct iommu_group *mtk_iommu_create_iova_space(
 #endif
 	return group;
 
-#ifdef CONFIG_ARM64
 free_group:
 	kfree(group);
-#endif
+
 free_dom:
 	kfree(dom);
 	return NULL;
@@ -4005,6 +3970,12 @@ static void mtk_iommu_pg_after_on(enum subsys_id sys)
 		}
 
 		spin_lock_irqsave(&data->reg_lock, flags);
+		if (data->poweron) {
+			pr_notice("%s, iommu%u already power on, skip restore\n",
+				  __func__, data->m4uid);
+			spin_unlock_irqrestore(&data->reg_lock, flags);
+			continue;
+		}
 		data->poweron = true;
 
 		ret = mtk_iommu_reg_restore(data);
@@ -4041,6 +4012,12 @@ static void mtk_iommu_pg_before_off(enum subsys_id sys)
 		}
 
 		spin_lock_irqsave(&data->reg_lock, flags);
+		if (!data->poweron) {
+			pr_notice("%s, iommu%u already power off, skip backup\n",
+				  __func__, data->m4uid);
+			spin_unlock_irqrestore(&data->reg_lock, flags);
+			continue;
+		}
 		if (data->isr_ref) {
 			spin_unlock_irqrestore(&data->reg_lock, flags);
 			start = sched_clock();
@@ -4216,7 +4193,7 @@ static int mtk_iommu_hw_init(struct mtk_iommu_data *data)
 		mtk_irq_bank[m4u_id][i] = irq_of_parse_and_map(node, 0);
 
 		pr_notice("%s, bank:%d, of_iomap: 0x%lx, irq_num: %d, m4u_id:%d\n",
-				__func__, i + 1, data->base_bank[i],
+				__func__, i + 1, (uintptr_t)data->base_bank[i],
 				mtk_irq_bank[m4u_id][i], m4u_id);
 
 		if (request_irq(mtk_irq_bank[m4u_id][i], mtk_iommu_isr,
@@ -4492,6 +4469,10 @@ static int mtk_iommu_probe(struct platform_device *pdev)
 	spin_lock_init(&data->reg_lock);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res) {
+		pr_info("%s, get resource is NULL\n", __func__);
+		return -EINVAL;
+	}
 	data->base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(data->base)) {
 		pr_notice("mtk_iommu base is null\n");
@@ -4585,12 +4566,11 @@ static int mtk_iommu_probe(struct platform_device *pdev)
 	ret = mtk_iommu_power_switch(data, false, "iommu_probe");
 	if (ret)
 		pr_notice("%s, failed to power switch off\n", __func__);
-
 #endif
 
 	pr_notice("%s-, %d,total=%d,m4u%d,base=0x%lx,protect=0x%pa\n",
 		  __func__, __LINE__, total_iommu_cnt, data->m4uid,
-		  (unsigned long)data->base, &data->protect_base);
+		  (uintptr_t)data->base, &data->protect_base);
 	return ret;
 }
 
@@ -4781,7 +4761,6 @@ static int __init mtk_iommu_init(void)
 {
 	int ret = 0;
 
-	dma_debug_init(PREALLOC_DMA_DEBUG_ENTRIES);
 	ret = platform_driver_register(&mtk_iommu_driver);
 	if (ret != 0)
 		pr_notice("Failed to register MTK IOMMU driver\n");

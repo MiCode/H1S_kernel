@@ -76,24 +76,26 @@ config ARM_MVEBU_V7_CPUIDLE
 	help
 	  Select this to enable cpuidle on Armada 370, 38x and XP processors.
 
-config ARM_MTK_CPUIDLE
-	bool "CPU Idle drivers for Mediatek processors"
-	default y if !ARM_MTK_NEW_ARCH_CPUIDLE && !CPU_IDLE_NO_MTK
-	depends on !ARM_MTK_NEW_ARCH_CPUIDLE
-	select CPU_IDLE_MULTIPLE_DRIVERS
-	help
-	  Select this to enable cpuidle for Mediatek processors
-
 config ARM_MTK_81XX_CPUIDLE
 	bool "CPU Idle drivers for Mediatek MT81xx series"
+	depends on ARCH_MEDIATEK
 	select CPU_IDLE_MULTIPLE_DRIVERS
 	help
-	Select this to enable cpuidle for Mediatek MT81xx series
+	  Select this to enable cpuidle for Mediatek MT81xx series
+
+config ARM_MTK_CPUIDLE
+	bool "CPU Idle Driver for Mediatek SoCs"
+	depends on ARCH_MEDIATEK && !ARM_MTK_NEW_ARCH_CPUIDLE
+	select DT_IDLE_STATES
+	select CPU_IDLE_MULTIPLE_DRIVERS
+	help
+	  Select this to enable cpuidle for mediatek SoC
 
 config ARM_MTK_NEW_ARCH_CPUIDLE
 	bool "New arch for mediatek cpu  idle drivers"
 	select CPU_IDLE_MULTIPLE_DRIVERS
 	select DT_IDLE_STATES
 	help
-	Select this to enable generic mediatek soc cpu idle driver.
-	It provides the new cpu idle architecture.
+	 Select this to enable generic mediatek soc cpu idle driver.
+	 It provides the new cpu idle architecture.
+

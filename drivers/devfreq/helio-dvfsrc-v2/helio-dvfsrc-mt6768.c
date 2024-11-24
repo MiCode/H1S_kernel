@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/fb.h>
 #include <linux/notifier.h>
@@ -142,6 +134,7 @@ void dvfsrc_update_md_scenario(bool blank)
 {
 	switch (spm_get_spmfw_idx()) {
 	case SPMFW_LP4X_2CH_3600:
+	case SPMFW_LP4X_2CH_3200:
 	case SPMFW_LP4_2CH_3200:
 		if (blank) {
 			dvfsrc_write(DVFSRC_EMI_MD2SPM0_T, 0x0000003F);
@@ -260,7 +253,7 @@ void begin_autok_task(void)
 void finish_autok_task(void)
 {
 	/* check if dvfs force is released */
-	int force = pm_qos_request(PM_QOS_VCORE_DVFS_FORCE_OPP);
+	int force = mtk_pm_qos_request(MTK_PM_QOS_VCORE_DVFS_FORCE_OPP);
 
 	/* notify MM DVFS for msdc autok finish */
 	mmdvfs_prepare_action(MMDVFS_PREPARE_CALIBRATION_END);
@@ -629,8 +622,8 @@ static int is_freq_hopping;
 
 void dvfsrc_enable_dvfs_freq_hopping(int gps_on)
 {
-	static struct pm_qos_request gps_vcore_req;
-	static struct pm_qos_request gps_ddr_req;
+	static struct mtk_pm_qos_request gps_vcore_req;
+	static struct mtk_pm_qos_request gps_ddr_req;
 
 	if (!is_dvfsrc_enabled())
 		return;
@@ -641,16 +634,16 @@ void dvfsrc_enable_dvfs_freq_hopping(int gps_on)
 	if (spm_get_spmfw_idx() == SPMFW_LP4X_2CH_3600)
 		return;
 
-	if (!pm_qos_request_active(&gps_vcore_req))
-		pm_qos_add_request(&gps_vcore_req,
-			PM_QOS_VCORE_OPP, PM_QOS_VCORE_OPP_DEFAULT_VALUE);
+	if (!mtk_pm_qos_request_active(&gps_vcore_req))
+		mtk_pm_qos_add_request(&gps_vcore_req,
+			MTK_PM_QOS_VCORE_OPP, MTK_PM_QOS_VCORE_OPP_DEFAULT_VALUE);
 
-	if (!pm_qos_request_active(&gps_ddr_req))
-		pm_qos_add_request(&gps_ddr_req,
-			PM_QOS_DDR_OPP, PM_QOS_DDR_OPP_DEFAULT_VALUE);
+	if (!mtk_pm_qos_request_active(&gps_ddr_req))
+		mtk_pm_qos_add_request(&gps_ddr_req,
+			MTK_PM_QOS_DDR_OPP, MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE);
 
-	pm_qos_update_request(&gps_vcore_req, VCORE_OPP_0);
-	pm_qos_update_request(&gps_ddr_req, DDR_OPP_0);
+	mtk_pm_qos_update_request(&gps_vcore_req, VCORE_OPP_0);
+	mtk_pm_qos_update_request(&gps_ddr_req, DDR_OPP_0);
 #if defined(CONFIG_MTK_PMIC_COMMON)
 	pr_info("[before]gps_on: %d, vcore: %d ddr: %d dvfsrc_level: 0x%x\n",
 		gps_on,
@@ -660,8 +653,8 @@ void dvfsrc_enable_dvfs_freq_hopping(int gps_on)
 #endif
 	spm_freq_hopping_cmd(!!gps_on);
 
-	pm_qos_update_request(&gps_ddr_req, DDR_OPP_UNREQ);
-	pm_qos_update_request(&gps_vcore_req, VCORE_OPP_UNREQ);
+	mtk_pm_qos_update_request(&gps_ddr_req, DDR_OPP_UNREQ);
+	mtk_pm_qos_update_request(&gps_vcore_req, VCORE_OPP_UNREQ);
 
 	is_freq_hopping = !!gps_on;
 #if defined(CONFIG_MTK_PMIC_COMMON)

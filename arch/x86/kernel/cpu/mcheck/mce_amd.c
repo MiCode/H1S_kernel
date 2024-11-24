@@ -431,12 +431,13 @@ static void deferred_error_interrupt_enable(struct cpuinfo_x86 *c)
 	    (deferred_error_int_vector != amd_deferred_error_interrupt))
 		deferred_error_int_vector = amd_deferred_error_interrupt;
 
-	low = (low & ~MASK_DEF_INT_TYPE) | DEF_INT_TYPE_APIC;
+	if (!mce_flags.smca)
+		low = (low & ~MASK_DEF_INT_TYPE) | DEF_INT_TYPE_APIC;
+
 	wrmsr(MSR_CU_DEF_ERR, low, high);
 }
 
-static u32 smca_get_block_address(unsigned int cpu, unsigned int bank,
-				  unsigned int block)
+static u32 smca_get_block_address(unsigned int bank, unsigned int block)
 {
 	u32 low, high;
 	u32 addr = 0;
@@ -455,13 +456,13 @@ static u32 smca_get_block_address(unsigned int cpu, unsigned int bank,
 	 * For SMCA enabled processors, BLKPTR field of the first MISC register
 	 * (MCx_MISC0) indicates presence of additional MISC regs set (MISC1-4).
 	 */
-	if (rdmsr_safe_on_cpu(cpu, MSR_AMD64_SMCA_MCx_CONFIG(bank), &low, &high))
+	if (rdmsr_safe(MSR_AMD64_SMCA_MCx_CONFIG(bank), &low, &high))
 		goto out;
 
 	if (!(low & MCI_CONFIG_MCAX))
 		goto out;
 
-	if (!rdmsr_safe_on_cpu(cpu, MSR_AMD64_SMCA_MCx_MISC(bank), &low, &high) &&
+	if (!rdmsr_safe(MSR_AMD64_SMCA_MCx_MISC(bank), &low, &high) &&
 	    (low & MASK_BLKPTR_LO))
 		addr = MSR_AMD64_SMCA_MCx_MISCy(bank, block - 1);
 
@@ -470,7 +471,7 @@ out:
 	return addr;
 }
 
-static u32 get_block_address(unsigned int cpu, u32 current_addr, u32 low, u32 high,
+static u32 get_block_address(u32 current_addr, u32 low, u32 high,
 			     unsigned int bank, unsigned int block)
 {
 	u32 addr = 0, offset = 0;
@@ -479,7 +480,7 @@ static u32 get_block_address(unsigned int cpu, u32 current_addr, u32 low, u32 hi
 		return addr;
 
 	if (mce_flags.smca)
-		return smca_get_block_address(cpu, bank, block);
+		return smca_get_block_address(bank, block);
 
 	/* Fall back to method we used for older processors: */
 	switch (block) {
@@ -592,7 +593,7 @@ void mce_amd_feature_init(struct cpuinfo_x86 *c)
 			smca_configure(bank, cpu);
 
 		for (block = 0; block < NR_BLOCKS; ++block) {
-			address = get_block_address(cpu, address, low, high, bank, block);
+			address = get_block_address(address, low, high, bank, block);
 			if (!address)
 				break;
 
@@ -1209,7 +1210,7 @@ static int allocate_threshold_blocks(unsigned int cpu, struct threshold_bank *tb
 	if (err)
 		goto out_free;
 recurse:
-	address = get_block_address(cpu, address, low, high, bank, ++block);
+	address = get_block_address(address, low, high, bank, ++block);
 	if (!address)
 		return 0;
 
@@ -1417,7 +1418,7 @@ int mce_threshold_create_device(unsigned int cpu)
 	if (bp)
 		return 0;
 
-	bp = kzalloc(sizeof(struct threshold_bank *) * mca_cfg.banks,
+	bp = kcalloc(mca_cfg.banks, sizeof(struct threshold_bank *),
 		     GFP_KERNEL);
 	if (!bp)
 		return -ENOMEM;

@@ -25,7 +25,9 @@
 #include <drm/drm_auth.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_atomic.h>
+#include <drm/drm_print.h>
 
+#include "drm_internal.h"
 #include "drm_crtc_internal.h"
 
 /**
@@ -78,11 +80,12 @@ int drm_framebuffer_check_src_coords(uint32_t src_x, uint32_t src_y,
 	    src_h > fb_height ||
 	    src_y > fb_height - src_h) {
 		DRM_DEBUG_KMS("Invalid source coordinates "
-			      "%u.%06ux%u.%06u+%u.%06u+%u.%06u\n",
+			      "%u.%06ux%u.%06u+%u.%06u+%u.%06u (fb %ux%u)\n",
 			      src_w >> 16, ((src_w & 0xffff) * 15625) >> 10,
 			      src_h >> 16, ((src_h & 0xffff) * 15625) >> 10,
 			      src_x >> 16, ((src_x & 0xffff) * 15625) >> 10,
-			      src_y >> 16, ((src_y & 0xffff) * 15625) >> 10);
+			      src_y >> 16, ((src_y & 0xffff) * 15625) >> 10,
+			      fb->width, fb->height);
 		return -ENOSPC;
 	}
 
@@ -92,21 +95,20 @@ int drm_framebuffer_check_src_coords(uint32_t src_x, uint32_t src_y,
 /**
  * drm_mode_addfb - add an FB to the graphics configuration
  * @dev: drm device for the ioctl
- * @data: data pointer for the ioctl
- * @file_priv: drm file for the ioctl call
+ * @or: pointer to request structure
+ * @file_priv: drm file
  *
  * Add a new FB to the specified CRTC, given a user request. This is the
  * original addfb ioctl which only supported RGB formats.
  *
- * Called by the user via ioctl.
+ * Called by the user via ioctl, or by an in-kernel client.
  *
  * Returns:
  * Zero on success, negative errno on failure.
  */
-int drm_mode_addfb(struct drm_device *dev,
-		   void *data, struct drm_file *file_priv)
+int drm_mode_addfb(struct drm_device *dev, struct drm_mode_fb_cmd *or,
+		   struct drm_file *file_priv)
 {
-	struct drm_mode_fb_cmd *or = data;
 	struct drm_mode_fb_cmd2 r = {};
 	int ret;
 
@@ -129,6 +131,12 @@ int drm_mode_addfb(struct drm_device *dev,
 	or->fb_id = r.fb_id;
 
 	return 0;
+}
+
+int drm_mode_addfb_ioctl(struct drm_device *dev,
+			 void *data, struct drm_file *file_priv)
+{
+	return drm_mode_addfb(dev, data, file_priv);
 }
 
 static int fb_plane_width(int width,
@@ -159,9 +167,10 @@ static int framebuffer_check(struct drm_device *dev,
 	info = __drm_format_info(r->pixel_format & ~DRM_FORMAT_BIG_ENDIAN);
 	if (!info) {
 		struct drm_format_name_buf format_name;
+
 		DRM_DEBUG_KMS("bad framebuffer format %s\n",
-		              drm_get_format_name(r->pixel_format,
-		                                  &format_name));
+			      drm_get_format_name(r->pixel_format,
+						  &format_name));
 		return -EINVAL;
 	}
 
@@ -269,7 +278,8 @@ drm_internal_framebuffer_create(struct drm_device *dev,
 	struct drm_framebuffer *fb;
 	int ret;
 
-	if (r->flags & ~(DRM_MODE_FB_INTERLACED | DRM_MODE_FB_MODIFIERS)) {
+	if (r->flags & ~(DRM_MODE_FB_INTERLACED | DRM_MODE_FB_MODIFIERS |
+			DRM_MODE_FB_SECURE)) {
 		DRM_DEBUG_KMS("bad framebuffer flags 0x%08x\n", r->flags);
 		return ERR_PTR(-EINVAL);
 	}
@@ -363,29 +373,28 @@ static void drm_mode_rmfb_work_fn(struct work_struct *w)
 
 /**
  * drm_mode_rmfb - remove an FB from the configuration
- * @dev: drm device for the ioctl
- * @data: data pointer for the ioctl
- * @file_priv: drm file for the ioctl call
+ * @dev: drm device
+ * @fb_id: id of framebuffer to remove
+ * @file_priv: drm file
  *
- * Remove the FB specified by the user.
+ * Remove the specified FB.
  *
- * Called by the user via ioctl.
+ * Called by the user via ioctl, or by an in-kernel client.
  *
  * Returns:
  * Zero on success, negative errno on failure.
  */
-int drm_mode_rmfb(struct drm_device *dev,
-		   void *data, struct drm_file *file_priv)
+int drm_mode_rmfb(struct drm_device *dev, u32 fb_id,
+		  struct drm_file *file_priv)
 {
 	struct drm_framebuffer *fb = NULL;
 	struct drm_framebuffer *fbl = NULL;
-	uint32_t *id = data;
 	int found = 0;
 
 	if (!drm_core_check_feature(dev, DRIVER_MODESET))
 		return -EINVAL;
 
-	fb = drm_framebuffer_lookup(dev, file_priv, *id);
+	fb = drm_framebuffer_lookup(dev, file_priv, fb_id);
 	if (!fb)
 		return -ENOENT;
 
@@ -431,6 +440,14 @@ fail_unref:
 	return -ENOENT;
 }
 
+int drm_mode_rmfb_ioctl(struct drm_device *dev,
+			void *data, struct drm_file *file_priv)
+{
+	uint32_t *fb_id = data;
+
+	return drm_mode_rmfb(dev, *fb_id, file_priv);
+}
+
 /**
  * drm_mode_getfb - get FB info
  * @dev: drm device for the ioctl
@@ -464,28 +481,29 @@ int drm_mode_getfb(struct drm_device *dev,
 		goto out;
 	}
 
+	if (!fb->funcs->create_handle) {
+		ret = -ENODEV;
+		goto out;
+	}
+
 	r->height = fb->height;
 	r->width = fb->width;
 	r->depth = fb->format->depth;
 	r->bpp = fb->format->cpp[0] * 8;
 	r->pitch = fb->pitches[0];
-	if (fb->funcs->create_handle) {
-		if (drm_is_current_master(file_priv) || capable(CAP_SYS_ADMIN) ||
-		    drm_is_control_client(file_priv)) {
-			ret = fb->funcs->create_handle(fb, file_priv,
-						       &r->handle);
-		} else {
-			/* GET_FB() is an unprivileged ioctl so we must not
-			 * return a buffer-handle to non-master processes! For
-			 * backwards-compatibility reasons, we cannot make
-			 * GET_FB() privileged, so just return an invalid handle
-			 * for non-masters. */
-			r->handle = 0;
-			ret = 0;
-		}
-	} else {
-		ret = -ENODEV;
+
+	/* GET_FB() is an unprivileged ioctl so we must not return a
+	 * buffer-handle to non-master processes! For
+	 * backwards-compatibility reasons, we cannot make GET_FB() privileged,
+	 * so just return an invalid handle for non-masters.
+	 */
+	if (!drm_is_current_master(file_priv) && !capable(CAP_SYS_ADMIN)) {
+		r->handle = 0;
+		ret = 0;
+		goto out;
 	}
+
+	ret = fb->funcs->create_handle(fb, file_priv, &r->handle);
 
 out:
 	drm_framebuffer_put(fb);
@@ -521,7 +539,7 @@ int drm_mode_dirtyfb_ioctl(struct drm_device *dev,
 	struct drm_framebuffer *fb;
 	unsigned flags;
 	int num_clips;
-	int ret;
+	int ret = 0;
 
 	if (!drm_core_check_feature(dev, DRIVER_MODESET))
 		return -EINVAL;
@@ -672,6 +690,7 @@ int drm_framebuffer_init(struct drm_device *dev, struct drm_framebuffer *fb,
 	INIT_LIST_HEAD(&fb->filp_head);
 
 	fb->funcs = funcs;
+	strcpy(fb->comm, current->comm);
 
 	ret = __drm_mode_object_add(dev, &fb->base, DRM_MODE_OBJECT_FB,
 				    false, drm_framebuffer_free);
@@ -692,6 +711,7 @@ EXPORT_SYMBOL(drm_framebuffer_init);
 /**
  * drm_framebuffer_lookup - look up a drm framebuffer and grab a reference
  * @dev: drm device
+ * @file_priv: drm file to check for lease against.
  * @id: id of the fb object
  *
  * If successful, this grabs an additional reference to the framebuffer -
@@ -776,14 +796,18 @@ static int atomic_remove_fb(struct drm_framebuffer *fb)
 	struct drm_plane *plane;
 	struct drm_connector *conn __maybe_unused;
 	struct drm_connector_state *conn_state;
-	int i, ret = 0;
+	int i, ret;
 	unsigned plane_mask;
+	bool disable_crtcs = false;
+
+retry_disable:
+	drm_modeset_acquire_init(&ctx, 0);
 
 	state = drm_atomic_state_alloc(dev);
-	if (!state)
-		return -ENOMEM;
-
-	drm_modeset_acquire_init(&ctx, 0);
+	if (!state) {
+		ret = -ENOMEM;
+		goto out;
+	}
 	state->acquire_ctx = &ctx;
 
 retry:
@@ -804,7 +828,7 @@ retry:
 			goto unlock;
 		}
 
-		if (plane_state->crtc->primary == plane) {
+		if (disable_crtcs && plane_state->crtc->primary == plane) {
 			struct drm_crtc_state *crtc_state;
 
 			crtc_state = drm_atomic_get_existing_crtc_state(state, plane_state->crtc);
@@ -824,11 +848,10 @@ retry:
 		if (ret)
 			goto unlock;
 
-		plane_mask |= BIT(drm_plane_index(plane));
-
-		plane->old_fb = plane->fb;
+		plane_mask |= drm_plane_mask(plane);
 	}
 
+	/* This list is only filled when disable_crtcs is set. */
 	for_each_new_connector_in_state(state, conn, conn_state, i) {
 		ret = drm_atomic_set_crtc_for_connector(conn_state, NULL);
 
@@ -840,9 +863,6 @@ retry:
 		ret = drm_atomic_commit(state);
 
 unlock:
-	if (plane_mask)
-		drm_atomic_clean_old_fb(dev, plane_mask, ret);
-
 	if (ret == -EDEADLK) {
 		drm_atomic_state_clear(state);
 		drm_modeset_backoff(&ctx);
@@ -851,8 +871,14 @@ unlock:
 
 	drm_atomic_state_put(state);
 
+out:
 	drm_modeset_drop_locks(&ctx);
 	drm_modeset_acquire_fini(&ctx);
+
+	if (ret == -EINVAL && !disable_crtcs) {
+		disable_crtcs = true;
+		goto retry_disable;
+	}
 
 	return ret;
 }
@@ -967,3 +993,61 @@ int drm_framebuffer_plane_height(int height,
 	return fb_plane_height(height, fb->format, plane);
 }
 EXPORT_SYMBOL(drm_framebuffer_plane_height);
+
+void drm_framebuffer_print_info(struct drm_printer *p, unsigned int indent,
+				const struct drm_framebuffer *fb)
+{
+	struct drm_format_name_buf format_name;
+	unsigned int i;
+
+	drm_printf_indent(p, indent, "allocated by = %s\n", fb->comm);
+	drm_printf_indent(p, indent, "refcount=%u\n",
+			  drm_framebuffer_read_refcount(fb));
+	drm_printf_indent(p, indent, "format=%s\n",
+			  drm_get_format_name(fb->format->format, &format_name));
+	drm_printf_indent(p, indent, "modifier=0x%llx\n", fb->modifier);
+	drm_printf_indent(p, indent, "size=%ux%u\n", fb->width, fb->height);
+	drm_printf_indent(p, indent, "layers:\n");
+
+	for (i = 0; i < fb->format->num_planes; i++) {
+		drm_printf_indent(p, indent + 1, "size[%u]=%dx%d\n", i,
+				  drm_framebuffer_plane_width(fb->width, fb, i),
+				  drm_framebuffer_plane_height(fb->height, fb, i));
+		drm_printf_indent(p, indent + 1, "pitch[%u]=%u\n", i, fb->pitches[i]);
+		drm_printf_indent(p, indent + 1, "offset[%u]=%u\n", i, fb->offsets[i]);
+		drm_printf_indent(p, indent + 1, "obj[%u]:%s\n", i,
+				  fb->obj[i] ? "" : "(null)");
+		if (fb->obj[i])
+			drm_gem_print_info(p, indent + 2, fb->obj[i]);
+	}
+}
+
+#ifdef CONFIG_DEBUG_FS
+static int drm_framebuffer_info(struct seq_file *m, void *data)
+{
+	struct drm_info_node *node = m->private;
+	struct drm_device *dev = node->minor->dev;
+	struct drm_printer p = drm_seq_file_printer(m);
+	struct drm_framebuffer *fb;
+
+	mutex_lock(&dev->mode_config.fb_lock);
+	drm_for_each_fb(fb, dev) {
+		drm_printf(&p, "framebuffer[%u]:\n", fb->base.id);
+		drm_framebuffer_print_info(&p, 1, fb);
+	}
+	mutex_unlock(&dev->mode_config.fb_lock);
+
+	return 0;
+}
+
+static const struct drm_info_list drm_framebuffer_debugfs_list[] = {
+	{ "framebuffer", drm_framebuffer_info, 0 },
+};
+
+int drm_framebuffer_debugfs_init(struct drm_minor *minor)
+{
+	return drm_debugfs_create_files(drm_framebuffer_debugfs_list,
+				ARRAY_SIZE(drm_framebuffer_debugfs_list),
+				minor->debugfs_root, minor);
+}
+#endif

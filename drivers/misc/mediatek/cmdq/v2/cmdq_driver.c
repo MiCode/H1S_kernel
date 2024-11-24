@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #include "cmdq_driver.h"
@@ -38,6 +30,7 @@
 #include <linux/sched.h>
 #include <linux/pm.h>
 #include <linux/suspend.h>
+#include <linux/of_device.h>
 #ifdef CMDQ_USE_LEGACY
 #include <mt-plat/mtk_boot.h>
 #endif
@@ -56,6 +49,7 @@
 static const struct of_device_id cmdq_of_ids[] = {
 	{.compatible = "mediatek,gce",},
 	{.compatible = "mediatek,mt8167-gce",},
+	{.compatible = "mediatek,mt8173-gce",},
 	{}
 };
 #endif
@@ -67,24 +61,11 @@ static struct class *gCMDQClass;
 void cmdq_driver_dump_readback(u32 *addrs, u32 count, u32 *values)
 {}
 
-static ssize_t cmdq_driver_dummy_write(struct device *dev,
-				       struct device_attribute *attr,
-				       const char *buf, size_t size)
-{
-	return -EACCES;
-}
-
-static DEVICE_ATTR(status, 0600, cmdqCorePrintStatus,
-		cmdq_driver_dummy_write);
-static DEVICE_ATTR(error, 0600, cmdqCorePrintError,
-		cmdq_driver_dummy_write);
-static DEVICE_ATTR(record, 0600, cmdqCorePrintRecord,
-		cmdq_driver_dummy_write);
-static DEVICE_ATTR(log_level, 0600, cmdqCorePrintLogLevel,
-		cmdqCoreWriteLogLevel);
-static DEVICE_ATTR(profile_enable, 0600, cmdqCorePrintProfileEnable,
-		cmdqCoreWriteProfileEnable);
-
+static DEVICE_ATTR_RO(status);
+static DEVICE_ATTR_RO(error);
+static DEVICE_ATTR_RO(record);
+static DEVICE_ATTR_RW(log_level);
+static DEVICE_ATTR_RW(profile_enable);
 
 static int cmdq_proc_status_open(struct inode *inode, struct file *file)
 {
@@ -126,9 +107,7 @@ static const struct file_operations cmdqDebugRecordOp = {
 };
 
 #ifdef CMDQ_INSTRUCTION_COUNT
-static DEVICE_ATTR(instruction_count_level, 0600,
-	cmdqCorePrintInstructionCountLevel,
-	cmdqCoreWriteInstructionCountLevel);
+static DEVICE_ATTR_RW(instruction_count_level);
 
 static int cmdq_proc_instruction_count_open(struct inode *inode,
 	struct file *file)
@@ -431,9 +410,6 @@ static long cmdq_driver_create_secure_medadata(
 	pCommand->secData.addrMetadatas =
 		(cmdqU32Ptr_t) (unsigned long)pAddrMetadatas;
 
-#if 0
-	cmdq_core_dump_secure_metadata(&(pCommand->secData));
-#endif
 #endif
 	return 0;
 }

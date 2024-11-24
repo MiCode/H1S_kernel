@@ -17,8 +17,72 @@
 #include <linux/log2.h>
 #include <linux/workqueue.h>
 
+#define CREATE_TRACE_POINTS
+#include <trace/events/rtc.h>
+
 static int rtc_timer_enqueue(struct rtc_device *rtc, struct rtc_timer *timer);
 static void rtc_timer_remove(struct rtc_device *rtc, struct rtc_timer *timer);
+
+static void rtc_add_offset(struct rtc_device *rtc, struct rtc_time *tm)
+{
+	time64_t secs;
+
+	if (!rtc->offset_secs)
+		return;
+
+	secs = rtc_tm_to_time64(tm);
+
+	/*
+	 * Since the reading time values from RTC device are always in the RTC
+	 * original valid range, but we need to skip the overlapped region
+	 * between expanded range and original range, which is no need to add
+	 * the offset.
+	 */
+	if ((rtc->start_secs > rtc->range_min && secs >= rtc->start_secs) ||
+	    (rtc->start_secs < rtc->range_min &&
+	     secs <= (rtc->start_secs + rtc->range_max - rtc->range_min)))
+		return;
+
+	rtc_time64_to_tm(secs + rtc->offset_secs, tm);
+}
+
+static void rtc_subtract_offset(struct rtc_device *rtc, struct rtc_time *tm)
+{
+	time64_t secs;
+
+	if (!rtc->offset_secs)
+		return;
+
+	secs = rtc_tm_to_time64(tm);
+
+	/*
+	 * If the setting time values are in the valid range of RTC hardware
+	 * device, then no need to subtract the offset when setting time to RTC
+	 * device. Otherwise we need to subtract the offset to make the time
+	 * values are valid for RTC hardware device.
+	 */
+	if (secs >= rtc->range_min && secs <= rtc->range_max)
+		return;
+
+	rtc_time64_to_tm(secs - rtc->offset_secs, tm);
+}
+
+static int rtc_valid_range(struct rtc_device *rtc, struct rtc_time *tm)
+{
+	if (rtc->range_min != rtc->range_max) {
+		time64_t time = rtc_tm_to_time64(tm);
+		time64_t range_min = rtc->set_start_time ? rtc->start_secs :
+			rtc->range_min;
+		time64_t range_max = rtc->set_start_time ?
+			(rtc->start_secs + rtc->range_max - rtc->range_min) :
+			rtc->range_max;
+
+		if (time < range_min || time > range_max)
+			return -ERANGE;
+	}
+
+	return 0;
+}
 
 static int __rtc_read_time(struct rtc_device *rtc, struct rtc_time *tm)
 {
@@ -35,6 +99,8 @@ static int __rtc_read_time(struct rtc_device *rtc, struct rtc_time *tm)
 				err);
 			return err;
 		}
+
+		rtc_add_offset(rtc, tm);
 
 		err = rtc_valid_tm(tm);
 		if (err < 0)
@@ -53,17 +119,36 @@ int rtc_read_time(struct rtc_device *rtc, struct rtc_time *tm)
 
 	err = __rtc_read_time(rtc, tm);
 	mutex_unlock(&rtc->ops_lock);
+
+	trace_rtc_read_time(rtc_tm_to_time64(tm), err);
 	return err;
 }
 EXPORT_SYMBOL_GPL(rtc_read_time);
 
 int rtc_set_time(struct rtc_device *rtc, struct rtc_time *tm)
 {
-	int err;
+	int err, uie;
 
 	err = rtc_valid_tm(tm);
 	if (err != 0)
 		return err;
+
+	err = rtc_valid_range(rtc, tm);
+	if (err)
+		return err;
+
+	rtc_subtract_offset(rtc, tm);
+
+#ifdef CONFIG_RTC_INTF_DEV_UIE_EMUL
+	uie = rtc->uie_rtctimer.enabled || rtc->uie_irq_active;
+#else
+	uie = rtc->uie_rtctimer.enabled;
+#endif
+	if (uie) {
+		err = rtc_update_irq_enable(rtc, 0);
+		if (err)
+			return err;
+	}
 
 	err = mutex_lock_interruptible(&rtc->ops_lock);
 	if (err)
@@ -87,6 +172,14 @@ int rtc_set_time(struct rtc_device *rtc, struct rtc_time *tm)
 	mutex_unlock(&rtc->ops_lock);
 	/* A timer might have just expired */
 	schedule_work(&rtc->irqwork);
+
+	if (uie) {
+		err = rtc_update_irq_enable(rtc, 1);
+		if (err)
+			return err;
+	}
+
+	trace_rtc_set_time(rtc_tm_to_time64(tm), err);
 	return err;
 }
 EXPORT_SYMBOL_GPL(rtc_set_time);
@@ -119,6 +212,8 @@ static int rtc_read_alarm_internal(struct rtc_device *rtc, struct rtc_wkalrm *al
 	}
 
 	mutex_unlock(&rtc->ops_lock);
+
+	trace_rtc_read_alarm(rtc_tm_to_time64(&alarm->time), err);
 	return err;
 }
 
@@ -187,8 +282,10 @@ int __rtc_read_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 			return err;
 
 		/* full-function RTCs won't have such missing fields */
-		if (rtc_valid_tm(&alarm->time) == 0)
+		if (rtc_valid_tm(&alarm->time) == 0) {
+			rtc_add_offset(rtc, &alarm->time);
 			return 0;
+		}
 
 		/* get the "after" timestamp, to detect wrapped fields */
 		err = rtc_read_time(rtc, &now);
@@ -316,6 +413,7 @@ int rtc_read_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 	}
 	mutex_unlock(&rtc->ops_lock);
 
+	trace_rtc_read_alarm(rtc_tm_to_time64(&alarm->time), err);
 	return err;
 }
 EXPORT_SYMBOL_GPL(rtc_read_alarm);
@@ -329,6 +427,7 @@ static int __rtc_set_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 	err = rtc_valid_tm(&alarm->time);
 	if (err)
 		return err;
+
 	scheduled = rtc_tm_to_time64(&alarm->time);
 
 	/* Make sure we're not setting alarms in the past */
@@ -345,6 +444,8 @@ static int __rtc_set_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 	 * over right here, before we set the alarm.
 	 */
 
+	rtc_subtract_offset(rtc, &alarm->time);
+
 	if (!rtc->ops)
 		err = -ENODEV;
 	else if (!rtc->ops->set_alarm)
@@ -352,6 +453,7 @@ static int __rtc_set_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 	else
 		err = rtc->ops->set_alarm(rtc->dev.parent, alarm);
 
+	trace_rtc_set_alarm(rtc_tm_to_time64(&alarm->time), err);
 	return err;
 }
 
@@ -368,6 +470,10 @@ int rtc_set_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 	if (err != 0)
 		return err;
 
+	err = rtc_valid_range(rtc, &alarm->time);
+	if (err)
+		return err;
+
 	err = mutex_lock_interruptible(&rtc->ops_lock);
 	if (err)
 		return err;
@@ -380,6 +486,7 @@ int rtc_set_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 		err = rtc_timer_enqueue(rtc, &rtc->aie_timer);
 
 	mutex_unlock(&rtc->ops_lock);
+
 	return err;
 }
 EXPORT_SYMBOL_GPL(rtc_set_alarm);
@@ -435,6 +542,7 @@ int rtc_initialize_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 
 		rtc->aie_timer.enabled = 1;
 		timerqueue_add(&rtc->timerqueue, &rtc->aie_timer.node);
+		trace_rtc_timer_enqueue(&rtc->aie_timer);
 	}
 	mutex_unlock(&rtc->ops_lock);
 	return err;
@@ -464,6 +572,8 @@ int rtc_alarm_irq_enable(struct rtc_device *rtc, unsigned int enabled)
 		err = rtc->ops->alarm_irq_enable(rtc->dev.parent, enabled);
 
 	mutex_unlock(&rtc->ops_lock);
+
+	trace_rtc_alarm_irq_enable(enabled, err);
 	return err;
 }
 EXPORT_SYMBOL_GPL(rtc_alarm_irq_enable);
@@ -537,12 +647,6 @@ void rtc_handle_legacy_irq(struct rtc_device *rtc, int num, int mode)
 	spin_lock_irqsave(&rtc->irq_lock, flags);
 	rtc->irq_data = (rtc->irq_data + (num << 8)) | (RTC_IRQF|mode);
 	spin_unlock_irqrestore(&rtc->irq_lock, flags);
-
-	/* call the task func */
-	spin_lock_irqsave(&rtc->irq_task_lock, flags);
-	if (rtc->irq_task)
-		rtc->irq_task->func(rtc->irq_task->private_data);
-	spin_unlock_irqrestore(&rtc->irq_task_lock, flags);
 
 	wake_up_interruptible(&rtc->irq_queue);
 	kill_fasync(&rtc->async_queue, SIGIO, POLL_IN);
@@ -652,39 +756,6 @@ void rtc_class_close(struct rtc_device *rtc)
 }
 EXPORT_SYMBOL_GPL(rtc_class_close);
 
-int rtc_irq_register(struct rtc_device *rtc, struct rtc_task *task)
-{
-	int retval = -EBUSY;
-
-	if (task == NULL || task->func == NULL)
-		return -EINVAL;
-
-	/* Cannot register while the char dev is in use */
-	if (test_and_set_bit_lock(RTC_DEV_BUSY, &rtc->flags))
-		return -EBUSY;
-
-	spin_lock_irq(&rtc->irq_task_lock);
-	if (rtc->irq_task == NULL) {
-		rtc->irq_task = task;
-		retval = 0;
-	}
-	spin_unlock_irq(&rtc->irq_task_lock);
-
-	clear_bit_unlock(RTC_DEV_BUSY, &rtc->flags);
-
-	return retval;
-}
-EXPORT_SYMBOL_GPL(rtc_irq_register);
-
-void rtc_irq_unregister(struct rtc_device *rtc, struct rtc_task *task)
-{
-	spin_lock_irq(&rtc->irq_task_lock);
-	if (rtc->irq_task == task)
-		rtc->irq_task = NULL;
-	spin_unlock_irq(&rtc->irq_task_lock);
-}
-EXPORT_SYMBOL_GPL(rtc_irq_unregister);
-
 static int rtc_update_hrtimer(struct rtc_device *rtc, int enabled)
 {
 	/*
@@ -716,67 +787,45 @@ static int rtc_update_hrtimer(struct rtc_device *rtc, int enabled)
  * Context: any
  *
  * Note that rtc_irq_set_freq() should previously have been used to
- * specify the desired frequency of periodic IRQ task->func() callbacks.
+ * specify the desired frequency of periodic IRQ.
  */
-int rtc_irq_set_state(struct rtc_device *rtc, struct rtc_task *task, int enabled)
+int rtc_irq_set_state(struct rtc_device *rtc, int enabled)
 {
 	int err = 0;
-	unsigned long flags;
 
-retry:
-	spin_lock_irqsave(&rtc->irq_task_lock, flags);
-	if (rtc->irq_task != NULL && task == NULL)
-		err = -EBUSY;
-	else if (rtc->irq_task != task)
-		err = -EACCES;
-	else {
-		if (rtc_update_hrtimer(rtc, enabled) < 0) {
-			spin_unlock_irqrestore(&rtc->irq_task_lock, flags);
-			cpu_relax();
-			goto retry;
-		}
-		rtc->pie_enabled = enabled;
-	}
-	spin_unlock_irqrestore(&rtc->irq_task_lock, flags);
+	while (rtc_update_hrtimer(rtc, enabled) < 0)
+		cpu_relax();
+
+	rtc->pie_enabled = enabled;
+
+	trace_rtc_irq_set_state(enabled, err);
 	return err;
 }
-EXPORT_SYMBOL_GPL(rtc_irq_set_state);
 
 /**
  * rtc_irq_set_freq - set 2^N Hz periodic IRQ frequency for IRQ
  * @rtc: the rtc device
  * @task: currently registered with rtc_irq_register()
- * @freq: positive frequency with which task->func() will be called
+ * @freq: positive frequency
  * Context: any
  *
  * Note that rtc_irq_set_state() is used to enable or disable the
  * periodic IRQs.
  */
-int rtc_irq_set_freq(struct rtc_device *rtc, struct rtc_task *task, int freq)
+int rtc_irq_set_freq(struct rtc_device *rtc, int freq)
 {
 	int err = 0;
-	unsigned long flags;
 
 	if (freq <= 0 || freq > RTC_MAX_FREQ)
 		return -EINVAL;
-retry:
-	spin_lock_irqsave(&rtc->irq_task_lock, flags);
-	if (rtc->irq_task != NULL && task == NULL)
-		err = -EBUSY;
-	else if (rtc->irq_task != task)
-		err = -EACCES;
-	else {
-		rtc->irq_freq = freq;
-		if (rtc->pie_enabled && rtc_update_hrtimer(rtc, 1) < 0) {
-			spin_unlock_irqrestore(&rtc->irq_task_lock, flags);
-			cpu_relax();
-			goto retry;
-		}
-	}
-	spin_unlock_irqrestore(&rtc->irq_task_lock, flags);
+
+	rtc->irq_freq = freq;
+	while (rtc->pie_enabled && rtc_update_hrtimer(rtc, 1) < 0)
+		cpu_relax();
+
+	trace_rtc_irq_set_freq(freq, err);
 	return err;
 }
-EXPORT_SYMBOL_GPL(rtc_irq_set_freq);
 
 /**
  * rtc_timer_enqueue - Adds a rtc_timer to the rtc_device timerqueue
@@ -808,6 +857,7 @@ static int rtc_timer_enqueue(struct rtc_device *rtc, struct rtc_timer *timer)
 	}
 
 	timerqueue_add(&rtc->timerqueue, &timer->node);
+	trace_rtc_timer_enqueue(timer);
 	if (!next || ktime_before(timer->node.expires, next->expires)) {
 		struct rtc_wkalrm alarm;
 		int err;
@@ -819,6 +869,7 @@ static int rtc_timer_enqueue(struct rtc_device *rtc, struct rtc_timer *timer)
 			schedule_work(&rtc->irqwork);
 		} else if (err) {
 			timerqueue_del(&rtc->timerqueue, &timer->node);
+			trace_rtc_timer_dequeue(timer);
 			timer->enabled = 0;
 			return err;
 		}
@@ -832,6 +883,7 @@ static void rtc_alarm_disable(struct rtc_device *rtc)
 		return;
 
 	rtc->ops->alarm_irq_enable(rtc->dev.parent, false);
+	trace_rtc_alarm_irq_enable(0, 0);
 }
 
 /**
@@ -850,6 +902,7 @@ static void rtc_timer_remove(struct rtc_device *rtc, struct rtc_timer *timer)
 {
 	struct timerqueue_node *next = timerqueue_getnext(&rtc->timerqueue);
 	timerqueue_del(&rtc->timerqueue, &timer->node);
+	trace_rtc_timer_dequeue(timer);
 	timer->enabled = 0;
 	if (next == &timer->node) {
 		struct rtc_wkalrm alarm;
@@ -900,16 +953,19 @@ again:
 		/* expire timer */
 		timer = container_of(next, struct rtc_timer, node);
 		timerqueue_del(&rtc->timerqueue, &timer->node);
+		trace_rtc_timer_dequeue(timer);
 		timer->enabled = 0;
-		if (timer->task.func)
-			timer->task.func(timer->task.private_data);
+		if (timer->func)
+			timer->func(timer->private_data);
 
+		trace_rtc_timer_fired(timer);
 		/* Re-add/fwd periodic timers */
 		if (ktime_to_ns(timer->period)) {
 			timer->node.expires = ktime_add(timer->node.expires,
 							timer->period);
 			timer->enabled = 1;
 			timerqueue_add(&rtc->timerqueue, &timer->node);
+			trace_rtc_timer_enqueue(timer);
 		}
 	}
 
@@ -931,6 +987,7 @@ reprogram:
 
 			timer = container_of(next, struct rtc_timer, node);
 			timerqueue_del(&rtc->timerqueue, &timer->node);
+			trace_rtc_timer_dequeue(timer);
 			timer->enabled = 0;
 			dev_err(&rtc->dev, "__rtc_set_alarm: err=%d\n", err);
 			goto again;
@@ -954,8 +1011,8 @@ void rtc_timer_init(struct rtc_timer *timer, void (*f)(void *p), void *data)
 {
 	timerqueue_init(&timer->node);
 	timer->enabled = 0;
-	timer->task.func = f;
-	timer->task.private_data = data;
+	timer->func = f;
+	timer->private_data = data;
 }
 
 /* rtc_timer_start - Sets an rtc_timer to fire in the future
@@ -1021,6 +1078,8 @@ int rtc_read_offset(struct rtc_device *rtc, long *offset)
 	mutex_lock(&rtc->ops_lock);
 	ret = rtc->ops->read_offset(rtc->dev.parent, offset);
 	mutex_unlock(&rtc->ops_lock);
+
+	trace_rtc_read_offset(*offset, ret);
 	return ret;
 }
 
@@ -1032,6 +1091,10 @@ int rtc_read_offset(struct rtc_device *rtc, long *offset)
  * Some rtc's allow an adjustment to the average duration of a second
  * to compensate for differences in the actual clock rate due to temperature,
  * the crystal, capacitor, etc.
+ *
+ * The adjustment applied is as follows:
+ *   t = t0 * (1 + offset * 1e-9)
+ * where t0 is the measured length of 1 RTC second with offset = 0
  *
  * Kernel interface to adjust an rtc clock offset.
  * Return 0 on success, or a negative number on error.
@@ -1050,5 +1113,7 @@ int rtc_set_offset(struct rtc_device *rtc, long offset)
 	mutex_lock(&rtc->ops_lock);
 	ret = rtc->ops->set_offset(rtc->dev.parent, offset);
 	mutex_unlock(&rtc->ops_lock);
+
+	trace_rtc_set_offset(offset, ret);
 	return ret;
 }

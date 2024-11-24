@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTKFB_DEBUG_H
 #define __MTKFB_DEBUG_H
@@ -31,6 +23,7 @@ unsigned int get_fake_layer_mva(int i);
 #include "ddp_info.h"
 extern int disp_layer_info_statistic(
 	struct disp_ddp_path_config *last_config, struct disp_frame_cfg_t *cfg);
+extern int hrt_show_flag;
 
 #ifdef MTKFB_DBG
 #include "disp_drv_log.h"

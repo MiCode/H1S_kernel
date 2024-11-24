@@ -1,21 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _H_DDP_INFO
 #define _H_DDP_INFO
 #include <linux/types.h>
 #include <linux/wait.h>
 #include <disp_session.h>
+#include <ion.h>
 
 #include "ddp_hal.h"
 #include "lcm_drv.h"
@@ -222,6 +215,7 @@ struct OVL_CONFIG_STRUCT {
 	int ext_sel_layer;
 	int ext_layer;
 	int phy_layer;
+	struct ion_handle *hnd;
 };
 
 struct OVL_BASIC_STRUCT {
@@ -309,6 +303,7 @@ struct WDMA_CONFIG_STRUCT {
 	unsigned int useSpecifiedAlpha;
 	unsigned char alpha;
 	enum DISP_BUFFER_TYPE security;
+	struct ion_handle *hnd;
 };
 
 struct golden_setting_context {
@@ -380,6 +375,10 @@ struct disp_ddp_path_config {
 	int hrt_scale;
 	int sbch_enable;
 	int read_dum_reg[OVL_NUM];
+
+	/*DynFPS*/
+	unsigned int last_dynfps;
+	unsigned int dynfps;
 };
 
 struct rx_data {

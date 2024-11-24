@@ -65,6 +65,14 @@ static const struct pci_device_id snd_lx6464es_ids[] = {
 			 PCI_VENDOR_ID_DIGIGRAM,
 			 PCI_SUBDEVICE_ID_DIGIGRAM_LX6464ES_CAE_SERIAL_SUBSYSTEM),
 	},			/* LX6464ES-CAE */
+	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_PLX, PCI_DEVICE_ID_PLX_LX6464ES,
+			 PCI_VENDOR_ID_DIGIGRAM,
+			 PCI_SUBDEVICE_ID_DIGIGRAM_LX6464ESE_SERIAL_SUBSYSTEM),
+	},			/* LX6464ESe */
+	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_PLX, PCI_DEVICE_ID_PLX_LX6464ES,
+			 PCI_VENDOR_ID_DIGIGRAM,
+			 PCI_SUBDEVICE_ID_DIGIGRAM_LX6464ESE_CAE_SERIAL_SUBSYSTEM),
+	},			/* LX6464ESe-CAE */
 	{ 0, },
 };
 
@@ -1016,6 +1024,11 @@ static int snd_lx6464es_create(struct snd_card *card,
 
 	/* dsp port */
 	chip->port_dsp_bar = pci_ioremap_bar(pci, 2);
+	if (!chip->port_dsp_bar) {
+		dev_err(card->dev, "cannot remap PCI memory region\n");
+		err = -ENOMEM;
+		goto remap_pci_failed;
+	}
 
 	err = request_threaded_irq(pci->irq, lx_interrupt, lx_threaded_irq,
 				   IRQF_SHARED, KBUILD_MODNAME, chip);
@@ -1055,6 +1068,9 @@ device_new_failed:
 	free_irq(pci->irq, chip);
 
 request_irq_failed:
+	iounmap(chip->port_dsp_bar);
+
+remap_pci_failed:
 	pci_release_regions(pci);
 
 request_regions_failed:

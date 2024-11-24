@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 #define PFX "CAM_CAL"
 #define pr_fmt(fmt) PFX "[%s] " fmt, __func__
@@ -96,10 +87,10 @@ static int EEPROM_set_i2c_bus(unsigned int deviceID,
 	if (idx == IMGSENSOR_SENSOR_IDX_NONE)
 		return -EFAULT;
 
-	if (i2c_idx < I2C_DEV_IDX_1 || i2c_idx >= I2C_DEV_IDX_MAX)
+	if (i2c_idx >= I2C_DEV_IDX_MAX)
 		return -EFAULT;
 
-	client = g_pstI2Cclients[i2c_idx];
+	client = g_pstI2Cclients[(unsigned int)i2c_idx];
 	pr_debug("%s end! deviceID=%d index=%u client=%p\n",
 		 __func__, deviceID, idx, client);
 
@@ -648,6 +639,13 @@ static long EEPROM_drv_compat_ioctl
 
 #endif
 
+int ov8856_af_mac;
+int ov8856_af_inf;
+int ov8856_af_lsb;
+
+int s5k4h7_af_mac;
+int s5k4h7_af_inf;
+int s5k4h7_af_lsb;
 #define NEW_UNLOCK_IOCTL
 #ifndef NEW_UNLOCK_IOCTL
 static int EEPROM_drv_ioctl(struct inode *a_pstInode,
@@ -814,12 +812,33 @@ static long EEPROM_drv_ioctl(struct file *file,
 		}
 
 		if (pcmdInf != NULL) {
-			if (pcmdInf->readCMDFunc != NULL)
-				i4RetValue =
-					pcmdInf->readCMDFunc(pcmdInf->client,
+			if (pcmdInf->readCMDFunc != NULL) {
+				if ((ptempbuf->sensorID == 0x885a)
+				&& (ptempbuf->u4Offset == 0x7500))
+					*pu1Params = i4RetValue = ov8856_af_inf;
+				else if ((ptempbuf->sensorID == 0x885a)
+				&& (ptempbuf->u4Offset == 0x7501))
+					*pu1Params = i4RetValue = ov8856_af_mac;
+				else if ((ptempbuf->sensorID == 0x885a)
+				&& (ptempbuf->u4Offset == 0x7502))
+					*pu1Params = i4RetValue = ov8856_af_lsb;
+				else if ((ptempbuf->sensorID == 0x487b)
+				&& (ptempbuf->u4Offset == 0x7500))
+					*pu1Params = i4RetValue = s5k4h7_af_inf;
+				else if ((ptempbuf->sensorID == 0x487b)
+				&& (ptempbuf->u4Offset == 0x7501))
+					*pu1Params = i4RetValue = s5k4h7_af_mac;
+				else if ((ptempbuf->sensorID == 0x487b)
+				&& (ptempbuf->u4Offset == 0x7502))
+					*pu1Params = i4RetValue = s5k4h7_af_lsb;
+				else
+					i4RetValue =
+						pcmdInf->readCMDFunc(
+							  pcmdInf->client,
 							  ptempbuf->u4Offset,
 							  pu1Params,
 							  ptempbuf->u4Length);
+			}
 			else {
 				pr_debug("pcmdInf->readCMDFunc == NULL\n");
 				kfree(pBuff);

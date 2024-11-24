@@ -10,6 +10,7 @@
  * qla24xx_calc_iocbs() - Determine number of Command Type 3 and
  * Continuation Type 1 IOCBs to allocate.
  *
+ * @vha: HA context
  * @dsds: number of data segment decriptors needed
  *
  * Returns the number of IOCB entries needed to store @dsds.
@@ -57,14 +58,12 @@ qla2x00_debounce_register(volatile uint16_t __iomem *addr)
 static inline void
 qla2x00_poll(struct rsp_que *rsp)
 {
-	unsigned long flags;
 	struct qla_hw_data *ha = rsp->hw;
-	local_irq_save(flags);
+
 	if (IS_P3P_TYPE(ha))
 		qla82xx_poll(0, rsp);
 	else
 		ha->isp_ops->intr_handler(0, rsp);
-	local_irq_restore(flags);
 }
 
 static inline uint8_t *
@@ -203,6 +202,12 @@ qla2x00_reset_active(scsi_qla_host_t *vha)
 	    test_bit(ABORT_ISP_ACTIVE, &vha->dpc_flags);
 }
 
+static inline int
+qla2x00_chip_is_down(scsi_qla_host_t *vha)
+{
+	return (qla2x00_reset_active(vha) || !vha->hw->flags.fw_started);
+}
+
 static inline srb_t *
 qla2xxx_get_qpair_sp(struct qla_qpair *qpair, fc_port_t *fcport, gfp_t flag)
 {
@@ -271,16 +276,13 @@ qla2x00_rel_sp(srb_t *sp)
 static inline void
 qla2x00_init_timer(srb_t *sp, unsigned long tmo)
 {
-	init_timer(&sp->u.iocb_cmd.timer);
+	timer_setup(&sp->u.iocb_cmd.timer, qla2x00_sp_timeout, 0);
 	sp->u.iocb_cmd.timer.expires = jiffies + tmo * HZ;
-	sp->u.iocb_cmd.timer.data = (unsigned long)sp;
-	sp->u.iocb_cmd.timer.function = qla2x00_sp_timeout;
-	add_timer(&sp->u.iocb_cmd.timer);
 	sp->free = qla2x00_sp_free;
+	init_completion(&sp->comp);
 	if (IS_QLAFX00(sp->vha->hw) && (sp->type == SRB_FXIOCB_DCMD))
 		init_completion(&sp->u.iocb_cmd.u.fxiocb.fxiocb_comp);
-	if (sp->type == SRB_ELS_DCMD)
-		init_completion(&sp->u.iocb_cmd.u.els_logo.comp);
+	add_timer(&sp->u.iocb_cmd.timer);
 }
 
 static inline int

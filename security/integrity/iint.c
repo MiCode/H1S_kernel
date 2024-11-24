@@ -21,11 +21,14 @@
 #include <linux/rbtree.h>
 #include <linux/file.h>
 #include <linux/uaccess.h>
+#include <linux/security.h>
 #include "integrity.h"
 
 static struct rb_root integrity_iint_tree = RB_ROOT;
 static DEFINE_RWLOCK(integrity_iint_lock);
 static struct kmem_cache *iint_cache __read_mostly;
+
+struct dentry *integrity_dir;
 
 /*
  * __integrity_iint_find - return the iint associated with an inode
@@ -43,12 +46,10 @@ static struct integrity_iint_cache *__integrity_iint_find(struct inode *inode)
 		else if (inode > iint->inode)
 			n = n->rb_right;
 		else
-			break;
+			return iint;
 	}
-	if (!n)
-		return NULL;
 
-	return iint;
+	return NULL;
 }
 
 /*
@@ -68,9 +69,32 @@ struct integrity_iint_cache *integrity_iint_find(struct inode *inode)
 	return iint;
 }
 
-static void iint_free(struct integrity_iint_cache *iint)
+#define IMA_MAX_NESTING (FILESYSTEM_MAX_STACK_DEPTH+1)
+
+/*
+ * It is not clear that IMA should be nested at all, but as long is it measures
+ * files both on overlayfs and on underlying fs, we need to annotate the iint
+ * mutex to avoid lockdep false positives related to IMA + overlayfs.
+ * See ovl_lockdep_annotate_inode_mutex_key() for more details.
+ */
+static inline void iint_lockdep_annotate(struct integrity_iint_cache *iint,
+					 struct inode *inode)
 {
-	kfree(iint->ima_hash);
+#ifdef CONFIG_LOCKDEP
+	static struct lock_class_key iint_mutex_key[IMA_MAX_NESTING];
+
+	int depth = inode->i_sb->s_stack_depth;
+
+	if (WARN_ON_ONCE(depth < 0 || depth >= IMA_MAX_NESTING))
+		depth = 0;
+
+	lockdep_set_class(&iint->mutex, &iint_mutex_key[depth]);
+#endif
+}
+
+static void iint_init_always(struct integrity_iint_cache *iint,
+			     struct inode *inode)
+{
 	iint->ima_hash = NULL;
 	iint->version = 0;
 	iint->flags = 0UL;
@@ -79,8 +103,17 @@ static void iint_free(struct integrity_iint_cache *iint)
 	iint->ima_mmap_status = INTEGRITY_UNKNOWN;
 	iint->ima_bprm_status = INTEGRITY_UNKNOWN;
 	iint->ima_read_status = INTEGRITY_UNKNOWN;
+	iint->ima_creds_status = INTEGRITY_UNKNOWN;
 	iint->evm_status = INTEGRITY_UNKNOWN;
 	iint->measured_pcrs = 0;
+	mutex_init(&iint->mutex);
+	iint_lockdep_annotate(iint, inode);
+}
+
+static void iint_free(struct integrity_iint_cache *iint)
+{
+	kfree(iint->ima_hash);
+	mutex_destroy(&iint->mutex);
 	kmem_cache_free(iint_cache, iint);
 }
 
@@ -105,6 +138,8 @@ struct integrity_iint_cache *integrity_inode_get(struct inode *inode)
 	if (!iint)
 		return NULL;
 
+	iint_init_always(iint, inode);
+
 	write_lock(&integrity_iint_lock);
 
 	p = &integrity_iint_tree.rb_node;
@@ -112,10 +147,15 @@ struct integrity_iint_cache *integrity_inode_get(struct inode *inode)
 		parent = *p;
 		test_iint = rb_entry(parent, struct integrity_iint_cache,
 				     rb_node);
-		if (inode < test_iint->inode)
+		if (inode < test_iint->inode) {
 			p = &(*p)->rb_left;
-		else
+		} else if (inode > test_iint->inode) {
 			p = &(*p)->rb_right;
+		} else {
+			write_unlock(&integrity_iint_lock);
+			kmem_cache_free(iint_cache, iint);
+			return test_iint;
+		}
 	}
 
 	iint->inode = inode;
@@ -149,28 +189,18 @@ void integrity_inode_free(struct inode *inode)
 	iint_free(iint);
 }
 
-static void init_once(void *foo)
+static void iint_init_once(void *foo)
 {
 	struct integrity_iint_cache *iint = foo;
 
 	memset(iint, 0, sizeof(*iint));
-	iint->version = 0;
-	iint->flags = 0UL;
-	iint->atomic_flags = 0;
-	iint->ima_file_status = INTEGRITY_UNKNOWN;
-	iint->ima_mmap_status = INTEGRITY_UNKNOWN;
-	iint->ima_bprm_status = INTEGRITY_UNKNOWN;
-	iint->ima_read_status = INTEGRITY_UNKNOWN;
-	iint->evm_status = INTEGRITY_UNKNOWN;
-	iint->measured_pcrs = 0;
-	mutex_init(&iint->mutex);
 }
 
 static int __init integrity_iintcache_init(void)
 {
 	iint_cache =
 	    kmem_cache_create("iint_cache", sizeof(struct integrity_iint_cache),
-			      0, SLAB_PANIC, init_once);
+			      0, SLAB_PANIC, iint_init_once);
 	return 0;
 }
 security_initcall(integrity_iintcache_init);
@@ -203,55 +233,6 @@ int integrity_kernel_read(struct file *file, loff_t offset,
 }
 
 /*
- * integrity_read_file - read entire file content into the buffer
- *
- * This is function opens a file, allocates the buffer of required
- * size, read entire file content to the buffer and closes the file
- *
- * It is used only by init code.
- *
- */
-int __init integrity_read_file(const char *path, char **data)
-{
-	struct file *file;
-	loff_t size;
-	char *buf;
-	int rc = -EINVAL;
-
-	if (!path || !*path)
-		return -EINVAL;
-
-	file = filp_open(path, O_RDONLY, 0);
-	if (IS_ERR(file)) {
-		rc = PTR_ERR(file);
-		pr_err("Unable to open file: %s (%d)", path, rc);
-		return rc;
-	}
-
-	size = i_size_read(file_inode(file));
-	if (size <= 0)
-		goto out;
-
-	buf = kmalloc(size, GFP_KERNEL);
-	if (!buf) {
-		rc = -ENOMEM;
-		goto out;
-	}
-
-	rc = integrity_kernel_read(file, 0, buf, size);
-	if (rc == size) {
-		*data = buf;
-	} else {
-		kfree(buf);
-		if (rc >= 0)
-			rc = -EIO;
-	}
-out:
-	fput(file);
-	return rc;
-}
-
-/*
  * integrity_load_keys - load integrity keys hook
  *
  * Hooks is called from init/main.c:kernel_init_freeable()
@@ -262,3 +243,21 @@ void __init integrity_load_keys(void)
 	ima_load_x509();
 	evm_load_x509();
 }
+
+static int __init integrity_fs_init(void)
+{
+	integrity_dir = securityfs_create_dir("integrity", NULL);
+	if (IS_ERR(integrity_dir)) {
+		int ret = PTR_ERR(integrity_dir);
+
+		if (ret != -ENODEV)
+			pr_err("Unable to create integrity sysfs dir: %d\n",
+			       ret);
+		integrity_dir = NULL;
+		return ret;
+	}
+
+	return 0;
+}
+
+late_initcall(integrity_fs_init)

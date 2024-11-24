@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2019 MediaTek Inc.
+*/   
+
 #ifndef _MTK_DRM_ARR_H_
 #define _MTK_DRM_ARR_H_
 

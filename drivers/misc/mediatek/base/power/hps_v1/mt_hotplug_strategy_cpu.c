@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 /**
@@ -21,11 +13,12 @@
 #include <linux/init.h>		/* module_init, module_exit */
 #include <linux/sched.h>	/* sched_get_* */
 #include <linux/cpu.h>		/* cpu_up */
+#include <linux/cpumask.h>
 #include <linux/topology.h>
 
 #include "mt_hotplug_strategy_internal.h"
 
-#define HP_HAVE_SCHED_TPLG		0
+#define HP_HAVE_MTK_TPLG		0
 #define LOG_CPUMASK			0
 
 #ifndef L_NUM_BASE_CUSTOM1
@@ -52,25 +45,6 @@
 #ifndef B_NUM_LIMIT_CUSTOM2
 #define B_NUM_LIMIT_CUSTOM2		8
 #endif
-
-#if !HP_HAVE_SCHED_TPLG
-#include <linux/cpumask.h>
-#include <linux/topology.h>
-#endif
-
-
-int __attribute__ ((weak))
-arch_cpu_is_big(unsigned int cpu)
-{
-	return 0;
-}
-
-int __attribute__ ((weak))
-arch_cpu_is_little(unsigned int cpu)
-{
-	return !arch_cpu_is_big(cpu);
-}
-
 
 /*
  * hps cpu interface - cpumask
@@ -197,9 +171,7 @@ void hps_cpu_get_tlp(unsigned int *avg, unsigned int *iowait_avg)
 void hps_cpu_get_big_little_cpumasks(
 		struct cpumask *big, struct cpumask *little)
 {
-#if HP_HAVE_SCHED_TPLG
-	sched_get_big_little_cpus(big, little);
-#else
+#if HP_HAVE_MTK_TPLG
 	unsigned int cpu;
 
 	cpumask_clear(big);
@@ -211,7 +183,30 @@ void hps_cpu_get_big_little_cpumasks(
 		else
 			cpumask_set_cpu(cpu, little);
 	}
-#endif /* HP_HAVE_SCHED_TPLG */
+#else
+	unsigned int cpu;
+	int id;
+	int cluster_min = INT_MAX, cluster_max = INT_MIN;
+
+	cpumask_clear(big);
+	cpumask_clear(little);
+
+	for_each_possible_cpu(cpu) {
+		id = topology_physical_package_id(cpu);
+
+		cluster_min = min(cluster_min, id);
+		cluster_max = max(cluster_max, id);
+	}
+
+	for_each_possible_cpu(cpu) {
+		id = topology_physical_package_id(cpu);
+
+		if ((cluster_min < cluster_max) && (id == cluster_max))
+			cpumask_set_cpu(cpu, big);
+		else
+			cpumask_set_cpu(cpu, little);
+	}
+#endif /* HP_HAVE_MTK_TPLG */
 }
 
 int hps_cpu_up(unsigned int cpu)

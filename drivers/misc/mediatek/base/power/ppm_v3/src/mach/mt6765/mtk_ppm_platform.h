@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
-
 
 #ifndef __MT_PPM_PLATFORM_H__
 #define __MT_PPM_PLATFORM_H__
@@ -43,6 +34,9 @@ extern "C" {
 #define TOTAL_CORE_NUM	(CORE_LL+CORE_L)
 #define CORE_LL	(4)
 #define CORE_L	(4)
+
+#define CORE_NUM_L	CORE_LL
+#define CORE_NUM_B	COREL_L
 
 #ifdef PPM_SSPM_SUPPORT
 #define PPM_COBRA_TBL_SRAM_ADDR	(0x0011B800)

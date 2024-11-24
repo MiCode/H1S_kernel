@@ -36,11 +36,13 @@ struct cpuinfo_arm64 {
 	u64		reg_id_aa64dfr1;
 	u64		reg_id_aa64isar0;
 	u64		reg_id_aa64isar1;
+	u64		reg_id_aa64isar2;
 	u64		reg_id_aa64mmfr0;
 	u64		reg_id_aa64mmfr1;
 	u64		reg_id_aa64mmfr2;
 	u64		reg_id_aa64pfr0;
 	u64		reg_id_aa64pfr1;
+	u64		reg_id_aa64zfr0;
 
 	u32		reg_id_dfr0;
 	u32		reg_id_isar0;
@@ -59,15 +61,18 @@ struct cpuinfo_arm64 {
 	u32		reg_mvfr0;
 	u32		reg_mvfr1;
 	u32		reg_mvfr2;
+
+	/* pseudo-ZCR for recording maximum ZCR_EL1 LEN value: */
+	u64		reg_zcr;
 };
 
 DECLARE_PER_CPU(struct cpuinfo_arm64, cpu_data);
 
 void cpuinfo_store_cpu(void);
 void __init cpuinfo_store_boot_cpu(void);
-
+void machine_desc_set(const char *str);
 void __init init_cpu_features(struct cpuinfo_arm64 *info);
 void update_cpu_features(int cpu, struct cpuinfo_arm64 *info,
 				 struct cpuinfo_arm64 *boot);
-void machine_desc_set(const char *str);
+
 #endif /* __ASM_CPU_H */

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <drm/drmP.h>
 #include <linux/clk.h>
@@ -210,6 +202,9 @@ static irqreturn_t mtk_wdma_irq_handler(int irq, void *dev_id)
 {
 	struct mtk_disp_wdma *priv = dev_id;
 	struct mtk_ddp_comp *wdma = &priv->ddp_comp;
+	struct mtk_cwb_info *cwb_info;
+	struct mtk_drm_private *drm_priv;
+	unsigned int buf_idx;
 	unsigned int val = 0;
 	unsigned int ret = 0;
 
@@ -241,6 +236,16 @@ static irqreturn_t mtk_wdma_irq_handler(int irq, void *dev_id)
 
 		DDPIRQ("[IRQ] %s: frame complete!\n",
 			mtk_dump_comp_str(wdma));
+		drm_priv = mtk_crtc->base.dev->dev_private;
+		cwb_info = mtk_crtc->cwb_info;
+		if (cwb_info && cwb_info->enable &&
+			cwb_info->comp->id == wdma->id &&
+			!drm_priv->cwb_is_preempted) {
+			buf_idx = cwb_info->buf_idx;
+			cwb_info->buffer[buf_idx].timestamp = 100;
+			atomic_set(&mtk_crtc->cwb_task_active, 1);
+			wake_up_interruptible(&mtk_crtc->cwb_wq);
+		}
 		if (mtk_crtc->dc_main_path_commit_task) {
 			atomic_set(
 				&mtk_crtc->dc_main_path_commit_event, 1);
@@ -305,7 +310,7 @@ static int mtk_wdma_is_busy(struct mtk_ddp_comp *comp)
 	int ret, tmp;
 
 	tmp = readl(comp->regs + DISP_REG_WDMA_FLOW_CTRL_DBG);
-	ret = ((tmp & FLOW_CTRL_DBG_FLD_WDMA_STA_FLOW_CTRL) != 0x1) ? 1 : 0;
+	ret = ((tmp & REG_FLD_MASK(FLOW_CTRL_DBG_FLD_WDMA_STA_FLOW_CTRL)) != 0x1) ? 1 : 0;
 
 	DDPINFO("%s:%d is:%d regs:0x%x\n", __func__, __LINE__, ret, tmp);
 
@@ -332,7 +337,9 @@ static void mtk_wdma_prepare(struct mtk_ddp_comp *comp)
 	}
 #else
 #if defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) \
-	|| defined(CONFIG_MACH_MT6833)
+	|| defined(CONFIG_MACH_MT6833) \
+	|| defined(CONFIG_MACH_MT6877) \
+	|| defined(CONFIG_MACH_MT6781)
 	/* Bypass shadow register and read shadow register */
 	mtk_ddp_write_mask_cpu(comp, WDMA_BYPASS_SHADOW,
 		DISP_REG_WDMA_SHADOW_CTRL, WDMA_BYPASS_SHADOW);
@@ -364,9 +371,14 @@ static void mtk_wdma_calc_golden_setting(struct golden_setting_context *gsc,
 	unsigned int fifo_size_uv = 31;
 #endif
 #if defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) \
-	|| defined(CONFIG_MACH_MT6833)
+	|| defined(CONFIG_MACH_MT6833) \
+	|| defined(CONFIG_MACH_MT6877)
 	unsigned int fifo_size = 578;
 	unsigned int fifo_size_uv = 29;
+#endif
+#if defined(CONFIG_MACH_MT6781)
+	unsigned int fifo_size = 410;
+	unsigned int fifo_size_uv = 200;
 #endif
 	unsigned int fifo;
 	unsigned int factor1 = 4;
@@ -402,7 +414,8 @@ static void mtk_wdma_calc_golden_setting(struct golden_setting_context *gsc,
 		fifo_size_uv = 50;
 #endif
 #if defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) \
-	|| defined(CONFIG_MACH_MT6833)
+	|| defined(CONFIG_MACH_MT6833) || defined(CONFIG_MACH_MT6877) \
+	|| defined(CONFIG_MACH_MT6781)
 		fifo_size = 402;
 		fifo_size_uv = 99;
 #endif
@@ -420,7 +433,8 @@ static void mtk_wdma_calc_golden_setting(struct golden_setting_context *gsc,
 		fifo_size_uv = 109;
 #endif
 #if defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) \
-	|| defined(CONFIG_MACH_MT6833)
+	|| defined(CONFIG_MACH_MT6833) || defined(CONFIG_MACH_MT6877) \
+	|| defined(CONFIG_MACH_MT6781)
 		fifo_size = 402;
 		fifo_size_uv = 201;
 #endif
@@ -443,6 +457,7 @@ static void mtk_wdma_calc_golden_setting(struct golden_setting_context *gsc,
 
 	gs[GS_WDMA_BUF_CON1] += (fifo_size_uv << 10) + fifo_size;
 
+#if BITS_PER_LONG == 64
 	/* WDMA_BUF_CON5 */
 	tmp = DIV_ROUND_UP(consume_rate * Bpp * preultra_low_us, FP);
 	gs[GS_WDMA_PRE_ULTRA_LOW_Y] = (fifo_size > tmp) ? (fifo_size - tmp) : 1;
@@ -571,6 +586,137 @@ static void mtk_wdma_calc_golden_setting(struct golden_setting_context *gsc,
 	tmp = DIV_ROUND_UP(consume_rate * urgent_high_offset, FP * factor2);
 	gs[GS_WDMA_URGENT_HIGH_V] = (fifo > tmp) ? (fifo - tmp) : 1;
 
+#elif BITS_PER_LONG == 32
+	/* WDMA_BUF_CON5 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * Bpp * preultra_low_us, FP);
+	gs[GS_WDMA_PRE_ULTRA_LOW_Y] = (fifo_size > tmp) ? (fifo_size - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * Bpp * ultra_low_us, FP);
+	gs[GS_WDMA_ULTRA_LOW_Y] = (fifo_size > tmp) ? (fifo_size - tmp) : 1;
+
+	/* WDMA_BUF_CON6 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * Bpp * preultra_high_us, FP);
+	gs[GS_WDMA_PRE_ULTRA_HIGH_Y] =
+		(fifo_size > tmp) ? (fifo_size - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * Bpp * ultra_high_us, FP);
+	gs[GS_WDMA_ULTRA_HIGH_Y] = (fifo_size > tmp) ? (fifo_size - tmp) : 1;
+
+	/* WDMA_BUF_CON7 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * preultra_low_us, FP * factor1);
+	gs[GS_WDMA_PRE_ULTRA_LOW_U] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * ultra_low_us, FP * factor1);
+	gs[GS_WDMA_ULTRA_LOW_U] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	/* WDMA_BUF_CON8 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * preultra_high_us, FP * factor1);
+	gs[GS_WDMA_PRE_ULTRA_HIGH_U] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * ultra_high_us, FP * factor1);
+	gs[GS_WDMA_ULTRA_HIGH_U] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	/* WDMA_BUF_CON9 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * preultra_low_us, FP * factor2);
+	gs[GS_WDMA_PRE_ULTRA_LOW_V] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * ultra_low_us, FP * factor2);
+	gs[GS_WDMA_ULTRA_LOW_V] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	/* WDMA_BUF_CON10 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * preultra_high_us, FP * factor2);
+	gs[GS_WDMA_PRE_ULTRA_HIGH_V] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * ultra_high_us, FP * factor2);
+	gs[GS_WDMA_ULTRA_HIGH_V] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	/* WDMA_BUF_CON11 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * Bpp * (preultra_low_us + dvfs_offset),
+			   FP);
+	gs[GS_WDMA_PRE_ULTRA_LOW_Y_DVFS] =
+		(fifo_size > tmp) ? (fifo_size - tmp) : 1;
+	tmp = DIV64_U64_ROUND_UP(consume_rate * Bpp * (ultra_low_us + dvfs_offset),
+			   FP);
+	gs[GS_WDMA_ULTRA_LOW_Y_DVFS] =
+		(fifo_size > tmp) ? (fifo_size - tmp) : 1;
+
+	/* WDMA_BUF_CON12 */
+	tmp = DIV64_U64_ROUND_UP(
+		consume_rate * Bpp * (preultra_high_us + dvfs_offset), FP);
+	gs[GS_WDMA_PRE_ULTRA_HIGH_Y_DVFS] =
+		(fifo_size > tmp) ? (fifo_size - tmp) : 1;
+	tmp = DIV64_U64_ROUND_UP(consume_rate * Bpp * (ultra_high_us + dvfs_offset),
+			   FP);
+	gs[GS_WDMA_ULTRA_HIGH_Y_DVFS] =
+		(fifo_size > tmp) ? (fifo_size - tmp) : 1;
+
+	/* WDMA_BUF_CON13 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * (preultra_low_us + dvfs_offset),
+			   FP * factor1);
+	gs[GS_WDMA_PRE_ULTRA_LOW_U_DVFS] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * (ultra_low_us + dvfs_offset),
+			   FP * factor1);
+	gs[GS_WDMA_ULTRA_LOW_U_DVFS] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	/* WDMA_BUF_CON14 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * (preultra_high_us + dvfs_offset),
+			   FP * factor1);
+	gs[GS_WDMA_PRE_ULTRA_HIGH_U_DVFS] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * (ultra_high_us + dvfs_offset),
+			   FP * factor1);
+	gs[GS_WDMA_ULTRA_HIGH_U_DVFS] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	/* WDMA_BUF_CON15 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * (preultra_low_us + dvfs_offset),
+			   FP * factor2);
+	gs[GS_WDMA_PRE_ULTRA_LOW_V_DVFS] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * (ultra_low_us + dvfs_offset),
+			   FP * factor2);
+	gs[GS_WDMA_ULTRA_LOW_V_DVFS] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	/* WDMA_BUF_CON16 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * (preultra_high_us + dvfs_offset),
+			   FP * factor2);
+	gs[GS_WDMA_PRE_ULTRA_HIGH_V_DVFS] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * (ultra_high_us + dvfs_offset),
+			   FP * factor2);
+	gs[GS_WDMA_ULTRA_HIGH_V_DVFS] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	/* WDMA_BUF_CON17 */
+	gs[GS_WDMA_DVFS_EN] = 1;
+	gs[GS_WDMA_DVFS_TH_Y] = gs[GS_WDMA_ULTRA_HIGH_Y_DVFS];
+
+	/* WDMA_BUF_CON18 */
+	gs[GS_WDMA_DVFS_TH_U] = gs[GS_WDMA_ULTRA_HIGH_U_DVFS];
+	gs[GS_WDMA_DVFS_TH_V] = gs[GS_WDMA_ULTRA_HIGH_V_DVFS];
+
+	/* WDMA URGENT CONTROL 0 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * Bpp * urgent_low_offset, FP);
+	gs[GS_WDMA_URGENT_LOW_Y] = (fifo_size > tmp) ? (fifo_size - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * Bpp * urgent_high_offset, FP);
+	gs[GS_WDMA_URGENT_HIGH_Y] = (fifo_size > tmp) ? (fifo_size - tmp) : 1;
+
+	/* WDMA URGENT CONTROL 1 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * urgent_low_offset, FP * factor1);
+	gs[GS_WDMA_URGENT_LOW_U] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * urgent_high_offset, FP * factor1);
+	gs[GS_WDMA_URGENT_HIGH_U] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	/* WDMA URGENT CONTROL 2 */
+	tmp = DIV64_U64_ROUND_UP(consume_rate * urgent_low_offset, FP * factor2);
+	gs[GS_WDMA_URGENT_LOW_V] = (fifo > tmp) ? (fifo - tmp) : 1;
+
+	tmp = DIV64_U64_ROUND_UP(consume_rate * urgent_high_offset, FP * factor2);
+	gs[GS_WDMA_URGENT_HIGH_V] = (fifo > tmp) ? (fifo - tmp) : 1;
+#else
+	#error "check for api use for this architeacture"
+#endif
 	/* WDMA Buf Constant 3 */
 	gs[GS_WDMA_ISSUE_REG_TH_Y] = 16;
 	gs[GS_WDMA_ISSUE_REG_TH_U] = 16;
@@ -580,13 +726,17 @@ static void mtk_wdma_calc_golden_setting(struct golden_setting_context *gsc,
 }
 
 static void mtk_wdma_golden_setting(struct mtk_ddp_comp *comp,
-				    struct mtk_ddp_config *cfg,
+				    struct golden_setting_context *gsc,
 				    struct cmdq_pkt *handle)
 {
-	struct golden_setting_context *gsc = cfg->p_golden_setting_context;
 	unsigned int gs[GS_WDMA_FLD_NUM];
 	unsigned int value = 0;
 
+	if (!gsc) {
+		DDPPR_ERR("golden setting is null, %s,%d\n", __FILE__,
+			  __LINE__);
+		return;
+	}
 	mtk_wdma_calc_golden_setting(gsc, comp->fb->format->format, true, gs);
 
 #if 0
@@ -756,7 +906,7 @@ static unsigned int wdma_fmt_convert(unsigned int fmt)
 static int wdma_config_yuv420(struct mtk_ddp_comp *comp,
 			      uint32_t fmt, unsigned int dstPitch,
 			      unsigned int Height, unsigned long dstAddress,
-			      uint32_t sec, void *handle)
+			      uint32_t sec, void *handle, int sec_id)
 {
 	/* size_t size; */
 	unsigned int u_off = 0;
@@ -798,12 +948,12 @@ static int wdma_config_yuv420(struct mtk_ddp_comp *comp,
 		cmdq_sec_pkt_write_reg(handle,
 			comp->regs_pa + DISP_REG_WDMA_DST_ADDR1,
 			dstAddress, CMDQ_IWC_H_2_MVA,
-			u_off, u_size, 0);
+			u_off, u_size, 0, sec_id);
 		if (has_v)
 			cmdq_sec_pkt_write_reg(handle,
 				comp->regs_pa + DISP_REG_WDMA_DST_ADDR2,
 				dstAddress, CMDQ_IWC_H_2_MVA,
-				v_off, u_size, 0);
+				v_off, u_size, 0, sec_id);
 #endif
 	}
 	mtk_ddp_write_mask(comp, u_stride,
@@ -840,7 +990,9 @@ static void mtk_wdma_config(struct mtk_ddp_comp *comp,
 	struct mtk_wdma_cfg_info *cfg_info = &wdma->cfg_info;
 	int crtc_idx = drm_crtc_index(&comp->mtk_crtc->base);
 	int clip_w, clip_h;
+	struct golden_setting_context *gsc;
 	u32 sec, buffer_size;
+	int sec_id;
 
 	if (!comp->fb) {
 		if (crtc_idx != 2)
@@ -857,6 +1009,7 @@ static void mtk_wdma_config(struct mtk_ddp_comp *comp,
 		return;
 	}
 	sec = mtk_drm_fb_is_secure(comp->fb);
+	sec_id = mtk_fb_get_sec_id(comp->fb);
 
 	addr += comp->fb->offsets[0];
 	if (!(comp->fb->format &&
@@ -895,7 +1048,7 @@ static void mtk_wdma_config(struct mtk_ddp_comp *comp,
 	if (is_yuv(comp->fb->format->format)) {
 		wdma_config_yuv420(comp, comp->fb->format->format,
 				comp->fb->pitches[0], cfg->h,
-				addr, sec, handle);
+				addr, sec, handle, sec_id);
 		mtk_ddp_write_mask(comp, 0,
 				DISP_REG_WDMA_CFG, WDMA_UFO_DCP_ENABLE, handle);
 		mtk_ddp_write_mask(comp, WDMA_CT_EN,
@@ -920,14 +1073,84 @@ static void mtk_wdma_config(struct mtk_ddp_comp *comp,
 		cmdq_sec_pkt_write_reg(handle,
 				comp->regs_pa + DISP_REG_WDMA_DST_ADDR0,
 				addr & 0xFFFFFFFFU, CMDQ_IWC_H_2_MVA,
-				0, buffer_size, 0);
+				0, buffer_size, 0, sec_id);
 #endif
 	}
-	mtk_wdma_golden_setting(comp, cfg, handle);
+
+	gsc = cfg->p_golden_setting_context;
+	mtk_wdma_golden_setting(comp, gsc, handle);
 
 	cfg_info->addr = addr;
 	cfg_info->width = cfg->w;
 	cfg_info->height = cfg->h;
+	cfg_info->fmt = comp->fb->format->format;
+}
+
+static void mtk_wdma_addon_config(struct mtk_ddp_comp *comp,
+				 enum mtk_ddp_comp_id prev,
+				 enum mtk_ddp_comp_id next,
+				 union mtk_addon_config *addon_config,
+				 struct cmdq_pkt *handle)
+{
+	unsigned int size = 0;
+	unsigned int con = 0;
+	unsigned int addr = 0;
+	struct mtk_disp_wdma *wdma = comp_to_wdma(comp);
+	struct mtk_wdma_cfg_info *cfg_info = &wdma->cfg_info;
+	int crtc_idx = drm_crtc_index(&comp->mtk_crtc->base);
+	int src_w, src_h, clip_w, clip_h, clip_x, clip_y;
+	struct golden_setting_context *gsc;
+
+	comp->fb = addon_config->addon_wdma_config.fb;
+	if (!comp->fb) {
+		DDPPR_ERR("%s fb is empty, CRTC%d\n", __func__, crtc_idx);
+		return;
+	}
+
+	con = wdma_fmt_convert(comp->fb->format->format);
+
+	addr = addon_config->addon_wdma_config.addr;
+	if (!addr) {
+		DDPPR_ERR("%s:%d C%d no dma_buf\n", __func__,
+				__LINE__, crtc_idx);
+		return;
+	}
+	cfg_info->addr = addr;
+	mtk_ddp_write(comp, addr & 0xFFFFFFFFU,
+		DISP_REG_WDMA_DST_ADDR0, handle);
+
+	src_w = addon_config->addon_wdma_config.wdma_src_roi.width;
+	src_h = addon_config->addon_wdma_config.wdma_src_roi.height;
+
+	clip_w = addon_config->addon_wdma_config.wdma_dst_roi.width;
+	clip_h = addon_config->addon_wdma_config.wdma_dst_roi.height;
+	clip_x = addon_config->addon_wdma_config.wdma_dst_roi.x;
+	clip_y = addon_config->addon_wdma_config.wdma_dst_roi.y;
+
+	size = (src_w & 0x3FFFU) + ((src_h << 16U) & 0x3FFF0000U);
+	mtk_ddp_write(comp, size, DISP_REG_WDMA_SRC_SIZE, handle);
+	mtk_ddp_write(comp, (clip_y << 16) | clip_x,
+		DISP_REG_WDMA_CLIP_COORD, handle);
+	mtk_ddp_write(comp, (clip_h << 16) | clip_w,
+		DISP_REG_WDMA_CLIP_SIZE, handle);
+	mtk_ddp_write_mask(comp, con, DISP_REG_WDMA_CFG,
+		WDMA_OUT_FMT | WDMA_CON_SWAP, handle);
+
+	mtk_ddp_write_mask(comp, 0,
+			DISP_REG_WDMA_CFG, WDMA_UFO_DCP_ENABLE, handle);
+	mtk_ddp_write_mask(comp, 0,
+			DISP_REG_WDMA_CFG, WDMA_CT_EN, handle);
+
+	mtk_ddp_write(comp, clip_w * 3,
+		DISP_REG_WDMA_DST_WIN_BYTE, handle);
+
+	gsc = addon_config->addon_wdma_config.p_golden_setting_context;
+	mtk_wdma_golden_setting(comp, gsc, handle);
+
+	DDPMSG("[capture] config addr:0x%x, roi:(%d,%d,%d,%d)\n",
+		addr, clip_x, clip_y, clip_w, clip_h);
+	cfg_info->width = clip_w;
+	cfg_info->height = clip_h;
 	cfg_info->fmt = comp->fb->format->format;
 }
 
@@ -938,6 +1161,12 @@ void mtk_wdma_dump_golden_setting(struct mtk_ddp_comp *comp)
 	int i;
 
 	DDPDUMP("-- %s Golden Setting --\n", mtk_dump_comp_str(comp));
+
+	if (comp->mtk_crtc && comp->mtk_crtc->sec_on) {
+		DDPDUMP("Skip dump secure wdma!\n");
+		return;
+	}
+
 	DDPDUMP("0x%03x:0x%08x 0x%03x:0x%08x\n",
 		0x10, readl(DISP_REG_WDMA_SMI_CON + baddr),
 		0x38, readl(DISP_REG_WDMA_BUF_CON1 + baddr));
@@ -1086,6 +1315,12 @@ int mtk_wdma_dump(struct mtk_ddp_comp *comp)
 	void __iomem *baddr = comp->regs;
 
 	DDPDUMP("== %s REGS ==\n", mtk_dump_comp_str(comp));
+
+	if (comp->mtk_crtc && comp->mtk_crtc->sec_on) {
+		DDPDUMP("Skip dump secure wdma!\n");
+		return 0;
+	}
+
 	if (mtk_ddp_comp_helper_get_opt(comp,
 					MTK_DRM_OPT_REG_PARSER_RAW_DUMP)) {
 		unsigned int i = 0;
@@ -1169,6 +1404,12 @@ int mtk_wdma_analysis(struct mtk_ddp_comp *comp)
 	void __iomem *baddr = comp->regs;
 
 	DDPDUMP("== DISP %s ANALYSIS ==\n", mtk_dump_comp_str(comp));
+
+	if (comp->mtk_crtc && comp->mtk_crtc->sec_on) {
+		DDPDUMP("Skip dump secure wdma!\n");
+		return 0;
+	}
+
 	DDPDUMP("en=%d,src(%dx%d),clip=(%d,%d,%dx%d)\n",
 		readl(baddr + DISP_REG_WDMA_EN) & 0x01,
 		readl(baddr + DISP_REG_WDMA_SRC_SIZE) & 0x3fff,
@@ -1218,13 +1459,64 @@ int MMPathTraceWDMA(struct mtk_ddp_comp *ddp_comp, char *str,
 	return n;
 }
 
+static int mtk_wdma_io_cmd(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle,
+			  enum mtk_ddp_io_cmd cmd, void *params)
+{
+	struct mtk_disp_wdma *wdma = container_of(comp, struct mtk_disp_wdma, ddp_comp);
+
+	switch (cmd) {
+	case WDMA_WRITE_DST_ADDR0:
+	{
+		unsigned int addr = *(unsigned int *)params;
+
+		mtk_ddp_write(comp, addr & 0xFFFFFFFFU,
+			DISP_REG_WDMA_DST_ADDR0, handle);
+		DDPMSG("[capture] update addr:0x%x\n", addr);
+		wdma->cfg_info.addr = addr;
+	}
+		break;
+	case WDMA_READ_DST_SIZE:
+	{
+		unsigned int val, w, h;
+		struct mtk_cwb_info *cwb_info = (struct mtk_cwb_info *)params;
+
+		val = readl(comp->regs + DISP_REG_WDMA_CLIP_SIZE);
+		w = val & 0x3fff;
+		h = (val >> 16) & 0x3fff;
+		cwb_info->copy_w = w;
+		cwb_info->copy_h = h;
+		DDPDBG("[capture] sof get (w,h)=(%d,%d)\n", w, h);
+	}
+		break;
+	case IRQ_LEVEL_IDLE: {
+		mtk_ddp_write(comp, 0x0, DISP_REG_WDMA_INTEN, handle);
+		break;
+	}
+	case IRQ_LEVEL_ALL: {
+		unsigned int inten;
+
+		inten = REG_FLD_VAL(INTEN_FLD_FME_CPL_INTEN, 1) |
+			REG_FLD_VAL(INTEN_FLD_FME_UND_INTEN, 1);
+
+		mtk_ddp_write(comp, inten, DISP_REG_WDMA_INTEN, handle);
+		break;
+	}
+	default:
+		break;
+	}
+
+	return 0;
+}
+
 static const struct mtk_ddp_comp_funcs mtk_disp_wdma_funcs = {
 	.config = mtk_wdma_config,
+	.addon_config = mtk_wdma_addon_config,
 	.start = mtk_wdma_start,
 	.stop = mtk_wdma_stop,
 	.prepare = mtk_wdma_prepare,
 	.unprepare = mtk_wdma_unprepare,
 	.is_busy = mtk_wdma_is_busy,
+	.io_cmd = mtk_wdma_io_cmd,
 };
 
 static int mtk_disp_wdma_bind(struct device *dev, struct device *master,
@@ -1343,8 +1635,18 @@ static const struct mtk_disp_wdma_data mt6853_wdma_driver_data = {
 	.support_shadow = false,
 };
 
+static const struct mtk_disp_wdma_data mt6877_wdma_driver_data = {
+	.sodi_config = mt6877_mtk_sodi_config,
+	.support_shadow = false,
+};
+
 static const struct mtk_disp_wdma_data mt6833_wdma_driver_data = {
 	.sodi_config = mt6833_mtk_sodi_config,
+	.support_shadow = false,
+};
+
+static const struct mtk_disp_wdma_data mt6781_wdma_driver_data = {
+	.sodi_config = mt6781_mtk_sodi_config,
 	.support_shadow = false,
 };
 
@@ -1359,8 +1661,12 @@ static const struct of_device_id mtk_disp_wdma_driver_dt_match[] = {
 	 .data = &mt6873_wdma_driver_data},
 	{.compatible = "mediatek,mt6853-disp-wdma",
 	 .data = &mt6853_wdma_driver_data},
+	{.compatible = "mediatek,mt6877-disp-wdma",
+	 .data = &mt6877_wdma_driver_data},
 	{.compatible = "mediatek,mt6833-disp-wdma",
 	 .data = &mt6833_wdma_driver_data},
+	{.compatible = "mediatek,mt6781-disp-wdma",
+	 .data = &mt6781_wdma_driver_data},
 	{},
 };
 MODULE_DEVICE_TABLE(of, mtk_disp_wdma_driver_dt_match);

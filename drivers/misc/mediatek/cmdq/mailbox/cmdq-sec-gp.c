@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/soc/mediatek/mtk-cmdq.h>
 #include <linux/math64.h>
@@ -25,6 +17,9 @@ void cmdq_sec_setup_tee_context(struct cmdq_sec_tee_context *tee)
 	tee->uuid = (struct TEEC_UUID) { 0x09010000, 0x0, 0x0,
 		{ 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 } };
 }
+
+#include <linux/atomic.h>
+static atomic_t m4u_init = ATOMIC_INIT(0);
 
 s32 cmdq_sec_init_context(struct cmdq_sec_tee_context *tee)
 {
@@ -43,6 +38,12 @@ s32 cmdq_sec_init_context(struct cmdq_sec_tee_context *tee)
 	}
 #endif
 	cmdq_log("[SEC]TEE is ready");
+
+	/* do m4u sec init */
+	if (atomic_cmpxchg(&m4u_init, 0, 1) == 0) {
+		m4u_sec_init();
+		cmdq_msg("[SEC] M4U_sec_init is called\n");
+	}
 
 	status = TEEC_InitializeContext(NULL, &tee->gp_context);
 	if (status != TEEC_SUCCESS)

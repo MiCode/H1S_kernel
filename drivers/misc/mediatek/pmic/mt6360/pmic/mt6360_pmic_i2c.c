@@ -1,18 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- *  drivers/misc/mediatek/pmic/mt6360/mt6360_pmic.c
- *  Driver for MT6360 PMIC part
- *
- *  Copyright (C) 2018 Mediatek Technology Inc.
- *  cy_huang <cy_huang@richtek.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- *  See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/init.h>
@@ -24,12 +12,13 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
 #include <linux/delay.h>
-#if defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)
+#ifdef FIXME
+//#if defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)
 #include <mach/mtk_pmic_wrap.h>
 #include <mt-plat/upmu_common.h>
 #endif
 #include "../inc/mt6360_pmic.h"
-#include <mt-plat/charger_class.h>
+#include <charger_class.h>
 
 static bool dbg_log_en; /* module param to enable/disable debug log */
 module_param(dbg_log_en, bool, 0644);
@@ -503,7 +492,8 @@ static int mt6360_pmic_set_voltage_sel(struct regulator_dev *rdev,
 	/* for LDO6/7 vocal add */
 	if (id > MT6360_PMIC_BUCK2)
 		sel = (sel >= 160) ? 0xfa : (((sel / 10) << 4) + sel % 10);
-#if defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)
+#ifdef FIXME
+//#if defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)
 	if (id == MT6360_PMIC_BUCK1)
 		pwrap_write(MT6359_RG_SPI_CON12, sel);
 #endif
@@ -883,8 +873,8 @@ static int mt6360_pmic_i2c_probe(struct i2c_client *client,
 	}
 	mt6360_pmic_irq_register(mpi);
 	dev_info(&client->dev, "%s: successfully probed\n", __func__);
-
-#if defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)
+#ifdef FIXME
+//#if defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)
 	/* MT6359 record VMDLA vosel */
 	ret = mt6360_pmic_reg_read(mpi,
 		mt6360_pmic_descs[MT6360_PMIC_BUCK1].desc.vsel_reg);
@@ -898,7 +888,7 @@ out_pdata:
 	mt6360_pmic_regmap_unregister(mpi);
 out_regmap:
 	mutex_destroy(&mpi->io_lock);
-	return ret;
+	return -EPROBE_DEFER;
 }
 
 static int mt6360_pmic_i2c_remove(struct i2c_client *client)
@@ -937,7 +927,7 @@ static void mt6360_pmic_shutdown(struct i2c_client *client)
 	struct mt6360_pmic_info *mpi = i2c_get_clientdata(client);
 	int ret = 0;
 
-	dev_dbg(mpi->dev, "%s\n", __func__);
+	dev_dbg(&client->dev, "%s\n", __func__);
 	if (mpi == NULL)
 		return;
 	ret = mt6360_pmic_enable_poweroff_sequence(mpi, true);
@@ -988,7 +978,18 @@ static struct i2c_driver mt6360_pmic_i2c_driver = {
 	.shutdown = mt6360_pmic_shutdown,
 	.id_table = mt6360_pmic_i2c_id,
 };
-module_i2c_driver(mt6360_pmic_i2c_driver);
+
+static int __init mt6360_pmic_i2c_init(void)
+{
+	return i2c_add_driver(&mt6360_pmic_i2c_driver);
+}
+device_initcall_sync(mt6360_pmic_i2c_init);
+
+static void __exit mt6360_pmic_i2c_exit(void)
+{
+	i2c_del_driver(&mt6360_pmic_i2c_driver);
+}
+module_exit(mt6360_pmic_i2c_exit);
 
 MODULE_AUTHOR("CY_Huang <cy_huang@richtek.com>");
 MODULE_DESCRIPTION("MT6660 PMIC Driver");

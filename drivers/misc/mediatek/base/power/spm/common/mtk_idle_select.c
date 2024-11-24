@@ -1,21 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/spinlock.h>
 
-#include <mt-plat/mtk_meminfo.h> /* dcs_get_dcs_status_trylock/unlock */
+//#include <mt-plat/mtk_meminfo.h> /* dcs_get_dcs_status_trylock/unlock */
 #include <mt-plat/mtk_boot.h>
 
 #if defined(CONFIG_MICROTRUST_TEE_SUPPORT)
@@ -27,7 +19,6 @@
 #include <mtk_idle_internal.h>
 #include <mtk_spm_internal.h> /* mtk_idle_cond_update_state */
 
-#include <mtk_idle_module.h>
 
 /* [ByChip] Internal weak functions: implemented in mtk_spm.c */
 int __attribute__((weak)) spm_load_firmware_status(void) { return -1; }
@@ -44,12 +35,55 @@ int __attribute__((weak)) mtk_idle_plat_bootblock_check(void)
 }
 
 #if defined(MTK_IDLE_DVT_TEST_ONLY)
+
 #include <linux/cpu.h>
+static atomic_t is_in_hotplug = ATOMIC_INIT(0);
 
 static bool mtk_idle_cpu_criteria(void)
 {
-	return (num_online_cpus() != 1) ? false : true;
+	return ((atomic_read(&is_in_hotplug) == 1) ||
+		(num_online_cpus() != 1)) ? false : true;
 }
+
+static int mtk_idle_cpu_callback(struct notifier_block *nfb,
+	unsigned long action, void *hcpu)
+{
+	switch (action) {
+	case CPU_UP_PREPARE:
+	case CPU_UP_PREPARE_FROZEN:
+	case CPU_DOWN_PREPARE:
+	case CPU_DOWN_PREPARE_FROZEN:
+		atomic_inc(&is_in_hotplug);
+		break;
+
+	case CPU_ONLINE:
+	case CPU_ONLINE_FROZEN:
+	case CPU_UP_CANCELED:
+	case CPU_UP_CANCELED_FROZEN:
+	case CPU_DOWN_FAILED:
+	case CPU_DOWN_FAILED_FROZEN:
+	case CPU_DEAD:
+	case CPU_DEAD_FROZEN:
+		atomic_dec(&is_in_hotplug);
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block mtk_idle_cpu_notifier = {
+	.notifier_call = mtk_idle_cpu_callback,
+	.priority   = INT_MAX,
+};
+
+int __init mtk_idle_hotplug_cb_init(void)
+{
+	register_cpu_notifier(&mtk_idle_cpu_notifier);
+
+	return 0;
+}
+
+late_initcall(mtk_idle_hotplug_cb_init);
 
 static void __go_to_wfi(int cpu)
 {
@@ -63,14 +97,25 @@ int mtk_idle_enter_dvt(int cpu)
 {
 	int state = -1;
 
-	if (mtk_idle_cpu_criteria()) {
-		if (mtk_idle_select(cpu) != IDLE_TYPE_LEGACY_ENTER)
-			__go_to_wfi(cpu);
-		else
-			state = 0;
+	if (mtk_idle_cpu_criteria())
+		state = mtk_idle_select(cpu);
+
+	switch (state) {
+	case IDLE_TYPE_DP:
+		dpidle_enter(cpu);
+		break;
+	case IDLE_TYPE_SO3:
+		soidle3_enter(cpu);
+		break;
+	case IDLE_TYPE_SO:
+		soidle_enter(cpu);
+		break;
+	default:
+		__go_to_wfi(cpu);
+		break;
 	}
 
-	return state;
+	return 0;
 }
 #endif /* MTK_IDLE_DVT_TEST_ONLY */
 
@@ -88,14 +133,34 @@ void idle_lock_by_ufs(unsigned int lock)
 }
 #endif
 
-#define LOG_STR "blocked by boot reason, system_state = "
-/* mtk_idle_select */
-int mtk_idle_entrance(struct mtk_idle_info *info
-	, int *ChosenIdle, int IsSelectOnly)
+static int check_each_idle_type(int reason)
 {
-	int idx = 0;
+
+	if (mtk_idle_screen_off_sodi3) {
+		if (sodi3_can_enter(reason))
+			return IDLE_TYPE_SO3;
+		else if (dpidle_can_enter(reason))
+			return IDLE_TYPE_DP;
+		else if (sodi_can_enter(reason))
+			return IDLE_TYPE_SO;
+	} else {
+		if (dpidle_can_enter(reason))
+			return IDLE_TYPE_DP;
+		else if (sodi3_can_enter(reason))
+			return IDLE_TYPE_SO3;
+		else if (sodi_can_enter(reason))
+			return IDLE_TYPE_SO;
+	}
+
+	/* always can enter rgidle */
+	return IDLE_TYPE_RG;
+}
+
+#define LOG_STR "blocked by boot reason, system_state = "
+int mtk_idle_select(int cpu)
+{
+	int idx;
 	int reason = NR_REASONS;
-	int bRet = 0;
 	#if defined(CONFIG_MTK_UFS_SUPPORT)
 	unsigned long flags = 0;
 	unsigned int ufs_locked;
@@ -108,8 +173,10 @@ int mtk_idle_entrance(struct mtk_idle_info *info
 	#endif
 
 	/* direct return if all mtk idle features are off */
-	if (mtk_idle_module_enabled() != MTK_IDLE_MOD_OK)
+	if (!mtk_dpidle_enabled() &&
+		!mtk_sodi3_enabled() && !mtk_sodi_enabled()) {
 		return -1;
+	}
 
 	/* If kernel didn't enter system running state,
 	 *  idle task can't enter mtk idle.
@@ -118,14 +185,15 @@ int mtk_idle_entrance(struct mtk_idle_info *info
 		(mtk_idle_plat_bootblock_check() == MTK_IDLE_PLAT_READY))
 	) {
 		if (system_state < SYSTEM_RUNNING) {
-			printk_deferred("[name:spm&]Power/swap %s %s %d\n"
-					, __func__, LOG_STR, system_state);
+			printk_deferred("[name:spm&]Power/swap %s %s %d\n",
+				__func__, LOG_STR, system_state);
 		}
-
 		return -1;
 	}
 
-	__profile_idle_start(PIDX_SELECT_TO_ENTER);
+	__profile_idle_start(IDLE_TYPE_DP, PIDX_SELECT_TO_ENTER);
+	__profile_idle_start(IDLE_TYPE_SO3, PIDX_SELECT_TO_ENTER);
+	__profile_idle_start(IDLE_TYPE_SO, PIDX_SELECT_TO_ENTER);
 
 	/* 1. spmfw firmware is loaded ? */
 	#if !defined(CONFIG_FPGA_EARLY_PORTING)
@@ -183,43 +251,13 @@ int mtk_idle_entrance(struct mtk_idle_info *info
 	#endif
 
 get_idle_idx:
+	idx = check_each_idle_type(reason);
 
 	#if defined(CONFIG_MTK_DCS)
 	if (dcs_lock_get)
 		dcs_get_dcs_status_unlock();
 	#endif
 
-	if (IsSelectOnly != 1) {
-		if (!MTK_IDLE_MOD_SUCCESS(
-			mtk_idle_module_enter(info, reason, &idx))
-		)
-			bRet = -1;
-	} else {
-		if (!MTK_IDLE_MOD_SUCCESS(
-			mtk_idle_module_model_sel(info, reason, &idx))
-		)
-			bRet = -1;
-	}
-
-	if (ChosenIdle)
-		*ChosenIdle = idx;
-
-	return bRet;
+	return idx;
 }
 
-/* Stub function, maybe remove later */
-int mtk_idle_select(int cpu)
-{
-	int idleIdx = 0;
-	struct mtk_idle_info IdleInfo = {
-		.cpu = cpu,
-		.predit_us = 0xffffffff,
-	};
-
-	if (mtk_idle_entrance(&IdleInfo, &idleIdx, 0) == 0)
-		idleIdx = IDLE_TYPE_LEGACY_ENTER;
-	else
-		idleIdx = IDLE_TYPE_LEGACY_CAN_NOT_ENTER;
-
-	return idleIdx;
-}

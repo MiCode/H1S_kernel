@@ -216,8 +216,10 @@ static int fsl_setup_msi_irqs(struct pci_dev *pdev, int nvec, int type)
 			dev_err(&pdev->dev,
 				"node %pOF has an invalid fsl,msi phandle %u\n",
 				hose->dn, np->phandle);
+			of_node_put(np);
 			return -EINVAL;
 		}
+		of_node_put(np);
 	}
 
 	for_each_pci_msi_entry(entry, pdev) {
@@ -354,6 +356,7 @@ static int fsl_of_msi_remove(struct platform_device *ofdev)
 }
 
 static struct lock_class_key fsl_msi_irq_class;
+static struct lock_class_key fsl_msi_irq_request_class;
 
 static int fsl_msi_setup_hwirq(struct fsl_msi *msi, struct platform_device *dev,
 			       int offset, int irq_index)
@@ -373,7 +376,8 @@ static int fsl_msi_setup_hwirq(struct fsl_msi *msi, struct platform_device *dev,
 		dev_err(&dev->dev, "No memory for MSI cascade data\n");
 		return -ENOMEM;
 	}
-	irq_set_lockdep_class(virt_msir, &fsl_msi_irq_class);
+	irq_set_lockdep_class(virt_msir, &fsl_msi_irq_class,
+			      &fsl_msi_irq_request_class);
 	cascade_data->index = offset;
 	cascade_data->msi_data = msi;
 	cascade_data->virq = virt_msir;
@@ -574,10 +578,12 @@ static const struct fsl_msi_feature ipic_msi_feature = {
 	.msiir_offset = 0x38,
 };
 
+#ifdef CONFIG_EPAPR_PARAVIRT
 static const struct fsl_msi_feature vmpic_msi_feature = {
 	.fsl_pic_ip = FSL_PIC_IP_VMPIC,
 	.msiir_offset = 0,
 };
+#endif
 
 static const struct of_device_id fsl_of_msi_ids[] = {
 	{

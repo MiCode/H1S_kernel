@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include "dpmaif_drv.h"
@@ -42,7 +34,7 @@ static void drv_dpmaif_dl_pit_only_update_enable_bit_done(unsigned char q_num)
 			CCCI_ERROR_LOG(0, TAG,
 				"DPMAIF_PD_DL_PIT_INIT ready failed\n");
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			count = 0;
 			return;
 		}
@@ -54,7 +46,7 @@ static void drv_dpmaif_dl_pit_only_update_enable_bit_done(unsigned char q_num)
 			CCCI_ERROR_LOG(0, TAG,
 				"DPMAIF_PD_DL_PIT_INIT not ready failed\n");
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			count = 0;
 			break;
 		}
@@ -81,7 +73,7 @@ static void drv_dpmaif_check_dl_fifo_idle(void)
 			CCCI_ERROR_LOG(0, TAG,
 				"DPMAIF_AO_DL_PIT_STA3 failed\n");
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			count = 0;
 			return;
 		}
@@ -224,7 +216,7 @@ static int drv_dpmaif_dl_set_idle(bool set_en)
 				CCCI_ERROR_LOG(0, TAG,
 					"DPMAIF_AO_DL_PIT_STA3 failed\n");
 				dpmaif_ctrl->ops->dump_status(
-					DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+					DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 				count1 = 0;
 				ret = HW_REG_CHK_FAIL;
 				break;
@@ -269,7 +261,7 @@ int drv_dpmaif_dl_add_frg_bat_cnt(unsigned char q_num,
 			CCCI_ERROR_LOG(0, TAG,
 				"%s cost too long\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -325,7 +317,7 @@ int drv_dpmaif_dl_add_bat_cnt(unsigned char q_num,
 			CCCI_ERROR_LOG(0, TAG,
 				"%s cost too long\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -373,7 +365,7 @@ int drv_dpmaif_dl_add_pit_remain_cnt(unsigned char q_num,
 			CCCI_ERROR_LOG(0, TAG,
 				"1st DPMAIF_PD_DL_PIT_ADD read fail\n");
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			count = 0;
 			return HW_REG_TIME_OUT;
 		}
@@ -385,7 +377,7 @@ int drv_dpmaif_dl_add_pit_remain_cnt(unsigned char q_num,
 			CCCI_ERROR_LOG(0, TAG,
 				 "2nd DPMAIF_PD_DL_PIT_ADD read fail\n");
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			count = 0;
 			return HW_REG_TIME_OUT;
 		}
@@ -609,7 +601,7 @@ int drv_dpmaif_dl_all_queue_en(bool enable)
 			CCCI_ERROR_LOG(0, TAG,
 				"1st DPMAIF_PD_DL_BAT_INIT read/write fail\n");
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -621,14 +613,14 @@ int drv_dpmaif_dl_all_queue_en(bool enable)
 			CCCI_ERROR_LOG(0, TAG,
 			"2nd DPMAIF_PD_DL_BAT_INIT read fail\n");
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
 	return 0;
 }
 
-unsigned int drv_dpmaif_dl_idle_check(void)
+int drv_dpmaif_dl_idle_check(void)
 {
 	unsigned int ret;
 
@@ -736,7 +728,7 @@ int drv_dpmaif_ul_add_wcnt(unsigned char q_num, unsigned short drb_wcnt)
 			CCCI_ERROR_LOG(0, TAG, "drb_add rdy poll fail: 0x%x\n",
 				DPMA_READ_PD_UL(DPMAIF_PD_UL_DBG_STA2));
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_CHK_FAIL;
 		}
 	}
@@ -794,7 +786,7 @@ int drv_dpmaif_dl_bat_init_done(unsigned char q_num, bool frg_en)
 			CCCI_ERROR_LOG(0, TAG,
 				"%s 1s fail\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -806,7 +798,7 @@ int drv_dpmaif_dl_bat_init_done(unsigned char q_num, bool frg_en)
 			CCCI_ERROR_LOG(0, TAG,
 				"%s 2nd fail\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -831,7 +823,7 @@ void drv_dpmaif_dl_pit_init_done(unsigned char q_num)
 			CCCI_ERROR_LOG(0, TAG,
 				"%s 1st fail\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return;
 		}
 	}
@@ -843,7 +835,7 @@ void drv_dpmaif_dl_pit_init_done(unsigned char q_num)
 			CCCI_ERROR_LOG(0, TAG,
 				"%s 2nd fail\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return;
 		}
 	}
@@ -1139,7 +1131,7 @@ int drv_dpmaif_dl_all_frg_queue_en(bool enable)
 			CCCI_ERROR_LOG(0, TAG,
 				"%s 1st fail\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -1151,7 +1143,7 @@ int drv_dpmaif_dl_all_frg_queue_en(bool enable)
 			CCCI_ERROR_LOG(0, TAG,
 				"%s 2nd fail\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -1468,7 +1460,7 @@ void drv_dpmaif_ul_all_queue_en(bool enable)
 #endif
 }
 
-unsigned int drv_dpmaif_ul_idle_check(void)
+int drv_dpmaif_ul_idle_check(void)
 {
 	unsigned long idle_sts;
 	unsigned int ret;
@@ -1511,7 +1503,7 @@ int drv_dpmaif_intr_hw_init(void)
 			CCCI_ERROR_LOG(0, TAG,
 				"%s 1st fail\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -1533,7 +1525,7 @@ int drv_dpmaif_intr_hw_init(void)
 			CCCI_ERROR_LOG(0, TAG,
 				"%s 2nd fail\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -1559,7 +1551,7 @@ int drv_dpmaif_intr_hw_init(void)
 			CCCI_ERROR_LOG(0, TAG,
 				"%s 3rd fail\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -1580,7 +1572,7 @@ int drv_dpmaif_intr_hw_init(void)
 			CCCI_ERROR_LOG(0, TAG,
 				"%s 4th fail\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -1648,7 +1640,7 @@ int drv_dpmaif_dl_restore(unsigned int mask)
 			CCCI_ERROR_LOG(0, TAG,
 				"%s fail\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -1666,7 +1658,7 @@ int drv_dpmaif_dl_restore(unsigned int mask)
 			CCCI_ERROR_LOG(0, TAG,
 				"%s fail\n", __func__);
 			dpmaif_ctrl->ops->dump_status(
-				DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+				DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 			return HW_REG_TIME_OUT;
 		}
 	}
@@ -1718,7 +1710,7 @@ static int drv_dpmaif_set_dl_idle(bool set_en)
 				CCCI_ERROR_LOG(0, TAG,
 					"DPMAIF_AO_DL_PIT_STA3 failed\n");
 				dpmaif_ctrl->ops->dump_status(
-					DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+					DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 				count1 = 0;
 				ret = HW_REG_CHK_FAIL;
 				break;
@@ -1797,7 +1789,7 @@ int drv_dpmaif_dl_add_apit_num(unsigned short ap_entry_cnt)
 				CCCI_ERROR_LOG(0, TAG,
 					"DPMAIF_PD_DL_PIT_INIT ready failed\n");
 				dpmaif_ctrl->ops->dump_status(
-					DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+					DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 				count = 0;
 				ret = HW_REG_CHK_FAIL;
 				return ret;
@@ -1811,7 +1803,7 @@ int drv_dpmaif_dl_add_apit_num(unsigned short ap_entry_cnt)
 				CCCI_ERROR_LOG(0, TAG,
 					"DPMAIF_PD_DL_PIT_INIT not ready failed\n");
 				dpmaif_ctrl->ops->dump_status(
-					DPMAIF_HIF_ID, DUMP_FLAG_REG, -1);
+					DPMAIF_HIF_ID, DUMP_FLAG_REG, NULL, -1);
 				count = 0;
 				ret = HW_REG_CHK_FAIL;
 				return ret;

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2014 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 #include <linux/debugfs.h>
 #endif
@@ -454,7 +446,7 @@ void mtk_drm_debugfs_init(struct drm_device *dev, struct mtk_drm_private *priv)
 					   &debug_fops);
 #endif
 #if IS_ENABLED(CONFIG_PROC_FS)
-	mtkdrm_dbgfs = proc_create("mtkdrm", S_IFREG | 0644, NULL,
+	mtkdrm_dbgfs = proc_create("mtkdrm", S_IFREG | 0640, NULL,
 					   &debug_fops);
 	if (!mtkdrm_dbgfs) {
 		pr_info("[%s %d]failed to create mtkdrm in /proc\n",

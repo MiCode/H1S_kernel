@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2011-2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include <linux/types.h>
@@ -84,7 +76,7 @@ static inline void sspm_log_timer_add(void)
 	}
 }
 
-static void sspm_log_timeout(unsigned long data)
+static void sspm_log_timeout(struct timer_list *unused)
 {
 	if (buf_info->r_pos != buf_info->w_pos) {
 		sspm_log_if_wake();
@@ -336,7 +328,7 @@ int __init sspm_logger_init_done(void)
 			return ret;
 #endif
 
-		setup_timer(&sspm_log_timer, &sspm_log_timeout, 0);
+		timer_setup(&sspm_log_timer, &sspm_log_timeout, 0);
 		sspm_log_timer.expires = 0;
 
 		sspm_logger_inited = 1;

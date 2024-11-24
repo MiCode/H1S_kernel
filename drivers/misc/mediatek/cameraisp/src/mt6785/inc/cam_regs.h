@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
-* Copyright (C) 2016 MediaTek Inc.
-*
-* This program is free software; you can redistribute it and/or modify
-* it under the terms of the GNU General Public License version 2 as
-* published by the Free Software Foundation.
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-* See http://www.gnu.org/licenses/gpl-2.0.html for more details.
-*/
+ * Copyright (c) 2019 MediaTek Inc.
+ */
 
 /******************************************************************************
  * cam_regs.h - MT6758 cam registers
@@ -202,6 +194,7 @@
 #define CAM_REG_CTL_CD_DONE_SEL(module)  (isp_devs[module].regs + 0x0048)
 #define CAM_REG_CTL_UNI_DONE_SEL(module)  (isp_devs[module].regs + 0x004C)
 #define CAM_REG_CTL_TWIN_STATUS(module)  (isp_devs[module].regs + 0x0050)
+#define CAM_REG_CTL_SPARE2(module)  (isp_devs[module].regs + 0x0058)
 
 #define CAM_REG_FBC_IMGO_CTL1(module)  (isp_devs[module].regs + 0x0110)
 #define CAM_REG_FBC_IMGO_CTL2(module)  (isp_devs[module].regs + 0x0114)
@@ -380,28 +373,28 @@
 
 union FBC_CTRL_1 {
 	struct { /* 0x1A004110  */
-		unsigned int  FBC_NUM                               :  6;      /*  0.. 5, 0x0000003F */
-		unsigned int  rsv_6                                 :  9;      /*  6..14, 0x00007FC0 */
-		unsigned int  FBC_EN                                :  1;      /* 15..15, 0x00008000 */
-		unsigned int  FBC_MODE                              :  1;      /* 16..16, 0x00010000 */
-		unsigned int  LOCK_EN                               :  1;      /* 17..17, 0x00020000 */
-		unsigned int  rsv_18                                :  2;      /* 18..19, 0x000C0000 */
-		unsigned int  DROP_TIMING                           :  1;      /* 20..20, 0x00100000 */
-		unsigned int  rsv_21                                :  3;      /* 21..23, 0x00E00000 */
-		unsigned int  SUB_RATIO                             :  8;      /* 24..31, 0xFF000000 */
+		unsigned int  FBC_NUM             :  6;/*  0.. 5, 0x0000003F */
+		unsigned int  rsv_6               :  9;/*  6..14, 0x00007FC0 */
+		unsigned int  FBC_EN              :  1;/* 15..15, 0x00008000 */
+		unsigned int  FBC_MODE            :  1;/* 16..16, 0x00010000 */
+		unsigned int  LOCK_EN             :  1;/* 17..17, 0x00020000 */
+		unsigned int  rsv_18              :  2;/* 18..19, 0x000C0000 */
+		unsigned int  DROP_TIMING         :  1;/* 20..20, 0x00100000 */
+		unsigned int  rsv_21              :  3;/* 21..23, 0x00E00000 */
+		unsigned int  SUB_RATIO           :  8;/* 24..31, 0xFF000000 */
 	} Bits;
 	unsigned int Raw;
 };  /* CAM_A_FBC_IMGO_CTL1 */
 
 union FBC_CTRL_2 {
 	struct { /* 0x1A004114 */
-		unsigned int  FBC_CNT                               :  7;      /*  0.. 6, 0x0000007F */
-		unsigned int  rsv_7                                 :  1;      /*  7.. 7, 0x00000080 */
-		unsigned int  RCNT                                  :  6;      /*  8..13, 0x00003F00 */
-		unsigned int  rsv_14                                :  2;      /* 14..15, 0x0000C000 */
-		unsigned int  WCNT                                  :  6;      /* 16..21, 0x003F0000 */
-		unsigned int  rsv_22                                :  2;      /* 22..23, 0x00C00000 */
-		unsigned int  DROP_CNT                              :  8;      /* 24..31, 0xFF000000 */
+		unsigned int  FBC_CNT             :  7;/*  0.. 6, 0x0000007F */
+		unsigned int  rsv_7               :  1;/*  7.. 7, 0x00000080 */
+		unsigned int  RCNT                :  6;/*  8..13, 0x00003F00 */
+		unsigned int  rsv_14              :  2;/* 14..15, 0x0000C000 */
+		unsigned int  WCNT                :  6;/* 16..21, 0x003F0000 */
+		unsigned int  rsv_22              :  2;/* 22..23, 0x00C00000 */
+		unsigned int  DROP_CNT            :  8;/* 24..31, 0xFF000000 */
 	} Bits;
 	unsigned int Raw;
 };  /* CAM_A_FBC_IMGO_CTL2 */

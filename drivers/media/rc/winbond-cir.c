@@ -989,8 +989,7 @@ wbcir_init_hw(struct wbcir_data *data)
 
 	/* Clear RX state */
 	data->rxstate = WBCIR_RXSTATE_INACTIVE;
-	ir_raw_event_reset(data->dev);
-	ir_raw_event_set_idle(data->dev, true);
+	wbcir_idle_rx(data->dev, true);
 
 	/* Clear TX state */
 	if (data->txstate == WBCIR_TXSTATE_ACTIVE) {
@@ -1009,6 +1008,7 @@ wbcir_resume(struct pnp_dev *device)
 	struct wbcir_data *data = pnp_get_drvdata(device);
 
 	wbcir_init_hw(data);
+	ir_raw_event_reset(data->dev);
 	enable_irq(data->irq);
 	led_classdev_resume(&data->led);
 
@@ -1044,7 +1044,7 @@ wbcir_probe(struct pnp_dev *device, const struct pnp_device_id *dev_id)
 	data->irq = pnp_irq(device, 0);
 
 	if (data->wbase == 0 || data->ebase == 0 ||
-	    data->sbase == 0 || data->irq == 0) {
+	    data->sbase == 0 || data->irq == -1) {
 		err = -ENODEV;
 		dev_err(dev, "Invalid resources\n");
 		goto exit_free_data;

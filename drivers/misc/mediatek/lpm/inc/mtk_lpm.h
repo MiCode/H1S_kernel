@@ -19,16 +19,10 @@
 #define MTK_LP_REQ_NOBROADCAST		(1<<1L)
 #define MTK_LP_REQ_NOSUSPEND		(1<<2L)
 #define MTK_LP_REQ_NOSYSCORE_CB		(1<<3L)
-#define MTK_LP_PREPARE_FAIL		(1<<4L)
 
 enum MT_LPM_ISSUER_TYPE {
 	MT_LPM_ISSUER_SUSPEND,
 	MT_LPM_ISSUER_CPUIDLE
-};
-
-enum MTK_LPM_SUSPEND_TYPE {
-	MTK_LPM_SUSPEND_SYSTEM,
-	MTK_LPM_SUSPEND_S2IDLE,
 };
 
 struct mtk_lpm_issuer {
@@ -90,8 +84,6 @@ int mtk_lpm_notifier_register(struct notifier_block *n);
 int mtk_lpm_notifier_unregister(struct notifier_block *n);
 
 int mtk_lpm_suspend_registry(const char *name, struct mtk_lpm_model *suspend);
-
-int mtk_lpm_suspend_type_get(void);
 
 extern int mtk_lpm_drv_cpuidle_ops_set(struct mtk_cpuidle_op *op);
 

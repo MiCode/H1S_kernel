@@ -1063,7 +1063,7 @@ sba_unmap_sg(struct device *dev, struct scatterlist *sglist, int nents,
 	spin_unlock_irqrestore(&ioc->res_lock, flags);
 #endif
 
-	while (sg_dma_len(sglist) && nents--) {
+	while (nents && sg_dma_len(sglist)) {
 
 		sba_unmap_page(dev, sg_dma_address(sglist), sg_dma_len(sglist),
 				direction, 0);
@@ -1072,6 +1072,7 @@ sba_unmap_sg(struct device *dev, struct scatterlist *sglist, int nents,
 		ioc->usingle_calls--;	/* kluge since call is unmap_sg() */
 #endif
 		++sglist;
+		nents--;
 	}
 
 	DBG_RUN_SG("%s() DONE (nents %d)\n", __func__,  nents);
@@ -1291,7 +1292,7 @@ sba_ioc_init_pluto(struct parisc_device *sba, struct ioc *ioc, int ioc_num)
 	** (one that doesn't overlap memory or LMMIO space) in the
 	** IBASE and IMASK registers.
 	*/
-	ioc->ibase = READ_REG(ioc->ioc_hpa + IOC_IBASE);
+	ioc->ibase = READ_REG(ioc->ioc_hpa + IOC_IBASE) & ~0x1fffffULL;
 	iova_space_size = ~(READ_REG(ioc->ioc_hpa + IOC_IMASK) & 0xFFFFFFFFUL) + 1;
 
 	if ((ioc->ibase < 0xfed00000UL) && ((ioc->ibase + iova_space_size) > 0xfee00000UL)) {
@@ -1863,20 +1864,6 @@ static int sba_proc_info(struct seq_file *m, void *p)
 }
 
 static int
-sba_proc_open(struct inode *i, struct file *f)
-{
-	return single_open(f, &sba_proc_info, NULL);
-}
-
-static const struct file_operations sba_proc_fops = {
-	.owner = THIS_MODULE,
-	.open = sba_proc_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
-
-static int
 sba_proc_bitmap_info(struct seq_file *m, void *p)
 {
 	struct sba_device *sba_dev = sba_list;
@@ -1888,20 +1875,6 @@ sba_proc_bitmap_info(struct seq_file *m, void *p)
 
 	return 0;
 }
-
-static int
-sba_proc_bitmap_open(struct inode *i, struct file *f)
-{
-	return single_open(f, &sba_proc_bitmap_info, NULL);
-}
-
-static const struct file_operations sba_proc_bitmap_fops = {
-	.owner = THIS_MODULE,
-	.open = sba_proc_bitmap_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
 #endif /* CONFIG_PROC_FS */
 
 static const struct parisc_device_id sba_tbl[] __initconst = {
@@ -2013,11 +1986,9 @@ static int __init sba_driver_callback(struct parisc_device *dev)
 		break;
 	}
 
-	proc_create("sba_iommu", 0, root, &sba_proc_fops);
-	proc_create("sba_iommu-bitmap", 0, root, &sba_proc_bitmap_fops);
+	proc_create_single("sba_iommu", 0, root, sba_proc_info);
+	proc_create_single("sba_iommu-bitmap", 0, root, sba_proc_bitmap_info);
 #endif
-
-	parisc_has_iommu();
 	return 0;
 }
 

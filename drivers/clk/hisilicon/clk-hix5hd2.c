@@ -208,7 +208,7 @@ static void clk_ether_unprepare(struct clk_hw *hw)
 	writel_relaxed(val, clk->ctrl_reg);
 }
 
-static struct clk_ops clk_ether_ops = {
+static const struct clk_ops clk_ether_ops = {
 	.prepare = clk_ether_prepare,
 	.unprepare = clk_ether_unprepare,
 };
@@ -247,7 +247,7 @@ static void clk_complex_disable(struct clk_hw *hw)
 	writel_relaxed(val, clk->phy_reg);
 }
 
-static struct clk_ops clk_complex_ops = {
+static const struct clk_ops clk_complex_ops = {
 	.enable = clk_complex_enable,
 	.disable = clk_complex_disable,
 };
@@ -262,7 +262,7 @@ hix5hd2_clk_register_complex(struct hix5hd2_complex_clock *clks, int nums,
 	for (i = 0; i < nums; i++) {
 		struct hix5hd2_clk_complex *p_clk;
 		struct clk *clk;
-		struct clk_init_data init;
+		struct clk_init_data init = {};
 
 		p_clk = kzalloc(sizeof(*p_clk), GFP_KERNEL);
 		if (!p_clk)

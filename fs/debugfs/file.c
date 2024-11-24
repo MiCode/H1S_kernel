@@ -1,16 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  file.c - part of debugfs, a tiny little debug file system
  *
  *  Copyright (C) 2004 Greg Kroah-Hartman <greg@kroah.com>
  *  Copyright (C) 2004 IBM Inc.
  *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License version
- *	2 as published by the Free Software Foundation.
- *
  *  debugfs is for people to use instead of /proc or /sys.
  *  See Documentation/filesystems/ for more details.
- *
  */
 
 #include <linux/module.h>
@@ -22,7 +18,8 @@
 #include <linux/slab.h>
 #include <linux/atomic.h>
 #include <linux/device.h>
-#include <asm/poll.h>
+#include <linux/pm_runtime.h>
+#include <linux/poll.h>
 
 #include "internal.h"
 
@@ -53,6 +50,15 @@ const struct file_operations *debugfs_real_fops(const struct file *filp)
 {
 	struct debugfs_fsdata *fsd = F_DENTRY(filp)->d_fsdata;
 
+	if ((unsigned long)fsd & DEBUGFS_FSDATA_IS_REAL_FOPS_BIT) {
+		/*
+		 * Urgh, we've been called w/o a protecting
+		 * debugfs_file_get().
+		 */
+		WARN_ON(1);
+		return NULL;
+	}
+
 	return fsd->real_fops;
 }
 EXPORT_SYMBOL_GPL(debugfs_real_fops);
@@ -74,9 +80,35 @@ EXPORT_SYMBOL_GPL(debugfs_real_fops);
  */
 int debugfs_file_get(struct dentry *dentry)
 {
-	struct debugfs_fsdata *fsd = dentry->d_fsdata;
+	struct debugfs_fsdata *fsd;
+	void *d_fsd;
 
-	/* Avoid starvation of removers. */
+	d_fsd = READ_ONCE(dentry->d_fsdata);
+	if (!((unsigned long)d_fsd & DEBUGFS_FSDATA_IS_REAL_FOPS_BIT)) {
+		fsd = d_fsd;
+	} else {
+		fsd = kmalloc(sizeof(*fsd), GFP_KERNEL);
+		if (!fsd)
+			return -ENOMEM;
+
+		fsd->real_fops = (void *)((unsigned long)d_fsd &
+					~DEBUGFS_FSDATA_IS_REAL_FOPS_BIT);
+		refcount_set(&fsd->active_users, 1);
+		init_completion(&fsd->active_users_drained);
+		if (cmpxchg(&dentry->d_fsdata, d_fsd, fsd) != d_fsd) {
+			kfree(fsd);
+			fsd = READ_ONCE(dentry->d_fsdata);
+		}
+	}
+
+	/*
+	 * In case of a successful cmpxchg() above, this check is
+	 * strictly necessary and must follow it, see the comment in
+	 * __debugfs_remove_file().
+	 * OTOH, if the cmpxchg() hasn't been executed or wasn't
+	 * successful, this serves the purpose of not starving
+	 * removers.
+	 */
 	if (d_unlinked(dentry))
 		return -EIO;
 
@@ -98,7 +130,7 @@ EXPORT_SYMBOL_GPL(debugfs_file_get);
  */
 void debugfs_file_put(struct dentry *dentry)
 {
-	struct debugfs_fsdata *fsd = dentry->d_fsdata;
+	struct debugfs_fsdata *fsd = READ_ONCE(dentry->d_fsdata);
 
 	if (refcount_dec_and_test(&fsd->active_users))
 		complete(&fsd->active_users_drained);
@@ -109,10 +141,11 @@ static int open_proxy_open(struct inode *inode, struct file *filp)
 {
 	struct dentry *dentry = F_DENTRY(filp);
 	const struct file_operations *real_fops = NULL;
-	int r = 0;
+	int r;
 
-	if (debugfs_file_get(dentry))
-		return -ENOENT;
+	r = debugfs_file_get(dentry);
+	if (r)
+		return r == -EIO ? -ENOENT : r;
 
 	real_fops = debugfs_real_fops(filp);
 	real_fops = fops_get(real_fops);
@@ -144,13 +177,13 @@ const struct file_operations debugfs_open_proxy_file_operations = {
 static ret_type full_proxy_ ## name(proto)				\
 {									\
 	struct dentry *dentry = F_DENTRY(filp);			\
-	const struct file_operations *real_fops =			\
-		debugfs_real_fops(filp);				\
+	const struct file_operations *real_fops;			\
 	ret_type r;							\
 									\
 	r = debugfs_file_get(dentry);					\
 	if (unlikely(r))						\
 		return r;						\
+	real_fops = debugfs_real_fops(filp);				\
 	r = real_fops->name(args);					\
 	debugfs_file_put(dentry);					\
 	return r;							\
@@ -174,16 +207,17 @@ FULL_PROXY_FUNC(unlocked_ioctl, long, filp,
 		PROTO(struct file *filp, unsigned int cmd, unsigned long arg),
 		ARGS(filp, cmd, arg));
 
-static unsigned int full_proxy_poll(struct file *filp,
+static __poll_t full_proxy_poll(struct file *filp,
 				struct poll_table_struct *wait)
 {
-	const struct file_operations *real_fops = debugfs_real_fops(filp);
 	struct dentry *dentry = F_DENTRY(filp);
-	unsigned int r = 0;
+	__poll_t r = 0;
+	const struct file_operations *real_fops;
 
 	if (debugfs_file_get(dentry))
-		return POLLHUP;
+		return EPOLLHUP;
 
+	real_fops = debugfs_real_fops(filp);
 	r = real_fops->poll(filp, wait);
 	debugfs_file_put(dentry);
 	return r;
@@ -232,10 +266,11 @@ static int full_proxy_open(struct inode *inode, struct file *filp)
 	struct dentry *dentry = F_DENTRY(filp);
 	const struct file_operations *real_fops = NULL;
 	struct file_operations *proxy_fops = NULL;
-	int r = 0;
+	int r;
 
-	if (debugfs_file_get(dentry))
-		return -ENOENT;
+	r = debugfs_file_get(dentry);
+	if (r)
+		return r == -EIO ? -ENOENT : r;
 
 	real_fops = debugfs_real_fops(filp);
 	real_fops = fops_get(real_fops);
@@ -296,8 +331,8 @@ ssize_t debugfs_attr_read(struct file *file, char __user *buf,
 }
 EXPORT_SYMBOL_GPL(debugfs_attr_read);
 
-ssize_t debugfs_attr_write(struct file *file, const char __user *buf,
-			 size_t len, loff_t *ppos)
+static ssize_t debugfs_attr_write_xsigned(struct file *file, const char __user *buf,
+			 size_t len, loff_t *ppos, bool is_signed)
 {
 	struct dentry *dentry = F_DENTRY(file);
 	ssize_t ret;
@@ -305,11 +340,27 @@ ssize_t debugfs_attr_write(struct file *file, const char __user *buf,
 	ret = debugfs_file_get(dentry);
 	if (unlikely(ret))
 		return ret;
-	ret = simple_attr_write(file, buf, len, ppos);
+	if (is_signed)
+		ret = simple_attr_write_signed(file, buf, len, ppos);
+	else
+		ret = simple_attr_write(file, buf, len, ppos);
 	debugfs_file_put(dentry);
 	return ret;
 }
+
+ssize_t debugfs_attr_write(struct file *file, const char __user *buf,
+			 size_t len, loff_t *ppos)
+{
+	return debugfs_attr_write_xsigned(file, buf, len, ppos, false);
+}
 EXPORT_SYMBOL_GPL(debugfs_attr_write);
+
+ssize_t debugfs_attr_write_signed(struct file *file, const char __user *buf,
+			 size_t len, loff_t *ppos)
+{
+	return debugfs_attr_write_xsigned(file, buf, len, ppos, true);
+}
+EXPORT_SYMBOL_GPL(debugfs_attr_write_signed);
 
 static struct dentry *debugfs_create_mode_unsafe(const char *name, umode_t mode,
 					struct dentry *parent, void *value,
@@ -708,11 +759,11 @@ static int debugfs_atomic_t_get(void *data, u64 *val)
 	*val = atomic_read((atomic_t *)data);
 	return 0;
 }
-DEFINE_DEBUGFS_ATTRIBUTE(fops_atomic_t, debugfs_atomic_t_get,
+DEFINE_DEBUGFS_ATTRIBUTE_SIGNED(fops_atomic_t, debugfs_atomic_t_get,
 			debugfs_atomic_t_set, "%lld\n");
-DEFINE_DEBUGFS_ATTRIBUTE(fops_atomic_t_ro, debugfs_atomic_t_get, NULL,
+DEFINE_DEBUGFS_ATTRIBUTE_SIGNED(fops_atomic_t_ro, debugfs_atomic_t_get, NULL,
 			"%lld\n");
-DEFINE_DEBUGFS_ATTRIBUTE(fops_atomic_t_wo, NULL, debugfs_atomic_t_set,
+DEFINE_DEBUGFS_ATTRIBUTE_SIGNED(fops_atomic_t_wo, NULL, debugfs_atomic_t_set,
 			"%lld\n");
 
 /**
@@ -762,19 +813,13 @@ EXPORT_SYMBOL_GPL(debugfs_read_file_bool);
 ssize_t debugfs_write_file_bool(struct file *file, const char __user *user_buf,
 				size_t count, loff_t *ppos)
 {
-	char buf[32];
-	size_t buf_size;
 	bool bv;
 	int r;
 	bool *val = file->private_data;
 	struct dentry *dentry = F_DENTRY(file);
 
-	buf_size = min(count, (sizeof(buf)-1));
-	if (copy_from_user(buf, user_buf, buf_size))
-		return -EFAULT;
-
-	buf[buf_size] = '\0';
-	if (strtobool(buf, &bv) == 0) {
+	r = kstrtobool_from_user(user_buf, count, &bv);
+	if (!r) {
 		r = debugfs_file_get(dentry);
 		if (unlikely(r))
 			return r;
@@ -1040,7 +1085,14 @@ static int debugfs_show_regset32(struct seq_file *s, void *data)
 {
 	struct debugfs_regset32 *regset = s->private;
 
+	if (regset->dev)
+		pm_runtime_get_sync(regset->dev);
+
 	debugfs_print_regs32(s, regset->regs, regset->nregs, regset->base, "");
+
+	if (regset->dev)
+		pm_runtime_put(regset->dev);
+
 	return 0;
 }
 

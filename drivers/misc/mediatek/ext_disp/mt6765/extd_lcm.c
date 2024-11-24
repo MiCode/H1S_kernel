@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
-
 
 /***********************************************/
 /*
@@ -141,7 +132,7 @@ int lcm_ioctl(unsigned int ioctl_cmd, int param1, int param2,
 		lcm_set_layer_num(param1);
 		break;
 	default:
-		EXTDERR("lcm_ioctl unknown command\n");
+		EXTDERR("%s unknown command\n", __func__);
 		break;
 	}
 
@@ -165,7 +156,7 @@ int lcm_post_init(void)
 	}
 
 	Extd_DBG_Init();
-	EXTDINFO("lcm_post_init done\n");
+	EXTDINFO("%s done\n", __func__);
 	return 0;
 }
 #endif

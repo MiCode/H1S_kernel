@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- *  Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -200,7 +193,7 @@ static inline int mt_parse_dt(struct device *dev,
 		struct mt6370_pmu_ldo_platform_data *mask)
 {
 	struct device_node *np = dev->of_node;
-	uint32_t val;
+	uint32_t val = 0;
 
 	if (of_property_read_u32(np, "ldo_oms", &val) == 0) {
 		mask->cfg |= (0x1  <<  6);

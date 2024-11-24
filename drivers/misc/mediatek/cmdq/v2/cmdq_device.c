@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #include "cmdq_device.h"
@@ -32,7 +24,7 @@
 #include <linux/of_address.h>
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
-#include <mt-plat/mtk_lpae.h>
+/* #include <mt-plat/mtk_lpae.h> */
 
 
 struct CmdqDeviceStruct {
@@ -474,16 +466,6 @@ void cmdq_dev_init_event_table(struct device_node *node)
 	}
 
 
-#if 0
-#undef DECLARE_CMDQ_EVENT
-#define DECLARE_CMDQ_EVENT(name, val, dts_name) \
-{	\
-	cmdq_dev_get_event_value_by_name(node, val, #dts_name);	\
-}
-#include "cmdq_event_common.h"
-#undef DECLARE_CMDQ_EVENT
-
-#endif
 #endif
 }
 

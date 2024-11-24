@@ -403,7 +403,7 @@ error:
 	return DVBFE_ALGO_SEARCH_ERROR;
 }
 
-static int cxd2820r_get_frontend_algo(struct dvb_frontend *fe)
+static enum dvbfe_algo cxd2820r_get_frontend_algo(struct dvb_frontend *fe)
 {
 	return DVBFE_ALGO_CUSTOM;
 }
@@ -549,7 +549,7 @@ struct dvb_frontend *cxd2820r_attach(const struct cxd2820r_config *config,
 
 	return pdata.get_dvb_frontend(client);
 }
-EXPORT_SYMBOL(cxd2820r_attach);
+EXPORT_SYMBOL_GPL(cxd2820r_attach);
 
 static struct dvb_frontend *cxd2820r_get_dvb_frontend(struct i2c_client *client)
 {

@@ -1,28 +1,7 @@
-/*****************************************************************************
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- *
- * Accelerometer Sensor Driver
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
- *****************************************************************************/
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2020 MediaTek Inc.
+ */
 
 #define pr_fmt(fmt) "<BMP280> " fmt
 
@@ -47,6 +26,10 @@
 /* #include <linux/hwmsen_helper.h> */
 
 /* #define POWER_NONE_MACRO MT65XX_POWER_NONE */
+
+#define DRIVER_ATTR(_name, _mode, _show, _store) \
+        struct driver_attribute driver_attr_##_name = \
+        __ATTR(_name, _mode, _show, _store)
 
 /* sensor type */
 enum SENSOR_TYPE_ENUM {
@@ -1707,7 +1690,6 @@ static void __exit bmp_exit(void)
 module_init(bmp_init);
 module_exit(bmp_exit);
 
-/*MODULE_LICENSE("GPLv2");*/
 MODULE_DESCRIPTION("BMP280 I2C Driver");
 MODULE_AUTHOR("deliang.tao@bosch-sensortec.com");
 MODULE_VERSION(BMP_DRIVER_VERSION);

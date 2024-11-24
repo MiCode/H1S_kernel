@@ -620,7 +620,7 @@ static int report_lock_release_event(struct perf_evsel *evsel,
 	case SEQ_STATE_READ_ACQUIRED:
 		seq->read_count--;
 		BUG_ON(seq->read_count < 0);
-		if (!seq->read_count) {
+		if (seq->read_count) {
 			ls->nr_release++;
 			goto end;
 		}
@@ -865,13 +865,15 @@ static int __cmd_report(bool display_info)
 		.namespaces	 = perf_event__process_namespaces,
 		.ordered_events	 = true,
 	};
-	struct perf_data_file file = {
-		.path = input_name,
-		.mode = PERF_DATA_MODE_READ,
-		.force = force,
+	struct perf_data data = {
+		.file      = {
+			.path = input_name,
+		},
+		.mode      = PERF_DATA_MODE_READ,
+		.force     = force,
 	};
 
-	session = perf_session__new(&file, false, &eops);
+	session = perf_session__new(&data, false, &eops);
 	if (!session) {
 		pr_err("Initializing perf session failed\n");
 		return -1;

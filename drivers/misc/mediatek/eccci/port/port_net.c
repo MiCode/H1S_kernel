@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -21,12 +13,14 @@
 #include <linux/timer.h>
 #include <linux/version.h>
 #include <linux/sockios.h>
-#include <mt-plat/mtk_ccci_common.h>
+#include "mt-plat/mtk_ccci_common.h"
 #include "ccci_config.h"
+#include "ccci_common_config.h"
 #include "ccci_core.h"
 #include "ccci_bm.h"
 #include "ccci_modem.h"
 #include "port_net.h"
+#include "ccci_hif.h"
 
 #ifdef PORT_NET_TRACE
 #define CREATE_TRACE_POINTS
@@ -240,7 +234,7 @@ int ccmni_send_pkt(int md_id, int ccmni_idx, void *data, int is_ack)
 {
 	struct port_t *port = NULL;
 	/* struct ccci_request *req = NULL; */
-	struct ccci_header *ccci_h;
+	struct ccci_header *ccci_h = NULL;
 	struct sk_buff *skb = (struct sk_buff *)data;
 	struct ccmni_ch *channel = ccmni_ops.get_ch(md_id, ccmni_idx);
 	int tx_ch = is_ack ? channel->dl_ack : channel->tx;
@@ -322,12 +316,14 @@ struct ccmni_ccci_ops eccci_ccmni_ops = {
 	.ccmni_num = 21,
 	.name = "ccmni",
 	.md_ability = MODEM_CAP_DATA_ACK_DVD | MODEM_CAP_CCMNI_MQ
-		| MODEM_CAP_DIRECT_TETHERING,
+		| MODEM_CAP_DIRECT_TETHERING, /* CCCI_KMODULE_ENABLE: todo */
 	.irat_md_id = -1,
 	.napi_poll_weigh = NAPI_POLL_WEIGHT,
 	.send_pkt = ccmni_send_pkt,
 	.napi_poll = ccmni_napi_poll,
 	.get_ccmni_ch = ccci_get_ccmni_channel,
+	.ccci_net_init = mtk_ccci_net_port_init,
+	.ccci_handle_port_list = mtk_ccci_handle_port_list,
 };
 
 struct ccmni_ccci_ops eccci_cc3mni_ops = {
@@ -399,10 +395,18 @@ static int port_net_init(struct port_t *port)
 	return 0;
 }
 
+#ifdef CCCI_KMODULE_ENABLE
+int mbim_start_xmit(struct sk_buff *skb, int ifid)
+{
+	pr_debug("[ccci/dummy] %s is not supported!\n", __func__);
+	return 0;
+}
+#endif
+
 static void recv_from_port_list(struct port_t *port)
 {
 	unsigned long flags;
-	struct sk_buff *skb;
+	struct sk_buff *skb = NULL;
 
 	spin_lock_irqsave(&port->port_rx_list.lock, flags);
 	skb = __skb_dequeue(&port->port_rx_list);
@@ -419,10 +423,12 @@ int mtk_ccci_handle_port_list(int status, char *name)
 {
 	int ret = 0, channel;
 	unsigned long flags;
-	struct port_t *port;
-	struct sk_buff *skb;
+	struct port_t *port = NULL;
+	struct sk_buff *skb = NULL;
 
 	channel = mtk_ccci_request_port(name);
+	if (channel < 0)
+		return -1;
 	ret = find_port_by_channel(channel, &port);
 	if (ret)
 		return -1;
@@ -461,7 +467,6 @@ static void ccmni_queue_recv_skb(struct port_t *port, struct sk_buff *skb)
 		spin_unlock_irqrestore(&port->port_rx_list.lock, flags);
 	}
 }
-
 static int port_net_recv_skb(struct port_t *port, struct sk_buff *skb)
 {
 #if MD_GENERATION >= (6293)
@@ -488,12 +493,12 @@ static int port_net_recv_skb(struct port_t *port, struct sk_buff *skb)
 
 #if MD_GENERATION >= (6293)
 	skb_pull(skb, sizeof(struct lhif_header));
-	CCCI_DEBUG_LOG(port->md_id, NET,
+		CCCI_DEBUG_LOG(port->md_id, NET,
 		"port %s recv: 0x%08X, 0x%08X, %08X, 0x%08X\n", port->name,
 		lhif_h->netif, lhif_h->f, lhif_h->flow, lhif_h->pdcp_count);
 #else
 	skb_pull(skb, sizeof(struct ccci_header));
-	CCCI_DEBUG_LOG(port->md_id, NET,
+		CCCI_DEBUG_LOG(port->md_id, NET,
 		"port %s recv: 0x%08X, 0x%08X, %08X, 0x%08X\n", port->name,
 		ccci_h->data[0], ccci_h->data[1], ccci_h->channel,
 		ccci_h->reserved);
@@ -525,7 +530,7 @@ static int port_net_recv_skb(struct port_t *port, struct sk_buff *skb)
 #ifdef PORT_NET_TRACE
 	rx_cb_time = sched_clock() - rx_cb_time;
 	total_time = sched_clock() - total_time;
-	trace_port_net_rx(port->md_id, PORT_RXQ_INDEX(port), port->rx_ch,
+	trace_port_net_rx(port->md_id, port->rxq_index, port->rx_ch,
 		(unsigned int)rx_cb_time, (unsigned int)total_time);
 #endif
 	return 0;
@@ -555,7 +560,7 @@ static void port_net_queue_state_notify(struct port_t *port, int dir,
 		}
 	}
 #if MD_GENERATION > (6293)
-	if (state == TX_FULL && hif_empty_query(qno)) {
+if (state == TX_FULL && hif_empty_query(qno)) {
 		if (dir == OUT)
 			spin_unlock_irqrestore(&port->flag_lock, flags);
 		return;
@@ -602,7 +607,7 @@ void port_net_md_dump_info(struct port_t *port, unsigned int flag)
 void mtk_ccci_net_port_init(char *name)
 {
 	int ret = 0, channel;
-	struct port_t *port;
+	struct port_t *port = NULL;
 
 	channel = mtk_ccci_request_port(name);
 	if (channel < 0) {

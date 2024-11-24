@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -17,9 +9,6 @@
 #include <linux/uaccess.h>
 #include <linux/printk.h>
 
-#include <mt-plat/mtk_secure_api.h>
-
-#include <mtk_mcdi.h>
 #include <mtk_mcdi_governor.h>
 #include <mtk_mcdi_util.h>
 #include <mtk_mcdi_cpc.h>
@@ -62,11 +51,6 @@ static void __mcdi_cpc_prof_enable(void)
 {
 	mcdi_mbox_write(MCDI_MBOX_PROF_CMD, 0x1);
 
-	mt_secure_call(MTK_SIP_KERNEL_MCDI_ARGS,
-			MCDI_SMC_EVENT_CPC_CONFIG,
-			MCDI_CPC_CFG_PROF,
-			1, 0);
-
 	mcdi_cpc_clr_lat();
 
 	cpc.sta.prof_en = true;
@@ -79,11 +63,6 @@ static void __mcdi_cpc_prof_disable(void)
 	mcdi_cpc_cal_lat();
 
 	mcdi_mbox_write(MCDI_MBOX_PROF_CMD, 0x0);
-
-	mt_secure_call(MTK_SIP_KERNEL_MCDI_ARGS,
-			MCDI_SMC_EVENT_CPC_CONFIG,
-			MCDI_CPC_CFG_PROF,
-			0, 0);
 }
 
 void mcdi_cpc_prof_en(bool enable)
@@ -105,60 +84,6 @@ void mcdi_cpc_prof_en(bool enable)
 
 out:
 	spin_unlock_irqrestore(&mcdi_cpc_prof_spin_lock, flags);
-}
-
-static void mcdi_cpc_auto_off_en(bool enable)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&mcdi_cpc_prof_spin_lock, flags);
-
-	cpc.sta.auto_off = enable;
-
-	mt_secure_call(MTK_SIP_KERNEL_MCDI_ARGS,
-			MCDI_SMC_EVENT_CPC_CONFIG,
-			MCDI_CPC_CFG_AUTO_OFF,
-			enable ? 1 : 0,
-			0);
-
-	spin_unlock_irqrestore(&mcdi_cpc_prof_spin_lock, flags);
-}
-
-static inline void mcdi_cpc_smc_auto_off_thres(unsigned int us)
-{
-	mt_secure_call(MTK_SIP_KERNEL_MCDI_ARGS,
-			MCDI_SMC_EVENT_CPC_CONFIG,
-			MCDI_CPC_CFG_AUTO_OFF_THRES,
-			cpc_us_to_tick(us),
-			0);
-}
-
-static void mcdi_cpc_set_auto_off_thres(unsigned int us)
-{
-	unsigned long flags;
-
-	if (us > MAX_AUTO_OFF_THRES_US)
-		us = MAX_AUTO_OFF_THRES_US;
-
-	spin_lock_irqsave(&mcdi_cpc_prof_spin_lock, flags);
-
-	cpc.auto_off_thres_us = us;
-
-	mcdi_cpc_smc_auto_off_thres(us);
-
-	spin_unlock_irqrestore(&mcdi_cpc_prof_spin_lock, flags);
-}
-
-void mcdi_cpc_auto_off_counter_suspend(void)
-{
-	if (cpc.sta.auto_off)
-		mcdi_cpc_smc_auto_off_thres(1);
-}
-
-void mcdi_cpc_auto_off_counter_resume(void)
-{
-	if (cpc.sta.auto_off)
-		mcdi_cpc_smc_auto_off_thres(cpc.auto_off_thres_us);
 }
 
 static void mcdi_cpc_get_cpu_lat(int cpu, unsigned int *on, unsigned int *off)
@@ -377,14 +302,6 @@ static ssize_t mcdi_cpc_read(struct file *filp,
 
 	cpc.sta.prof_pause = true;
 
-	mcdi_log("cpc cluster mode: %s ",
-			cpc.sta.auto_off ? "auto off" : "off");
-
-	if (cpc.sta.auto_off)
-		mcdi_log("(thres: %d us)", cpc.auto_off_thres_us);
-
-	mcdi_log("\n");
-
 	while (cpc.sta.prof_saving)
 		udelay(1);
 
@@ -442,16 +359,6 @@ static ssize_t mcdi_cpc_read(struct file *filp,
 
 	mcdi_log("\n");
 
-	mcdi_log("Usage: echo [command line] > /proc/mcdi/cpc\n");
-	mcdi_log("command line:\n");
-	mcdi_log("  %-40s : profile CPC latency\n",
-				"profile [0|1]");
-	mcdi_log("  %-40s : enable cluster auto-off mode\n",
-				"auto_off [0|1]");
-	mcdi_log("  %-40s : set cluster auto-off counter\n",
-				"auto_off_thres [time_us(dec)]");
-	mcdi_log("\n");
-
 	len = p - dbg_buf;
 
 	return simple_read_from_buffer(userbuf, count, f_pos, dbg_buf, len);
@@ -483,17 +390,13 @@ static ssize_t mcdi_cpc_write(struct file *filp,
 	if (param_str == NULL)
 		return -EINVAL;
 
-	ret = kstrtoul(param_str, 10, &param);
+	ret = kstrtoul(param_str, 16, &param);
 
 	if (ret < 0)
 		return -EINVAL;
 
 	if (!strncmp(cmd_str, "profile", sizeof("profile")))
 		mcdi_cpc_prof_en(!!param);
-	else if (!strncmp(cmd_str, "auto_off", sizeof("auto_off")))
-		mcdi_cpc_auto_off_en(!!param);
-	else if (!strncmp(cmd_str, "auto_off_thres", sizeof("auto_off_thres")))
-		mcdi_cpc_set_auto_off_thres(param);
 	else
 		return -EINVAL;
 
@@ -525,17 +428,14 @@ void mcdi_cpc_init(void)
 	ret = snprintf(cpc.mcusys.name, CPC_LAT_NAME_SIZE, "mcusys");
 	if (ret < 0)
 		pr_info("[mcdi] [%s] cpc mcusys name fail!\n", __func__);
-
-	mcdi_cpc_set_auto_off_thres(DEFAULT_AUTO_OFF_THRES_US);
-	mcdi_cpc_auto_off_en(false);
 }
 
 #else
 
 void mcdi_cpc_prof_en(bool enable) {}
-void mcdi_cpc_auto_off_en(bool enable) {}
 void mcdi_cpc_reflect(int cpu, int last_core_taken) {}
 void mcdi_procfs_cpc_init(struct proc_dir_entry *mcdi_dir) {}
 void mcdi_cpc_init(void) {}
 
 #endif
+

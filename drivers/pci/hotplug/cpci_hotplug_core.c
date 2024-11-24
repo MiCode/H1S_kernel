@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * CompactPCI Hot Plug Driver
  *
@@ -6,21 +7,6 @@
  * Copyright (C) 2001 IBM Corp.
  *
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or (at
- * your option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, GOOD TITLE or
- * NON INFRINGEMENT.  See the GNU General Public License for more
- * details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * Send feedback to <scottm@somanetworks.com>
  */
@@ -209,10 +195,8 @@ get_latch_status(struct hotplug_slot *hotplug_slot, u8 *value)
 	return 0;
 }
 
-static void release_slot(struct hotplug_slot *hotplug_slot)
+static void release_slot(struct slot *slot)
 {
-	struct slot *slot = hotplug_slot->private;
-
 	kfree(slot->hotplug_slot->info);
 	kfree(slot->hotplug_slot);
 	pci_dev_put(slot->dev);
@@ -267,7 +251,6 @@ cpci_hp_register_bus(struct pci_bus *bus, u8 first, u8 last)
 		snprintf(name, SLOT_NAME_SIZE, "%02x:%02x", bus->number, i);
 
 		hotplug_slot->private = slot;
-		hotplug_slot->release = &release_slot;
 		hotplug_slot->ops = &cpci_hotplug_slot_ops;
 
 		/*
@@ -322,12 +305,8 @@ cpci_hp_unregister_bus(struct pci_bus *bus)
 			slots--;
 
 			dbg("deregistering slot %s", slot_name(slot));
-			status = pci_hp_deregister(slot->hotplug_slot);
-			if (status) {
-				err("pci_hp_deregister failed with error %d",
-				    status);
-				break;
-			}
+			pci_hp_deregister(slot->hotplug_slot);
+			release_slot(slot);
 		}
 	}
 	up_write(&list_rwsem);
@@ -637,6 +616,7 @@ cleanup_slots(void)
 	list_for_each_entry_safe(slot, tmp, &slot_list, slot_list) {
 		list_del(&slot->slot_list);
 		pci_hp_deregister(slot->hotplug_slot);
+		release_slot(slot);
 	}
 cleanup_null:
 	up_write(&list_rwsem);

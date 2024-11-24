@@ -506,7 +506,6 @@ static int vadc_of_xlate(struct iio_dev *indio_dev,
 static const struct iio_info vadc_info = {
 	.read_raw = vadc_read_raw,
 	.of_xlate = vadc_of_xlate,
-	.driver_module = THIS_MODULE,
 };
 
 struct vadc_channels {
@@ -607,7 +606,7 @@ static const struct vadc_channels vadc_chans[] = {
 	VADC_CHAN_NO_SCALE(P_MUX16_1_3, 1)
 
 	VADC_CHAN_NO_SCALE(LR_MUX1_BAT_THERM, 0)
-	VADC_CHAN_NO_SCALE(LR_MUX2_BAT_ID, 0)
+	VADC_CHAN_VOLT(LR_MUX2_BAT_ID, 0, SCALE_DEFAULT)
 	VADC_CHAN_NO_SCALE(LR_MUX3_XO_THERM, 0)
 	VADC_CHAN_NO_SCALE(LR_MUX4_AMUX_THM1, 0)
 	VADC_CHAN_NO_SCALE(LR_MUX5_AMUX_THM2, 0)

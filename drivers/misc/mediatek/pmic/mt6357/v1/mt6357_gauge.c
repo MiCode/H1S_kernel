@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2021 MediaTek Inc.
  */
 
 
@@ -24,7 +16,7 @@
 
 #include <mach/mtk_battery_property.h>
 #include <mach/mtk_pmic.h>
-#include <mt-plat/mtk_battery.h>
+#include <mt-plat/v1/mtk_battery.h>
 #include <mt-plat/upmu_common.h>
 #include <mt-plat/mtk_rtc_hal_common.h>
 #include <mt-plat/mtk_rtc.h>

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * drivers/usb/generic.c - generic driver for USB devices (not interfaces)
  *
@@ -16,7 +17,6 @@
  *	(C) Copyright Greg Kroah-Hartman 2002-2003
  *
  * Released under the GPLv2 only.
- * SPDX-License-Identifier: GPL-2.0
  */
 
 #include <linux/usb.h>
@@ -40,6 +40,36 @@ static int is_activesync(struct usb_interface_descriptor *desc)
 	return desc->bInterfaceClass == USB_CLASS_MISC
 		&& desc->bInterfaceSubClass == 1
 		&& desc->bInterfaceProtocol == 1;
+}
+
+static int get_usb_audio_config(struct usb_host_bos *bos)
+{
+	unsigned int desc_cnt, num_cfg_desc, len = 0;
+	unsigned char *buffer;
+	struct usb_config_summary_descriptor *conf_summary;
+
+	if (!bos || !bos->config_summary)
+		goto done;
+
+	num_cfg_desc = bos->num_config_summary_desc;
+	conf_summary = bos->config_summary;
+	buffer = (unsigned char *)conf_summary;
+	for (desc_cnt = 0; desc_cnt < num_cfg_desc; desc_cnt++) {
+		conf_summary =
+			(struct usb_config_summary_descriptor *)(buffer + len);
+
+		len += conf_summary->bLength;
+
+		if (conf_summary->bcdVersion != USB_CONFIG_SUMMARY_DESC_REV ||
+				conf_summary->bClass != USB_CLASS_AUDIO)
+			continue;
+
+		/* return 1st config as per device preference */
+		return conf_summary->bConfigurationIndex[0];
+	}
+
+done:
+	return -EINVAL;
 }
 
 int usb_choose_configuration(struct usb_device *udev)
@@ -145,7 +175,10 @@ int usb_choose_configuration(struct usb_device *udev)
 			insufficient_power, plural(insufficient_power));
 
 	if (best) {
-		i = best->desc.bConfigurationValue;
+		/* choose device preferred config */
+		i = get_usb_audio_config(udev->bos);
+		if (i < 0)
+			i = best->desc.bConfigurationValue;
 		dev_dbg(&udev->dev,
 			"configuration #%d chosen from %d choice%s\n",
 			i, num_configs, plural(num_configs));

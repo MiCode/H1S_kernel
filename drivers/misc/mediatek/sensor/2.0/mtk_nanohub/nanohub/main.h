@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (C) 2020 MediaTek Inc.
  */
+
 
 #ifndef _NANOHUB_MAIN_H
 #define _NANOHUB_MAIN_H
@@ -24,7 +16,6 @@
 #include <linux/pm_wakeup.h>
 
 #include "comms.h"
-#include "bl.h"
 
 #define NANOHUB_NAME "nanohub"
 
@@ -51,7 +42,6 @@ struct nanohub_data {
 	struct nanohub_io io[ID_NANOHUB_MAX];
 
 	struct nanohub_comms comms;
-	struct nanohub_bl bl;
 	const struct nanohub_platform_data *pdata;
 	int irq1;
 	int irq2;

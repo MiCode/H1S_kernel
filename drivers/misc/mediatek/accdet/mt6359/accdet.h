@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2019 MediaTek Inc.
- * Author: Argus Lin <argus.lin@mediatek.com>
- */
+* Copyright (C) 2021 MediaTek Inc.
+*/
 
 #ifndef _ACCDET_H_
 #define _ACCDET_H_

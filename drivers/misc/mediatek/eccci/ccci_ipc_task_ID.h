@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #ifndef __CCCI_IPC_TASK_ID_H__
@@ -39,7 +31,6 @@
 #define    MD_MOD_UFPM    10
 #define    MD_MOD_USBCLASS 11
 #define    MD_MOD_WAAL     12
-/* mp1 1, mp2 0, ro 1 */
 #define    MD_MOD_GMMGR    13
 
 #define    AP_IPC_AGPS   0
@@ -77,7 +68,6 @@ X_IPC_MODULE_CONF(1, MD_MOD_IPCORE, MD_UNIFY_ID_FLAG | MD_MOD_IPCORE, 1)
 X_IPC_MODULE_CONF(1, MD_MOD_MDT, MD_UNIFY_ID_FLAG | MD_MOD_MDT, 1)
 X_IPC_MODULE_CONF(1, MD_MOD_UFPM, MD_UNIFY_ID_FLAG | MD_MOD_UFPM, 1)
 X_IPC_MODULE_CONF(1, MD_MOD_WAAL, MD_UNIFY_ID_FLAG | MD_MOD_WAAL, 1)
-/* mp1 1, mp2 0, ro 1 */
 X_IPC_MODULE_CONF(1, MD_MOD_GMMGR, MD_UNIFY_ID_FLAG | MD_MOD_GMMGR, 1)
 
 /* -------------------------------------------------------------------------- */

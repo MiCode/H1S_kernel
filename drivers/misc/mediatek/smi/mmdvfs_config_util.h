@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 
@@ -16,7 +8,7 @@
 #define __MMDVFS_CONFIG_UTIL_H__
 
 #include <linux/module.h>
-#include "mtk_smi.h"
+//#include "mtk_smi.h"
 #include "mmdvfs_mgr.h"
 
 
@@ -171,7 +163,7 @@ struct mmdvfs_adaptor {
 	int mmdvfs_clk_hw_maps_num;
 	struct mmdvfs_step_profile *step_profile_mappings;
 	int step_num;
-	unsigned int disable_auto_control_mask;
+	int disable_auto_control_mask;
 	void (*profile_dump_func)(struct mmdvfs_adaptor *self);
 	void (*single_hw_configuration_dump_func)(
 	struct mmdvfs_adaptor *self,
@@ -259,7 +251,7 @@ extern u32 camera_bw_config;
 
 void mmdvfs_config_util_init(void);
 
-#ifdef CONFIG_MTK_QOS_SUPPORT
+#ifdef MMDVFS_QOS_SUPPORT
 void mmdvfs_qos_update(struct mmdvfs_step_util *step_util, int new_step);
 int set_qos_scenario(const char *val, const struct kernel_param *kp);
 int get_qos_scenario(char *buf, const struct kernel_param *kp);

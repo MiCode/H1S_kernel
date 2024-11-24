@@ -9,6 +9,8 @@
 #ifndef _S390_KEXEC_H
 #define _S390_KEXEC_H
 
+#include <linux/module.h>
+
 #include <asm/processor.h>
 #include <asm/page.h>
 /*
@@ -46,4 +48,35 @@
 static inline void crash_setup_regs(struct pt_regs *newregs,
 					struct pt_regs *oldregs) { }
 
+struct kimage;
+struct s390_load_data {
+	/* Pointer to the kernel buffer. Used to register cmdline etc.. */
+	void *kernel_buf;
+
+	/* Total size of loaded segments in memory. Used as an offset. */
+	size_t memsz;
+
+	/* Load address of initrd. Used to register INITRD_START in kernel. */
+	unsigned long initrd_load_addr;
+};
+
+int kexec_file_add_purgatory(struct kimage *image,
+			     struct s390_load_data *data);
+int kexec_file_add_initrd(struct kimage *image,
+			  struct s390_load_data *data,
+			  char *initrd, unsigned long initrd_len);
+int *kexec_file_update_kernel(struct kimage *iamge,
+			      struct s390_load_data *data);
+
+extern const struct kexec_file_ops s390_kexec_image_ops;
+extern const struct kexec_file_ops s390_kexec_elf_ops;
+
+#ifdef CONFIG_KEXEC_FILE
+struct purgatory_info;
+int arch_kexec_apply_relocations_add(struct purgatory_info *pi,
+				     Elf_Shdr *section,
+				     const Elf_Shdr *relsec,
+				     const Elf_Shdr *symtab);
+#define arch_kexec_apply_relocations_add arch_kexec_apply_relocations_add
+#endif
 #endif /*_S390_KEXEC_H */

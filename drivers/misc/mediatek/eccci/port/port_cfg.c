@@ -1,17 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include "ccci_config.h"
+#include "ccci_common_config.h"
 #include "ccci_hif.h"
 #include "port_cfg.h"
 #include "ccci_port.h"
@@ -234,10 +227,26 @@ static struct port_t md1_ccci_ports[] = {
 	{CCCI_GARB_TX, CCCI_GARB_RX, 1, 1, 0xFF, 0xFF,
 		MD1_NORMAL_HIF, PORT_F_WITH_CHAR_NODE,
 		&char_port_ops, 35, "ccci_0_204",},
+#endif
 	{CCCI_IKERAW_TX, CCCI_IKERAW_RX, 1, 1, 0xFF, 0xFF,
 		MD1_NORMAL_HIF, PORT_F_WITH_CHAR_NODE,
 		&char_port_ops, 36, "ccci_ikeraw",},
-#endif
+	{CCCI_EPDG1_TX, CCCI_EPDG1_RX, 1, 1, 0xFF, 0xFF,
+		MD1_NORMAL_HIF, PORT_F_WITH_CHAR_NODE,
+		&char_port_ops, 37, "ccci_epdg1",},
+	{CCCI_EPDG2_TX, CCCI_EPDG2_RX, 1, 1, 0xFF, 0xFF,
+		MD1_NORMAL_HIF, PORT_F_WITH_CHAR_NODE,
+		&char_port_ops, 38, "ccci_epdg2",},
+	{CCCI_EPDG3_TX, CCCI_EPDG3_RX, 1, 1, 0xFF, 0xFF,
+		MD1_NORMAL_HIF, PORT_F_WITH_CHAR_NODE,
+		&char_port_ops, 39, "ccci_epdg3",},
+	{CCCI_EPDG4_TX, CCCI_EPDG4_RX, 1, 1, 0xFF, 0xFF,
+		MD1_NORMAL_HIF, PORT_F_WITH_CHAR_NODE,
+		&char_port_ops, 40, "ccci_epdg4",},
+	/* misc kernel port */
+	{CCCI_MIPI_CHANNEL_TX, CCCI_MIPI_CHANNEL_RX, 1, 1, 0xFF, 0xFF,
+		MD1_NORMAL_HIF, 0,
+		&ccci_misc_port_ops, 0xFF, "ccci_misc",},
 /* IPC char port minor= minor idx + CCCI_IPC_MINOR_BASE(100) */
 	{CCCI_IPC_TX, CCCI_IPC_RX, 1, 1, 0xFF, 0xFF,
 		MD1_NORMAL_HIF, PORT_F_WITH_CHAR_NODE,
@@ -310,7 +319,6 @@ static struct port_t md1_ccci_ports[] = {
 	{CCCI_SMEM_CH, CCCI_SMEM_CH, SMEM_Q, SMEM_Q, SMEM_Q, SMEM_Q,
 		CCIF_HIF_ID, PORT_F_WITH_CHAR_NODE,
 		&smem_port_ops, SMEM_USER_CCB_META, "ccci_ccb_meta",},
-
 };
 
 #ifdef CONFIG_MTK_ECCCI_C2K
@@ -477,15 +485,17 @@ int mtk_ccci_request_port(char *name)
 	CCCI_ERROR_LOG(-1, PORT, "can not find port %s", name);
 	return -1;
 }
+EXPORT_SYMBOL(mtk_ccci_request_port);
 
 int find_port_by_channel(int index, struct port_t **port)
 {
-	if (index < ARRAY_SIZE(md1_ccci_ports)) {
-		*port = &md1_ccci_ports[index];
-		return 0;
+	if (index < 0 || index >= ARRAY_SIZE(md1_ccci_ports)) {
+		CCCI_ERROR_LOG(-1, PORT, "%s: invalid index = %d\n",
+				__func__, index);
+		return -EINVAL;
 	}
-	CCCI_ERROR_LOG(-1, PORT, "cannot find port by index %d\n", index);
-	return -1;
+	*port = &md1_ccci_ports[index];
+	return 0;
 }
 
 int mtk_ccci_open_port(int index)
@@ -500,6 +510,7 @@ int mtk_ccci_open_port(int index)
 	atomic_inc(&md1_ccci_ports[index].usage_cnt);
 	return 0;
 }
+EXPORT_SYMBOL(mtk_ccci_open_port);
 
 int mtk_ccci_release_port(int index)
 {
@@ -510,3 +521,4 @@ int mtk_ccci_release_port(int index)
 	atomic_dec(&md1_ccci_ports[index].usage_cnt);
 	return 0;
 }
+EXPORT_SYMBOL(mtk_ccci_release_port);

@@ -1,13 +1,6 @@
-/* Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifdef pr_fmt
@@ -26,11 +19,19 @@
 #include <linux/regulator/consumer.h>
 #include <linux/clk.h>
 #include <linux/slab.h>
+#include <linux/regmap.h>
+#include <linux/mfd/syscon.h>
 
 #include "mtk_sd.h"
 #include "dbg.h"
-#include "include/pmic_api_buck.h"
+//#include "include/pmic_api_buck.h"
 
+#if defined(CONFIG_MTK_PMIC_WRAP)
+#include <linux/soc/mediatek/pmic_wrap.h>
+#include <linux/mfd/mt6357/registers.h>
+
+static struct regmap *regmap;
+#endif
 
 struct msdc_host *mtk_msdc_host[] = { NULL, NULL, NULL};
 EXPORT_SYMBOL(mtk_msdc_host);
@@ -89,8 +90,8 @@ const struct of_device_id msdc_of_ids[] = {
 #if !defined(FPGA_PLATFORM)
 static void __iomem *gpio_base;
 
-static void __iomem *infracfg_ao_base;
-static void __iomem *topckgen_base;
+static struct regmap *infracfg_ao_base;
+static struct regmap *topckgen_base;
 #endif
 
 void __iomem *msdc_io_cfg_bases[HOST_MAX_NUM];
@@ -147,8 +148,9 @@ void msdc_ldo_power(u32 on, struct regulator *reg, int voltage_mv, u32 *status)
 void msdc_dump_ldo_sts(char **buff, unsigned long *size,
 	struct seq_file *m, struct msdc_host *host)
 {
-#if !defined(CONFIG_MTK_MSDC_BRING_UP_BYPASS) \
-	|| defined(MTK_MSDC_BRINGUP_DEBUG)
+//#if !defined(CONFIG_MTK_MSDC_BRING_UP_BYPASS) \
+//	|| defined(MTK_MSDC_BRINGUP_DEBUG)
+#ifdef CODE_DEPEND_OK
 	u32 ldo_en = 0, ldo_vol = 0, ldo_cal = 0;
 	u32 id = host->id;
 
@@ -200,26 +202,37 @@ void msdc_dump_ldo_sts(char **buff, unsigned long *size,
 #endif
 }
 
-void msdc_sd_power_switch(struct msdc_host *host, u32 on)
+int msdc_sd_power_switch(struct msdc_host *host, u32 on)
 {
 #if !defined(CONFIG_MTK_MSDC_BRING_UP_BYPASS)
+
 	if (host->id == 1) {
-		if (on) {
-			/* VMC calibration +60mV. According to SA's request. */
-			pmic_config_interface(REG_VMC_VOSEL_CAL,
-				6,
-				MASK_VMC_VOSEL_CAL,
-				SHIFT_VMC_VOSEL_CAL);
-		}
 
 		msdc_ldo_power(on, host->mmc->supply.vqmmc, VOL_1800,
-			&host->power_io);
+		&host->power_io);
+		/* double check if vmc is configured to the expected value */
+		if (regulator_get_voltage(host->mmc->supply.vqmmc) !=
+			VOL_1800 * 1000) {
+			pr_notice("WARN: sdcard switch voltage fail,VMC:%d\n",
+				regulator_get_voltage(host->mmc->supply.vqmmc));
+			return 1;
+		}
+
+		if (on) {
+#if defined(CONFIG_MTK_PMIC_WRAP)
+			/* VMC calibration +60mV. According to SA's request. */
+			regmap_update_bits(regmap, MT6357_VMC_ANA_CON0,
+				MT6357_RG_VMC_VOCAL_MASK, 6);
+#endif
+		}
+
 		msdc_set_tdsel(host, MSDC_TDRDSEL_1V8, 0);
 		msdc_set_rdsel(host, MSDC_TDRDSEL_1V8, 0);
 		host->hw->driving_applied = &host->hw->driving_sdr50;
 		msdc_set_driving(host, host->hw->driving_applied);
 	}
 #endif
+	return 0;
 }
 
 void msdc_sdio_power(struct msdc_host *host, u32 on)
@@ -240,21 +253,6 @@ int msdc_oc_check(struct msdc_host *host, u32 en)
 {
 #if !defined(CONFIG_MTK_MSDC_BRING_UP_BYPASS)
 /* mt6765 follow mt6771 ,use interrupt */
-#if 0
-	u32 val = 0;
-
-	if (host->id == 1 && en) {
-		pmic_read_interface(REG_VMCH_OC_STATUS, &val,
-			MASK_VMCH_OC_STATUS, SHIFT_VMCH_OC_STATUS);
-
-		if (val) {
-			pr_notice("msdc1 OC status = %x\n", val);
-			host->power_control(host, 0);
-			msdc_set_bad_card_and_remove(host);
-			return -1;
-		}
-	}
-#endif
 #endif
 	return 0;
 }
@@ -276,6 +274,12 @@ void msdc_emmc_power(struct msdc_host *host, u32 on)
 #endif
 }
 
+struct reg_oc_msdc {
+	struct notifier_block nb;
+	struct work_struct work;
+};
+
+static struct reg_oc_msdc sd_oc;
 void msdc_sd_power(struct msdc_host *host, u32 on)
 {
 #if !defined(CONFIG_MTK_MSDC_BRING_UP_BYPASS)
@@ -291,26 +295,20 @@ void msdc_sd_power(struct msdc_host *host, u32 on)
 
 		/* Disable VMCH OC */
 		if (!card_on)
-			pmic_enable_interrupt(INT_VMCH_OC, 0, "sdcard");
+			devm_regulator_unregister_notifier(
+				host->mmc->supply.vmmc, &sd_oc.nb);
 
 		/* VMCH VOLSEL */
 		msdc_ldo_power(card_on, host->mmc->supply.vmmc, VOL_3000,
 			&host->power_flash);
 
-
 		/* Enable VMCH OC */
 		if (card_on) {
 			mdelay(3);
-			pmic_enable_interrupt(INT_VMCH_OC, 1, "sdcard");
+			devm_regulator_register_notifier(host->mmc->supply.vmmc,
+				&sd_oc.nb);
 		}
 
-		/* VMC VOLSEL */
-		/* rollback to 0mv in REG_VMC_VOSEL_CAL
-		 * in case of SD3.0 setting
-		 */
-		pmic_config_interface(REG_VMC_VOSEL_CAL,
-			SD_VOL_ACTUAL - VOL_3000,
-			MASK_VMC_VOSEL_CAL, SHIFT_VMC_VOSEL_CAL);
 		msdc_ldo_power(on, host->mmc->supply.vqmmc, VOL_3000,
 			&host->power_io);
 
@@ -348,11 +346,34 @@ void msdc_sd_power_off(void)
 EXPORT_SYMBOL(msdc_sd_power_off);
 #endif /*if !defined(FPGA_PLATFORM)*/
 
+static int msdc_sd_event(struct notifier_block *nb,
+		unsigned long event, void *data)
+{
+#if !defined(CONFIG_MTK_MSDC_BRING_UP_BYPASS)
+	switch (event) {
+	case REGULATOR_EVENT_OVER_CURRENT:
+	case REGULATOR_EVENT_FAIL:
+		schedule_work(&sd_oc.work);
+		break;
+	default:
+		break;
+	};
+#endif
+	return NOTIFY_OK;
+}
+
+static void sdcard_oc_handler(struct work_struct *work)
+{
+	msdc_sd_power_off();
+}
+
 void msdc_pmic_force_vcore_pwm(bool enable)
 {
+#ifdef CODE_DEPEND_OK
 #if !defined(FPGA_PLATFORM) && !defined(CONFIG_MTK_MSDC_BRING_UP_BYPASS)
 	if (vcore_pmic_set_mode(enable))
 		pr_notice("[msdc]error: vcore_pmic_set_mode fail\n");
+#endif
 #endif
 }
 
@@ -428,9 +449,6 @@ void msdc_HQA_set_voltage(struct msdc_host *host)
 	vio18_cal = 0;
 #endif
 
-	pmic_config_interface(REG_VCORE_VOSEL_SW, vcore,
-		VCORE_VOSEL_SW_MASK, VCORE_VOSEL_SW_SHIFT);
-
 	if (vio18_cal)
 		pmic_config_interface(REG_VIO_VOCAL_SW, vio18_cal,
 			VIO_VOCAL_SW_MASK, VIO_VOCAL_SW_SHIFT);
@@ -493,7 +511,7 @@ int msdc_get_ccf_clk_pointer(struct platform_device *pdev,
 		return 1;
 	}
 
-#ifdef CONFIG_MTK_HW_FDE
+#if defined(CONFIG_MTK_HW_FDE) || defined(CONFIG_MMC_CRYPTO)
 	if (pdev->id == 0) {
 		host->aes_clk_ctl = devm_clk_get(&pdev->dev,
 			MSDC0_AES_CLK_NAME);
@@ -537,36 +555,35 @@ static void msdc_dump_clock_sts_core(char **buff, unsigned long *size,
 {
 	char buffer[1024];
 	char *buf_ptr = buffer;
+	unsigned int reg_value;
 
 	if (topckgen_base) {
+		regmap_read(topckgen_base, 0x70, &reg_value);
 		buf_ptr += sprintf(buf_ptr,
-		" topckgen [0x%p]=0x%x(should bit[1:0]=01b, bit[7]=0, bit[10:8]=001b, bit[15]=0), bit[18:16]=001b, bit[23]=0\n",
-			topckgen_base + 0x70,
-			MSDC_READ32(topckgen_base + 0x70));
+		" topckgen 0x%x(should bit[1:0]=01b, bit[7]=0, bit[10:8]=001b, bit[15]=0), bit[18:16]=001b, bit[23]=0\n",
+			reg_value);
 
-#ifdef CONFIG_MTK_HW_FDE
+#if defined(CONFIG_MTK_HW_FDE) || defined(CONFIG_MMC_CRYPTO)
+		regmap_read(topckgen_base, 0xa0, &reg_value);
 		buf_ptr += sprintf(buf_ptr,
-		" topckgen [0x%p]=0x%x(should bit[26:24]=001b, bit[31]=0)\n",
-			topckgen_base + 0xa0,
-			MSDC_READ32(topckgen_base + 0xa0));
+		" topckgen 0x%x(should bit[26:24]=001b, bit[31]=0)\n",
+			reg_value);
 #endif
 	}
-	if (infracfg_ao_base) {
-		buf_ptr += sprintf(buf_ptr,
-		" infracfg_ao [0x%p]=0x%x(should bit[2]=0b,bit[4]=0b)\n",
-			infracfg_ao_base + 0x94,
-			MSDC_READ32(infracfg_ao_base + 0x94));
 
-#ifdef CONFIG_MTK_HW_FDE
+	if (infracfg_ao_base) {
+		regmap_read(infracfg_ao_base, 0x94, &reg_value);
 		buf_ptr += sprintf(buf_ptr,
-		" infracfg_ao [0x%p]=0x%x(should bit[29]=0b)\n",
-			infracfg_ao_base + 0xac,
-			MSDC_READ32(infracfg_ao_base + 0xac));
+		" infracfg_ao 0x%x(should bit[2]=0b,bit[4]=0b)\n", reg_value);
+
+#if defined(CONFIG_MTK_HW_FDE) || defined(CONFIG_MMC_CRYPTO)
+		regmap_read(infracfg_ao_base, 0xac, &reg_value);
+		buf_ptr += sprintf(buf_ptr,
+		" infracfg_ao 0x%x(should bit[29]=0b)\n", reg_value);
 #endif
+		regmap_read(infracfg_ao_base, 0xc8, &reg_value);
 		buf_ptr += sprintf(buf_ptr,
-		" infracfg_ao [0x%p]=0x%x(should bit[10:9]=00b)\n",
-			infracfg_ao_base + 0xc8,
-			MSDC_READ32(infracfg_ao_base + 0xc8));
+		" infracfg_ao 0x%x(should bit[10:9]=00b)\n", reg_value);
 	}
 
 	*buf_ptr = '\0';
@@ -635,7 +652,7 @@ int msdc_io_check(struct msdc_host *host)
 	if (host->block_bad_card)
 		goto SET_BAD_CARD;
 
-	/* backup the orignal value */
+	/* backup the original value */
 	MSDC_GET_FIELD(MSDC1_GPIO_PUPD, 0x3F << 0, orig_pupd);
 	MSDC_GET_FIELD(MSDC1_GPIO_R0, 0x3F << 0, orig_r0);
 	MSDC_GET_FIELD(MSDC1_GPIO_R1, 0x3F << 0, orig_r1);
@@ -1161,14 +1178,18 @@ static int msdc_get_register_settings(struct msdc_host *host,
  *	@host: host whose node should be parsed.
  *
  */
+
 int msdc_of_parse(struct platform_device *pdev, struct mmc_host *mmc)
 {
 	struct device_node *np;
 	struct msdc_host *host = mmc_priv(mmc);
 	int ret = 0;
 	int len = 0;
-	u8 id;
+	u8 id = 0;
 	const char *dup_name;
+#if defined(CONFIG_MTK_PMIC_WRAP)
+	struct device_node *pwrap_node;
+#endif
 
 	np = mmc->parent->of_node; /* mmcx node in project dts */
 
@@ -1179,7 +1200,16 @@ int msdc_of_parse(struct platform_device *pdev, struct mmc_host *mmc)
 	}
 	host->id = id;
 	pdev->id = id;
+#if defined(CONFIG_MTK_PMIC_WRAP)
+	if (host->id == 1) {
+		pwrap_node = of_parse_phandle(pdev->dev.of_node,
+			"mediatek,pwrap-regmap", 0);
+		if (!pwrap_node)
+			return -ENODEV;
 
+		regmap = pwrap_node_to_regmap(pwrap_node);
+	}
+#endif
 	pr_notice("DT probe %s%d!\n", pdev->dev.of_node->name, id);
 
 	ret = mmc_of_parse(mmc);
@@ -1233,9 +1263,6 @@ int msdc_of_parse(struct platform_device *pdev, struct mmc_host *mmc)
 
 #if !defined(FPGA_PLATFORM)
 	msdc_get_pinctl_settings(host, np);
-
-	mmc->supply.vmmc = regulator_get(mmc_dev(mmc), "vmmc");
-	mmc->supply.vqmmc = regulator_get(mmc_dev(mmc), "vqmmc");
 #else
 	msdc_fpga_pwr_init();
 #endif
@@ -1280,9 +1307,10 @@ int msdc_of_parse(struct platform_device *pdev, struct mmc_host *mmc)
 	pdev->name = pdev->dev.kobj.name;
 	kfree_const(dup_name);
 
-	if (host->id == 1)
-		pmic_register_interrupt_callback(INT_VMCH_OC,
-			msdc_sd_power_off);
+	if (host->id == 1) {
+		sd_oc.nb.notifier_call = msdc_sd_event;
+		INIT_WORK(&sd_oc.work, sdcard_oc_handler);
+	}
 
 	return host->id;
 }
@@ -1319,18 +1347,21 @@ int msdc_dt_init(struct platform_device *pdev, struct mmc_host *mmc)
 	}
 
 	if (topckgen_base == NULL) {
-		np = of_find_compatible_node(NULL, NULL, "mediatek,topckgen");
-		topckgen_base = of_iomap(np, 0);
-		pr_debug("of_iomap for topckgen base @ 0x%p\n",
-			topckgen_base);
+		topckgen_base =
+			syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
+			"topckgen");
+		if (IS_ERR(topckgen_base))
+			pr_info("regmap of topckgen base @ 0x%p\n",
+				topckgen_base);
 	}
 
 	if (infracfg_ao_base == NULL) {
-		np = of_find_compatible_node(NULL, NULL,
-			"mediatek,infracfg_ao");
-		infracfg_ao_base = of_iomap(np, 0);
-		pr_debug("of_iomap for infracfg_ao base @ 0x%p\n",
-			infracfg_ao_base);
+		infracfg_ao_base =
+			syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
+			"infracfg");
+		if (IS_ERR(infracfg_ao_base))
+			pr_info("regmap of infracfg_ao base @ 0x%p\n",
+				infracfg_ao_base);
 	}
 
 #endif

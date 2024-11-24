@@ -1,18 +1,7 @@
-/* drivers/input/touchscreen/mediatek/gt9xx_mtk/include/tpd_gt9xx_common.h
- *
- * Copyright  (C)  2010 - 2016 Goodix., Ltd.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * Version: V2.6
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef TPD_CUSTOM_GT9XX_H__
 #define TPD_CUSTOM_GT9XX_H__

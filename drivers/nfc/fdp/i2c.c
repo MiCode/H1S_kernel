@@ -176,16 +176,6 @@ static int fdp_nci_i2c_read(struct fdp_i2c_phy *phy, struct sk_buff **skb)
 		/* Packet that contains a length */
 		if (tmp[0] == 0 && tmp[1] == 0) {
 			phy->next_read_size = (tmp[2] << 8) + tmp[3] + 3;
-			/*
-			 * Ensure next_read_size does not exceed sizeof(tmp)
-			 * for reading that many bytes during next iteration
-			 */
-			if (phy->next_read_size > FDP_NCI_I2C_MAX_PAYLOAD) {
-				dev_dbg(&client->dev, "%s: corrupted packet\n",
-					__func__);
-				phy->next_read_size = 5;
-				goto flush;
-			}
 		} else {
 			phy->next_read_size = FDP_NCI_I2C_MIN_PAYLOAD;
 
@@ -269,9 +259,12 @@ static void fdp_nci_i2c_read_device_properties(struct device *dev,
 		/* Add 1 to the length to inclue the length byte itself */
 		len++;
 
-		*fw_vsc_cfg = devm_kmalloc(dev,
-					   len * sizeof(**fw_vsc_cfg),
+		*fw_vsc_cfg = devm_kmalloc_array(dev,
+					   len, sizeof(**fw_vsc_cfg),
 					   GFP_KERNEL);
+
+		if (!*fw_vsc_cfg)
+			goto alloc_err;
 
 		r = device_property_read_u8_array(dev, FDP_DP_FW_VSC_CFG_NAME,
 						  *fw_vsc_cfg, len);
@@ -286,6 +279,7 @@ vsc_read_err:
 		*fw_vsc_cfg = NULL;
 	}
 
+alloc_err:
 	dev_dbg(dev, "Clock type: %d, clock frequency: %d, VSC: %s",
 		*clock_type, *clock_freq, *fw_vsc_cfg != NULL ? "yes" : "no");
 }

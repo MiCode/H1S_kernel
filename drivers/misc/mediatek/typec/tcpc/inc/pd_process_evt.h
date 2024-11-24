@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef PD_PROCESS_EVT_H_
@@ -46,7 +38,7 @@ struct pe_state_reaction {
 bool pd_process_protocol_error(
 	struct pd_port *pd_port, struct pd_event *pd_event);
 
-bool pd_process_tx_failed_discard(struct pd_port *pd_port, uint8_t msg);
+bool pd_process_tx_failed(struct pd_port *pd_port);
 
 /*---------------------------------------------------------------------------*/
 

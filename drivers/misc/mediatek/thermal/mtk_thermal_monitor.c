@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifdef pr_fmt
@@ -1872,41 +1863,11 @@ static int mtk_cooling_wrapper_set_cur_state
 	return ret;
 }
 
-#if 0
-/* .get_available */
-static int mtk_cooling_wrapper_get_available
-(struct thermal_cooling_device *cdev, char *available)
-{
-	int ret = 0;
-	struct thermal_cooling_device_ops *ops;
-	struct mtk_thermal_cooler_data *mcdata;
-
-	mutex_lock(&MTM_COOLER_LOCK);
-
-	/* Recovery client's devdata */
-	ops = recoveryClientCooler(cdev, &mcdata);
-
-	if (ops->get_available)
-		ret = ops->get_available(cdev, available);
-	else
-		snprintf(available, 1, "\n");
-
-	THRML_LOG("[.get_available] cdev_type:%s available:%s\n",
-						cdev->type, available);
-
-	cdev->devdata = mcdata;
-
-	mutex_unlock(&MTM_COOLER_LOCK);
-
-	return ret;
-}
-#endif
 /* Cooling callbacks OPS */
 static struct thermal_cooling_device_ops mtk_cooling_wrapper_dev_ops = {
 	.get_max_state = mtk_cooling_wrapper_get_max_state,
 	.get_cur_state = mtk_cooling_wrapper_get_cur_state,
 	.set_cur_state = mtk_cooling_wrapper_set_cur_state,
-	//.get_available = mtk_cooling_wrapper_get_available,
 };
 
 /*

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include "ccci_fsm_internal.h"
@@ -19,36 +11,47 @@
 
 static int fsm_get_no_response_assert_type(struct ccci_fsm_poller *poller_ctl)
 {
-	struct ccci_per_md *per_md_data
-		= ccci_get_per_md_data(poller_ctl->md_id);
-	u64 latest_isr_time = per_md_data->latest_isr_time;
-	u64 latest_q0_isr_time = per_md_data->latest_q0_isr_time;
-	u64 latest_q0_rx_time = per_md_data->latest_q0_rx_time;
-	int md_id = poller_ctl->md_id;
-	unsigned long rem_nsec0, rem_nsec1, rem_nsec2, rem_nsec3;
+	unsigned long long traffic_info[3] = {0};
+	u64 latest_isr_time = 0;
+	u64 latest_q0_isr_time = 0;
+	u64 latest_q0_rx_time = 0;
+	unsigned long long last_poll_time = 0;
+	int md_id = 0, ret = 0;
+	unsigned long rem_nsec0 = 0, rem_nsec1 = 0, rem_nsec2 = 0, rem_nsec3 = 0;
 
-	rem_nsec0 = (poller_ctl->latest_poll_start_time == 0 ?
-			0
-			:
-			do_div(poller_ctl->latest_poll_start_time,
-				1000000000));
-	rem_nsec1 =
-	(latest_isr_time == 0 ? 0 : do_div(latest_isr_time, 1000000000));
-	rem_nsec2 =
-	(latest_q0_isr_time == 0 ? 0 : do_div(latest_q0_isr_time, 1000000000));
-	rem_nsec3 =
-	(latest_q0_rx_time == 0 ? 0 : do_div(latest_q0_rx_time, 1000000000));
+	if (!poller_ctl)
+		return MD_FORCE_ASSERT_BY_MD_NO_RESPONSE;
+
+	ret = ccci_hif_dump_status(1 << MD1_NORMAL_HIF, DUMP_FLAG_GET_TRAFFIC,
+			traffic_info, sizeof(traffic_info));
+	if (!ret) {
+		latest_isr_time = traffic_info[0];
+		latest_q0_isr_time = traffic_info[1];
+		latest_q0_rx_time = traffic_info[2];
+	}
+	last_poll_time = poller_ctl->latest_poll_start_time;
+	md_id = poller_ctl->md_id;
+
+	rem_nsec0 = (last_poll_time == 0 ?
+		0 : do_div(last_poll_time, NSEC_PER_SEC));
+	rem_nsec1 = (latest_isr_time == 0 ?
+		0 : do_div(latest_isr_time, NSEC_PER_SEC));
+	rem_nsec2 = (latest_q0_isr_time == 0 ?
+		0 : do_div(latest_q0_isr_time, NSEC_PER_SEC));
+	rem_nsec3 = (latest_q0_rx_time == 0 ?
+		0 : do_div(latest_q0_rx_time, NSEC_PER_SEC));
 
 	CCCI_ERROR_LOG(md_id, FSM,
-		"polling: start=%lu.%06lu, isr=%lu.%06lu,q0_isr=%lu.%06lu, q0_rx=%lu.%06lu\n",
-		(unsigned long)poller_ctl->latest_poll_start_time,
-		rem_nsec0 / 1000,
-		(unsigned long)latest_isr_time, rem_nsec1 / 1000,
-		(unsigned long)latest_q0_isr_time, rem_nsec2 / 1000,
-		(unsigned long)latest_q0_rx_time, rem_nsec3 / 1000);
+		"polling: start=%llu.%06lu, isr=%llu.%06lu,q0_isr=%llu.%06lu, q0_rx=%llu.%06lu\n",
+		last_poll_time, rem_nsec0 / 1000,
+		latest_isr_time, rem_nsec1 / 1000,
+		latest_q0_isr_time, rem_nsec2 / 1000,
+		latest_q0_rx_time, rem_nsec3 / 1000);
 	/* Check whether ap received polling queue irq, after polling start */
-	if (poller_ctl->latest_poll_start_time > latest_q0_isr_time) {
-		if (poller_ctl->latest_poll_start_time < latest_isr_time)
+	/* send status > last q0 isr time */
+	if (poller_ctl->latest_poll_start_time > traffic_info[1]) {
+		/* send status < last isr time */
+		if (poller_ctl->latest_poll_start_time < traffic_info[0])
 			CCCI_ERROR_LOG(md_id, FSM,
 				"After polling start, have isr but no polling isr, maybe md no response\n");
 		else {
@@ -57,13 +60,10 @@ static int fsm_get_no_response_assert_type(struct ccci_fsm_poller *poller_ctl)
 		}
 		return MD_FORCE_ASSERT_BY_MD_NO_RESPONSE;
 	}
-	/* AP received polling queue irq,
-	 * need check q0 work normal or
-	 * no polling response package
-	 */
-	if (latest_q0_isr_time > latest_q0_rx_time) {
+	 /* send status > last wq time, < last isr time */
+	if (poller_ctl->latest_poll_start_time > traffic_info[2]) {
 		CCCI_ERROR_LOG(md_id, FSM,
-		"AP rx polling queue no work after isr, rx queue maybe blocked\n");
+		"no work after poll but isr, rx queue maybe blocked\n");
 		return MD_FORCE_ASSERT_BY_AP_Q0_BLOCKED;
 	}
 
@@ -88,6 +88,7 @@ static int fsm_poll_main(void *data)
 				CRIT_USR_MDLOG) != 1)
 			goto next;
 		poller_ctl->poller_state = FSM_POLLER_WAITING_RESPONSE;
+		poller_ctl->latest_poll_start_time = local_clock();
 		ret = ccci_port_send_msg_to_md(poller_ctl->md_id,
 				CCCI_STATUS_TX, 0, 0, 1);
 		CCCI_NORMAL_LOG(poller_ctl->md_id, FSM,
@@ -102,7 +103,6 @@ static int fsm_poll_main(void *data)
 			if (md_state == READY) {
 				CCCI_ERROR_LOG(poller_ctl->md_id, FSM,
 					"poll MD status timeout, force assert\n");
-				dump_ctrl_path_hif_status();
 				assert_md_type =
 				fsm_get_no_response_assert_type(poller_ctl);
 				if (assert_md_type

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2019 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -52,7 +44,7 @@ static int __init plat_dbg_info_init(void)
 		    (plat_dbg_info_base == NULL)) {
 			pr_debug("[PLAT DBG INFO] cannot allocate memory\n");
 			ret = -ENOMEM;
-			goto err_out;
+			goto alloc_fail;
 		}
 
 		ret |= of_property_read_u32_array(
@@ -67,7 +59,7 @@ static int __init plat_dbg_info_init(void)
 		if (ret != 0) {
 			pr_debug("[PLAT DBG INFO] cannot find property\n");
 			ret = -ENODEV;
-			goto err_out;
+			goto alloc_fail;
 		}
 
 		for (i = 0; i < plat_dbg_info_max; i++) {
@@ -89,11 +81,13 @@ static int __init plat_dbg_info_init(void)
 	}
 
 	return 0;
-err_out:
+
+alloc_fail:
 	kfree(temp_base);
 	kfree(plat_dbg_info_key);
 	kfree(plat_dbg_info_size);
 	kfree(plat_dbg_info_base);
+
 	return ret;
 }
 

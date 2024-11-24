@@ -14,13 +14,19 @@
 # drivers/video/mtk/Makefile
 #
 
+CMDQ_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+ifeq ($(CONFIG_MTK_PLATFORM), "mt6761")
+	MTK_PLATFORM := mt6765
+else
+	MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+endif
+
 obj-$(CONFIG_MTK_FB) += mtkfb_console.o		\
 			disp_assert_layer.o	\
 			mtkfb.o			\
 			mtkfb_fence.o		\
 			fbconfig_kdebug.o	\
 			mtkfb_vsync.o		\
-			disp_cust.o             \
 			debug.o			\
 			primary_display.o	\
 			disp_lowpower.o		\
@@ -56,32 +62,38 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/video/include/     \
              -I$(srctree)/drivers/misc/mediatek/smi/ \
              -I$(srctree)/drivers/misc/mediatek/dramc/$(MTK_PLATFORM) \
              -I$(srctree)/drivers/misc/mediatek/gpu/ged/include/ \
-             -I$(srctree)/drivers/iommu/
+             -I$(srctree)/drivers/iommu/  \
+             -I$(srctree)/drivers/misc/mediatek/mmdvfs \
+             -I$(srctree)/drivers/devfreq	\
+             -I$(srctree)/include/linux/soc/mediatek
 
-subdir-ccflags-y += -I$(srctree)/drivers/staging/android/ion \
-		    -I$(srctree)/drivers/staging/android/ion/mtk
+ifeq ($(CONFIG_MTK_ION), y)
+subdir-ccflags-y += -I$(srctree)/drivers/staging/android/mtk_ion \
+                    -I$(srctree)/drivers/staging/android/mtk_ion/mtk
+else
+subdir-ccflags-y += -I$(srctree)/drivers/staging/android/aosp_ion \
+                    -I$(srctree)/drivers/staging/android/aosp_ion/mtk
+endif
 
+ifeq ($(CONFIG_MTK_PLATFORM), "mt6761")
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/m4u/mt6761 \
+                    -I$(srctree)/drivers/misc/mediatek/m4u/2.0
+else
 subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/m4u/$(MTK_PLATFORM) \
-		    -I$(srctree)/drivers/misc/mediatek/m4u/2.0
+                    -I$(srctree)/drivers/misc/mediatek/m4u/2.0
+endif
 
 subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/
 
-ifeq ($(CONFIG_MACH_MT6761),y)
-    subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/mt6765/
-else
-    subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/$(MTK_PLATFORM)/
-endif
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/$(CMDQ_PLATFORM)/
+
 
 subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/mmp/
 
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/ext_disp \
 	     -I$(srctree)/drivers/misc/mediatek/ext_disp/v2
 
-ifeq ($(CONFIG_MACH_MT6761),y)
-	ccflags-y += -I$(srctree)/drivers/misc/mediatek/ext_disp/mt6765
-else
-	ccflags-y += -I$(srctree)/drivers/misc/mediatek/ext_disp/$(MTK_PLATFORM)
-endif
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/ext_disp/$(MTK_PLATFORM)
 
 ccflags-$(CONFIG_MTK_LCM) += -I$(srctree)/drivers/misc/mediatek/lcm/inc
 
@@ -95,7 +107,7 @@ ifeq ($(CONFIG_MTK_DITHERING_SUPPORT), y)
 ccflags-y += -DDITHERING_SUPPORT
 endif
 
-ifeq ($(CONFIG_MTK_GPU_SUPPORT), y)
+ifneq ($(CONFIG_MTK_GPU_SUPPORT),)
 ccflags-y += -DHWGPU_SUPPORT
 endif
 

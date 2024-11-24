@@ -16,9 +16,8 @@
 
 #include "scsi_priv.h"
 
-/* MTK PATCH */
 static int do_scsi_runtime_resume(struct device *dev,
-				   const struct dev_pm_ops *pm);
+				  const struct dev_pm_ops *pm);
 
 #ifdef CONFIG_PM_SLEEP
 
@@ -81,13 +80,6 @@ static int scsi_dev_type_resume(struct device *dev,
 	scsi_device_resume(to_scsi_device(dev));
 	dev_dbg(dev, "scsi resume: %d\n", err);
 
-	/* MTK PATCH:
-	 *
-	 * For scsi device with runtime PM enabled and managed by block layer,
-	 * we should update request queue's runtime status after system resume.
-	 *
-	 * Note. (cb != do_scsi_runtime_resume) allows system resume path only.
-	 */
 	if (err == 0 && (cb != do_scsi_runtime_resume)) {
 		pm_runtime_disable(dev);
 		err = pm_runtime_set_active(dev);
@@ -236,10 +228,21 @@ static int scsi_bus_restore(struct device *dev)
 #define scsi_bus_poweroff		NULL
 #define scsi_bus_restore		NULL
 
+static inline int
+scsi_dev_type_suspend(struct device *dev,
+		      int (*cb)(struct device *, const struct dev_pm_ops *))
+{
+	return 0;
+}
+
+static inline int
+scsi_dev_type_resume(struct device *dev,
+		     int (*cb)(struct device *, const struct dev_pm_ops *))
+{
+	return 0;
+}
 #endif /* CONFIG_PM_SLEEP */
 
-/* MTK PATCH */
-#ifdef CONFIG_PM
 static int do_scsi_runtime_suspend(struct device *dev,
 				   const struct dev_pm_ops *pm)
 {
@@ -247,7 +250,7 @@ static int do_scsi_runtime_suspend(struct device *dev,
 }
 
 static int do_scsi_runtime_resume(struct device *dev,
-				   const struct dev_pm_ops *pm)
+				  const struct dev_pm_ops *pm)
 {
 	return pm && pm->runtime_resume ? pm->runtime_resume(dev) : 0;
 }
@@ -258,15 +261,6 @@ static int sdev_runtime_suspend(struct device *dev)
 	struct scsi_device *sdev = to_scsi_device(dev);
 	int err = 0;
 
-	/*
-	 * MTK PATCH:
-	 *
-	 * Note that some scsi devices' runtime PMs are NOT managed by block
-	 * layer.
-	 *
-	 * For such scsi device, prevent invoking block layer runtime PM API.
-	 * Invoke scsi runtime PM API only.
-	 */
 	if (!sdev->request_queue->dev) {
 		err = scsi_dev_type_suspend(dev, do_scsi_runtime_suspend);
 		if (err == -EAGAIN)
@@ -304,15 +298,6 @@ static int sdev_runtime_resume(struct device *dev)
 	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
 	int err = 0;
 
-	/*
-	 * MTK PATCH:
-	 *
-	 * Note that some scsi devices' runtime PMs are NOT managed by block
-	 * layer.
-	 *
-	 * For such scsi device, prevent invoking block layer runtime PM API.
-	 * Invoke scsi runtime PM API only.
-	 */
 	if (!sdev->request_queue->dev)
 		return scsi_dev_type_resume(dev, do_scsi_runtime_resume);
 
@@ -397,20 +382,6 @@ void scsi_autopm_put_host(struct Scsi_Host *shost)
 {
 	pm_runtime_put_sync(&shost->shost_gendev);
 }
-
-#else
-
-static int do_scsi_runtime_resume(struct device *dev,
-				   const struct dev_pm_ops *pm)
-{
-	return 0;
-}
-
-#define scsi_runtime_suspend	NULL
-#define scsi_runtime_resume	NULL
-#define scsi_runtime_idle	NULL
-
-#endif /* CONFIG_PM */
 
 const struct dev_pm_ops scsi_bus_pm_ops = {
 	.prepare =		scsi_bus_prepare,

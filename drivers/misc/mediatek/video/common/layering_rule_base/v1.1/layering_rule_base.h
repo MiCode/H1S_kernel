@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Joey Pan <joey.pan@mediatek.com>
  */
 
 #ifndef __LAYERING_RULE_BASE__
@@ -131,12 +124,13 @@ struct hrt_sort_entry {
 struct layering_rule_info_t {
 	int layer_tb_idx;
 	int bound_tb_idx;
-	unsigned int disp_path;
+	int disp_path;
 	int scale_rate;
 	int dal_enable;
 	int primary_fps;
-	unsigned int hrt_sys_state;
-	unsigned int wrot_sram;
+	int hrt_sys_state;
+	int wrot_sram;
+	unsigned int hrt_idx;
 };
 
 struct layering_rule_ops {
@@ -148,7 +142,7 @@ struct layering_rule_ops {
 	int (*get_hrt_bound)(int is_larb, int hrt_level);
 	void (*rsz_by_gpu_info_change)(void);
 	bool (*rollback_to_gpu_by_hw_limitation)(struct disp_layer_info
-			*disp_info);
+						 *disp_info);
 	bool (*unset_disp_rsz_attr)(struct disp_layer_info *disp_info,
 				    int disp_idx);
 	bool (*adaptive_dc_enabled)(void);
@@ -207,5 +201,8 @@ bool is_gles_layer(struct disp_layer_info *disp_info,
 bool has_layer_cap(struct layer_config *layer_info, enum LAYERING_CAPS l_caps);
 void set_layering_opt(enum LYE_HELPER_OPT opt, int value);
 int get_layering_opt(enum LYE_HELPER_OPT opt);
-
+bool is_layer_id_valid(struct disp_layer_info *disp_info,
+	int disp_idx, int i);
+void rollback_layer_to_GPU(struct disp_layer_info *disp_info, int disp_idx,
+	int i);
 #endif

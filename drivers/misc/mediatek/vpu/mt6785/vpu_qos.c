@@ -1,27 +1,19 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/timer.h>
 #include <linux/module.h>
 #include <linux/pm_qos.h>
+#include <linux/soc/mediatek/mtk-pm-qos.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/mutex.h>
 #include <linux/sched.h>
 #include <linux/workqueue.h>
-#ifdef ENABLE_EARA_QOS
 #include <mtk_qos_bound.h>
-#endif
 #include "vpu_qos.h"
 #include "vpu_cmn.h"
 #include "vpu_dbg.h"
@@ -37,7 +29,7 @@
 
 struct qos_counter {
 	struct timer_list qos_timer;
-	struct pm_qos_request qos_req;
+	struct mtk_pm_qos_request qos_req;
 	struct list_head list;
 	struct mutex list_mtx;
 
@@ -90,25 +82,26 @@ static inline struct qos_counter *get_qos_counter(unsigned int core)
 }
 
 //-----
-static int add_qos_request(struct pm_qos_request *req)
+static int add_qos_request(struct mtk_pm_qos_request *req)
 {
-	pm_qos_add_request(req, PM_QOS_APU_MEMORY_BANDWIDTH,
+	mtk_pm_qos_add_request(req, MTK_PM_QOS_MEMORY_EXT_BANDWIDTH,
 		PM_QOS_DEFAULT_VALUE);
 	return 0;
 }
 
-static void update_qos_request(struct pm_qos_request *req, int32_t val)
+static void update_qos_request(struct mtk_pm_qos_request *req, int32_t val)
 {
 	if (g_vpu_log_level > VpuLogThre_PERFORMANCE)
 		LOG_INF("[vpu][qos] %s, peakBw=%d -\n", __func__, val);
 
-	pm_qos_update_request(req, val);
+	mtk_pm_qos_update_request(req, val);
 }
 
-static int destroy_qos_request(struct pm_qos_request *req)
+static int destroy_qos_request(struct mtk_pm_qos_request *req)
 {
-	pm_qos_update_request(req, PM_QOS_APU_MEMORY_BANDWIDTH_DEFAULT_VALUE);
-	pm_qos_remove_request(req);
+	mtk_pm_qos_update_request(req,
+	MTK_PM_QOS_MEMORY_BANDWIDTH_DEFAULT_VALUE);
+	mtk_pm_qos_remove_request(req);
 	return 0;
 }
 
@@ -331,19 +324,19 @@ static void qos_work_func(struct work_struct *work)
 	LOG_DBG("[vpu][qos] %s, peakbw=%d -\n", __func__, peak_bw);
 }
 
-static void qos_timer_func(unsigned long arg)
+static void qos_timer_func(struct timer_list *t)
 {
 	struct qos_counter *counter = NULL;
 
-	LOG_DBG("[vpu][qos] %s(%d) +\n", __func__, (int)arg);
-	counter = get_qos_counter(arg);
+	counter = container_of(t, struct qos_counter, qos_timer);
+	LOG_DBG("[vpu][qos] %s(%d) +\n", __func__, counter->core);
 	if (counter == NULL) {
 		LOG_ERR("[vpu][qos] %s get counter fail\n", __func__);
 		return;
 	}
 
 	/* queue work because mutex sleep must be happened */
-	enque_qos_wq(&qos_work[arg]);
+	enque_qos_wq(&qos_work[counter->core]);
 	mod_timer(&counter->qos_timer,
 		jiffies + msecs_to_jiffies(DEFAUTL_QOS_POLLING_TIME));
 
@@ -425,9 +418,7 @@ int vpu_qos_counter_start(unsigned int core)
 	mutex_init(&counter->list_mtx);
 
 	/* setup timer */
-	init_timer(&counter->qos_timer);
-	counter->qos_timer.function = &qos_timer_func;
-	counter->qos_timer.data = core;
+	timer_setup(&counter->qos_timer, qos_timer_func, 0);
 	counter->qos_timer.expires =
 		jiffies + msecs_to_jiffies(DEFAUTL_QOS_POLLING_TIME);
 	/* record wait time in counter */

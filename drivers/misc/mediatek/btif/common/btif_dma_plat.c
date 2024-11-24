@@ -1,18 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
-#include <mtk_lpae.h>
 
 #ifdef DFT_TAG
 #undef DFT_TAG
@@ -116,8 +107,6 @@ static int hal_tx_dma_dump_reg(struct _MTK_DMA_INFO_STR_ *p_dma_info,
 			       enum _ENUM_BTIF_REG_ID_ flag);
 static int is_tx_dma_irq_finish_done(struct _MTK_DMA_INFO_STR_ *p_dma_info);
 static int _btif_dma_dump_dbg_reg(void);
-static void hal_btif_tx_dma_vff_set_for_4g(void);
-static void hal_btif_rx_dma_vff_set_for_4g(void);
 
 /*****************************************************************************
  * FUNCTION
@@ -442,13 +431,10 @@ int hal_btif_dma_hw_init(struct _MTK_DMA_INFO_STR_ *p_dma_info)
 
 		/*write vfifo base address to VFF_ADDR*/
 		btif_reg_sync_writel(p_vfifo->phy_addr, RX_DMA_VFF_ADDR(base));
-		if (enable_4G())
-			hal_btif_rx_dma_vff_set_for_4g();
-		else {
-			addr_h = p_vfifo->phy_addr >> 16;
-			addr_h = addr_h >> 16;
-			btif_reg_sync_writel(addr_h, RX_DMA_VFF_ADDR_H(base));
-		}
+		addr_h = p_vfifo->phy_addr >> 16;
+		addr_h = addr_h >> 16;
+		btif_reg_sync_writel(addr_h, RX_DMA_VFF_ADDR_H(base));
+
 		/*write vfifo length to VFF_LEN*/
 		btif_reg_sync_writel(p_vfifo->vfifo_size, RX_DMA_VFF_LEN(base));
 		/*write wpt to VFF_WPT*/
@@ -484,15 +470,13 @@ int hal_btif_dma_hw_init(struct _MTK_DMA_INFO_STR_ *p_dma_info)
 			BTIF_CLR_BIT(TX_DMA_RST(base), DMA_HARD_RST);
 			BTIF_INFO_FUNC("TX dma hard reset\n");
 		}
+
 /*write vfifo base address to VFF_ADDR*/
 		btif_reg_sync_writel(p_vfifo->phy_addr, TX_DMA_VFF_ADDR(base));
-		if (enable_4G())
-			hal_btif_tx_dma_vff_set_for_4g();
-		else {
-			addr_h = p_vfifo->phy_addr >> 16;
-			addr_h = addr_h >> 16;
-			btif_reg_sync_writel(addr_h, TX_DMA_VFF_ADDR_H(base));
-		}
+		addr_h = p_vfifo->phy_addr >> 16;
+		addr_h = addr_h >> 16;
+		btif_reg_sync_writel(addr_h, TX_DMA_VFF_ADDR_H(base));
+
 /*write vfifo length to VFF_LEN*/
 		btif_reg_sync_writel(p_vfifo->vfifo_size, TX_DMA_VFF_LEN(base));
 /*write wpt to VFF_WPT*/
@@ -766,8 +750,8 @@ int hal_tx_dma_irq_handler(struct _MTK_DMA_INFO_STR_ *p_dma_info)
 	unsigned int left_len = 0;
 	unsigned long base = p_dma_info->base;
 	static int flush_irq_counter;
-	static struct timeval start_timer;
-	static struct timeval end_timer;
+	static struct timespec64 start_timer;
+	static struct timespec64 end_timer;
 	unsigned long flag = 0;
 
 	spin_lock_irqsave(&(g_clk_cg_spinlock), flag);
@@ -786,12 +770,12 @@ int hal_tx_dma_irq_handler(struct _MTK_DMA_INFO_STR_ *p_dma_info)
 	valid_size = BTIF_READ32(TX_DMA_VFF_VALID_SIZE(base));
 	left_len = BTIF_READ32(TX_DMA_VFF_LEFT_SIZE(base));
 	if (flush_irq_counter == 0)
-		do_gettimeofday(&start_timer);
+		btif_do_gettimeofday(&start_timer);
 	if ((valid_size > 0) && (valid_size < 8)) {
 		i_ret = _tx_dma_flush(p_dma_info);
 		flush_irq_counter++;
 		if (flush_irq_counter >= MAX_CONTINUOUS_TIMES) {
-			do_gettimeofday(&end_timer);
+			btif_do_gettimeofday(&end_timer);
 /*
  * when btif tx fifo cannot accept any data and counts of bytes left
  * in tx vfifo < 8 for a while
@@ -808,10 +792,10 @@ int hal_tx_dma_irq_handler(struct _MTK_DMA_INFO_STR_ *p_dma_info)
 			BTIF_ERR_FUNC
 			    ("*************ERROR, ERROR, ERROR************\n");
 			BTIF_ERR_FUNC(
-			     "Tx happened %d times, between %ld.%ld and %ld.%ld\n",
+			     "Tx happened %d times, between %lld.%ld and %lld.%ld\n",
 			     MAX_CONTINUOUS_TIMES, start_timer.tv_sec,
-			     start_timer.tv_usec, end_timer.tv_sec,
-			     end_timer.tv_usec);
+			     start_timer.tv_nsec, end_timer.tv_sec,
+			     end_timer.tv_nsec);
 		}
 	} else if (vff_len == left_len) {
 		flush_irq_counter = 0;
@@ -820,12 +804,6 @@ int hal_tx_dma_irq_handler(struct _MTK_DMA_INFO_STR_ *p_dma_info)
 /*vFIFO data has been read by DMA controller, just disable tx dma's irq*/
 		i_ret = hal_btif_dma_ier_ctrl(p_dma_info, false);
 	} else {
-#if 0
-		BTIF_ERR_FUNC
-		    ("**********************WARNING************************\n");
-		BTIF_ERR_FUNC("invalid irq condition, dump register\n");
-		hal_dma_dump_reg(p_dma_info, REG_ALL);
-#endif
 		BTIF_DBG_FUNC
 		    ("superious IRQ:vff_len(%d),valid_size(%d),left_len(%d)\n",
 		     vff_len, valid_size, left_len);
@@ -902,9 +880,7 @@ int hal_dma_send_data(struct _MTK_DMA_INFO_STR_ *p_dma_info,
 		       p_data, len_to_send - tail_len);
 /*make sure all data write to memory area tx vfifo locates*/
 		mb();
-#ifdef CONFIG_ARM64
-		__dma_flush_area((void *)p_buf, buf_len);
-#endif
+
 /*calculate WPT*/
 		wpt = wpt + len_to_send - vff_size;
 		last_wpt_wrap ^= DMA_WPT_WRAP;
@@ -913,9 +889,7 @@ int hal_dma_send_data(struct _MTK_DMA_INFO_STR_ *p_dma_info,
 		       p_data, len_to_send);
 /*make sure all data write to memory area tx vfifo locates*/
 		mb();
-#ifdef CONFIG_ARM64
-		__dma_flush_area((void *)p_buf, buf_len);
-#endif
+
 /*calculate WPT*/
 		wpt += len_to_send;
 	}
@@ -1333,9 +1307,6 @@ int hal_dma_dump_reg(struct _MTK_DMA_INFO_STR_ *p_dma_info,
 {
 	unsigned int i_ret = -1;
 
-#if defined(CONFIG_MTK_GIC_V3_EXT)
-	mt_irq_dump_status(p_dma_info->p_irq->irq_id);
-#endif
 	if (p_dma_info->dir == DMA_DIR_TX)
 		i_ret = hal_tx_dma_dump_reg(p_dma_info, flag);
 	else if (p_dma_info->dir == DMA_DIR_RX)
@@ -1344,6 +1315,21 @@ int hal_dma_dump_reg(struct _MTK_DMA_INFO_STR_ *p_dma_info,
 		BTIF_WARN_FUNC("unknown dir:%d\n", p_dma_info->dir);
 
 	return i_ret;
+}
+
+void hal_dma_dump_vfifo(struct _MTK_DMA_INFO_STR_ *p_dma_info)
+{
+	struct _DMA_VFIFO_ *p_vfifo;
+
+	if (!p_dma_info)
+		return;
+
+	p_vfifo = p_dma_info->p_vfifo;
+	if (!p_vfifo || !p_vfifo->p_vir_addr)
+		return;
+
+	btif_dump_array(p_dma_info->dir == DMA_DIR_RX ? "RX" : "TX",
+		p_vfifo->p_vir_addr, p_vfifo->vfifo_size);
 }
 
 static int _tx_dma_flush(struct _MTK_DMA_INFO_STR_ *p_dma_info)
@@ -1466,65 +1452,7 @@ int hal_dma_receive_data(struct _MTK_DMA_INFO_STR_ *p_dma_info,
 
 int _btif_dma_dump_dbg_reg(void)
 {
-#if 0
-	static struct _MTK_BTIF_DMA_REG_DMP_DBG_ g_dma_dbg_regs[] = {
-		{0x10201180, 0x0},
-		{0x10201184, 0x0},
-		{0x10201188, 0x0},
-		{0x1020118C, 0x0},
-		{0x10201190, 0x0},
-		{0x1000320C, 0x0},
-		{0x10003210, 0x0},
-		{0x10003214, 0x0},
-	};
-
-	int i = 0;
-	char *addr1 = NULL;
-	char *addr2 = NULL;
-
-	int array_num = ARRAY_SIZE(g_dma_dbg_regs)
-
-	addr1 = ioremap(g_dma_dbg_regs[0].reg_addr, 0x20);
-	if (addr1) {
-		for (i = 0; i < 5; i++)
-			g_dma_dbg_regs[i].reg_val =
-					readl((unsigned int)(addr1 + i*4));
-		iounmap(addr1);
-	}
-
-	addr2 = ioremap(g_dma_dbg_regs[5].reg_addr, 0x10);
-	if (addr2) {
-		g_dma_dbg_regs[5].reg_val = readl((unsigned int)(addr2));
-		g_dma_dbg_regs[6].reg_val = readl((unsigned int)(addr2+4));
-		g_dma_dbg_regs[7].reg_val = readl((unsigned int)(addr2+8));
-		iounmap(addr2);
-	}
-
-	for (i = 0; i < array_num; i++)
-		BTIF_INFO_FUNC("<reg, val>-<0x%lx, 0x%08x>\n",
-				g_dma_dbg_regs[i].reg_addr,
-				g_dma_dbg_regs[i].reg_val);
-#endif
 	return 0;
-}
-
-static void hal_btif_tx_dma_vff_set_for_4g(void)
-{
-	BTIF_DBG_FUNC("Set btif tx_vff_addr bit29\n");
-	BTIF_SET_BIT(TX_DMA_VFF_ADDR_H(mtk_btif_tx_dma.base),
-			DMA_VFF_BIT29_OFFSET);
-	BTIF_DBG_FUNC("Dump value of bit29 0x%lx:(0x%x)\n",
-			TX_DMA_VFF_ADDR_H(mtk_btif_tx_dma.base),
-			BTIF_READ32(TX_DMA_VFF_ADDR_H(mtk_btif_tx_dma.base)));
-}
-static void hal_btif_rx_dma_vff_set_for_4g(void)
-{
-	BTIF_DBG_FUNC("Set btif rx_vff_addr bit29\n");
-	BTIF_SET_BIT(RX_DMA_VFF_ADDR_H(mtk_btif_rx_dma.base),
-			DMA_VFF_BIT29_OFFSET);
-	BTIF_DBG_FUNC("Dump value of bit29 0x%lx:(0x%x)\n",
-			RX_DMA_VFF_ADDR_H(mtk_btif_rx_dma.base),
-			BTIF_READ32(RX_DMA_VFF_ADDR_H(mtk_btif_rx_dma.base)));
 }
 
 /*****************************************************************************
@@ -1598,8 +1526,7 @@ int hal_rx_dma_lock(bool enable)
 	if (enable) {
 		if (!spin_trylock_irqsave(&g_clk_cg_spinlock, flag))
 			return E_BTIF_FAIL;
-	}
-	else
+	} else
 		spin_unlock_irqrestore(&g_clk_cg_spinlock, flag);
 	return 0;
 }

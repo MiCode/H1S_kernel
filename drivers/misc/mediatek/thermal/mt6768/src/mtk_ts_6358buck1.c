@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 #include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -575,10 +567,10 @@ static int __init mt6358tsbuck1_init(void)
 
 	struct proc_dir_entry *entry = NULL;
 	struct proc_dir_entry *mt6358tsbuck1_dir = NULL;
-
+	struct regmap *reg_null = NULL;
 	mtktspmic_info("[%s]\n", __func__);
 
-	mtktspmic_cali_prepare();
+	mtktspmic_cali_prepare(reg_null);
 	mtktspmic_cali_prepare2();
 
 	err = mt6358tsbuck1_register_cooler();

@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
-
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -19,7 +10,6 @@
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
 
-#include "mach/mtk_pbm.h"
 #include "mtk_ppm_internal.h"
 #include "mtk_ppm_platform.h"
 
@@ -80,7 +70,7 @@ void mt_ppm_dlpt_kick_PBM(struct ppm_cluster_status *cluster_status,
 		budget, power_idx, total_core, max_volt);
 
 #ifndef DISABLE_PBM_FEATURE
-#ifdef CONFIG_MTK_RAM_CONSOLE
+#ifdef CONFIG_MTK_AEE_IPANIC
 	aee_rr_rec_ppm_waiting_for_pbm(1);
 	kicker_pbm_by_cpu(budget, total_core, max_volt);
 	aee_rr_rec_ppm_waiting_for_pbm(0);

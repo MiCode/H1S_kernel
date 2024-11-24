@@ -1,17 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/sched.h>
@@ -33,12 +22,11 @@
 #include "fstb.h"
 #include "xgf.h"
 #include "mini_top.h"
+#include "sched/sched.h"
 
 
 /* 32 ms based */
 #define _ALIVE_THRS			((u64)(0x1 << (25 + 1)))
-
-
 
 static atomic_t __minitop_enable = ATOMIC_INIT(0);
 
@@ -49,6 +37,7 @@ static int __cooldn_order;
 static int __thrs_heavy;
 
 static DEFINE_MUTEX(minitop_mlock);
+static DEFINE_MUTEX(minitop_qlock);
 static struct kobject *minitop_kobj;
 static unsigned int minitop_life;
 
@@ -60,6 +49,14 @@ static DEFINE_SPINLOCK(minitop_mwlock);
 static LIST_HEAD(minitop_mws);
 static struct minitop_work mwa[3];
 
+static unsigned long long last_queue_ts;
+static int __minitop_active;
+
+static struct hrtimer hrt;
+static void mini_top_stats(struct work_struct *work);
+static DECLARE_WORK(minitop_stats_work,
+		(void *) mini_top_stats);
+static struct workqueue_struct *wq;
 
 static void minitop_trace(const char *fmt, ...)
 {
@@ -94,6 +91,87 @@ static inline void minitop_unlock(const char *tag)
 static inline void minitop_lockprove(const char *tag)
 {
 	WARN_ON(!mutex_is_locked(&minitop_mlock));
+}
+
+static void enable_mini_top_timer(void)
+{
+	ktime_t ktime;
+
+	ktime = ktime_set(0,
+			32 * 1000000);
+	hrtimer_start(&hrt, ktime, HRTIMER_MODE_REL);
+}
+
+static enum hrtimer_restart mt_mini_top(struct hrtimer *timer)
+{
+	if (wq)
+		queue_work(wq, &minitop_stats_work);
+
+	return HRTIMER_NORESTART;
+}
+
+void getMaxTaskUtil(int tasks[], int utils[])
+{
+	int cpu;
+	struct task_struct *p;
+	unsigned long task_util;
+	unsigned long flags;
+	unsigned long min_utils = 0;
+
+	for_each_possible_cpu(cpu) {
+
+		raw_spin_lock_irqsave(&cpu_rq(cpu)->lock, flags);
+		utils[cpu] = 0;
+		min_utils = 0;
+		list_for_each_entry(p, &cpu_rq(cpu)->cfs_tasks, se.group_node) {
+			task_util  = p->se.avg.util_avg;
+			if (min_utils < task_util) {
+				utils[cpu] = task_util;
+				tasks[cpu] = p->pid;
+				min_utils = task_util;
+			}
+		}
+		raw_spin_unlock_irqrestore(&cpu_rq(cpu)->lock, flags);
+	}
+}
+
+void fpsgo_sched_nominate(pid_t *tid, int *util);
+static void mini_top_stats(struct work_struct *work)
+{
+	pid_t *tasks;
+	int *utils;
+	unsigned long long cur_ts;
+
+	tasks = kcalloc(nr_cpus, sizeof(*tasks), GFP_KERNEL);
+	utils = kcalloc(nr_cpus, sizeof(*utils), GFP_KERNEL);
+
+	getMaxTaskUtil(tasks, utils);
+
+	fpsgo_sched_nominate(tasks, utils);
+
+	kfree(tasks);
+	kfree(utils);
+
+	cur_ts = fpsgo_get_time();
+
+	mutex_lock(&minitop_qlock);
+	if (cur_ts < last_queue_ts + 1000000000ULL)
+		enable_mini_top_timer();
+	else
+		__minitop_active = 0;
+	mutex_unlock(&minitop_qlock);
+}
+
+void fpsgo_comp2minitop_queue_update(unsigned long long ts)
+{
+	mutex_lock(&minitop_qlock);
+	last_queue_ts = ts;
+
+	if (!__minitop_active) {
+		__minitop_active = 1;
+		enable_mini_top_timer();
+	}
+	mutex_unlock(&minitop_qlock);
 }
 
 /**
@@ -752,7 +830,7 @@ static ssize_t name##_store(struct kobject *kobj, \
 		struct kobj_attribute *attr, \
 		const char *buf, size_t count) \
 { \
-	int val = -1; \
+	int val; \
 	char acBuffer[FPSGO_SYSFS_MAX_BUFF_SIZE]; \
 	int arg; \
 \
@@ -918,7 +996,7 @@ static ssize_t enable_store(struct kobject *kobj,
 		struct kobj_attribute *attr,
 		const char *buf, size_t count)
 {
-	int val = -1;
+	int val;
 	char acBuffer[FPSGO_SYSFS_MAX_BUFF_SIZE];
 	int arg;
 
@@ -990,11 +1068,16 @@ int __init minitop_init(void)
 	}
 
 
-	/* once everything is ready, hook into scheduler */
-#ifdef CONFIG_MTK_SCHED_RQAVG_KS
-	fpsgo_sched_nominate_fp = fpsgo_sched_nominate;
-#endif
+	wq = create_singlethread_workqueue("mt_mini_top");
+	if (!wq)
+		goto err;
+
+
+	hrtimer_init(&hrt, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	hrt.function = &mt_mini_top;
 
 	atomic_set(&__minitop_enable, 1);
+
+err:
 	return 0;
 }

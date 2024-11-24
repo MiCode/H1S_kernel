@@ -270,23 +270,21 @@ static int setup_v1_file_key_derived(struct fscrypt_info *ci,
 	int err;
 
 	if ((ci->ci_policy.version == FSCRYPT_POLICY_V1) &&
-	    S_ISREG(ci->ci_inode->i_mode) && fscrypt_using_inline_encryption(ci)) {
+	    S_ISREG(ci->ci_inode->i_mode) &&
+	    fscrypt_using_inline_encryption(ci)) {
 		err = fscrypt_set_per_file_enc_key(ci, raw_master_key);
-	} else{
+	} else {
 	/*
 	 * This cannot be a stack buffer because it will be passed to the
 	 * scatterlist crypto API during derive_key_aes().
 	 */
-
 		derived_key = kmalloc(ci->ci_mode->keysize, GFP_NOFS);
 		if (!derived_key)
 			return -ENOMEM;
-
 		err = derive_key_aes(raw_master_key, ci->ci_nonce,
 				     derived_key, ci->ci_mode->keysize);
 		if (err)
 			goto out;
-
 		err = fscrypt_set_per_file_enc_key(ci, derived_key);
 	}
 

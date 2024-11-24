@@ -1,33 +1,28 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 /*
  * @file    mtk_clk_buf_hw.c
  * @brief   Driver for clock buffer control of each platform
  *
  */
-
+#include <linux/regmap.h>
 #include <mtk_spm.h>
 #include <mtk_clkbuf_ctl.h>
 #include <mtk_clkbuf_common.h>
-#if defined(CONFIG_MTK_UFS_SUPPORT)
-#include "ufs-mtk.h"
+#if defined(CONFIG_SCSI_UFS_MEDIATEK)
+//#include "ufs-mtk.h"
+#if defined(CONFIG_MACH_MT6781)
+#include <mt-plat/mtk_boot.h>
+#endif
 #endif
 
 static void __iomem *pwrap_base;
-
+struct regmap *clkbuf_regmap;
 #define PWRAP_REG(ofs)		(pwrap_base + ofs)
-
 /* PMICWRAP Reg */
 #define DCXO_ENABLE		PWRAP_REG(0x190)
 #define DCXO_CONN_ADR0		PWRAP_REG(0x194)
@@ -111,6 +106,8 @@ static unsigned int xo_mode_init[XO_NUMBER];
 /* #define CLK_BUF_HW_BBLPM_EN */
 static unsigned int bblpm_switch = 2;
 
+static unsigned int bblpm_cnt;
+
 static unsigned int pwrap_dcxo_en_init;
 
 static unsigned int clk_buf7_ctrl = true;
@@ -130,12 +127,12 @@ static int PMIC_CLK_BUF1_DRIVING_CURR = CLK_BUF_DRIVING_CURR_1,
 	   PMIC_CLK_BUF6_DRIVING_CURR = CLK_BUF_DRIVING_CURR_1,
 	   PMIC_CLK_BUF7_DRIVING_CURR = CLK_BUF_DRIVING_CURR_1;
 
-static u8 clkbuf_drv_curr_auxout[CLKBUF_NUM];
-static u8 xo_en_stat[CLKBUF_NUM];
+static u8 clkbuf_drv_curr_auxout[XO_NUMBER];
+static u8 xo_en_stat[XO_NUMBER];
 static u8 xo_bb_lpm_en_stat;
 
 #ifndef CLKBUF_BRINGUP
-static enum CLK_BUF_SWCTRL_STATUS_T  pmic_clk_buf_swctrl[CLKBUF_NUM] = {
+static enum CLK_BUF_SWCTRL_STATUS_T  pmic_clk_buf_swctrl[XO_NUMBER] = {
 	CLK_BUF_SW_ENABLE,
 	CLK_BUF_SW_DISABLE,
 	CLK_BUF_SW_DISABLE,
@@ -145,7 +142,7 @@ static enum CLK_BUF_SWCTRL_STATUS_T  pmic_clk_buf_swctrl[CLKBUF_NUM] = {
 	CLK_BUF_SW_ENABLE
 };
 #else /* For Bring-up */
-static enum CLK_BUF_SWCTRL_STATUS_T  pmic_clk_buf_swctrl[CLKBUF_NUM] = {
+static enum CLK_BUF_SWCTRL_STATUS_T  pmic_clk_buf_swctrl[XO_NUMBER] = {
 	CLK_BUF_SW_ENABLE,
 	CLK_BUF_SW_ENABLE,
 	CLK_BUF_SW_ENABLE,
@@ -221,11 +218,11 @@ void clk_buf_control_bblpm(bool on)
 	if (!is_clkbuf_initiated || !is_pmic_clkbuf)
 		return;
 
-	if (on) /* FPM -> BBLPM */
+	if (on) 
 		pmic_config_interface_nolock(PMIC_DCXO_CW00_SET_ADDR, 0x1,
 				      PMIC_XO_BB_LPM_EN_MASK,
 				      PMIC_XO_BB_LPM_EN_SHIFT);
-	else /* BBLPM -> FPM */
+	else 
 		pmic_config_interface_nolock(PMIC_DCXO_CW00_CLR_ADDR, 0x1,
 				      PMIC_XO_BB_LPM_EN_MASK,
 				      PMIC_XO_BB_LPM_EN_SHIFT);
@@ -236,7 +233,7 @@ void clk_buf_control_bblpm(bool on)
 	pr_debug("%s(%u): CW00=0x%x\n", __func__, (on ? 1 : 0), cw00);
 #endif
 #endif
-}
+} 
 
 #ifdef CLKBUF_USE_BBLPM
 static void clk_buf_ctrl_bblpm_mask(enum clk_buf_id id, bool onoff)
@@ -290,9 +287,6 @@ static void clk_buf_ctrl_bblpm_mask(enum clk_buf_id id, bool onoff)
 u32 clk_buf_bblpm_enter_cond(void)
 {
 	u32 bblpm_cond = 0;
-#if defined(CONFIG_MTK_UFS_SUPPORT) && defined(CLKBUF_USE_BBLPM)
-	int boot_type;
-#endif
 
 #ifdef CLKBUF_USE_BBLPM
 	if (!is_clkbuf_initiated || !is_pmic_clkbuf || !bblpm_switch) {
@@ -313,20 +307,17 @@ u32 clk_buf_bblpm_enter_cond(void)
 		if (pmic_clk_buf_swctrl[XO_NFC] == CLK_BUF_SW_ENABLE)
 			bblpm_cond |= BBLPM_COND_NFC;
 
-#if defined(CONFIG_MTK_UFS_SUPPORT)
-		boot_type = get_boot_type();
-		if (boot_type == BOOTDEV_UFS) {
-			if (ufs_mtk_deepidle_hibern8_check() < 0)
-				bblpm_cond |= BBLPM_COND_EXT;
-		}
+#if defined(CONFIG_SCSI_UFS_MEDIATEK)
+		if (ufs_mtk_deepidle_hibern8_check() < 0)
+			bblpm_cond |= BBLPM_COND_EXT;
 #endif
 	}
-#else /* !CLKBUF_USE_BBLPM */
-	bblpm_cond |= BBLPM_COND_SKIP;
-#endif
 
 	if (!bblpm_cond)
 		bblpm_cnt++;
+#else /* !CLKBUF_USE_BBLPM */
+	bblpm_cond |= BBLPM_COND_SKIP;
+#endif
 
 	return bblpm_cond;
 }
@@ -732,7 +723,6 @@ bool clk_buf_ctrl(enum clk_buf_id id, bool onoff)
 				__func__, id);
 			break;
 		}
-		/* record the status of CONN from caller for checking BBLPM */
 		pmic_clk_buf_swctrl[XO_WCN] = onoff;
 		break;
 	case CLK_BUF_NFC:
@@ -742,7 +732,6 @@ bool clk_buf_ctrl(enum clk_buf_id id, bool onoff)
 				__func__, id);
 			break;
 		}
-		/* record the status of NFC from caller for checking BBLPM */
 		pmic_clk_buf_swctrl[XO_NFC] = onoff;
 		break;
 	case CLK_BUF_RF:
@@ -778,7 +767,37 @@ bool clk_buf_ctrl(enum clk_buf_id id, bool onoff)
 	else
 		return true;
 }
-EXPORT_SYMBOL(clk_buf_ctrl);
+EXPORT_SYMBOL(clk_buf_ctrl); 
+
+void clk_buf_disp_ctrl(bool onoff)
+{
+	int pwrap_dcxo_en;
+
+	pwrap_dcxo_en = clkbuf_readl(DCXO_ENABLE) & ~DCXO_NFC_ENABLE;
+	clkbuf_writel(DCXO_ENABLE, pwrap_dcxo_en);
+	if (onoff) {
+		pmic_config_interface(PMIC_DCXO_CW00_CLR_ADDR,
+			PMIC_XO_EXTBUF3_MODE_MASK,
+			PMIC_XO_EXTBUF3_MODE_MASK,
+			PMIC_XO_EXTBUF3_MODE_SHIFT);
+		pmic_config_interface(PMIC_DCXO_CW00_SET_ADDR,
+			PMIC_XO_EXTBUF3_EN_M_MASK,
+			PMIC_XO_EXTBUF3_EN_M_MASK,
+			PMIC_XO_EXTBUF3_EN_M_SHIFT);
+		pmic_clk_buf_swctrl[XO_NFC] = 1;
+	} else {
+		pmic_config_interface(PMIC_DCXO_CW00_CLR_ADDR,
+			PMIC_XO_EXTBUF3_MODE_MASK,
+			PMIC_XO_EXTBUF3_MODE_MASK,
+			PMIC_XO_EXTBUF3_MODE_SHIFT);
+		pmic_config_interface(PMIC_DCXO_CW00_CLR_ADDR,
+			PMIC_XO_EXTBUF3_EN_M_MASK,
+			PMIC_XO_EXTBUF3_EN_M_MASK,
+			PMIC_XO_EXTBUF3_EN_M_SHIFT);
+		pmic_clk_buf_swctrl[XO_NFC] = 0;
+	}
+}
+EXPORT_SYMBOL(clk_buf_disp_ctrl);
 
 void clk_buf_dump_dts_log(void)
 {
@@ -822,7 +841,7 @@ void clk_buf_dump_clkbuf_log(void)
 		     __func__, pmic_cw00, pmic_cw01, pmic_cw02, pmic_cw11,
 		     pmic_cw14, pmic_cw16, pmic_cw23);
 	pr_info("%s top_spi_con1=0x%x\n", __func__, top_spi_con1);
-}
+} 
 
 static u32 dcxo_dbg_read_auxout(u16 sel)
 {
@@ -1129,16 +1148,24 @@ static ssize_t clk_buf_show_status_info_internal(char *buf)
 	len += snprintf(buf+len, CLKBUF_STATUS_INFO_SIZE-len,
 		"bblpm_switch=%u, bblpm_cnt=%u, bblpm_cond=0x%x\n",
 		bblpm_switch, bblpm_cnt, clk_buf_bblpm_enter_cond());
-
+#if defined(CONFIG_MACH_MT6768)
 	len += snprintf(buf+len, CLKBUF_STATUS_INFO_SIZE-len,
 		"MD1_PWR_CON=0x%x, PWR_STATUS=0x%x, PCM_REG13_DATA=0x%x,",
 		mtk_spm_read_register(SPM_MD1_PWR_CON),
 		mtk_spm_read_register(SPM_PWRSTA),
 		mtk_spm_read_register(SPM_REG13));
+#endif
+
+#if defined(CONFIG_MACH_MT6768)
 	len += snprintf(buf+len, CLKBUF_STATUS_INFO_SIZE-len,
 		"SPARE_ACK_MASK=0x%x, flight mode = %d\n",
 		mtk_spm_read_register(SPM_SPARE_ACK_MASK),
 		is_clk_buf_under_flightmode());
+#else
+		len += snprintf(buf+len, CLKBUF_STATUS_INFO_SIZE-len,
+		 "flight mode = %d\n",
+		is_clk_buf_under_flightmode());
+#endif
 	len += snprintf(buf+len, CLKBUF_STATUS_INFO_SIZE-len,
 			".********** clock buffer command help **********\n");
 	len += snprintf(buf+len, CLKBUF_STATUS_INFO_SIZE-len,
@@ -1161,7 +1188,7 @@ u8 clk_buf_get_xo_en_sta(enum xo_id id)
 	clk_buf_get_xo_en();
 
 	return xo_en_stat[id];
-}
+} 
 
 void clk_buf_show_status_info(void)
 {
@@ -1184,20 +1211,22 @@ void clk_buf_show_status_info(void)
 static ssize_t clk_buf_ctrl_store(struct kobject *kobj,
 	struct kobj_attribute *attr, const char *buf, size_t count)
 {
-	u32 clk_buf_en[CLKBUF_NUM], i, pwrap_dcxo_en = 0;
+	u32 clk_buf_en[XO_NUMBER];
+	u32 pwrap_dcxo_en = 0;
+	u32 i;
 	char cmd[32];
 
 	if (sscanf(buf, "%31s %x %x %x %x %x %x %x", cmd, &clk_buf_en[XO_SOC],
 		&clk_buf_en[XO_WCN], &clk_buf_en[XO_NFC], &clk_buf_en[XO_CEL],
 		&clk_buf_en[XO_AUD], &clk_buf_en[XO_PD], &clk_buf_en[XO_EXT])
-		!= (CLKBUF_NUM + 1))
+		!= (XO_NUMBER + 1))
 		return -EPERM;
 
 	if (!strcmp(cmd, "pmic")) {
 		if (!is_pmic_clkbuf)
 			return -EINVAL;
 
-		for (i = 0; i < CLKBUF_NUM; i++)
+		for (i = 0; i < XO_NUMBER; i++)
 			pmic_clk_buf_swctrl[i] = clk_buf_en[i];
 
 		pmic_clk_buf_ctrl(pmic_clk_buf_swctrl);
@@ -1209,7 +1238,7 @@ static ssize_t clk_buf_ctrl_store(struct kobject *kobj,
 
 		mutex_lock(&clk_buf_ctrl_lock);
 
-		for (i = 0; i < CLKBUF_NUM; i++) {
+		for (i = 0; i < XO_NUMBER; i++) {
 			if (i == XO_WCN) {
 				if (clk_buf_en[i])
 					pwrap_dcxo_en |= DCXO_CONN_ENABLE;
@@ -1384,15 +1413,86 @@ static ssize_t clk_buf_bblpm_show(struct kobject *kobj,
 	return len;
 }
 
+static void capid_trim_write(uint32_t cap_code)
+{
+	pmic_config_interface(PMIC_XO_COFST_FPM_ADDR, 0x0,
+			      PMIC_XO_COFST_FPM_MASK, PMIC_XO_COFST_FPM_SHIFT);
+	pmic_config_interface(PMIC_XO_CDAC_FPM_ADDR, cap_code,
+			      PMIC_XO_CDAC_FPM_MASK, PMIC_XO_CDAC_FPM_SHIFT);
+	pmic_config_interface(PMIC_XO_CORE_IDAC_FPM_ADDR, 0x2,
+			      PMIC_XO_CORE_IDAC_FPM_MASK,
+			      PMIC_XO_CORE_IDAC_FPM_SHIFT);
+	pmic_config_interface(PMIC_XO_AAC_FPM_SWEN_ADDR, 0x0,
+			      PMIC_XO_AAC_FPM_SWEN_MASK,
+			      PMIC_XO_AAC_FPM_SWEN_SHIFT);
+	mdelay(1);
+	pmic_config_interface(PMIC_XO_AAC_FPM_SWEN_ADDR, 0x1,
+			      PMIC_XO_AAC_FPM_SWEN_MASK,
+			      PMIC_XO_AAC_FPM_SWEN_SHIFT);
+	mdelay(5);
+}
+
+static uint32_t capid_trim_read(void)
+{
+	uint32_t cap_code = 0;
+
+	pmic_read_interface(PMIC_XO_CDAC_FPM_ADDR, &cap_code,
+			    PMIC_XO_CDAC_FPM_MASK, PMIC_XO_CDAC_FPM_SHIFT);
+
+	return cap_code;
+}
+
+static ssize_t clk_buf_capid_store(struct kobject *kobj,
+	struct kobj_attribute *attr, const char *buf, size_t count)
+{
+	uint32_t capid;
+	int ret;
+
+	if (buf != NULL && count != 0) {
+		ret = kstrtouint(buf, 0, &capid);
+		if (ret) {
+			pr_info("wrong format!\n");
+			return ret;
+		}
+		if (capid > PMIC_XO_CDAC_FPM_MASK) {
+			pr_info("offset should be within(%x) %x!\n",
+				PMIC_XO_CDAC_FPM_MASK, capid);
+			return -EINVAL;
+		}
+
+		pr_info("original cap code: 0x%x\n", capid_trim_read());
+
+		capid_trim_write(capid);
+		mdelay(1);
+		pr_info("write capid 0x%x done. current capid: 0x%x\n",
+			capid, capid_trim_read());
+	}
+
+	return count;
+}
+
+static ssize_t clk_buf_capid_show(struct kobject *kobj,
+struct kobj_attribute *attr, char *buf)
+{
+	int len = 0;
+
+	len += snprintf(buf+len, PAGE_SIZE-len, "dcxo capid: 0x%x\n",
+		capid_trim_read());
+
+	return len;
+}
+
 DEFINE_ATTR_RW(clk_buf_ctrl);
 DEFINE_ATTR_RW(clk_buf_debug);
 DEFINE_ATTR_RW(clk_buf_bblpm);
+DEFINE_ATTR_RW(clk_buf_capid);
 
 static struct attribute *clk_buf_attrs[] = {
 	/* for clock buffer control */
 	__ATTR_OF(clk_buf_ctrl),
 	__ATTR_OF(clk_buf_debug),
 	__ATTR_OF(clk_buf_bblpm),
+	__ATTR_OF(clk_buf_capid),
 
 	/* must */
 	NULL,
@@ -1425,14 +1525,14 @@ int clk_buf_fs_init(void)
 int clk_buf_dts_map(void)
 {
 	struct device_node *node;
-	u32 vals[CLKBUF_NUM] = {0, 0, 0, 0, 0, 0, 0};
+	u32 vals[XO_NUMBER] = {0, 0, 0, 0, 0, 0, 0};
 	int ret = -1;
 
 	node = of_find_compatible_node(NULL, NULL,
 		"mediatek,pmic_clock_buffer");
 	if (node) {
 		ret = of_property_read_u32_array(node,
-			"mediatek,clkbuf-config", vals, CLKBUF_NUM);
+			"mediatek,clkbuf-config", vals, XO_NUMBER);
 		if (!ret) {
 			CLK_BUF1_STATUS = vals[0];
 			CLK_BUF2_STATUS = vals[1];
@@ -1444,7 +1544,7 @@ int clk_buf_dts_map(void)
 		}
 		ret = of_property_read_u32_array(node,
 				"mediatek,clkbuf-driving-current",
-				vals, CLKBUF_NUM);
+				vals, XO_NUMBER);
 		if (!ret) {
 			PMIC_CLK_BUF1_DRIVING_CURR = vals[0];
 			PMIC_CLK_BUF2_DRIVING_CURR = vals[1];
@@ -1460,7 +1560,11 @@ int clk_buf_dts_map(void)
 		return -1;
 	}
 
+#if defined(CONFIG_MACH_MT6781)
+	node = of_find_compatible_node(NULL, NULL, "mediatek,mt6781-pwrap");
+#else
 	node = of_find_compatible_node(NULL, NULL, "mediatek,mt6768-pwrap");
+#endif
 	if (node)
 		pwrap_base = of_iomap(node, 0);
 	else {
@@ -1478,9 +1582,11 @@ int clk_buf_dts_map(void)
 }
 #endif
 
-void clk_buf_init_pmic_clkbuf(void)
+void clk_buf_init_pmic_clkbuf_legacy(void)
 {
+	/* Dump registers before setting */
 	clk_buf_dump_clkbuf_log();
+
 }
 
 void clk_buf_init_pmic_wrap(void)
@@ -1503,20 +1609,12 @@ short is_clkbuf_bringup(void)
 
 void clk_buf_post_init(void)
 {
-#if defined(CONFIG_MTK_UFS_SUPPORT)
-	int boot_type;
-
-	boot_type = get_boot_type();
-	/* no need to use XO_EXT if storage is emmc */
-	if (boot_type != BOOTDEV_UFS) {
-		clk_buf_ctrl_internal(CLK_BUF_UFS, CLK_BUF_FORCE_OFF);
-		CLK_BUF7_STATUS = CLOCK_BUFFER_DISABLE;
-	}
-#else
+#ifndef CONFIG_MTK_MT6382_BDG
+#ifndef CONFIG_SCSI_UFS_MEDIATEK
 	clk_buf_ctrl_internal(CLK_BUF_UFS, CLK_BUF_FORCE_OFF);
 	CLK_BUF7_STATUS = CLOCK_BUFFER_DISABLE;
 #endif
-
+#endif
 #ifndef CONFIG_NFC_CHIP_SUPPORT
 	/* no need to use XO_NFC if no NFC */
 	clk_buf_ctrl_internal(CLK_BUF_NFC, CLK_BUF_FORCE_OFF);

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2016 MediaTek Inc.
  */
 
 #ifndef __MTK_LP_DTS_H__
@@ -40,6 +32,21 @@
 				pValue |= MTK_OF_PROPERTY_VALUE_ENABLE;\
 			} of_node_put(state_node);\
 		} while (0); pValue; })
+
+/*Parsing idle-state's status about sodi*/
+#define GET_MTK_OF_PROPERTY_STATUS_SODI(_parentNode)\
+	GET_MTK_IDLE_OF_PROPERTY_STATUS(\
+		_parentNode, MTK_LP_FEATURE_DTS_NAME_SODI)
+
+/*Parsing idle-state's status about sodi3*/
+#define GET_MTK_OF_PROPERTY_STATUS_SODI3(_parentNode)\
+	GET_MTK_IDLE_OF_PROPERTY_STATUS(\
+		_parentNode, MTK_LP_FEATURE_DTS_NAME_SODI3)
+
+/*Parsing idle-state's status about dp*/
+#define GET_MTK_OF_PROPERTY_STATUS_DP(_parentNode)\
+	GET_MTK_IDLE_OF_PROPERTY_STATUS(\
+		_parentNode, MTK_LP_FEATURE_DTS_NAME_DP)
 
 /*Parsing idle-state's status about suspend*/
 #define GET_MTK_OF_PROPERTY_STATUS_SUSPEND(_parentNode)\

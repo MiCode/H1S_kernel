@@ -20,38 +20,10 @@
 #define MTK_POLL_DELAY_US   10
 #define MTK_POLL_TIMEOUT    (jiffies_to_usecs(HZ))
 
-#define INFRA_TOPAXI_SI1_CTL		0x0204
 #define INFRA_TOPAXI_PROTECTEN		0x0220
 #define INFRA_TOPAXI_PROTECTSTA1	0x0228
 #define INFRA_TOPAXI_PROTECTEN_SET	0x0260
 #define INFRA_TOPAXI_PROTECTEN_CLR	0x0264
-
-/**
- * mtk_infracfg_set_axi_si1_way_en - enable AXI way_en
- * @regmap: The infracfg regmap
- * @mask: The mask containing the way_en bits to be enabled.
- *
- * This function enables the AXI way_en bits for enabled power
- * domains so that registers on the power domain can be accessed.
- */
-void mtk_infracfg_set_axi_si1_way_en(struct regmap *infracfg, u32 mask)
-{
-	regmap_update_bits(infracfg, INFRA_TOPAXI_SI1_CTL, mask, mask);
-}
-
-/**
- * mtk_infracfg_clear_axi_si1_way_en - disable AXI way_en
- * @regmap: The infracfg regmap
- * @mask: The mask containing the way_en bits to be disabled.
- *
- * This function disables the AXI way_en bits previously enabled with
- * mtk_infracfg_set_axi_si1_way_en, to prevent system hang while accessing
- * registers.
- */
-void mtk_infracfg_clear_axi_si1_way_en(struct regmap *infracfg, u32 mask)
-{
-	regmap_update_bits(infracfg, INFRA_TOPAXI_SI1_CTL, mask, 0);
-}
 
 /**
  * mtk_infracfg_set_bus_protection - enable bus protection

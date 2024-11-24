@@ -467,7 +467,7 @@ static struct class enclosure_class = {
 	.dev_groups		= enclosure_class_groups,
 };
 
-static const char *const enclosure_status [] = {
+static const char *const enclosure_status[] = {
 	[ENCLOSURE_STATUS_UNSUPPORTED] = "unsupported",
 	[ENCLOSURE_STATUS_OK] = "OK",
 	[ENCLOSURE_STATUS_CRITICAL] = "critical",
@@ -479,7 +479,7 @@ static const char *const enclosure_status [] = {
 	[ENCLOSURE_STATUS_MAX] = NULL,
 };
 
-static const char *const enclosure_type [] = {
+static const char *const enclosure_type[] = {
 	[ENCLOSURE_COMPONENT_DEVICE] = "device",
 	[ENCLOSURE_COMPONENT_ARRAY_DEVICE] = "array device",
 };
@@ -679,13 +679,7 @@ ATTRIBUTE_GROUPS(enclosure_component);
 
 static int __init enclosure_init(void)
 {
-	int err;
-
-	err = class_register(&enclosure_class);
-	if (err)
-		return err;
-
-	return 0;
+	return class_register(&enclosure_class);
 }
 
 static void __exit enclosure_exit(void)

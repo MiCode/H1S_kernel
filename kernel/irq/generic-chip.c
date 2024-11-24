@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Library implementing the most common irq chip callback functions
  *
@@ -364,10 +365,11 @@ irq_get_domain_generic_chip(struct irq_domain *d, unsigned int hw_irq)
 EXPORT_SYMBOL_GPL(irq_get_domain_generic_chip);
 
 /*
- * Separate lockdep class for interrupt chip which can nest irq_desc
- * lock.
+ * Separate lockdep classes for interrupt chip which can nest irq_desc
+ * lock and request mutex.
  */
 static struct lock_class_key irq_nested_lock_class;
+static struct lock_class_key irq_nested_request_class;
 
 /*
  * irq_map_generic_chip - Map a generic chip for an irq domain
@@ -409,7 +411,8 @@ int irq_map_generic_chip(struct irq_domain *d, unsigned int virq,
 	set_bit(idx, &gc->installed);
 
 	if (dgc->gc_flags & IRQ_GC_INIT_NESTED_LOCK)
-		irq_set_lockdep_class(virq, &irq_nested_lock_class);
+		irq_set_lockdep_class(virq, &irq_nested_lock_class,
+				      &irq_nested_request_class);
 
 	if (chip->irq_calc_mask)
 		chip->irq_calc_mask(data);
@@ -479,7 +482,8 @@ void irq_setup_generic_chip(struct irq_chip_generic *gc, u32 msk,
 			continue;
 
 		if (flags & IRQ_GC_INIT_NESTED_LOCK)
-			irq_set_lockdep_class(i, &irq_nested_lock_class);
+			irq_set_lockdep_class(i, &irq_nested_lock_class,
+					      &irq_nested_request_class);
 
 		if (!(flags & IRQ_GC_NO_MASK)) {
 			struct irq_data *d = irq_get_irq_data(i);
@@ -533,21 +537,34 @@ EXPORT_SYMBOL_GPL(irq_setup_alt_chip);
 void irq_remove_generic_chip(struct irq_chip_generic *gc, u32 msk,
 			     unsigned int clr, unsigned int set)
 {
-	unsigned int i = gc->irq_base;
+	unsigned int i, virq;
 
 	raw_spin_lock(&gc_lock);
 	list_del(&gc->list);
 	raw_spin_unlock(&gc_lock);
 
-	for (; msk; msk >>= 1, i++) {
+	for (i = 0; msk; msk >>= 1, i++) {
 		if (!(msk & 0x01))
 			continue;
 
+		/*
+		 * Interrupt domain based chips store the base hardware
+		 * interrupt number in gc::irq_base. Otherwise gc::irq_base
+		 * contains the base Linux interrupt number.
+		 */
+		if (gc->domain) {
+			virq = irq_find_mapping(gc->domain, gc->irq_base + i);
+			if (!virq)
+				continue;
+		} else {
+			virq = gc->irq_base + i;
+		}
+
 		/* Remove handler first. That will mask the irq line */
-		irq_set_handler(i, NULL);
-		irq_set_chip(i, &no_irq_chip);
-		irq_set_chip_data(i, NULL);
-		irq_modify_status(i, clr, set);
+		irq_set_handler(virq, NULL);
+		irq_set_chip(virq, &no_irq_chip);
+		irq_set_chip_data(virq, NULL);
+		irq_modify_status(virq, clr, set);
 	}
 }
 EXPORT_SYMBOL_GPL(irq_remove_generic_chip);

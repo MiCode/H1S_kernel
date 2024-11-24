@@ -604,7 +604,7 @@ static struct clk * __init clkgen_pll_register(const char *parent_name,
 {
 	struct clkgen_pll *pll;
 	struct clk *clk;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 
 	pll = kzalloc(sizeof(*pll), GFP_KERNEL);
 	if (!pll)
@@ -738,7 +738,7 @@ static void __init clkgen_c32_pll_setup(struct device_node *np,
 		return;
 
 	clk_data->clk_num = num_odfs;
-	clk_data->clks = kzalloc(clk_data->clk_num * sizeof(struct clk *),
+	clk_data->clks = kcalloc(clk_data->clk_num, sizeof(struct clk *),
 				 GFP_KERNEL);
 
 	if (!clk_data->clks)

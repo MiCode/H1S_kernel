@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #define DEBUG 1
@@ -26,7 +18,9 @@
 #include <linux/string.h>
 #include <linux/topology.h>
 #include "mtk_ppm_internal.h"
-#include <trace/events/mtk_events.h>
+#define CREATE_TRACE_POINTS
+#include "mtk_ppm_trace.h"
+/* #include <trace/events/mtk_events.h> */
 #include <linux/of.h>
 
 /*==============================================================*/
@@ -102,10 +96,8 @@ int ppm_main_freq_to_idx(unsigned int cluster_id,
 	FUNC_ENTER(FUNC_LV_MAIN);
 
 	if (!p->cluster_info[cluster_id].dvfs_tbl) {
-#ifdef FIXME
 		ppm_err("@%s: DVFS table of cluster %d is not exist!\n",
 			__func__, cluster_id);
-#endif
 		idx = (relation == CPUFREQ_RELATION_L)
 			? get_cluster_min_cpufreq_idx(cluster_id)
 			: get_cluster_max_cpufreq_idx(cluster_id);
@@ -634,7 +626,7 @@ int mt_ppm_main(void)
 	if (!ppm_main_info.is_enabled || ppm_main_info.is_in_suspend)
 		goto end;
 
-#if 0 /* TODO will remove later */
+#ifdef TODO /* TODO will remove later */
 	if (!ppm_main_info.client_info[PPM_CLIENT_DVFS].limit_cb ||
 		!ppm_main_info.client_info[PPM_CLIENT_HOTPLUG].limit_cb) {
 		ppm_info("dvfs/hps clients not yet registed!\n");
@@ -642,7 +634,7 @@ int mt_ppm_main(void)
 	}
 #endif /* TODO will remove later */
 
-#ifdef CONFIG_MTK_RAM_CONSOLE
+#ifdef CONFIG_MTK_AEE_IPANIC
 	aee_rr_rec_ppm_step(1);
 #endif
 
@@ -670,14 +662,14 @@ int mt_ppm_main(void)
 		}
 	}
 
-#ifdef CONFIG_MTK_RAM_CONSOLE
+#ifdef CONFIG_MTK_AEE_IPANIC
 	aee_rr_rec_ppm_step(2);
 #endif
 
 	/* calculate final limit and fill-in client request structure */
 	ppm_main_calc_new_limit();
 
-#ifdef CONFIG_MTK_RAM_CONSOLE
+#ifdef CONFIG_MTK_AEE_IPANIC
 	aee_rr_rec_ppm_step(3);
 #endif
 
@@ -716,7 +708,7 @@ int mt_ppm_main(void)
 				c_req->root_cluster, buf);
 #endif
 
-#ifdef CONFIG_MTK_RAM_CONSOLE
+#ifdef CONFIG_MTK_AEE_IPANIC
 		for (i = 0; i < c_req->cluster_num; i++) {
 			aee_rr_rec_ppm_cluster_limit(i,
 				(c_req->cpu_limit[i].min_cpufreq_idx << 24) |
@@ -730,12 +722,12 @@ int mt_ppm_main(void)
 #endif
 
 #ifdef PPM_SSPM_SUPPORT
-#ifdef CONFIG_MTK_RAM_CONSOLE
+#ifdef CONFIG_MTK_AEE_IPANIC
 		aee_rr_rec_ppm_step(4);
 #endif
 		/* update limit to SSPM first */
 		ppm_ipi_update_limit(*c_req);
-#ifdef CONFIG_MTK_RAM_CONSOLE
+#ifdef CONFIG_MTK_AEE_IPANIC
 		aee_rr_rec_ppm_step(5);
 #endif
 #endif
@@ -840,7 +832,7 @@ nofity_end:
 	}
 
 
-#ifdef CONFIG_MTK_RAM_CONSOLE
+#ifdef CONFIG_MTK_AEE_IPANIC
 	aee_rr_rec_ppm_step(0);
 #endif
 
@@ -975,7 +967,7 @@ static int ppm_main_data_init(void)
 			ppm_main_info.cluster_num;
 	}
 
-#ifdef CONFIG_MTK_RAM_CONSOLE
+#ifdef CONFIG_MTK_AEE_IPANIC
 	/* init SRAM debug info */
 	for_each_ppm_clusters(i)
 		aee_rr_rec_ppm_cluster_limit(i, 0);

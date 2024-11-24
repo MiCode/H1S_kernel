@@ -136,12 +136,13 @@ void aq_ring_queue_stop(struct aq_ring_s *ring)
 		netif_stop_subqueue(ndev, ring->idx);
 }
 
-void aq_ring_tx_clean(struct aq_ring_s *self)
+bool aq_ring_tx_clean(struct aq_ring_s *self)
 {
 	struct device *dev = aq_nic_get_dev(self->aq_nic);
+	unsigned int budget;
 
-	for (; self->sw_head != self->hw_head;
-		self->sw_head = aq_ring_next_dx(self, self->sw_head)) {
+	for (budget = AQ_CFG_TX_CLEAN_BUDGET;
+	     budget && self->sw_head != self->hw_head; budget--) {
 		struct aq_ring_buff_s *buff = &self->buff_ring[self->sw_head];
 
 		if (likely(buff->is_mapped)) {
@@ -161,12 +162,40 @@ void aq_ring_tx_clean(struct aq_ring_s *self)
 			}
 		}
 
-		if (unlikely(buff->is_eop))
-			dev_kfree_skb_any(buff->skb);
+		if (unlikely(buff->is_eop)) {
+			++self->stats.rx.packets;
+			self->stats.tx.bytes += buff->skb->len;
 
+			dev_kfree_skb_any(buff->skb);
+		}
 		buff->pa = 0U;
 		buff->eop_index = 0xffffU;
+		self->sw_head = aq_ring_next_dx(self, self->sw_head);
 	}
+
+	return !!budget;
+}
+
+static void aq_rx_checksum(struct aq_ring_s *self,
+			   struct aq_ring_buff_s *buff,
+			   struct sk_buff *skb)
+{
+	if (!(self->aq_nic->ndev->features & NETIF_F_RXCSUM))
+		return;
+
+	if (unlikely(buff->is_cso_err)) {
+		++self->stats.rx.errors;
+		skb->ip_summed = CHECKSUM_NONE;
+		return;
+	}
+	if (buff->is_ip_cso) {
+		__skb_incr_checksum_unnecessary(skb);
+	} else {
+		skb->ip_summed = CHECKSUM_NONE;
+	}
+
+	if (buff->is_udp_cso || buff->is_tcp_cso)
+		__skb_incr_checksum_unnecessary(skb);
 }
 
 #define AQ_SKB_ALIGN SKB_DATA_ALIGN(sizeof(struct skb_shared_info))
@@ -264,19 +293,8 @@ int aq_ring_rx_clean(struct aq_ring_s *self,
 		}
 
 		skb->protocol = eth_type_trans(skb, ndev);
-		if (unlikely(buff->is_cso_err)) {
-			++self->stats.rx.errors;
-			skb->ip_summed = CHECKSUM_NONE;
-		} else {
-			if (buff->is_ip_cso) {
-				__skb_incr_checksum_unnecessary(skb);
-			} else {
-				skb->ip_summed = CHECKSUM_NONE;
-			}
 
-			if (buff->is_udp_cso || buff->is_tcp_cso)
-				__skb_incr_checksum_unnecessary(skb);
-		}
+		aq_rx_checksum(self, buff, skb);
 
 		skb_set_hash(skb, buff->rss_hash,
 			     buff->is_hash_l4 ? PKT_HASH_TYPE_L4 :
@@ -284,10 +302,10 @@ int aq_ring_rx_clean(struct aq_ring_s *self,
 
 		skb_record_rx_queue(skb, self->idx);
 
-		napi_gro_receive(napi, skb);
-
 		++self->stats.rx.packets;
 		self->stats.rx.bytes += skb->len;
+
+		napi_gro_receive(napi, skb);
 	}
 
 err_exit:
@@ -309,8 +327,7 @@ int aq_ring_rx_fill(struct aq_ring_s *self)
 		buff->flags = 0U;
 		buff->len = AQ_CFG_RX_FRAME_MAX;
 
-		buff->page = alloc_pages(GFP_ATOMIC | __GFP_COLD |
-					 __GFP_COMP, pages_order);
+		buff->page = alloc_pages(GFP_ATOMIC | __GFP_COMP, pages_order);
 		if (!buff->page) {
 			err = -ENOMEM;
 			goto err_exit;

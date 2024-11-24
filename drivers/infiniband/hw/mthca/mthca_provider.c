@@ -96,8 +96,9 @@ static int mthca_query_device(struct ib_device *ibdev, struct ib_device_attr *pr
 	props->page_size_cap       = mdev->limits.page_size_cap;
 	props->max_qp              = mdev->limits.num_qps - mdev->limits.reserved_qps;
 	props->max_qp_wr           = mdev->limits.max_wqes;
-	props->max_sge             = mdev->limits.max_sg;
-	props->max_sge_rd          = props->max_sge;
+	props->max_send_sge        = mdev->limits.max_sg;
+	props->max_recv_sge        = mdev->limits.max_sg;
+	props->max_sge_rd          = mdev->limits.max_sg;
 	props->max_cq              = mdev->limits.num_cqs - mdev->limits.reserved_cqs;
 	props->max_cqe             = mdev->limits.max_cqes;
 	props->max_mr              = mdev->limits.num_mpts - mdev->limits.reserved_mrws;
@@ -448,7 +449,7 @@ static struct ib_srq *mthca_create_srq(struct ib_pd *pd,
 	int err;
 
 	if (init_attr->srq_type != IB_SRQT_BASIC)
-		return ERR_PTR(-ENOSYS);
+		return ERR_PTR(-EOPNOTSUPP);
 
 	srq = kmalloc(sizeof *srq, GFP_KERNEL);
 	if (!srq)
@@ -532,7 +533,7 @@ static struct ib_qp *mthca_create_qp(struct ib_pd *pd,
 	{
 		struct mthca_ucontext *context;
 
-		qp = kmalloc(sizeof *qp, GFP_KERNEL);
+		qp = kzalloc(sizeof(*qp), GFP_KERNEL);
 		if (!qp)
 			return ERR_PTR(-ENOMEM);
 
@@ -598,7 +599,7 @@ static struct ib_qp *mthca_create_qp(struct ib_pd *pd,
 		if (pd->uobject)
 			return ERR_PTR(-EINVAL);
 
-		qp = kmalloc(sizeof (struct mthca_sqp), GFP_KERNEL);
+		qp = kzalloc(sizeof(struct mthca_sqp), GFP_KERNEL);
 		if (!qp)
 			return ERR_PTR(-ENOMEM);
 
@@ -1295,6 +1296,7 @@ int mthca_register_device(struct mthca_dev *dev)
 
 	mutex_init(&dev->cap_mask_mutex);
 
+	dev->ib_dev.driver_id = RDMA_DRIVER_MTHCA;
 	ret = ib_register_device(&dev->ib_dev, NULL);
 	if (ret)
 		return ret;

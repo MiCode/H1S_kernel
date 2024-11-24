@@ -1,16 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 #ifndef __LINUX_TRUSTY_TRUSTY_IPC_H
 #define __LINUX_TRUSTY_TRUSTY_IPC_H
 
@@ -53,7 +45,11 @@ struct tipc_dn_chan {
 	u32 session;
 	struct mutex sess_lock;
 	enum tee_id_t tee_id;
+	int port_id;
+	int32_t cpumask;
 };
+
+int tipc_set_default_cpumask(uint32_t cpumask);
 
 struct tipc_chan *tipc_create_channel(struct device *dev,
 				      const struct tipc_chan_ops *ops,

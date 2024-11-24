@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define TMEM_UT_TEST_FMT
@@ -312,7 +305,7 @@ int invoke_ut_cases(u64 cmd, u64 param1, u64 param2, u64 param3)
 	return invoke_ut_test_case(cmd);
 }
 
-static int __init tmem_ut_server_init(void)
+int tmem_ut_server_init(void)
 {
 	pr_info("%s:%d\n", __func__, __LINE__);
 
@@ -320,7 +313,7 @@ static int __init tmem_ut_server_init(void)
 	return TMEM_OK;
 }
 
-static void __exit tmem_ut_server_exit(void)
+void tmem_ut_server_exit(void)
 {
 	struct UT_TEST_CASE *t_case, *tmp;
 
@@ -331,10 +324,3 @@ static void __exit tmem_ut_server_exit(void)
 		kfree(t_case);
 	}
 }
-
-subsys_initcall(tmem_ut_server_init);
-module_exit(tmem_ut_server_exit);
-
-MODULE_AUTHOR("MediaTek Inc.");
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("MediaTek Trusted Memory Test Server");

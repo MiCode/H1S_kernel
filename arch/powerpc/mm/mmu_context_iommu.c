@@ -18,10 +18,14 @@
 #include <linux/migrate.h>
 #include <linux/hugetlb.h>
 #include <linux/swap.h>
+#include <linux/sizes.h>
 #include <asm/mmu_context.h>
 #include <asm/pte-walk.h>
 
 static DEFINE_MUTEX(mem_list_mutex);
+
+#define MM_IOMMU_TABLE_GROUP_PAGE_DIRTY	0x1
+#define MM_IOMMU_TABLE_GROUP_PAGE_MASK	~(SZ_4K - 1)
 
 struct mm_iommu_table_group_mem_t {
 	struct list_head next;
@@ -77,8 +81,7 @@ EXPORT_SYMBOL_GPL(mm_iommu_preregistered);
 /*
  * Taken from alloc_migrate_target with changes to remove CMA allocations
  */
-struct page *new_iommu_non_cma_page(struct page *page, unsigned long private,
-					int **resultp)
+struct page *new_iommu_non_cma_page(struct page *page, unsigned long private)
 {
 	gfp_t gfp_mask = GFP_USER;
 	struct page *new_page;
@@ -114,7 +117,7 @@ static int mm_iommu_move_page_from_cma(struct page *page)
 	put_page(page); /* Drop the gup reference */
 
 	ret = migrate_pages(&cma_migrate_pages, new_iommu_non_cma_page,
-				NULL, 0, MIGRATE_SYNC, MR_CMA);
+				NULL, 0, MIGRATE_SYNC, MR_CONTIG_RANGE);
 	if (ret) {
 		if (!list_empty(&cma_migrate_pages))
 			putback_movable_pages(&cma_migrate_pages);
@@ -171,7 +174,7 @@ long mm_iommu_get(struct mm_struct *mm, unsigned long ua, unsigned long entries,
 	 * smaller than huge pages but still bigger than PAGE_SIZE.
 	 */
 	mem->pageshift = __ffs(ua | (entries << PAGE_SHIFT));
-	mem->hpas = vzalloc(entries * sizeof(mem->hpas[0]));
+	mem->hpas = vzalloc(array_size(entries, sizeof(mem->hpas[0])));
 	if (!mem->hpas) {
 		kfree(mem);
 		ret = -ENOMEM;
@@ -263,6 +266,9 @@ static void mm_iommu_unpin(struct mm_iommu_table_group_mem_t *mem)
 		page = pfn_to_page(mem->hpas[i] >> PAGE_SHIFT);
 		if (!page)
 			continue;
+
+		if (mem->hpas[i] & MM_IOMMU_TABLE_GROUP_PAGE_DIRTY)
+			SetPageDirty(page);
 
 		put_page(page);
 		mem->hpas[i] = 0;
@@ -361,7 +367,6 @@ struct mm_iommu_table_group_mem_t *mm_iommu_lookup_rm(struct mm_struct *mm,
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(mm_iommu_lookup_rm);
 
 struct mm_iommu_table_group_mem_t *mm_iommu_find(struct mm_struct *mm,
 		unsigned long ua, unsigned long entries)
@@ -391,7 +396,7 @@ long mm_iommu_ua_to_hpa(struct mm_iommu_table_group_mem_t *mem,
 	if (pageshift > mem->pageshift)
 		return -EFAULT;
 
-	*hpa = *va | (ua & ~PAGE_MASK);
+	*hpa = (*va & MM_IOMMU_TABLE_GROUP_PAGE_MASK) | (ua & ~PAGE_MASK);
 
 	return 0;
 }
@@ -414,11 +419,31 @@ long mm_iommu_ua_to_hpa_rm(struct mm_iommu_table_group_mem_t *mem,
 	if (!pa)
 		return -EFAULT;
 
-	*hpa = *pa | (ua & ~PAGE_MASK);
+	*hpa = (*pa & MM_IOMMU_TABLE_GROUP_PAGE_MASK) | (ua & ~PAGE_MASK);
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(mm_iommu_ua_to_hpa_rm);
+
+extern void mm_iommu_ua_mark_dirty_rm(struct mm_struct *mm, unsigned long ua)
+{
+	struct mm_iommu_table_group_mem_t *mem;
+	long entry;
+	void *va;
+	unsigned long *pa;
+
+	mem = mm_iommu_lookup_rm(mm, ua, PAGE_SIZE);
+	if (!mem)
+		return;
+
+	entry = (ua - mem->ua) >> PAGE_SHIFT;
+	va = &mem->hpas[entry];
+
+	pa = (void *) vmalloc_to_phys(va);
+	if (!pa)
+		return;
+
+	*pa |= MM_IOMMU_TABLE_GROUP_PAGE_DIRTY;
+}
 
 long mm_iommu_mapped_inc(struct mm_iommu_table_group_mem_t *mem)
 {

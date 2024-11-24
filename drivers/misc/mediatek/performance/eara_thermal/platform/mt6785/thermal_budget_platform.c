@@ -1,22 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include "mtk_gpufreq.h"
-#include "thermal_budget.h"
+#include "thermal_internal.h"
 
 #if defined(CONFIG_MTK_VPU_SUPPORT)
 #include "vpu_dvfs.h"
@@ -74,7 +64,7 @@ void eara_thrm_update_gpu_info(int *input_opp_num, int *in_max_opp_idx,
 	if (!tbl)
 		return;
 
-	memcpy((*gpu_tbl), &tbl[*in_max_opp_idx], opp_num *sizeof(*tbl));
+	memcpy((*gpu_tbl), &tbl[*in_max_opp_idx], opp_num * sizeof(*tbl));
 }
 
 int eara_thrm_get_vpu_core_num(void)

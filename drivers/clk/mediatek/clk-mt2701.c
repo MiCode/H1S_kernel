@@ -46,8 +46,6 @@ static const struct mtk_fixed_clk top_fixed_clks[] = {
 		340 * MHZ),
 	FIXED_CLK(CLK_TOP_HDMI_0_PLL340M, "hdmi_0_pll340m", "clk26m",
 		340 * MHZ),
-	FIXED_CLK(CLK_TOP_HDMITX_CLKDIG_CTS, "hdmitx_dig_cts", "clk26m",
-		300 * MHZ),
 	FIXED_CLK(CLK_TOP_HADDS2_FB, "hadds2_fbclk", "clk26m",
 		27 * MHZ),
 	FIXED_CLK(CLK_TOP_WBG_DIG_416M, "wbg_dig_ck_416m", "clk26m",
@@ -690,6 +688,8 @@ static int mtk_topckgen_init(struct platform_device *pdev)
 		return PTR_ERR(base);
 
 	clk_data = mtk_alloc_clk_data(CLK_TOP_NR);
+	if (!clk_data)
+		return -ENOMEM;
 
 	mtk_clk_register_fixed_clks(top_fixed_clks, ARRAY_SIZE(top_fixed_clks),
 								clk_data);
@@ -751,12 +751,14 @@ static const struct mtk_fixed_factor infra_fixed_divs[] = {
 
 static struct clk_onecell_data *infra_clk_data;
 
-static void mtk_infrasys_init_early(struct device_node *node)
+static void __init mtk_infrasys_init_early(struct device_node *node)
 {
 	int r, i;
 
 	if (!infra_clk_data) {
 		infra_clk_data = mtk_alloc_clk_data(CLK_INFRA_NR);
+		if (!infra_clk_data)
+			return;
 
 		for (i = 0; i < CLK_INFRA_NR; i++)
 			infra_clk_data->clks[i] = ERR_PTR(-EPROBE_DEFER);
@@ -783,6 +785,8 @@ static int mtk_infrasys_init(struct platform_device *pdev)
 
 	if (!infra_clk_data) {
 		infra_clk_data = mtk_alloc_clk_data(CLK_INFRA_NR);
+		if (!infra_clk_data)
+			return -ENOMEM;
 	} else {
 		for (i = 0; i < CLK_INFRA_NR; i++) {
 			if (infra_clk_data->clks[i] == ERR_PTR(-EPROBE_DEFER))
@@ -911,6 +915,8 @@ static int mtk_pericfg_init(struct platform_device *pdev)
 		return PTR_ERR(base);
 
 	clk_data = mtk_alloc_clk_data(CLK_PERI_NR);
+	if (!clk_data)
+		return -ENOMEM;
 
 	mtk_clk_register_gates(node, peri_clks, ARRAY_SIZE(peri_clks),
 						clk_data);
@@ -977,6 +983,10 @@ static const struct mtk_pll_data apmixed_plls[] = {
 				21, 0x2d0, 4, 0x0, 0x2d4, 0),
 };
 
+static const struct mtk_fixed_factor apmixed_fixed_divs[] = {
+	FACTOR(CLK_APMIXED_HDMI_REF, "hdmi_ref", "tvdpll", 1, 1),
+};
+
 static int mtk_apmixedsys_init(struct platform_device *pdev)
 {
 	struct clk_onecell_data *clk_data;
@@ -987,6 +997,8 @@ static int mtk_apmixedsys_init(struct platform_device *pdev)
 		return -ENOMEM;
 
 	mtk_clk_register_plls(node, apmixed_plls, ARRAY_SIZE(apmixed_plls),
+								clk_data);
+	mtk_clk_register_factors(apmixed_fixed_divs, ARRAY_SIZE(apmixed_fixed_divs),
 								clk_data);
 
 	return of_clk_add_provider(node, of_clk_src_onecell_get, clk_data);

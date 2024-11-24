@@ -1,31 +1,26 @@
 // SPDX-License-Identifier: GPL-2.0
 //
 // Copyright (C) 2018 MediaTek Inc.
-// Copyright (C) 2021 XiaoMi, Inc.
 
 #include "mtk-scp-ultra-mem-control.h"
 #include "mtk-scp-ultra-common.h"
 #include "mtk-base-afe.h"
 #include "mtk-base-scp-ultra.h"
 #include "mtk-afe-fe-dai.h"
-#include "audio_buf.h"
 #include <sound/soc.h>
 #include <linux/device.h>
 #include <linux/compat.h>
 #include <linux/io.h>
 #include "scp_helper.h"
 #include "scp_ipi.h"
-#include "audio_ipi_platform.h"
 #include "mtk-sram-manager.h"
-#include "mtk-scp-ultra-platform-mem-control.h"
 #include "audio_ultra_msg_id.h"
-#include "audio_buf.h"
 
 int mtk_scp_ultra_reserved_dram_init(void)
 {
 	struct mtk_base_scp_ultra *scp_ultra = get_scp_ultra_base();
-	struct audio_dsp_dram *ultra_resv_mem = &scp_ultra->ultra_reserve_dram;
-	struct audio_dsp_dram *dump_resv_mem =
+	struct audio_ultra_dram *ultra_resv_mem = &scp_ultra->ultra_reserve_dram;
+	struct audio_ultra_dram *dump_resv_mem =
 		&scp_ultra->ultra_dump.dump_resv_mem;
 
 	ultra_resv_mem->phy_addr =
@@ -114,26 +109,26 @@ int mtk_scp_ultra_free_mem(struct snd_pcm_substream *substream,
 EXPORT_SYMBOL_GPL(mtk_scp_ultra_free_mem);
 
 int mtk_scp_ultra_allocate_mem(struct snd_pcm_substream *substream,
-				   dma_addr_t *phys_addr,
-				   unsigned char **virt_addr,
-				   unsigned int size,
-				   snd_pcm_format_t format,
-				   struct mtk_base_afe *afe)
+			       dma_addr_t *phys_addr,
+			       unsigned char **virt_addr,
+			       unsigned int size,
+			       snd_pcm_format_t format,
+			       struct mtk_base_afe *afe)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct mtk_base_scp_ultra *scp_ultra = get_scp_ultra_base();
 	struct mtk_base_scp_ultra_mem *ultra_mem = &scp_ultra->ultra_mem;
-	struct audio_dsp_dram *ultra_resv_mem = &scp_ultra->ultra_reserve_dram;
+	struct audio_ultra_dram *ultra_resv_mem = &scp_ultra->ultra_reserve_dram;
 	int id = rtd->cpu_dai->id;
 	struct mtk_base_afe_memif *memif = &afe->memif[id];
 	struct snd_dma_buffer *ultra_dma_buf = NULL;
 	int buf_offset;
 	int ret;
 
-	if (id == get_scp_ultra_memif_id(SCP_ULTRA_DL_DAI_ID)) {
+	if (id == scp_ultra->scp_ultra_dl_memif_id) {
 		ultra_dma_buf = &ultra_mem->ultra_dl_dma_buf;
 		buf_offset = ULTRA_BUF_OFFSET;
-	} else if (id == get_scp_ultra_memif_id(SCP_ULTRA_UL_DAI_ID)) {
+	} else if (id == scp_ultra->scp_ultra_ul_memif_id) {
 		ultra_dma_buf = &ultra_mem->ultra_ul_dma_buf;
 		buf_offset = ULTRA_BUF_OFFSET * 2;
 	}  else {
@@ -143,13 +138,13 @@ int mtk_scp_ultra_allocate_mem(struct snd_pcm_substream *substream,
 
 	ultra_dma_buf->bytes = size;
 	if (memif->use_dram_only == 0 &&
-		mtk_audio_sram_allocate(afe->sram,
-					&ultra_dma_buf->addr,
-					&ultra_dma_buf->area,
-					ultra_dma_buf->bytes,
-					substream,
-					format,
-					false) == 0) {
+	    mtk_audio_sram_allocate(afe->sram,
+				    &ultra_dma_buf->addr,
+				    &ultra_dma_buf->area,
+				    ultra_dma_buf->bytes,
+				    substream,
+				    format,
+				    false) == 0) {
 		memif->using_sram = 1;
 	} else {
 		memif->using_sram = 0;
@@ -161,7 +156,6 @@ int mtk_scp_ultra_allocate_mem(struct snd_pcm_substream *substream,
 
 	memset_io(ultra_dma_buf->area, 0, ultra_dma_buf->bytes);
 
-//BYPASS_RSVED_MEM_ALLOCATE:
 	/* set memif addr */
 	ret = mtk_memif_set_addr(afe, id,
 				 ultra_dma_buf->area,
@@ -184,7 +178,9 @@ int mtk_scp_ultra_allocate_mem(struct snd_pcm_substream *substream,
 	if (memif->using_sram == 0 && afe->request_dram_resource)
 		afe->request_dram_resource(afe->dev);
 
+	*phys_addr = ultra_dma_buf->addr;
+	*virt_addr = ultra_dma_buf->area;
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mtk_scp_ultra_allocate_mem);
-
+late_initcall(mtk_scp_ultra_reserved_dram_init);

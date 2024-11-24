@@ -44,7 +44,6 @@
 #include <net/ipv6.h>
 #include <linux/parser.h>
 #include <linux/bvec.h>
-
 #include "cifspdu.h"
 #include "cifsglob.h"
 #include "cifsproto.h"
@@ -57,11 +56,10 @@
 #include "rfc1002pdu.h"
 #include "fscache.h"
 #include "smb2proto.h"
-
-#define CIFS_PORT 445
-#define RFC1001_PORT 139
+#include "smbdirect.h"
 
 extern mempool_t *cifs_req_poolp;
+extern bool disable_legacy_dialects;
 
 /* FIXME: should these be tunable? */
 #define TLINK_ERROR_EXPIRE	(1 * HZ)
@@ -72,14 +70,15 @@ enum {
 	Opt_user_xattr, Opt_nouser_xattr,
 	Opt_forceuid, Opt_noforceuid,
 	Opt_forcegid, Opt_noforcegid,
-	Opt_noblocksend, Opt_noautotune,
+	Opt_noblocksend, Opt_noautotune, Opt_nolease,
 	Opt_hard, Opt_soft, Opt_perm, Opt_noperm,
 	Opt_mapposix, Opt_nomapposix,
 	Opt_mapchars, Opt_nomapchars, Opt_sfu,
 	Opt_nosfu, Opt_nodfs, Opt_posixpaths,
-	Opt_noposixpaths, Opt_nounix,
+	Opt_noposixpaths, Opt_nounix, Opt_unix,
 	Opt_nocase,
 	Opt_brl, Opt_nobrl,
+	Opt_handlecache, Opt_nohandlecache,
 	Opt_forcemandatorylock, Opt_setuidfromacl, Opt_setuids,
 	Opt_nosetuids, Opt_dynperm, Opt_nodynperm,
 	Opt_nohard, Opt_nosoft,
@@ -93,7 +92,7 @@ enum {
 	Opt_multiuser, Opt_sloppy, Opt_nosharesock,
 	Opt_persistent, Opt_nopersistent,
 	Opt_resilient, Opt_noresilient,
-	Opt_domainauto,
+	Opt_domainauto, Opt_rdma,
 
 	/* Mount options which take numeric value */
 	Opt_backupuid, Opt_backupgid, Opt_uid,
@@ -130,6 +129,7 @@ static const match_table_t cifs_mount_option_tokens = {
 	{ Opt_noforcegid, "noforcegid" },
 	{ Opt_noblocksend, "noblocksend" },
 	{ Opt_noautotune, "noautotune" },
+	{ Opt_nolease, "nolease" },
 	{ Opt_hard, "hard" },
 	{ Opt_soft, "soft" },
 	{ Opt_perm, "perm" },
@@ -145,10 +145,16 @@ static const match_table_t cifs_mount_option_tokens = {
 	{ Opt_noposixpaths, "noposixpaths" },
 	{ Opt_nounix, "nounix" },
 	{ Opt_nounix, "nolinux" },
+	{ Opt_nounix, "noposix" },
+	{ Opt_unix, "unix" },
+	{ Opt_unix, "linux" },
+	{ Opt_unix, "posix" },
 	{ Opt_nocase, "nocase" },
 	{ Opt_nocase, "ignorecase" },
 	{ Opt_brl, "brl" },
 	{ Opt_nobrl, "nobrl" },
+	{ Opt_handlecache, "handlecache" },
+	{ Opt_nohandlecache, "nohandlecache" },
 	{ Opt_nobrl, "nolock" },
 	{ Opt_forcemandatorylock, "forcemandatorylock" },
 	{ Opt_forcemandatorylock, "forcemand" },
@@ -184,6 +190,7 @@ static const match_table_t cifs_mount_option_tokens = {
 	{ Opt_resilient, "resilienthandles"},
 	{ Opt_noresilient, "noresilienthandles"},
 	{ Opt_domainauto, "domainauto"},
+	{ Opt_rdma, "rdma"},
 
 	{ Opt_backupuid, "backupuid=%s" },
 	{ Opt_backupgid, "backupgid=%s" },
@@ -298,10 +305,8 @@ static const match_table_t cifs_smb_version_tokens = {
 	{ Smb_21, SMB21_VERSION_STRING },
 	{ Smb_30, SMB30_VERSION_STRING },
 	{ Smb_302, SMB302_VERSION_STRING },
-#ifdef CONFIG_CIFS_SMB311
 	{ Smb_311, SMB311_VERSION_STRING },
 	{ Smb_311, ALT_SMB311_VERSION_STRING },
-#endif /* SMB311 */
 	{ Smb_3any, SMB3ANY_VERSION_STRING },
 	{ Smb_default, SMBDEFAULT_VERSION_STRING },
 	{ Smb_version_err, NULL }
@@ -312,7 +317,7 @@ static int generic_ip_connect(struct TCP_Server_Info *server);
 static void tlink_rb_insert(struct rb_root *root, struct tcon_link *new_tlink);
 static void cifs_prune_tlinks(struct work_struct *work);
 static int cifs_setup_volume_info(struct smb_vol *volume_info, char *mount_data,
-					const char *devname);
+					const char *devname, bool is_smb3);
 
 /*
  * Resolve hostname and set ip addr in tcp ses. Useful for hostnames that may
@@ -394,6 +399,7 @@ cifs_reconnect(struct TCP_Server_Info *server)
 	server->max_read = 0;
 
 	cifs_dbg(FYI, "Reconnecting tcp session\n");
+	trace_smb3_reconnect(server->CurrentMid, server->hostname);
 
 	/* before reconnecting the tcp session, mark the smb session (uid)
 		and the tid bad so they are not used until reconnected */
@@ -403,11 +409,12 @@ cifs_reconnect(struct TCP_Server_Info *server)
 	list_for_each(tmp, &server->smb_ses_list) {
 		ses = list_entry(tmp, struct cifs_ses, smb_ses_list);
 		ses->need_reconnect = true;
-		ses->ipc_tid = 0;
 		list_for_each(tmp2, &ses->tcon_list) {
 			tcon = list_entry(tmp2, struct cifs_tcon, tcon_list);
 			tcon->need_reconnect = true;
 		}
+		if (ses->tcon_ipc)
+			ses->tcon_ipc->need_reconnect = true;
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
 
@@ -422,7 +429,8 @@ cifs_reconnect(struct TCP_Server_Info *server)
 			 server->ssocket->state, server->ssocket->flags);
 		sock_release(server->ssocket);
 		server->ssocket = NULL;
-	}
+	} else if (cifs_rdma_enabled(server))
+		smbd_destroy(server);
 	server->sequence_number = 0;
 	server->session_estab = false;
 	kfree(server->session_key.response);
@@ -455,7 +463,10 @@ cifs_reconnect(struct TCP_Server_Info *server)
 
 		/* we should try only the port we connected to before */
 		mutex_lock(&server->srv_mutex);
-		rc = generic_ip_connect(server);
+		if (cifs_rdma_enabled(server))
+			rc = smbd_reconnect(server);
+		else
+			rc = generic_ip_connect(server);
 		if (rc) {
 			cifs_dbg(FYI, "reconnect error %d\n", rc);
 			rc = reconn_set_ipaddr(server);
@@ -614,8 +625,10 @@ cifs_readv_from_socket(struct TCP_Server_Info *server, struct msghdr *smb_msg)
 
 		if (server_unresponsive(server))
 			return -ECONNABORTED;
-
-		length = sock_recvmsg(server->ssocket, smb_msg, 0);
+		if (cifs_rdma_enabled(server) && server->smbd_conn)
+			length = smbd_recv(server->smbd_conn, smb_msg);
+		else
+			length = sock_recvmsg(server->ssocket, smb_msg, 0);
 
 		if (server->tcpStatus == CifsExiting)
 			return -ESHUTDOWN;
@@ -660,10 +673,11 @@ cifs_read_from_socket(struct TCP_Server_Info *server, char *buf,
 
 int
 cifs_read_page_from_socket(struct TCP_Server_Info *server, struct page *page,
-		      unsigned int to_read)
+	unsigned int page_offset, unsigned int to_read)
 {
 	struct msghdr smb_msg;
-	struct bio_vec bv = {.bv_page = page, .bv_len = to_read};
+	struct bio_vec bv = {
+		.bv_page = page, .bv_len = to_read, .bv_offset = page_offset};
 	iov_iter_bvec(&smb_msg.msg_iter, READ | ITER_BVEC, &bv, 1, to_read);
 	return cifs_readv_from_socket(server, &smb_msg);
 }
@@ -723,7 +737,15 @@ dequeue_mid(struct mid_q_entry *mid, bool malformed)
 		mid->mid_state = MID_RESPONSE_RECEIVED;
 	else
 		mid->mid_state = MID_RESPONSE_MALFORMED;
-	list_del_init(&mid->qhead);
+	/*
+	 * Trying to handle/dequeue a mid after the send_recv()
+	 * function has finished processing it is a bug.
+	 */
+	if (mid->mid_flags & MID_DELETED)
+		printk_once(KERN_WARNING
+			    "trying to dequeue a deleted mid\n");
+	else
+		list_del_init(&mid->qhead);
 	spin_unlock(&GlobalMid_Lock);
 }
 
@@ -756,6 +778,8 @@ static void clean_demultiplex_info(struct TCP_Server_Info *server)
 	list_del_init(&server->tcp_ses_list);
 	spin_unlock(&cifs_tcp_ses_lock);
 
+	cancel_delayed_work_sync(&server->echo);
+
 	spin_lock(&GlobalMid_Lock);
 	server->tcpStatus = CifsExiting;
 	spin_unlock(&GlobalMid_Lock);
@@ -776,7 +800,8 @@ static void clean_demultiplex_info(struct TCP_Server_Info *server)
 	wake_up_all(&server->request_q);
 	/* give those requests time to exit */
 	msleep(125);
-
+	if (cifs_rdma_enabled(server))
+		smbd_destroy(server);
 	if (server->ssocket) {
 		sock_release(server->ssocket);
 		server->ssocket = NULL;
@@ -838,10 +863,11 @@ standard_receive3(struct TCP_Server_Info *server, struct mid_q_entry *mid)
 {
 	int length;
 	char *buf = server->smallbuf;
-	unsigned int pdu_length = get_rfc1002_length(buf);
+	unsigned int pdu_length = server->pdu_size;
 
 	/* make sure this will fit in a large buffer */
-	if (pdu_length > CIFSMaxBufSize + MAX_HEADER_SIZE(server) - 4) {
+	if (pdu_length > CIFSMaxBufSize + MAX_HEADER_SIZE(server) -
+		server->vals->header_preamble_size) {
 		cifs_dbg(VFS, "SMB response too long (%u bytes)\n", pdu_length);
 		cifs_reconnect(server);
 		wake_up(&server->response_q);
@@ -857,7 +883,9 @@ standard_receive3(struct TCP_Server_Info *server, struct mid_q_entry *mid)
 
 	/* now read the rest */
 	length = cifs_read_from_socket(server, buf + HEADER_SIZE(server) - 1,
-				pdu_length - HEADER_SIZE(server) + 1 + 4);
+				       pdu_length - HEADER_SIZE(server) + 1
+				       + server->vals->header_preamble_size);
+
 	if (length < 0)
 		return length;
 	server->total_read += length;
@@ -905,15 +933,37 @@ cifs_handle_standard(struct TCP_Server_Info *server, struct mid_q_entry *mid)
 	return 0;
 }
 
+static void
+smb2_add_credits_from_hdr(char *buffer, struct TCP_Server_Info *server)
+{
+	struct smb2_sync_hdr *shdr = (struct smb2_sync_hdr *)buffer;
+
+	/*
+	 * SMB1 does not use credits.
+	 */
+	if (server->vals->header_preamble_size)
+		return;
+
+	if (shdr->CreditRequest) {
+		spin_lock(&server->req_lock);
+		server->credits += le16_to_cpu(shdr->CreditRequest);
+		spin_unlock(&server->req_lock);
+		wake_up(&server->request_q);
+	}
+}
+
+
 static int
 cifs_demultiplex_thread(void *p)
 {
-	int length;
+	int i, num_mids, length;
 	struct TCP_Server_Info *server = p;
 	unsigned int pdu_length;
+	unsigned int next_offset;
 	char *buf = NULL;
 	struct task_struct *task_to_wake = NULL;
-	struct mid_q_entry *mid_entry;
+	struct mid_q_entry *mids[MAX_COMPOUND];
+	char *bufs[MAX_COMPOUND];
 
 	current->flags |= PF_MEMALLOC;
 	cifs_dbg(FYI, "Demultiplex PID: %d\n", task_pid_nr(current));
@@ -938,7 +988,11 @@ cifs_demultiplex_thread(void *p)
 		length = cifs_read_from_socket(server, buf, pdu_length);
 		if (length < 0)
 			continue;
-		server->total_read = length;
+
+		if (server->vals->header_preamble_size == 0)
+			server->total_read = 0;
+		else
+			server->total_read = length;
 
 		/*
 		 * The right amount was read from socket - 4 bytes,
@@ -949,74 +1003,112 @@ cifs_demultiplex_thread(void *p)
 		cifs_dbg(FYI, "RFC1002 header 0x%x\n", pdu_length);
 		if (!is_smb_response(server, buf[0]))
 			continue;
+next_pdu:
+		server->pdu_size = pdu_length;
 
 		/* make sure we have enough to get to the MID */
-		if (pdu_length < HEADER_SIZE(server) - 1 - 4) {
+		if (server->pdu_size < HEADER_SIZE(server) - 1 -
+		    server->vals->header_preamble_size) {
 			cifs_dbg(VFS, "SMB response too short (%u bytes)\n",
-				 pdu_length);
+				 server->pdu_size);
 			cifs_reconnect(server);
 			wake_up(&server->response_q);
 			continue;
 		}
 
 		/* read down to the MID */
-		length = cifs_read_from_socket(server, buf + 4,
-					       HEADER_SIZE(server) - 1 - 4);
+		length = cifs_read_from_socket(server,
+			     buf + server->vals->header_preamble_size,
+			     HEADER_SIZE(server) - 1
+			     - server->vals->header_preamble_size);
 		if (length < 0)
 			continue;
 		server->total_read += length;
 
-		mid_entry = NULL;
+		if (server->ops->next_header) {
+			next_offset = server->ops->next_header(buf);
+			if (next_offset)
+				server->pdu_size = next_offset;
+		}
+
+		memset(mids, 0, sizeof(mids));
+		memset(bufs, 0, sizeof(bufs));
+		num_mids = 0;
+
 		if (server->ops->is_transform_hdr &&
 		    server->ops->receive_transform &&
 		    server->ops->is_transform_hdr(buf)) {
 			length = server->ops->receive_transform(server,
-								&mid_entry);
+								mids,
+								bufs,
+								&num_mids);
 		} else {
-			mid_entry = server->ops->find_mid(server, buf);
+			mids[0] = server->ops->find_mid(server, buf);
+			bufs[0] = buf;
+			num_mids = 1;
 
-			if (!mid_entry || !mid_entry->receive)
-				length = standard_receive3(server, mid_entry);
+			if (!mids[0] || !mids[0]->receive)
+				length = standard_receive3(server, mids[0]);
 			else
-				length = mid_entry->receive(server, mid_entry);
+				length = mids[0]->receive(server, mids[0]);
 		}
 
 		if (length < 0) {
-			if (mid_entry)
-				cifs_mid_q_entry_release(mid_entry);
+			for (i = 0; i < num_mids; i++)
+				if (mids[i])
+					cifs_mid_q_entry_release(mids[i]);
 			continue;
 		}
 
 		if (server->large_buf)
 			buf = server->bigbuf;
 
+
 		server->lstrp = jiffies;
-		if (mid_entry != NULL) {
-			if ((mid_entry->mid_flags & MID_WAIT_CANCELLED) &&
-			     mid_entry->mid_state == MID_RESPONSE_RECEIVED &&
-					server->ops->handle_cancelled_mid)
-				server->ops->handle_cancelled_mid(
-							mid_entry->resp_buf,
+
+		for (i = 0; i < num_mids; i++) {
+			if (mids[i] != NULL) {
+				mids[i]->resp_buf_size = server->pdu_size;
+				if ((mids[i]->mid_flags & MID_WAIT_CANCELLED) &&
+				    mids[i]->mid_state == MID_RESPONSE_RECEIVED &&
+				    server->ops->handle_cancelled_mid)
+					server->ops->handle_cancelled_mid(
+							mids[i]->resp_buf,
 							server);
 
-			if (!mid_entry->multiRsp || mid_entry->multiEnd)
-				mid_entry->callback(mid_entry);
+				if (!mids[i]->multiRsp || mids[i]->multiEnd)
+					mids[i]->callback(mids[i]);
 
-			cifs_mid_q_entry_release(mid_entry);
-		} else if (server->ops->is_oplock_break &&
-			   server->ops->is_oplock_break(buf, server)) {
-			cifs_dbg(FYI, "Received oplock break\n");
-		} else {
-			cifs_dbg(VFS, "No task to wake, unknown frame received! NumMids %d\n",
-				 atomic_read(&midCount));
-			cifs_dump_mem("Received Data is: ", buf,
-				      HEADER_SIZE(server));
+				cifs_mid_q_entry_release(mids[i]);
+			} else if (server->ops->is_oplock_break &&
+				   server->ops->is_oplock_break(bufs[i],
+								server)) {
+				smb2_add_credits_from_hdr(bufs[i], server);
+				cifs_dbg(FYI, "Received oplock break\n");
+			} else {
+				cifs_dbg(VFS, "No task to wake, unknown frame "
+					 "received! NumMids %d\n",
+					 atomic_read(&midCount));
+				cifs_dump_mem("Received Data is: ", bufs[i],
+					      HEADER_SIZE(server));
 #ifdef CONFIG_CIFS_DEBUG2
-			if (server->ops->dump_detail)
-				server->ops->dump_detail(buf);
-			cifs_dump_mids(server);
+				if (server->ops->dump_detail)
+					server->ops->dump_detail(bufs[i],
+								 server);
+				smb2_add_credits_from_hdr(bufs[i], server);
+				cifs_dump_mids(server);
 #endif /* CIFS_DEBUG2 */
+			}
+		}
 
+		if (pdu_length > server->pdu_size) {
+			if (!allocate_buffers(server))
+				continue;
+			pdu_length -= server->pdu_size;
+			server->total_read = 0;
+			server->large_buf = false;
+			buf = server->smallbuf;
+			goto next_pdu;
 		}
 	} /* end while !EXITING */
 
@@ -1202,17 +1294,33 @@ cifs_parse_cache_flavor(char *value, struct smb_vol *vol)
 }
 
 static int
-cifs_parse_smb_version(char *value, struct smb_vol *vol)
+cifs_parse_smb_version(char *value, struct smb_vol *vol, bool is_smb3)
 {
 	substring_t args[MAX_OPT_ARGS];
 
 	switch (match_token(value, cifs_smb_version_tokens, args)) {
 #ifdef CONFIG_CIFS_ALLOW_INSECURE_LEGACY
 	case Smb_1:
+		if (disable_legacy_dialects) {
+			cifs_dbg(VFS, "mount with legacy dialect disabled\n");
+			return 1;
+		}
+		if (is_smb3) {
+			cifs_dbg(VFS, "vers=1.0 (cifs) not permitted when mounting with smb3\n");
+			return 1;
+		}
 		vol->ops = &smb1_operations;
 		vol->vals = &smb1_values;
 		break;
 	case Smb_20:
+		if (disable_legacy_dialects) {
+			cifs_dbg(VFS, "mount with legacy dialect disabled\n");
+			return 1;
+		}
+		if (is_smb3) {
+			cifs_dbg(VFS, "vers=2.0 not permitted when mounting with smb3\n");
+			return 1;
+		}
 		vol->ops = &smb20_operations;
 		vol->vals = &smb20_values;
 		break;
@@ -1236,12 +1344,10 @@ cifs_parse_smb_version(char *value, struct smb_vol *vol)
 		vol->ops = &smb30_operations; /* currently identical with 3.0 */
 		vol->vals = &smb302_values;
 		break;
-#ifdef CONFIG_CIFS_SMB311
 	case Smb_311:
 		vol->ops = &smb311_operations;
 		vol->vals = &smb311_values;
 		break;
-#endif /* SMB311 */
 	case Smb_3any:
 		vol->ops = &smb30_operations; /* currently identical with 3.0 */
 		vol->vals = &smb3any_values;
@@ -1314,7 +1420,7 @@ cifs_parse_devname(const char *devname, struct smb_vol *vol)
 
 static int
 cifs_parse_mount_options(const char *mountdata, const char *devname,
-			 struct smb_vol *vol)
+			 struct smb_vol *vol, bool is_smb3)
 {
 	char *data, *end;
 	char *mountdata_copy = NULL, *options;
@@ -1463,6 +1569,9 @@ cifs_parse_mount_options(const char *mountdata, const char *devname,
 		case Opt_noautotune:
 			vol->noautotune = 1;
 			break;
+		case Opt_nolease:
+			vol->no_lease = 1;
+			break;
 		case Opt_hard:
 			vol->retry = 1;
 			break;
@@ -1505,7 +1614,16 @@ cifs_parse_mount_options(const char *mountdata, const char *devname,
 			vol->posix_paths = 0;
 			break;
 		case Opt_nounix:
+			if (vol->linux_ext)
+				cifs_dbg(VFS,
+					"conflicting unix mount options\n");
 			vol->no_linux_ext = 1;
+			break;
+		case Opt_unix:
+			if (vol->no_linux_ext)
+				cifs_dbg(VFS,
+					"conflicting unix mount options\n");
+			vol->linux_ext = 1;
 			break;
 		case Opt_nocase:
 			vol->nocase = 1;
@@ -1523,6 +1641,12 @@ cifs_parse_mount_options(const char *mountdata, const char *devname,
 			if (vol->file_mode ==
 				(S_IALLUGO & ~(S_ISUID | S_IXGRP)))
 				vol->file_mode = S_IALLUGO;
+			break;
+		case Opt_nohandlecache:
+			vol->nohandlecache = 1;
+			break;
+		case Opt_handlecache:
+			vol->nohandlecache = 0;
 			break;
 		case Opt_forcemandatorylock:
 			vol->mand_lock = 1;
@@ -1646,6 +1770,9 @@ cifs_parse_mount_options(const char *mountdata, const char *devname,
 			break;
 		case Opt_domainauto:
 			vol->domainauto = true;
+			break;
+		case Opt_rdma:
+			vol->rdma = true;
 			break;
 
 		/* Numeric Values */
@@ -2009,7 +2136,7 @@ cifs_parse_mount_options(const char *mountdata, const char *devname,
 			if (string == NULL)
 				goto out_nomem;
 
-			if (cifs_parse_smb_version(string, vol) != 0)
+			if (cifs_parse_smb_version(string, vol, is_smb3) != 0)
 				goto cifs_parse_mount_err;
 			got_version = true;
 			break;
@@ -2045,6 +2172,11 @@ cifs_parse_mount_options(const char *mountdata, const char *devname,
 
 	if (!sloppy && invalid) {
 		pr_err("CIFS: Unknown mount option \"%s\"\n", invalid);
+		goto cifs_parse_mount_err;
+	}
+
+	if (vol->rdma && vol->vals->protocol_id < SMB30_PROT_ID) {
+		cifs_dbg(VFS, "SMB Direct requires Version >=3.0\n");
 		goto cifs_parse_mount_err;
 	}
 
@@ -2259,6 +2391,9 @@ static int match_server(struct TCP_Server_Info *server, struct smb_vol *vol)
 	if (server->echo_interval != vol->echo_interval * HZ)
 		return 0;
 
+	if (server->rdma != vol->rdma)
+		return 0;
+
 	return 1;
 }
 
@@ -2357,6 +2492,7 @@ cifs_get_tcp_session(struct smb_vol *volume_info)
 	tcp_ses->noblocksnd = volume_info->noblocksnd;
 	tcp_ses->noautotune = volume_info->noautotune;
 	tcp_ses->tcp_nodelay = volume_info->sockopt_tcp_nodelay;
+	tcp_ses->rdma = volume_info->rdma;
 	tcp_ses->in_flight = 0;
 	tcp_ses->credits = 1;
 	init_waitqueue_head(&tcp_ses->response_q);
@@ -2394,13 +2530,29 @@ cifs_get_tcp_session(struct smb_vol *volume_info)
 		tcp_ses->echo_interval = volume_info->echo_interval * HZ;
 	else
 		tcp_ses->echo_interval = SMB_ECHO_INTERVAL_DEFAULT * HZ;
-
+	if (tcp_ses->rdma) {
+#ifndef CONFIG_CIFS_SMB_DIRECT
+		cifs_dbg(VFS, "CONFIG_CIFS_SMB_DIRECT is not enabled\n");
+		rc = -ENOENT;
+		goto out_err_crypto_release;
+#endif
+		tcp_ses->smbd_conn = smbd_get_connection(
+			tcp_ses, (struct sockaddr *)&volume_info->dstaddr);
+		if (tcp_ses->smbd_conn) {
+			cifs_dbg(VFS, "RDMA transport established\n");
+			rc = 0;
+			goto smbd_connected;
+		} else {
+			rc = -ENOENT;
+			goto out_err_crypto_release;
+		}
+	}
 	rc = ip_connect(tcp_ses);
 	if (rc < 0) {
 		cifs_dbg(VFS, "Error connecting to socket. Aborting operation.\n");
 		goto out_err_crypto_release;
 	}
-
+smbd_connected:
 	/*
 	 * since we're in a cifs function already, we know that
 	 * this will succeed. No need for try_module_get().
@@ -2478,6 +2630,93 @@ static int match_session(struct cifs_ses *ses, struct smb_vol *vol)
 	return 1;
 }
 
+/**
+ * cifs_setup_ipc - helper to setup the IPC tcon for the session
+ *
+ * A new IPC connection is made and stored in the session
+ * tcon_ipc. The IPC tcon has the same lifetime as the session.
+ */
+static int
+cifs_setup_ipc(struct cifs_ses *ses, struct smb_vol *volume_info)
+{
+	int rc = 0, xid;
+	struct cifs_tcon *tcon;
+	struct nls_table *nls_codepage;
+	char unc[SERVER_NAME_LENGTH + sizeof("//x/IPC$")] = {0};
+	bool seal = false;
+
+	/*
+	 * If the mount request that resulted in the creation of the
+	 * session requires encryption, force IPC to be encrypted too.
+	 */
+	if (volume_info->seal) {
+		if (ses->server->capabilities & SMB2_GLOBAL_CAP_ENCRYPTION)
+			seal = true;
+		else {
+			cifs_dbg(VFS,
+				 "IPC: server doesn't support encryption\n");
+			return -EOPNOTSUPP;
+		}
+	}
+
+	tcon = tconInfoAlloc();
+	if (tcon == NULL)
+		return -ENOMEM;
+
+	snprintf(unc, sizeof(unc), "\\\\%s\\IPC$", ses->server->hostname);
+
+	/* cannot fail */
+	nls_codepage = load_nls_default();
+
+	xid = get_xid();
+	tcon->ses = ses;
+	tcon->ipc = true;
+	tcon->seal = seal;
+	rc = ses->server->ops->tree_connect(xid, ses, unc, tcon, nls_codepage);
+	free_xid(xid);
+
+	if (rc) {
+		cifs_dbg(VFS, "failed to connect to IPC (rc=%d)\n", rc);
+		tconInfoFree(tcon);
+		goto out;
+	}
+
+	cifs_dbg(FYI, "IPC tcon rc = %d ipc tid = %d\n", rc, tcon->tid);
+
+	ses->tcon_ipc = tcon;
+out:
+	unload_nls(nls_codepage);
+	return rc;
+}
+
+/**
+ * cifs_free_ipc - helper to release the session IPC tcon
+ *
+ * Needs to be called everytime a session is destroyed
+ */
+static int
+cifs_free_ipc(struct cifs_ses *ses)
+{
+	int rc = 0, xid;
+	struct cifs_tcon *tcon = ses->tcon_ipc;
+
+	if (tcon == NULL)
+		return 0;
+
+	if (ses->server->ops->tree_disconnect) {
+		xid = get_xid();
+		rc = ses->server->ops->tree_disconnect(xid, tcon);
+		free_xid(xid);
+	}
+
+	if (rc)
+		cifs_dbg(FYI, "failed to disconnect IPC tcon (rc=%d)\n", rc);
+
+	tconInfoFree(tcon);
+	ses->tcon_ipc = NULL;
+	return rc;
+}
+
 static struct cifs_ses *
 cifs_find_smb_ses(struct TCP_Server_Info *server, struct smb_vol *vol)
 {
@@ -2517,6 +2756,8 @@ cifs_put_smb_ses(struct cifs_ses *ses)
 	if (ses->status == CifsGood)
 		ses->status = CifsExiting;
 	spin_unlock(&cifs_tcp_ses_lock);
+
+	cifs_free_ipc(ses);
 
 	if (ses->status == CifsExiting && server->ops->logoff) {
 		xid = get_xid();
@@ -2688,10 +2929,17 @@ cifs_set_cifscreds(struct smb_vol *vol __attribute__((unused)),
 }
 #endif /* CONFIG_KEYS */
 
+/**
+ * cifs_get_smb_ses - get a session matching @volume_info data from @server
+ *
+ * This function assumes it is being called from cifs_mount() where we
+ * already got a server reference (server refcount +1). See
+ * cifs_get_tcon() for refcount explanations.
+ */
 static struct cifs_ses *
 cifs_get_smb_ses(struct TCP_Server_Info *server, struct smb_vol *volume_info)
 {
-	int rc = -ENOMEM;
+	int rc = 0;
 	unsigned int xid;
 	struct cifs_ses *ses;
 	struct sockaddr_in *addr = (struct sockaddr_in *)&server->dstaddr;
@@ -2732,6 +2980,8 @@ cifs_get_smb_ses(struct TCP_Server_Info *server, struct smb_vol *volume_info)
 		free_xid(xid);
 		return ses;
 	}
+
+	rc = -ENOMEM;
 
 	cifs_dbg(FYI, "Existing smb sess not found\n");
 	ses = sesInfoAlloc();
@@ -2784,6 +3034,9 @@ cifs_get_smb_ses(struct TCP_Server_Info *server, struct smb_vol *volume_info)
 	spin_unlock(&cifs_tcp_ses_lock);
 
 	free_xid(xid);
+
+	cifs_setup_ipc(ses, volume_info);
+
 	return ses;
 
 get_ses_fail:
@@ -2801,6 +3054,8 @@ static int match_tcon(struct cifs_tcon *tcon, struct smb_vol *volume_info)
 	if (tcon->seal != volume_info->seal)
 		return 0;
 	if (tcon->snapshot_time != volume_info->snapshot_time)
+		return 0;
+	if (tcon->no_lease != volume_info->no_lease)
 		return 0;
 	return 1;
 }
@@ -2828,8 +3083,16 @@ void
 cifs_put_tcon(struct cifs_tcon *tcon)
 {
 	unsigned int xid;
-	struct cifs_ses *ses = tcon->ses;
+	struct cifs_ses *ses;
 
+	/*
+	 * IPC tcon share the lifetime of their session and are
+	 * destroyed in the session put function
+	 */
+	if (tcon == NULL || tcon->ipc)
+		return;
+
+	ses = tcon->ses;
 	cifs_dbg(FYI, "%s: tc_count=%d\n", __func__, tcon->tc_count);
 	spin_lock(&cifs_tcp_ses_lock);
 	if (--tcon->tc_count > 0) {
@@ -2850,6 +3113,26 @@ cifs_put_tcon(struct cifs_tcon *tcon)
 	cifs_put_smb_ses(ses);
 }
 
+/**
+ * cifs_get_tcon - get a tcon matching @volume_info data from @ses
+ *
+ * - tcon refcount is the number of mount points using the tcon.
+ * - ses refcount is the number of tcon using the session.
+ *
+ * 1. This function assumes it is being called from cifs_mount() where
+ *    we already got a session reference (ses refcount +1).
+ *
+ * 2. Since we're in the context of adding a mount point, the end
+ *    result should be either:
+ *
+ * a) a new tcon already allocated with refcount=1 (1 mount point) and
+ *    its session refcount incremented (1 new tcon). This +1 was
+ *    already done in (1).
+ *
+ * b) an existing tcon with refcount+1 (add a mount point to it) and
+ *    identical ses refcount (no new tcon). Because of (1) we need to
+ *    decrement the ses refcount.
+ */
 static struct cifs_tcon *
 cifs_get_tcon(struct cifs_ses *ses, struct smb_vol *volume_info)
 {
@@ -2858,8 +3141,11 @@ cifs_get_tcon(struct cifs_ses *ses, struct smb_vol *volume_info)
 
 	tcon = cifs_find_tcon(ses, volume_info);
 	if (tcon) {
+		/*
+		 * tcon has refcount already incremented but we need to
+		 * decrement extra ses reference gotten by caller (case b)
+		 */
 		cifs_dbg(FYI, "Found match on UNC path\n");
-		/* existing tcon already has a reference */
 		cifs_put_smb_ses(ses);
 		return tcon;
 	}
@@ -2890,6 +3176,34 @@ cifs_get_tcon(struct cifs_ses *ses, struct smb_vol *volume_info)
 		tcon->password = kstrdup(volume_info->password, GFP_KERNEL);
 		if (!tcon->password) {
 			rc = -ENOMEM;
+			goto out_fail;
+		}
+	}
+
+	if (volume_info->seal) {
+		if (ses->server->vals->protocol_id == 0) {
+			cifs_dbg(VFS,
+				 "SMB3 or later required for encryption\n");
+			rc = -EOPNOTSUPP;
+			goto out_fail;
+		} else if (tcon->ses->server->capabilities &
+					SMB2_GLOBAL_CAP_ENCRYPTION)
+			tcon->seal = true;
+		else {
+			cifs_dbg(VFS, "Encryption is not supported on share\n");
+			rc = -EOPNOTSUPP;
+			goto out_fail;
+		}
+	}
+
+	if (volume_info->linux_ext) {
+		if (ses->server->posix_ext_supported) {
+			tcon->posix_extensions = true;
+			printk_once(KERN_WARNING
+				"SMB3.11 POSIX Extensions are experimental\n");
+		} else {
+			cifs_dbg(VFS, "Server does not support mounting with posix SMB3.11 extensions.\n");
+			rc = -EOPNOTSUPP;
 			goto out_fail;
 		}
 	}
@@ -2942,22 +3256,6 @@ cifs_get_tcon(struct cifs_ses *ses, struct smb_vol *volume_info)
 		tcon->use_resilient = true;
 	}
 
-	if (volume_info->seal) {
-		if (ses->server->vals->protocol_id == 0) {
-			cifs_dbg(VFS,
-				 "SMB3 or later required for encryption\n");
-			rc = -EOPNOTSUPP;
-			goto out_fail;
-		} else if (tcon->ses->server->capabilities &
-					SMB2_GLOBAL_CAP_ENCRYPTION)
-			tcon->seal = true;
-		else {
-			cifs_dbg(VFS, "Encryption is not supported on share\n");
-			rc = -EOPNOTSUPP;
-			goto out_fail;
-		}
-	}
-
 	/*
 	 * We can have only one retry value for a connection to a share so for
 	 * resources mounted more than once to the same server share the last
@@ -2965,7 +3263,9 @@ cifs_get_tcon(struct cifs_ses *ses, struct smb_vol *volume_info)
 	 */
 	tcon->retry = volume_info->retry;
 	tcon->nocase = volume_info->nocase;
+	tcon->nohandlecache = volume_info->nohandlecache;
 	tcon->local_lease = volume_info->local_lease;
+	tcon->no_lease = volume_info->no_lease;
 	INIT_LIST_HEAD(&tcon->pending_opens);
 
 	spin_lock(&cifs_tcp_ses_lock);
@@ -2999,23 +3299,21 @@ cifs_put_tlink(struct tcon_link *tlink)
 	return;
 }
 
-static inline struct tcon_link *
-cifs_sb_master_tlink(struct cifs_sb_info *cifs_sb)
-{
-	return cifs_sb->master_tlink;
-}
-
 static int
 compare_mount_options(struct super_block *sb, struct cifs_mnt_data *mnt_data)
 {
 	struct cifs_sb_info *old = CIFS_SB(sb);
 	struct cifs_sb_info *new = mnt_data->cifs_sb;
+	unsigned int oldflags = old->mnt_cifs_flags & CIFS_MOUNT_MASK;
+	unsigned int newflags = new->mnt_cifs_flags & CIFS_MOUNT_MASK;
 
 	if ((sb->s_flags & CIFS_MS_MASK) != (mnt_data->flags & CIFS_MS_MASK))
 		return 0;
 
-	if ((old->mnt_cifs_flags & CIFS_MOUNT_MASK) !=
-	    (new->mnt_cifs_flags & CIFS_MOUNT_MASK))
+	if (old->mnt_cifs_serverino_autodisabled)
+		newflags &= ~CIFS_MOUNT_SERVER_INUM;
+
+	if (oldflags != newflags)
 		return 0;
 
 	/*
@@ -3077,9 +3375,10 @@ cifs_match_super(struct super_block *sb, void *data)
 	spin_lock(&cifs_tcp_ses_lock);
 	cifs_sb = CIFS_SB(sb);
 	tlink = cifs_get_tlink(cifs_sb_master_tlink(cifs_sb));
-	if (IS_ERR(tlink)) {
+	if (tlink == NULL) {
+		/* can not match superblock if tlink were ever null */
 		spin_unlock(&cifs_tcp_ses_lock);
-		return rc;
+		return 0;
 	}
 	tcon = tlink_tcon(tlink);
 	ses = tcon->ses;
@@ -3107,39 +3406,17 @@ get_dfs_path(const unsigned int xid, struct cifs_ses *ses, const char *old_path,
 	     const struct nls_table *nls_codepage, unsigned int *num_referrals,
 	     struct dfs_info3_param **referrals, int remap)
 {
-	char *temp_unc;
 	int rc = 0;
 
-	if (!ses->server->ops->tree_connect || !ses->server->ops->get_dfs_refer)
+	if (!ses->server->ops->get_dfs_refer)
 		return -ENOSYS;
 
 	*num_referrals = 0;
 	*referrals = NULL;
 
-	if (ses->ipc_tid == 0) {
-		temp_unc = kmalloc(2 /* for slashes */ +
-			strnlen(ses->serverName, SERVER_NAME_LEN_WITH_NULL * 2)
-				+ 1 + 4 /* slash IPC$ */ + 2, GFP_KERNEL);
-		if (temp_unc == NULL)
-			return -ENOMEM;
-		temp_unc[0] = '\\';
-		temp_unc[1] = '\\';
-		strcpy(temp_unc + 2, ses->serverName);
-		strcpy(temp_unc + 2 + strlen(ses->serverName), "\\IPC$");
-		rc = ses->server->ops->tree_connect(xid, ses, temp_unc, NULL,
-						    nls_codepage);
-		cifs_dbg(FYI, "Tcon rc = %d ipc_tid = %d\n", rc, ses->ipc_tid);
-		kfree(temp_unc);
-	}
-	if (rc == 0)
-		rc = ses->server->ops->get_dfs_refer(xid, ses, old_path,
-						     referrals, num_referrals,
-						     nls_codepage, remap);
-	/*
-	 * BB - map targetUNCs to dfs_info3 structures, here or in
-	 * ses->server->ops->get_dfs_refer.
-	 */
-
+	rc = ses->server->ops->get_dfs_refer(xid, ses, old_path,
+					     referrals, num_referrals,
+					     nls_codepage, remap);
 	return rc;
 }
 
@@ -3547,6 +3824,8 @@ int cifs_setup_cifs_sb(struct smb_vol *pvolume_info,
 		cifs_sb->mnt_cifs_flags |= CIFS_MOUNT_UNX_EMUL;
 	if (pvolume_info->nobrl)
 		cifs_sb->mnt_cifs_flags |= CIFS_MOUNT_NO_BRL;
+	if (pvolume_info->nohandlecache)
+		cifs_sb->mnt_cifs_flags |= CIFS_MOUNT_NO_HANDLE_CACHE;
 	if (pvolume_info->nostrictsync)
 		cifs_sb->mnt_cifs_flags |= CIFS_MOUNT_NOSSYNC;
 	if (pvolume_info->mand_lock)
@@ -3708,7 +3987,7 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 		} else {
 			cleanup_volume_info_contents(volume_info);
 			rc = cifs_setup_volume_info(volume_info, mdata,
-							fake_devname);
+							fake_devname, false);
 		}
 		kfree(fake_devname);
 		kfree(cifs_sb->mountdata);
@@ -3721,11 +4000,11 @@ expand_dfs_referral(const unsigned int xid, struct cifs_ses *ses,
 
 static int
 cifs_setup_volume_info(struct smb_vol *volume_info, char *mount_data,
-			const char *devname)
+			const char *devname, bool is_smb3)
 {
 	int rc = 0;
 
-	if (cifs_parse_mount_options(mount_data, devname, volume_info))
+	if (cifs_parse_mount_options(mount_data, devname, volume_info, is_smb3))
 		return -EINVAL;
 
 	if (volume_info->nullauth) {
@@ -3759,7 +4038,7 @@ cifs_setup_volume_info(struct smb_vol *volume_info, char *mount_data,
 }
 
 struct smb_vol *
-cifs_get_volume_info(char *mount_data, const char *devname)
+cifs_get_volume_info(char *mount_data, const char *devname, bool is_smb3)
 {
 	int rc;
 	struct smb_vol *volume_info;
@@ -3768,7 +4047,7 @@ cifs_get_volume_info(char *mount_data, const char *devname)
 	if (!volume_info)
 		return ERR_PTR(-ENOMEM);
 
-	rc = cifs_setup_volume_info(volume_info, mount_data, devname);
+	rc = cifs_setup_volume_info(volume_info, mount_data, devname, is_smb3);
 	if (rc) {
 		cifs_cleanup_volume_info(volume_info);
 		volume_info = ERR_PTR(rc);
@@ -3889,6 +4168,10 @@ try_mount_again:
 		goto remote_path_check;
 	}
 
+	/* if new SMB3.11 POSIX extensions are supported do not remap / and \ */
+	if (tcon->posix_extensions)
+		cifs_sb->mnt_cifs_flags |= CIFS_MOUNT_POSIX_PATHS;
+
 	/* tell server which Unix caps we support */
 	if (cap_unix(tcon->ses)) {
 		/* reset of caps checks mount to see if unix extensions
@@ -3904,7 +4187,7 @@ try_mount_again:
 		tcon->unix_ext = 0; /* server does not support them */
 
 	/* do not care if a following call succeed - informational */
-	if (!tcon->ipc && server->ops->qfs_tcon)
+	if (!tcon->pipe && server->ops->qfs_tcon)
 		server->ops->qfs_tcon(xid, tcon);
 
 	cifs_sb->wsize = server->ops->negotiate_wsize(tcon, volume_info);
@@ -4034,8 +4317,7 @@ out:
 }
 
 /*
- * Issue a TREE_CONNECT request. Note that for IPC$ shares, that the tcon
- * pointer may be NULL.
+ * Issue a TREE_CONNECT request.
  */
 int
 CIFSTCon(const unsigned int xid, struct cifs_ses *ses,
@@ -4071,7 +4353,7 @@ CIFSTCon(const unsigned int xid, struct cifs_ses *ses,
 	pSMB->AndXCommand = 0xFF;
 	pSMB->Flags = cpu_to_le16(TCON_EXTENDED_SECINFO);
 	bcc_ptr = &pSMB->Password[0];
-	if (!tcon || (ses->server->sec_mode & SECMODE_USER)) {
+	if (tcon->pipe || (ses->server->sec_mode & SECMODE_USER)) {
 		pSMB->PasswordLength = cpu_to_le16(1);	/* minimum */
 		*bcc_ptr = 0; /* password is null byte */
 		bcc_ptr++;              /* skip password */
@@ -4143,7 +4425,7 @@ CIFSTCon(const unsigned int xid, struct cifs_ses *ses,
 			 0);
 
 	/* above now done in SendReceive */
-	if ((rc == 0) && (tcon != NULL)) {
+	if (rc == 0) {
 		bool is_unicode;
 
 		tcon->tidStatus = CifsGood;
@@ -4163,7 +4445,8 @@ CIFSTCon(const unsigned int xid, struct cifs_ses *ses,
 			if ((bcc_ptr[0] == 'I') && (bcc_ptr[1] == 'P') &&
 			    (bcc_ptr[2] == 'C')) {
 				cifs_dbg(FYI, "IPC connection\n");
-				tcon->ipc = 1;
+				tcon->ipc = true;
+				tcon->pipe = true;
 			}
 		} else if (length == 2) {
 			if ((bcc_ptr[0] == 'A') && (bcc_ptr[1] == ':')) {
@@ -4190,9 +4473,6 @@ CIFSTCon(const unsigned int xid, struct cifs_ses *ses,
 		else
 			tcon->Flags = 0;
 		cifs_dbg(FYI, "Tcon flags: 0x%x\n", tcon->Flags);
-	} else if ((rc == 0) && tcon == NULL) {
-		/* all we need to save for IPC$ connection */
-		ses->ipc_tid = smb_buffer_response->Tid;
 	}
 
 	cifs_buf_release(smb_buffer);
@@ -4276,7 +4556,7 @@ cifs_setup_session(const unsigned int xid, struct cifs_ses *ses,
 		 server->sec_mode, server->capabilities, server->timeAdj);
 
 	if (ses->auth_key.response) {
-		cifs_dbg(VFS, "Free previous auth_key.response = %p\n",
+		cifs_dbg(FYI, "Free previous auth_key.response = %p\n",
 			 ses->auth_key.response);
 		kfree(ses->auth_key.response);
 		ses->auth_key.response = NULL;
@@ -4323,10 +4603,16 @@ cifs_construct_tcon(struct cifs_sb_info *cifs_sb, kuid_t fsuid)
 	vol_info->UNC = master_tcon->treeName;
 	vol_info->retry = master_tcon->retry;
 	vol_info->nocase = master_tcon->nocase;
+	vol_info->nohandlecache = master_tcon->nohandlecache;
 	vol_info->local_lease = master_tcon->local_lease;
+	vol_info->no_lease = master_tcon->no_lease;
+	vol_info->resilient = master_tcon->use_resilient;
+	vol_info->persistent = master_tcon->use_persistent;
 	vol_info->no_linux_ext = !master_tcon->unix_ext;
+	vol_info->linux_ext = master_tcon->posix_extensions;
 	vol_info->sectype = master_tcon->ses->sectype;
 	vol_info->sign = master_tcon->ses->sign;
+	vol_info->seal = master_tcon->seal;
 
 	rc = cifs_set_vol_auth(vol_info, master_tcon->ses);
 	if (rc) {
@@ -4354,6 +4640,7 @@ cifs_construct_tcon(struct cifs_sb_info *cifs_sb, kuid_t fsuid)
 
 	if (cap_unix(ses))
 		reset_cifs_unix_caps(0, tcon, NULL, vol_info);
+
 out:
 	kfree(vol_info->username);
 	kzfree(vol_info->password);
@@ -4508,7 +4795,7 @@ cifs_prune_tlinks(struct work_struct *work)
 	struct cifs_sb_info *cifs_sb = container_of(work, struct cifs_sb_info,
 						    prune_tlinks.work);
 	struct rb_root *root = &cifs_sb->tlink_tree;
-	struct rb_node *node = rb_first(root);
+	struct rb_node *node;
 	struct rb_node *tmp;
 	struct tcon_link *tlink;
 

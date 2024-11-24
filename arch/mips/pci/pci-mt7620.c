@@ -33,14 +33,14 @@
 #define RALINK_GPIOMODE			0x60
 
 #define PPLL_CFG1			0x9c
-#define PDRV_SW_SET			BIT(23)
+#define PPLL_LD				BIT(23)
 
 #define PPLL_DRV			0xa0
-#define PDRV_SW_SET			(1<<31)
-#define LC_CKDRVPD			(1<<19)
-#define LC_CKDRVOHZ			(1<<18)
-#define LC_CKDRVHZ			(1<<17)
-#define LC_CKTEST			(1<<16)
+#define PDRV_SW_SET			BIT(31)
+#define LC_CKDRVPD			BIT(19)
+#define LC_CKDRVOHZ			BIT(18)
+#define LC_CKDRVHZ			BIT(17)
+#define LC_CKTEST			BIT(16)
 
 /* PCI Bridge registers */
 #define RALINK_PCI_PCICFG_ADDR		0x00
@@ -66,7 +66,7 @@
 #define PCIEPHY0_CFG			0x90
 
 #define RALINK_PCIEPHY_P0_CTL_OFFSET	0x7498
-#define RALINK_PCIE0_CLK_EN		(1 << 26)
+#define RALINK_PCIE0_CLK_EN		BIT(26)
 
 #define BUSY				0x80000000
 #define WAITRETRY_MAX			10
@@ -243,8 +243,8 @@ static int mt7620_pci_hw_init(struct platform_device *pdev)
 	rt_sysc_m32(0, RALINK_PCIE0_CLK_EN, RALINK_CLKCFG1);
 	mdelay(100);
 
-	if (!(rt_sysc_r32(PPLL_CFG1) & PDRV_SW_SET)) {
-		dev_err(&pdev->dev, "MT7620 PPLL unlock\n");
+	if (!(rt_sysc_r32(PPLL_CFG1) & PPLL_LD)) {
+		dev_err(&pdev->dev, "pcie PLL not locked, aborting init\n");
 		reset_control_assert(rstpcie0);
 		rt_sysc_m32(RALINK_PCIE0_CLK_EN, 0, RALINK_CLKCFG1);
 		return -1;
@@ -316,6 +316,7 @@ static int mt7620_pci_probe(struct platform_device *pdev)
 		break;
 
 	case MT762X_SOC_MT7628AN:
+	case MT762X_SOC_MT7688:
 		if (mt7628_pci_hw_init(pdev))
 			return -1;
 		break;

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 #ifndef __PORT_UDC__
 #define __PORT_UDC__
@@ -22,7 +14,7 @@
 #define UDC_API_RESP_ID	0xFFFF0000
 
 void udc_cmd_handler(struct port_t *port, struct sk_buff *skb);
-int get_udc_prio(struct sk_buff *skb);
+void set_udc_status(struct sk_buff *skb);
 
 /**
  *	 @brief  Compression request (descriptor) for UDC compression
@@ -67,6 +59,22 @@ enum ccci_udc_cmd_e {
 	UDC_CMD_DISC_DONE = UDC_CMD_DISC | 0xFFFF0000,
 };
 
+struct udc_state_ctl {
+	unsigned int curr_state;
+	unsigned int last_state;
+};
+
+enum ccci_udc_status {
+	UDC_IDLE = 0,
+	UDC_HighKick,
+	UDC_HandleHighKick,
+	UDC_DISCARD,
+	UDC_DISC_DONE,
+	UDC_DEACTV = 5,
+	UDC_KICKDEACTV,
+	UDC_DEACTV_DONE,
+};
+
 enum ccci_udc_error {
 	/* udc default error 1-6 */
 	CMP_BUF_FULL = 7,
@@ -89,11 +97,7 @@ struct ccci_udc_deactv_param_t {
 
 enum ccci_udc_cmd_rslt_e {
 	UDC_CMD_RSLT_OK = 0,
-	UDC_ERROR_CMP_BUF_FULL,
-	UDC_ERROR_CMP_RSLT_FULL,
-
-	UDC_GENERAL_ERR = 0xFE,
-	UDC_ERROR_PARA,
+	UDC_CMD_RSLT_ERROR,
 };
 
 struct ccci_udc_cmd_rsp_t {
@@ -125,6 +129,7 @@ struct ccci_udc_disc_param_t {
 	u32 udc_cmd;
 	u32 new_req_r;
 } __packed;
+
 
 struct ccci_udc_kick_param_t {
 	struct ccci_header header;

@@ -248,7 +248,11 @@ static void reg_r(struct gspca_dev *gspca_dev,
 	int ret;
 
 	if (len > USB_BUF_SZ) {
-		PERR("reg_r: buffer overflow\n");
+		gspca_err(gspca_dev, "reg_r: buffer overflow\n");
+		return;
+	}
+	if (len == 0) {
+		gspca_err(gspca_dev, "reg_r: zero-length read\n");
 		return;
 	}
 	if (gspca_dev->usb_err < 0)
@@ -259,7 +263,7 @@ static void reg_r(struct gspca_dev *gspca_dev,
 			USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
 			0,		/* value */
 			index,
-			len ? gspca_dev->usb_buf : NULL, len,
+			gspca_dev->usb_buf, len,
 			500);
 	if (ret < 0) {
 		pr_err("reg_r err %d\n", ret);
@@ -316,8 +320,8 @@ static void reg_w_riv(struct gspca_dev *gspca_dev,
 		gspca_dev->usb_err = ret;
 		return;
 	}
-	PDEBUG(D_USBO, "reg_w_riv: 0x%02x,0x%04x:0x%04x",
-		req, index, value);
+	gspca_dbg(gspca_dev, D_USBO, "reg_w_riv: 0x%02x,0x%04x:0x%04x\n",
+		  req, index, value);
 }
 
 static void write_vector(struct gspca_dev *gspca_dev,
@@ -348,12 +352,14 @@ static void spca504_acknowledged_command(struct gspca_dev *gspca_dev,
 {
 	reg_w_riv(gspca_dev, req, idx, val);
 	reg_r(gspca_dev, 0x01, 0x0001, 1);
-	PDEBUG(D_FRAM, "before wait 0x%04x", gspca_dev->usb_buf[0]);
+	gspca_dbg(gspca_dev, D_FRAM, "before wait 0x%04x\n",
+		  gspca_dev->usb_buf[0]);
 	reg_w_riv(gspca_dev, req, idx, val);
 
 	msleep(200);
 	reg_r(gspca_dev, 0x01, 0x0001, 1);
-	PDEBUG(D_FRAM, "after wait 0x%04x", gspca_dev->usb_buf[0]);
+	gspca_dbg(gspca_dev, D_FRAM, "after wait 0x%04x\n",
+		  gspca_dev->usb_buf[0]);
 }
 
 static void spca504_read_info(struct gspca_dev *gspca_dev)
@@ -368,10 +374,10 @@ static void spca504_read_info(struct gspca_dev *gspca_dev)
 		reg_r(gspca_dev, 0, i, 1);
 		info[i] = gspca_dev->usb_buf[0];
 	}
-	PDEBUG(D_STREAM,
-		"Read info: %d %d %d %d %d %d. Should be 1,0,2,2,0,0",
-		info[0], info[1], info[2],
-		info[3], info[4], info[5]);
+	gspca_dbg(gspca_dev, D_STREAM,
+		  "Read info: %d %d %d %d %d %d. Should be 1,0,2,2,0,0\n",
+		  info[0], info[1], info[2],
+		  info[3], info[4], info[5]);
 }
 
 static void spca504A_acknowledged_command(struct gspca_dev *gspca_dev,
@@ -384,8 +390,8 @@ static void spca504A_acknowledged_command(struct gspca_dev *gspca_dev,
 	reg_r(gspca_dev, 0x01, 0x0001, 1);
 	if (gspca_dev->usb_err < 0)
 		return;
-	PDEBUG(D_FRAM, "Status 0x%02x Need 0x%02x",
-			gspca_dev->usb_buf[0], endcode);
+	gspca_dbg(gspca_dev, D_FRAM, "Status 0x%02x Need 0x%02x\n",
+		  gspca_dev->usb_buf[0], endcode);
 	if (!count)
 		return;
 	count = 200;
@@ -396,8 +402,8 @@ static void spca504A_acknowledged_command(struct gspca_dev *gspca_dev,
 		reg_r(gspca_dev, 0x01, 0x0001, 1);
 		status = gspca_dev->usb_buf[0];
 		if (status == endcode) {
-			PDEBUG(D_FRAM, "status 0x%04x after wait %d",
-				status, 200 - count);
+			gspca_dbg(gspca_dev, D_FRAM, "status 0x%04x after wait %d\n",
+				  status, 200 - count);
 				break;
 		}
 	}
@@ -440,8 +446,8 @@ static void spca50x_GetFirmware(struct gspca_dev *gspca_dev)
 
 	data = gspca_dev->usb_buf;
 	reg_r(gspca_dev, 0x20, 0, 5);
-	PDEBUG(D_STREAM, "FirmWare: %d %d %d %d %d",
-		data[0], data[1], data[2], data[3], data[4]);
+	gspca_dbg(gspca_dev, D_STREAM, "FirmWare: %d %d %d %d %d\n",
+		  data[0], data[1], data[2], data[3], data[4]);
 	reg_r(gspca_dev, 0x23, 0, 64);
 	reg_r(gspca_dev, 0x23, 1, 64);
 }
@@ -656,7 +662,7 @@ static int sd_init(struct gspca_dev *gspca_dev)
 		spca504B_WaitCmdStatus(gspca_dev);
 		break;
 	case BRIDGE_SPCA504C:	/* pccam600 */
-		PDEBUG(D_STREAM, "Opening SPCA504 (PC-CAM 600)");
+		gspca_dbg(gspca_dev, D_STREAM, "Opening SPCA504 (PC-CAM 600)\n");
 		reg_w_riv(gspca_dev, 0xe0, 0x0000, 0x0000);
 		reg_w_riv(gspca_dev, 0xe0, 0x0000, 0x0001);	/* reset */
 		spca504_wait_status(gspca_dev);
@@ -671,7 +677,7 @@ static int sd_init(struct gspca_dev *gspca_dev)
 		break;
 	default:
 /*	case BRIDGE_SPCA504: */
-		PDEBUG(D_STREAM, "Opening SPCA504");
+		gspca_dbg(gspca_dev, D_STREAM, "Opening SPCA504\n");
 		if (sd->subtype == AiptekMiniPenCam13) {
 			spca504_read_info(gspca_dev);
 
@@ -734,7 +740,7 @@ static int sd_start(struct gspca_dev *gspca_dev)
 		case MegaImageVI:
 			reg_w_riv(gspca_dev, 0xf0, 0, 0);
 			spca504B_WaitCmdStatus(gspca_dev);
-			reg_r(gspca_dev, 0xf0, 4, 0);
+			reg_w_riv(gspca_dev, 0xf0, 4, 0);
 			spca504B_WaitCmdStatus(gspca_dev);
 			break;
 		default:

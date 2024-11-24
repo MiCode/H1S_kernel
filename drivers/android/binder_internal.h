@@ -13,46 +13,9 @@
 #include <linux/types.h>
 #include <linux/uidgid.h>
 
-#ifdef CONFIG_MTK_ENG_BUILD
-#define BINDER_WATCHDOG		"v0.1"
-#endif
-#define BINDER_USER_TRACKING	1
-
-#ifdef BINDER_USER_TRACKING
+#ifdef CONFIG_ANDROID_BINDER_USER_TRACKING
 #include <linux/rtc.h>
 #include <linux/time.h>
-#endif
-
-#ifdef BINDER_WATCHDOG
-#include <linux/mm.h>
-#include <linux/slab.h>
-#include <linux/types.h>
-#include <linux/delay.h>
-#include <linux/kthread.h>
-
-/*****************************************************************************/
-/* Payload layout of addService():                                           */
-/*                                                                           */
-/* Parcel header | IServiceManager.descriptor | Parcel header | Service name */
-/* (Please refer ServiceManagerNative.java:addService())                     */
-/* IServiceManager.descriptor is 'android.os.IServiceManager' interleaved    */
-/* with character '\0'.                                                      */
-/* that is, 'a', '\0', 'n', '\0', 'd', '\0', 'r', '\0', 'o', ...             */
-/*                                                                           */
-/* so the offset of Service name                                             */
-/* = Parcel header x2 + strlen(android.os.IServiceManager) x2                */
-/* = 8x2 + 26x2 = 68                                                         */
-/*****************************************************************************/
-#define MAX_SERVICE_NAME_LEN    32
-#define MAGIC_SERVICE_NAME_OFFSET       68
-#define MAX_ENG_TRANS_LOG_BUFF_LEN      10240
-
-enum wait_on_reason {
-	WAIT_ON_NONE = 0U,
-	WAIT_ON_READ = 1U,
-	WAIT_ON_EXEC = 2U,
-	WAIT_ON_REPLY_READ = 3U,
-};
 #endif
 
 struct binder_context {
@@ -174,45 +137,17 @@ struct binder_transaction_log_entry {
 	int return_error_line;
 	uint32_t return_error;
 	uint32_t return_error_param;
-	const char *context_name;
-#ifdef BINDER_WATCHDOG
-	unsigned int code;
-	char service[MAX_SERVICE_NAME_LEN];
-	int fd;
-	struct timespec readstamp;
-	struct timespec endstamp;
-	unsigned int cur;
-#endif
-#ifdef BINDER_USER_TRACKING
+	char context_name[BINDERFS_MAX_NAME + 1];
+#ifdef CONFIG_ANDROID_BINDER_USER_TRACKING
 	struct timespec timestamp;
 	struct timeval tv;
 #endif
 };
-#ifdef BINDER_WATCHDOG
-struct binder_timeout_log_entry {
-	enum wait_on_reason r;
-	pid_t from_proc;
-	pid_t from_thrd;
-	pid_t to_proc;
-	pid_t to_thrd;
-	unsigned int over_sec;
-	struct timespec ts;
-	struct timeval tv;
-	unsigned int code;
-	char service[MAX_SERVICE_NAME_LEN];
-	int debug_id;
-};
-#endif
 
 struct binder_transaction_log {
 	atomic_t cur;
 	bool full;
-#ifdef BINDER_WATCHDOG
-	unsigned int size;
-	struct binder_transaction_log_entry *entry;
-#else
 	struct binder_transaction_log_entry entry[32];
-#endif
 };
 
 extern struct binder_transaction_log binder_transaction_log;

@@ -1,7 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0 OR MIT
 /**************************************************************************
  *
- * Copyright © 2016 VMware, Inc., Palo Alto, CA., USA
- * All Rights Reserved.
+ * Copyright 2016 VMware, Inc., Palo Alto, CA., USA
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -149,6 +149,10 @@ vmw_simple_resource_create_ioctl(struct drm_device *dev, void *data,
 	struct vmw_resource *res;
 	struct vmw_resource *tmp;
 	struct ttm_object_file *tfile = vmw_fpriv(file_priv)->tfile;
+	struct ttm_operation_ctx ctx = {
+		.interruptible = true,
+		.no_wait_gpu = false
+	};
 	size_t alloc_size;
 	size_t account_size;
 	int ret;
@@ -162,7 +166,7 @@ vmw_simple_resource_create_ioctl(struct drm_device *dev, void *data,
 		return ret;
 
 	ret = ttm_mem_global_alloc(vmw_mem_glob(dev_priv), account_size,
-				   false, true);
+				   &ctx);
 	ttm_read_unlock(&dev_priv->reservation_sem);
 	if (ret) {
 		if (ret != -ERESTARTSYS)

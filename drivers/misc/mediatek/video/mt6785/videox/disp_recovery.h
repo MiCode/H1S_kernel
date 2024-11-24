@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _DISP_RECOVERY_H_
 #define _DISP_RECOVERY_H_
@@ -20,7 +11,8 @@
 
 /* defined in mtkfb.c should move to mtkfb.h*/
 extern unsigned int islcmconnected;
-
+extern int ddp_dsi_config(enum DISP_MODULE_ENUM module,
+		struct disp_ddp_path_config *config, void *cmdq);
 void primary_display_check_recovery_init(void);
 void primary_display_esd_check_enable(int enable);
 unsigned int need_wait_esd_eof(void);

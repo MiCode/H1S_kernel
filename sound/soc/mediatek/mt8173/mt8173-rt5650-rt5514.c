@@ -1,17 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * mt8173-rt5650-rt5514.c  --  MT8173 machine driver with RT5650/5514 codecs
  *
  * Copyright (c) 2016 MediaTek Inc.
  * Author: Koro Chen <koro.chen@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -37,8 +29,6 @@ static const struct snd_soc_dapm_route mt8173_rt5650_rt5514_routes[] = {
 	{"Sub DMIC1R", NULL, "Int Mic"},
 	{"Headphone", NULL, "HPOL"},
 	{"Headphone", NULL, "HPOR"},
-	{"Headset Mic", NULL, "micbias1"},
-	{"Headset Mic", NULL, "micbias2"},
 	{"IN1P", NULL, "Headset Mic"},
 	{"IN1N", NULL, "Headset Mic"},
 };
@@ -84,10 +74,10 @@ static struct snd_soc_jack mt8173_rt5650_rt5514_jack;
 static int mt8173_rt5650_rt5514_init(struct snd_soc_pcm_runtime *runtime)
 {
 	struct snd_soc_card *card = runtime->card;
-	struct snd_soc_codec *codec = runtime->codec_dais[0]->codec;
+	struct snd_soc_component *component = runtime->codec_dais[0]->component;
 	int ret;
 
-	rt5645_sel_asrc_clk_src(codec,
+	rt5645_sel_asrc_clk_src(component,
 				RT5645_DA_STEREO_FILTER |
 				RT5645_AD_STEREO_FILTER,
 				RT5645_CLK_SEL_I2S1_ASRC);
@@ -103,7 +93,7 @@ static int mt8173_rt5650_rt5514_init(struct snd_soc_pcm_runtime *runtime)
 		return ret;
 	}
 
-	return rt5645_set_jack_detect(codec,
+	return rt5645_set_jack_detect(component,
 				      &mt8173_rt5650_rt5514_jack,
 				      &mt8173_rt5650_rt5514_jack,
 				      &mt8173_rt5650_rt5514_jack);
@@ -209,14 +199,16 @@ static int mt8173_rt5650_rt5514_dev_probe(struct platform_device *pdev)
 	if (!mt8173_rt5650_rt5514_codecs[0].of_node) {
 		dev_err(&pdev->dev,
 			"Property 'audio-codec' missing or invalid\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 	mt8173_rt5650_rt5514_codecs[1].of_node =
 		of_parse_phandle(pdev->dev.of_node, "mediatek,audio-codec", 1);
 	if (!mt8173_rt5650_rt5514_codecs[1].of_node) {
 		dev_err(&pdev->dev,
 			"Property 'audio-codec' missing or invalid\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 	mt8173_rt5650_rt5514_codec_conf[0].of_node =
 		mt8173_rt5650_rt5514_codecs[1].of_node;
@@ -227,6 +219,9 @@ static int mt8173_rt5650_rt5514_dev_probe(struct platform_device *pdev)
 	if (ret)
 		dev_err(&pdev->dev, "%s snd_soc_register_card fail %d\n",
 			__func__, ret);
+
+out:
+	of_node_put(platform_node);
 	return ret;
 }
 

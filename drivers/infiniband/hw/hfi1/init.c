@@ -1,5 +1,5 @@
 /*
- * Copyright(c) 2015-2017 Intel Corporation.
+ * Copyright(c) 2015 - 2018 Intel Corporation.
  *
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
@@ -113,8 +113,8 @@ module_param_named(rcvhdrcnt, rcvhdrcnt, uint, S_IRUGO);
 MODULE_PARM_DESC(rcvhdrcnt, "Receive header queue count (default 2048)");
 
 static uint hfi1_hdrq_entsize = 32;
-module_param_named(hdrq_entsize, hfi1_hdrq_entsize, uint, S_IRUGO);
-MODULE_PARM_DESC(hdrq_entsize, "Size of header queue entries: 2 - 8B, 16 - 64B (default), 32 - 128B");
+module_param_named(hdrq_entsize, hfi1_hdrq_entsize, uint, 0444);
+MODULE_PARM_DESC(hdrq_entsize, "Size of header queue entries: 2 - 8B, 16 - 64B, 32 - 128B (default)");
 
 unsigned int user_credit_return_threshold = 33;	/* default is 33% */
 module_param(user_credit_return_threshold, uint, S_IRUGO);
@@ -123,8 +123,6 @@ MODULE_PARM_DESC(user_credit_return_threshold, "Credit return threshold for user
 static inline u64 encode_rcv_header_entry_size(u16 size);
 
 static struct idr hfi1_unit_table;
-u32 hfi1_cpulist_count;
-unsigned long *hfi1_cpulist;
 
 static int hfi1_create_kctxt(struct hfi1_devdata *dd,
 			     struct hfi1_pportdata *ppd)
@@ -174,7 +172,7 @@ int hfi1_create_kctxts(struct hfi1_devdata *dd)
 	u16 i;
 	int ret;
 
-	dd->rcd = kzalloc_node(dd->num_rcv_contexts * sizeof(*dd->rcd),
+	dd->rcd = kcalloc_node(dd->num_rcv_contexts, sizeof(*dd->rcd),
 			       GFP_KERNEL, dd->node);
 	if (!dd->rcd)
 		return -ENOMEM;
@@ -289,6 +287,27 @@ static int allocate_rcd_index(struct hfi1_devdata *dd,
 }
 
 /**
+ * hfi1_rcd_get_by_index_safe - validate the ctxt index before accessing the
+ * array
+ * @dd: pointer to a valid devdata structure
+ * @ctxt: the index of an possilbe rcd
+ *
+ * This is a wrapper for hfi1_rcd_get_by_index() to validate that the given
+ * ctxt index is valid.
+ *
+ * The caller is responsible for making the _put().
+ *
+ */
+struct hfi1_ctxtdata *hfi1_rcd_get_by_index_safe(struct hfi1_devdata *dd,
+						 u16 ctxt)
+{
+	if (ctxt < dd->num_rcv_contexts)
+		return hfi1_rcd_get_by_index(dd, ctxt);
+
+	return NULL;
+}
+
+/**
  * hfi1_rcd_get_by_index
  * @dd: pointer to a valid devdata structure
  * @ctxt: the index of an possilbe rcd
@@ -346,16 +365,14 @@ int hfi1_create_ctxtdata(struct hfi1_pportdata *ppd, int numa,
 		}
 
 		INIT_LIST_HEAD(&rcd->qp_wait_list);
-		hfi1_exp_tid_group_init(&rcd->tid_group_list);
-		hfi1_exp_tid_group_init(&rcd->tid_used_list);
-		hfi1_exp_tid_group_init(&rcd->tid_full_list);
+		hfi1_exp_tid_group_init(rcd);
 		rcd->ppd = ppd;
 		rcd->dd = dd;
-		__set_bit(0, rcd->in_use_ctxts);
 		rcd->numa_id = numa;
 		rcd->rcv_array_groups = dd->rcv_entries.ngroups;
+		rcd->rhf_rcv_function_map = normal_rhf_rcv_functions;
 
-		mutex_init(&rcd->exp_lock);
+		mutex_init(&rcd->exp_mutex);
 
 		hfi1_cdbg(PROC, "setting up context %u\n", rcd->ctxt);
 
@@ -391,6 +408,8 @@ int hfi1_create_ctxtdata(struct hfi1_pportdata *ppd, int numa,
 
 		rcd->rcvhdrq_cnt = rcvhdrcnt;
 		rcd->rcvhdrqentsize = hfi1_hdrq_entsize;
+		rcd->rhf_offset =
+			rcd->rcvhdrqentsize - sizeof(u64) / sizeof(u32);
 		/*
 		 * Simple Eager buffer allocation: we have already pre-allocated
 		 * the number of RcvArray entry groups. Each ctxtdata structure
@@ -424,15 +443,16 @@ int hfi1_create_ctxtdata(struct hfi1_pportdata *ppd, int numa,
 		 * The resulting value will be rounded down to the closest
 		 * multiple of dd->rcv_entries.group_size.
 		 */
-		rcd->egrbufs.buffers = kzalloc_node(
-			rcd->egrbufs.count * sizeof(*rcd->egrbufs.buffers),
-			GFP_KERNEL, numa);
+		rcd->egrbufs.buffers =
+			kcalloc_node(rcd->egrbufs.count,
+				     sizeof(*rcd->egrbufs.buffers),
+				     GFP_KERNEL, numa);
 		if (!rcd->egrbufs.buffers)
 			goto bail;
-		rcd->egrbufs.rcvtids = kzalloc_node(
-				rcd->egrbufs.count *
-				sizeof(*rcd->egrbufs.rcvtids),
-				GFP_KERNEL, numa);
+		rcd->egrbufs.rcvtids =
+			kcalloc_node(rcd->egrbufs.count,
+				     sizeof(*rcd->egrbufs.rcvtids),
+				     GFP_KERNEL, numa);
 		if (!rcd->egrbufs.rcvtids)
 			goto bail;
 		rcd->egrbufs.size = eager_buffer_size;
@@ -515,7 +535,7 @@ void set_link_ipg(struct hfi1_pportdata *ppd)
 	u16 shift, mult;
 	u64 src;
 	u32 current_egress_rate; /* Mbits /sec */
-	u32 max_pkt_time;
+	u64 max_pkt_time;
 	/*
 	 * max_pkt_time is the maximum packet egress time in units
 	 * of the fabric clock period 1/(805 MHz).
@@ -622,6 +642,15 @@ void hfi1_init_pportdata(struct pci_dev *pdev, struct hfi1_pportdata *ppd,
 	ppd->dd = dd;
 	ppd->hw_pidx = hw_pidx;
 	ppd->port = port; /* IB port number, not index */
+	ppd->prev_link_width = LINK_WIDTH_DEFAULT;
+	/*
+	 * There are C_VL_COUNT number of PortVLXmitWait counters.
+	 * Adding 1 to C_VL_COUNT to include the PortXmitWait counter.
+	 */
+	for (i = 0; i < C_VL_COUNT + 1; i++) {
+		ppd->port_vl_xmit_wait_last[i] = 0;
+		ppd->vl_xmit_flit_cnt[i] = 0;
+	}
 
 	default_pkey_idx = 1;
 
@@ -831,24 +860,6 @@ int hfi1_init(struct hfi1_devdata *dd, int reinit)
 	struct hfi1_ctxtdata *rcd;
 	struct hfi1_pportdata *ppd;
 
-	/* Set up recv low level handlers */
-	dd->normal_rhf_rcv_functions[RHF_RCV_TYPE_EXPECTED] =
-						kdeth_process_expected;
-	dd->normal_rhf_rcv_functions[RHF_RCV_TYPE_EAGER] =
-						kdeth_process_eager;
-	dd->normal_rhf_rcv_functions[RHF_RCV_TYPE_IB] = process_receive_ib;
-	dd->normal_rhf_rcv_functions[RHF_RCV_TYPE_ERROR] =
-						process_receive_error;
-	dd->normal_rhf_rcv_functions[RHF_RCV_TYPE_BYPASS] =
-						process_receive_bypass;
-	dd->normal_rhf_rcv_functions[RHF_RCV_TYPE_INVALID5] =
-						process_receive_invalid;
-	dd->normal_rhf_rcv_functions[RHF_RCV_TYPE_INVALID6] =
-						process_receive_invalid;
-	dd->normal_rhf_rcv_functions[RHF_RCV_TYPE_INVALID7] =
-						process_receive_invalid;
-	dd->rhf_rcv_function_map = dd->normal_rhf_rcv_functions;
-
 	/* Set up send low level handlers */
 	dd->process_pio_send = hfi1_verbs_send_pio;
 	dd->process_dma_send = hfi1_verbs_send_dma;
@@ -914,7 +925,7 @@ int hfi1_init(struct hfi1_devdata *dd, int reinit)
 	}
 
 	/* Allocate enough memory for user event notification. */
-	len = PAGE_ALIGN(dd->chip_rcv_contexts * HFI1_MAX_SHARED_CTXTS *
+	len = PAGE_ALIGN(chip_rcv_contexts(dd) * HFI1_MAX_SHARED_CTXTS *
 			 sizeof(*dd->events));
 	dd->events = vmalloc_user(len);
 	if (!dd->events)
@@ -926,9 +937,6 @@ int hfi1_init(struct hfi1_devdata *dd, int reinit)
 	dd->status = vmalloc_user(PAGE_SIZE);
 	if (!dd->status)
 		dd_dev_err(dd, "Failed to allocate dev status page\n");
-	else
-		dd->freezelen = PAGE_SIZE - (sizeof(*dd->status) -
-					     sizeof(dd->status->freezemsg));
 	for (pidx = 0; pidx < dd->num_pports; ++pidx) {
 		ppd = dd->pport + pidx;
 		if (dd->status)
@@ -1011,7 +1019,7 @@ static void stop_timers(struct hfi1_devdata *dd)
 
 	for (pidx = 0; pidx < dd->num_pports; ++pidx) {
 		ppd = dd->pport + pidx;
-		if (ppd->led_override_timer.data) {
+		if (ppd->led_override_timer.function) {
 			del_timer_sync(&ppd->led_override_timer);
 			atomic_set(&ppd->led_override_timer_active, 0);
 		}
@@ -1122,7 +1130,7 @@ void hfi1_free_ctxtdata(struct hfi1_devdata *dd, struct hfi1_ctxtdata *rcd)
 		return;
 
 	if (rcd->rcvhdrq) {
-		dma_free_coherent(&dd->pcidev->dev, rcd->rcvhdrq_size,
+		dma_free_coherent(&dd->pcidev->dev, rcvhdrq_size(rcd),
 				  rcd->rcvhdrq, rcd->rcvhdrq_dma);
 		rcd->rcvhdrq = NULL;
 		if (rcd->rcvhdrtail_kvaddr) {
@@ -1138,7 +1146,7 @@ void hfi1_free_ctxtdata(struct hfi1_devdata *dd, struct hfi1_ctxtdata *rcd)
 	rcd->egrbufs.rcvtids = NULL;
 
 	for (e = 0; e < rcd->egrbufs.alloced; e++) {
-		if (rcd->egrbufs.buffers[e].dma)
+		if (rcd->egrbufs.buffers[e].addr)
 			dma_free_coherent(&dd->pcidev->dev,
 					  rcd->egrbufs.buffers[e].len,
 					  rcd->egrbufs.buffers[e].addr,
@@ -1189,26 +1197,49 @@ static void finalize_asic_data(struct hfi1_devdata *dd,
 	kfree(ad);
 }
 
-static void __hfi1_free_devdata(struct kobject *kobj)
+/**
+ * hfi1_clean_devdata - cleans up per-unit data structure
+ * @dd: pointer to a valid devdata structure
+ *
+ * It cleans up all data structures set up by
+ * by hfi1_alloc_devdata().
+ */
+static void hfi1_clean_devdata(struct hfi1_devdata *dd)
 {
-	struct hfi1_devdata *dd =
-		container_of(kobj, struct hfi1_devdata, kobj);
 	struct hfi1_asic_data *ad;
 	unsigned long flags;
 
 	spin_lock_irqsave(&hfi1_devs_lock, flags);
-	idr_remove(&hfi1_unit_table, dd->unit);
-	list_del(&dd->list);
+	if (!list_empty(&dd->list)) {
+		idr_remove(&hfi1_unit_table, dd->unit);
+		list_del_init(&dd->list);
+	}
 	ad = release_asic_data(dd);
 	spin_unlock_irqrestore(&hfi1_devs_lock, flags);
-	if (ad)
-		finalize_asic_data(dd, ad);
+
+	finalize_asic_data(dd, ad);
 	free_platform_config(dd);
 	rcu_barrier(); /* wait for rcu callbacks to complete */
 	free_percpu(dd->int_counter);
 	free_percpu(dd->rcv_limit);
 	free_percpu(dd->send_schedule);
+	free_percpu(dd->tx_opstats);
+	dd->int_counter   = NULL;
+	dd->rcv_limit     = NULL;
+	dd->send_schedule = NULL;
+	dd->tx_opstats    = NULL;
+	kfree(dd->comp_vect);
+	dd->comp_vect = NULL;
+	sdma_clean(dd, dd->num_sdma);
 	rvt_dealloc_device(&dd->verbs_dev.rdi);
+}
+
+static void __hfi1_free_devdata(struct kobject *kobj)
+{
+	struct hfi1_devdata *dd =
+		container_of(kobj, struct hfi1_devdata, kobj);
+
+	hfi1_clean_devdata(dd);
 }
 
 static struct kobj_type hfi1_devdata_type = {
@@ -1255,6 +1286,7 @@ struct hfi1_devdata *hfi1_alloc_devdata(struct pci_dev *pdev, size_t extra)
 		dd->unit = ret;
 		list_add(&dd->list, &hfi1_dev_list);
 	}
+	dd->node = -1;
 
 	spin_unlock_irqrestore(&hfi1_devs_lock, flags);
 	idr_preload_end();
@@ -1264,6 +1296,8 @@ struct hfi1_devdata *hfi1_alloc_devdata(struct pci_dev *pdev, size_t extra)
 			       "Could not allocate unit ID: error %d\n", -ret);
 		goto bail;
 	}
+	rvt_set_ibdev_name(&dd->verbs_dev.rdi, "%s_%d", class_name(), dd->unit);
+
 	/*
 	 * Initialize all locks for the device. This needs to be as early as
 	 * possible so locks are usable.
@@ -1284,46 +1318,38 @@ struct hfi1_devdata *hfi1_alloc_devdata(struct pci_dev *pdev, size_t extra)
 	dd->int_counter = alloc_percpu(u64);
 	if (!dd->int_counter) {
 		ret = -ENOMEM;
-		hfi1_early_err(&pdev->dev,
-			       "Could not allocate per-cpu int_counter\n");
 		goto bail;
 	}
 
 	dd->rcv_limit = alloc_percpu(u64);
 	if (!dd->rcv_limit) {
 		ret = -ENOMEM;
-		hfi1_early_err(&pdev->dev,
-			       "Could not allocate per-cpu rcv_limit\n");
 		goto bail;
 	}
 
 	dd->send_schedule = alloc_percpu(u64);
 	if (!dd->send_schedule) {
 		ret = -ENOMEM;
-		hfi1_early_err(&pdev->dev,
-			       "Could not allocate per-cpu int_counter\n");
 		goto bail;
 	}
 
-	if (!hfi1_cpulist_count) {
-		u32 count = num_online_cpus();
-
-		hfi1_cpulist = kcalloc(BITS_TO_LONGS(count), sizeof(long),
-				       GFP_KERNEL);
-		if (hfi1_cpulist)
-			hfi1_cpulist_count = count;
-		else
-			hfi1_early_err(
-			&pdev->dev,
-			"Could not alloc cpulist info, cpu affinity might be wrong\n");
+	dd->tx_opstats = alloc_percpu(struct hfi1_opcode_stats_perctx);
+	if (!dd->tx_opstats) {
+		ret = -ENOMEM;
+		goto bail;
 	}
+
+	dd->comp_vect = kzalloc(sizeof(*dd->comp_vect), GFP_KERNEL);
+	if (!dd->comp_vect) {
+		ret = -ENOMEM;
+		goto bail;
+	}
+
 	kobject_init(&dd->kobj, &hfi1_devdata_type);
 	return dd;
 
 bail:
-	if (!list_empty(&dd->list))
-		list_del_init(&dd->list);
-	rvt_dealloc_device(&dd->verbs_dev.rdi);
+	hfi1_clean_devdata(dd);
 	return ERR_PTR(ret);
 }
 
@@ -1488,11 +1514,9 @@ module_init(hfi1_mod_init);
 static void __exit hfi1_mod_cleanup(void)
 {
 	pci_unregister_driver(&hfi1_pci_driver);
-	node_affinity_destroy();
+	node_affinity_destroy_all();
 	hfi1_wss_exit();
 	hfi1_dbg_exit();
-	hfi1_cpulist_count = 0;
-	kfree(hfi1_cpulist);
 
 	idr_destroy(&hfi1_unit_table);
 	dispose_firmware();	/* asymmetric with obtain_firmware() */
@@ -1574,6 +1598,8 @@ static void cleanup_device_data(struct hfi1_devdata *dd)
 static void postinit_cleanup(struct hfi1_devdata *dd)
 {
 	hfi1_start_cleanup(dd);
+	hfi1_comp_vectors_clean_up(dd);
+	hfi1_dev_affinity_clean_up(dd);
 
 	hfi1_pcie_ddcleanup(dd);
 	hfi1_pcie_cleanup(dd->pcidev);
@@ -1815,15 +1841,9 @@ int hfi1_create_rcvhdrq(struct hfi1_devdata *dd, struct hfi1_ctxtdata *rcd)
 	if (!rcd->rcvhdrq) {
 		gfp_t gfp_flags;
 
-		/*
-		 * rcvhdrqentsize is in DWs, so we have to convert to bytes
-		 * (* sizeof(u32)).
-		 */
-		amt = PAGE_ALIGN(rcd->rcvhdrq_cnt * rcd->rcvhdrqentsize *
-				 sizeof(u32));
+		amt = rcvhdrq_size(rcd);
 
-		if ((rcd->ctxt < dd->first_dyn_alloc_ctxt) ||
-		    (rcd->sc && (rcd->sc->type == SC_KERNEL)))
+		if (rcd->ctxt < dd->first_dyn_alloc_ctxt || rcd->is_vnic)
 			gfp_flags = GFP_KERNEL;
 		else
 			gfp_flags = GFP_USER;
@@ -1846,8 +1866,6 @@ int hfi1_create_rcvhdrq(struct hfi1_devdata *dd, struct hfi1_ctxtdata *rcd)
 			if (!rcd->rcvhdrtail_kvaddr)
 				goto bail_free;
 		}
-
-		rcd->rcvhdrq_size = amt;
 	}
 	/*
 	 * These values are per-context:
@@ -1863,7 +1881,7 @@ int hfi1_create_rcvhdrq(struct hfi1_devdata *dd, struct hfi1_ctxtdata *rcd)
 			& RCV_HDR_ENT_SIZE_ENT_SIZE_MASK)
 		<< RCV_HDR_ENT_SIZE_ENT_SIZE_SHIFT;
 	write_kctxt_csr(dd, rcd->ctxt, RCV_HDR_ENT_SIZE, reg);
-	reg = (dd->rcvhdrsize & RCV_HDR_SIZE_HDR_SIZE_MASK)
+	reg = ((u64)DEFAULT_RCVHDRSIZE & RCV_HDR_SIZE_HDR_SIZE_MASK)
 		<< RCV_HDR_SIZE_HDR_SIZE_SHIFT;
 	write_kctxt_csr(dd, rcd->ctxt, RCV_HDR_SIZE, reg);
 
@@ -1899,9 +1917,9 @@ bail:
 int hfi1_setup_eagerbufs(struct hfi1_ctxtdata *rcd)
 {
 	struct hfi1_devdata *dd = rcd->dd;
-	u32 max_entries, egrtop, alloced_bytes = 0, idx = 0;
+	u32 max_entries, egrtop, alloced_bytes = 0;
 	gfp_t gfp_flags;
-	u16 order;
+	u16 order, idx = 0;
 	int ret = 0;
 	u16 round_mtu = roundup_pow_of_two(hfi1_max_mtu);
 

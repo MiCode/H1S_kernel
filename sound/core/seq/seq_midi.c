@@ -78,7 +78,7 @@ static void snd_midi_input_event(struct snd_rawmidi_substream *substream)
 	struct seq_midisynth *msynth;
 	struct snd_seq_event ev;
 	char buf[16], *pbuf;
-	long res, count;
+	long res;
 
 	if (substream == NULL)
 		return;
@@ -94,19 +94,15 @@ static void snd_midi_input_event(struct snd_rawmidi_substream *substream)
 		if (msynth->parser == NULL)
 			continue;
 		pbuf = buf;
-		while (res > 0) {
-			count = snd_midi_event_encode(msynth->parser, pbuf, res, &ev);
-			if (count < 0)
-				break;
-			pbuf += count;
-			res -= count;
-			if (ev.type != SNDRV_SEQ_EVENT_NONE) {
-				ev.source.port = msynth->seq_port;
-				ev.dest.client = SNDRV_SEQ_ADDRESS_SUBSCRIBERS;
-				snd_seq_kernel_client_dispatch(msynth->seq_client, &ev, 1, 0);
-				/* clear event and reset header */
-				memset(&ev, 0, sizeof(ev));
-			}
+		while (res-- > 0) {
+			if (!snd_midi_event_encode_byte(msynth->parser,
+							*pbuf++, &ev))
+				continue;
+			ev.source.port = msynth->seq_port;
+			ev.dest.client = SNDRV_SEQ_ADDRESS_SUBSCRIBERS;
+			snd_seq_kernel_client_dispatch(msynth->seq_client, &ev, 1, 0);
+			/* clear event and reset header */
+			memset(&ev, 0, sizeof(ev));
 		}
 	}
 }
@@ -129,6 +125,12 @@ static int dump_midi(struct snd_rawmidi_substream *substream, const char *buf, i
 	return 0;
 }
 
+/* callback for snd_seq_dump_var_event(), bridging to dump_midi() */
+static int __dump_midi(void *ptr, void *buf, int count)
+{
+	return dump_midi(ptr, buf, count);
+}
+
 static int event_process_midi(struct snd_seq_event *ev, int direct,
 			      void *private_data, int atomic, int hop)
 {
@@ -148,7 +150,7 @@ static int event_process_midi(struct snd_seq_event *ev, int direct,
 			pr_debug("ALSA: seq_midi: invalid sysex event flags = 0x%x\n", ev->flags);
 			return 0;
 		}
-		snd_seq_dump_var_event(ev, (snd_seq_dump_func_t)dump_midi, substream);
+		snd_seq_dump_var_event(ev, __dump_midi, substream);
 		snd_midi_event_reset_decode(msynth->parser);
 	} else {
 		if (msynth->parser == NULL)

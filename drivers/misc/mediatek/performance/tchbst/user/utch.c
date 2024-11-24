@@ -1,21 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 #define pr_fmt(fmt) "[usrtch]"fmt
 
 #include <linux/slab.h>
 #include <linux/proc_fs.h>
 #include <mt-plat/fpsgo_common.h>
-
 
 #include "tchbst.h"
 #include "fstb.h"
@@ -32,7 +23,7 @@ static int usrtch_dbg;
 static int  touch_boost_value;
 static int touch_boost_opp; /* boost freq of touch boost */
 static int *cluster_opp;
-static struct ppm_limit_data *target_freq, *reset_freq;
+static struct cpu_ctrl_data *target_freq, *reset_freq;
 static int touch_boost_duration;
 static long long active_time;
 static int time_to_last_touch;
@@ -361,9 +352,9 @@ int init_utch(struct proc_dir_entry *parent)
 	last_touch_time = ktime_get();
 
 	target_freq = kcalloc(perfmgr_clusters,
-			sizeof(struct ppm_limit_data), GFP_KERNEL);
+			sizeof(struct cpu_ctrl_data), GFP_KERNEL);
 	reset_freq = kcalloc(perfmgr_clusters,
-			sizeof(struct ppm_limit_data), GFP_KERNEL);
+			sizeof(struct cpu_ctrl_data), GFP_KERNEL);
 	cluster_opp = kcalloc(perfmgr_clusters,
 			sizeof(int), GFP_KERNEL);
 

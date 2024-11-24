@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #if defined(MTK_LCM_DEVICE_TREE_SUPPORT)
@@ -80,9 +72,8 @@ static struct i2c_board_info _lcm_i2c_board_info __initdata = {
 };
 #else
 static const struct of_device_id _lcm_i2c_of_match[] = {
-	{
-	 .compatible = "mediatek,I2C_LCD_BIAS",
-	 },
+	{ .compatible = "mediatek,I2C_LCD_BIAS", },
+	{},
 };
 #endif
 
@@ -190,7 +181,7 @@ static int __init _lcm_i2c_init(void)
 	pr_debug("[LCM][I2C] %s\n", __func__);
 #ifdef CONFIG_MTK_LEGACY
 	i2c_register_board_info(LCM_I2C_BUSNUM, &_lcm_i2c_board_info, 1);
-	pr_debug("[LCM][I2C] %s2\n", __func__);
+	pr_debug("[LCM][I2C] _lcm_i2c_init2\n");
 #endif
 	i2c_add_driver(&_lcm_i2c_driver);
 	pr_debug("[LCM][I2C] %s success\n", __func__);

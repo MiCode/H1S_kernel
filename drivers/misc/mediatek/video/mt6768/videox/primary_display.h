@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _PRIMARY_DISPLAY_H_
 #define _PRIMARY_DISPLAY_H_
@@ -21,14 +13,16 @@
 #include "disp_lcm.h"
 #include "disp_helper.h"
 #ifdef MTK_FB_MMDVFS_SUPPORT
-#include <linux/pm_qos.h>
+#include <linux/soc/mediatek/mtk-pm-qos.h>
 #endif
+#include "mt-plat/mtk_smi.h"
+#include "mtk_smi.h"
 
 
 #ifdef MTK_FB_MMDVFS_SUPPORT
-extern struct pm_qos_request primary_display_qos_request;
-extern struct pm_qos_request primary_display_emi_opp_request;
-extern struct pm_qos_request primary_display_mm_freq_request;
+extern struct mtk_pm_qos_request primary_display_qos_request;
+extern struct mtk_pm_qos_request primary_display_emi_opp_request;
+extern struct mtk_pm_qos_request primary_display_mm_freq_request;
 #endif
 
 enum DISP_PRIMARY_PATH_MODE {
@@ -61,6 +55,9 @@ extern unsigned int ap_fps_changed;
 extern unsigned int arr_fps_backup;
 extern unsigned int arr_fps_enable;
 extern unsigned int round_corner_offset_enable;
+
+extern bool g_force_cfg;
+extern unsigned int g_force_cfg_id;
 
 struct DISP_LAYER_INFO {
 	unsigned int id;
@@ -225,9 +222,9 @@ enum mtkfb_power_mode {
 
 struct display_primary_path_context {
 	enum DISP_POWER_STATE state;
-	unsigned int lcm_fps;
+	unsigned int lcm_fps;/*real fps * 100*/
 	unsigned int dynamic_fps;
-	int lcm_refresh_rate;
+	unsigned int lcm_refresh_rate; /*real fps*/
 	int max_layer;
 	int need_trigger_overlay;
 	int need_trigger_ovl1to2;
@@ -273,6 +270,18 @@ struct display_primary_path_context {
 #endif
 	enum mtkfb_power_mode pm;
 	enum lcm_power_state lcm_ps;
+
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+	/*DynFPS start*/
+	int active_cfg;
+	struct mutex dynfps_lock;
+	struct multi_configs multi_cfg_table;
+	cmdqBackupSlotHandle config_id_slot;
+	unsigned int first_cfg;
+	/*DynFPS end*/
+#endif
+	/* change vfp for ap dsi and 6382 at same time */
+	bool vfp_chg_sync_bdg;
 };
 
 static inline char *lcm_power_state_to_string(enum lcm_power_state ps)
@@ -396,6 +405,11 @@ int primary_display_get_original_height(void);
 int primary_display_lcm_ATA(void);
 int primary_display_setbacklight(unsigned int level);
 int primary_display_setbacklight_nolock(unsigned int level);
+int primary_display_set_lcm_hbm(bool en);
+int primary_display_hbm_wait(bool en);
+int primary_display_setlcm_func_call(
+void (*func4)(void *, void *, void *, void *),
+void *data1, void *data2, void *data3, void *data4);
 int primary_display_pause(PRIMARY_DISPLAY_CALLBACK callback,
 	unsigned int user_data);
 int primary_display_switch_dst_mode(int mode);
@@ -490,4 +504,30 @@ extern unsigned int dump_output;
 extern unsigned int dump_output_comp;
 extern void *composed_buf;
 extern struct completion dump_buf_comp;
+
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+/**************function for DynFPS start************************/
+unsigned int primary_display_is_support_DynFPS(void);
+unsigned int primary_display_get_default_disp_fps(int need_lock);
+unsigned int primary_display_get_def_timing_fps(int need_lock);
+int primary_display_get_cfg_fps(
+	int config_id, unsigned int *fps, unsigned int *vact_timing_fps);
+unsigned int primary_display_get_current_cfg_id(void);
+void primary_display_update_cfg_id(int cfg_id);
+void primary_display_init_multi_cfg_info(void);
+int primary_display_get_multi_configs(struct multi_configs *p_cfgs);
+void primary_display_dynfps_chg_fps(int cfg_id);
+void primary_display_dynfps_get_vfp_info(
+	unsigned int *vfp, unsigned int *vfp_for_lp);
+
+#if 0
+bool primary_display_need_update_golden_fps(
+	unsigned int last_fps, unsigned int new_fps);
+bool primary_display_need_update_hrt_fps(
+	unsigned int last_fps, unsigned int new_fps);
+#endif
+
+/**************function for DynFPS end************************/
+#endif
+
 #endif

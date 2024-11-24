@@ -14,11 +14,12 @@
  */
 
 #include <linux/linkage.h>
+#include <linux/platform_data/ams-delta-fiq.h>
+
 #include <asm/assembler.h>
-
 #include <mach/board-ams-delta.h>
-#include <mach/ams-delta-fiq.h>
 
+#include "ams-delta-fiq.h"
 #include "iomap.h"
 #include "soc.h"
 
@@ -134,6 +135,8 @@ restart:
 	orr r11, r11, r13			@ mask all requested interrupts
 	str r11, [r12, #OMAP1510_GPIO_INT_MASK]
 
+	str r13, [r12, #OMAP1510_GPIO_INT_STATUS] @ ack all requested interrupts
+
 	ands r10, r13, #KEYBRD_CLK_MASK		@ extract keyboard status - set?
 	beq hksw				@ no - try next source
 
@@ -141,7 +144,6 @@ restart:
 	@@@@@@@@@@@@@@@@@@@@@@
 	@ Keyboard clock FIQ mode interrupt handler
 	@ r10 now contains KEYBRD_CLK_MASK, use it
-	str r10, [r12, #OMAP1510_GPIO_INT_STATUS]	@ ack the interrupt
 	bic r11, r11, r10				@ unmask it
 	str r11, [r12, #OMAP1510_GPIO_INT_MASK]
 

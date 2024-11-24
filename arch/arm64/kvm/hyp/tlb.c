@@ -18,6 +18,7 @@
 #include <linux/irqflags.h>
 
 #include <asm/kvm_hyp.h>
+#include <asm/kvm_mmu.h>
 #include <asm/tlbflush.h>
 
 static void __hyp_text __tlb_switch_to_guest_vhe(struct kvm *kvm,

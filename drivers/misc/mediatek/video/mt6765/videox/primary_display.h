@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _PRIMARY_DISPLAY_H_
@@ -21,14 +13,16 @@
 #include "disp_lcm.h"
 #include "disp_helper.h"
 #ifdef MTK_FB_MMDVFS_SUPPORT
-#include <linux/pm_qos.h>
+#include <linux/soc/mediatek/mtk-pm-qos.h>
 #endif
+#include "mt-plat/mtk_smi.h"
+#include "mtk_smi.h"
 
 
 #ifdef MTK_FB_MMDVFS_SUPPORT
-extern struct pm_qos_request primary_display_qos_request;
-extern struct pm_qos_request primary_display_emi_opp_request;
-extern struct pm_qos_request primary_display_mm_freq_request;
+extern struct mtk_pm_qos_request primary_display_qos_request;
+extern struct mtk_pm_qos_request primary_display_emi_opp_request;
+extern struct mtk_pm_qos_request primary_display_mm_freq_request;
 #endif
 
 enum DISP_PRIMARY_PATH_MODE {
@@ -37,6 +31,39 @@ enum DISP_PRIMARY_PATH_MODE {
 	SINGLE_LAYER_MODE,
 	DEBUG_RDMA1_DSI0_MODE
 };
+
+/*enum MTK_SMI_BWC_SCEN {
+	SMI_BWC_SCEN_NORMAL,
+	SMI_BWC_SCEN_UI_IDLE,
+	SMI_BWC_SCEN_VPMJC,
+	SMI_BWC_SCEN_FORCE_MMDVFS,
+	SMI_BWC_SCEN_HDMI,
+	SMI_BWC_SCEN_HDMI4K,
+	SMI_BWC_SCEN_WFD,
+	SMI_BWC_SCEN_VENC,
+	SMI_BWC_SCEN_SWDEC_VP,
+	SMI_BWC_SCEN_VP,
+	SMI_BWC_SCEN_VP_HIGH_FPS,
+	SMI_BWC_SCEN_VP_HIGH_RESOLUTION,
+	SMI_BWC_SCEN_VR,
+	SMI_BWC_SCEN_VR_SLOW,
+	SMI_BWC_SCEN_VSS,
+	SMI_BWC_SCEN_CAM_PV,
+	SMI_BWC_SCEN_CAM_CP,
+	SMI_BWC_SCEN_ICFP,
+	SMI_BWC_SCEN_MM_GPU,
+	SMI_BWC_SCEN_CNT
+};
+
+enum {
+	MMDVFS_CAM_MON_SCEN = SMI_BWC_SCEN_CNT, MMDVFS_SCEN_MHL,
+	MMDVFS_SCEN_MJC, MMDVFS_SCEN_DISP, MMDVFS_SCEN_ISP,
+	MMDVFS_SCEN_VP_HIGH_RESOLUTION, MMDVFS_SCEN_VPU, MMDVFS_MGR,
+	MMDVFS_SCEN_VPU_KERNEL, MMDVFS_PMQOS_ISP,
+	MMDVFS_SCEN_VP_WFD, MMDVFS_SCEN_COUNT
+};
+*/
+
 #define UINT8 unsigned char
 #define UINT32 unsigned int
 
@@ -61,6 +88,8 @@ extern unsigned int ap_fps_changed;
 extern unsigned int arr_fps_backup;
 extern unsigned int arr_fps_enable;
 extern unsigned int round_corner_offset_enable;
+extern bool g_force_cfg;
+extern unsigned int g_force_cfg_id;
 
 struct DISP_LAYER_INFO {
 	unsigned int id;
@@ -207,6 +236,16 @@ struct OPT_BACKUP {
 	int value;
 };
 
+#define LCM_FPS_ARRAY_SIZE	32
+struct lcm_fps_ctx_t {
+	int is_inited;
+	struct mutex lock;
+	unsigned int dsi_mode;
+	unsigned int head_idx;
+	unsigned int num;
+	unsigned long long last_ns;
+	unsigned long long array[LCM_FPS_ARRAY_SIZE];
+};
 /* AOD */
 enum lcm_power_state {
 	LCM_OFF = 0,
@@ -264,7 +303,11 @@ struct display_primary_path_context {
 	cmdqBackupSlotHandle ovl_config_time;
 	cmdqBackupSlotHandle dither_status_info;
 	cmdqBackupSlotHandle dsi_vfp_line;
+	cmdqBackupSlotHandle dsi_vfp_changed;
+	cmdqBackupSlotHandle next_working_fps;
 	cmdqBackupSlotHandle night_light_params;
+	cmdqBackupSlotHandle hrt_idx_id;
+	cmdqBackupSlotHandle trigger_record_slot;
 
 	int is_primary_sec;
 	int primary_display_scenario;
@@ -273,6 +316,18 @@ struct display_primary_path_context {
 #endif
 	enum mtkfb_power_mode pm;
 	enum lcm_power_state lcm_ps;
+	/*DynFPS start*/
+	unsigned int current_disp_fps;
+	unsigned int req_new_disp_fps;
+	bool dynfps_update_hrt;
+	bool dynfps_update_mmdvfs;
+	bool dynfps_update_golden;
+	int active_cfg;
+	cmdqBackupSlotHandle config_id_slot;
+	unsigned int first_cfg;
+	struct mutex dynfps_lock;
+	struct multi_configs multi_cfg_table;
+	/*DynFPS end*/
 };
 
 static inline char *lcm_power_state_to_string(enum lcm_power_state ps)
@@ -354,9 +409,6 @@ int primary_display_diagnose(void);
 
 int primary_display_get_info(struct disp_session_info *info);
 int primary_display_capture_framebuffer(unsigned long pbuf);
-int primary_display_capture_framebuffer_ovl(unsigned long pbuf,
-	unsigned int format);
-
 int primary_display_is_video_mode(void);
 int primary_is_sec(void);
 int do_primary_display_switch_mode(int sess_mode, unsigned int session,
@@ -395,7 +447,6 @@ int primary_display_get_original_width(void);
 int primary_display_get_original_height(void);
 int primary_display_lcm_ATA(void);
 int primary_display_setbacklight(unsigned int level);
-int primary_display_setbacklight_nolock(unsigned int level);
 int primary_display_pause(PRIMARY_DISPLAY_CALLBACK callback,
 	unsigned int user_data);
 int primary_display_switch_dst_mode(int mode);
@@ -408,7 +459,9 @@ int primary_display_get_lcm_refresh_rate(void);
 int _display_set_lcm_refresh_rate(int fps);
 void primary_display_idlemgr_kick(const char *source, int need_lock);
 void primary_display_idlemgr_enter_idle(int need_lock);
-void primary_display_update_present_fence(unsigned int fence_idx);
+void primary_display_update_present_fence(struct cmdqRecStruct *cmdq_handle,
+	unsigned int fence_idx);
+void primary_display_wakeup_pf_thread(void);
 void primary_display_switch_esd_mode(int mode);
 int primary_display_cmdq_set_reg(unsigned int addr, unsigned int val);
 int primary_display_vsync_switch(int method);
@@ -483,6 +536,36 @@ int primary_display_config_full_roi(struct disp_ddp_path_config *pconfig,
 int primary_display_set_scenario(int scenario);
 enum DISP_MODULE_ENUM _get_dst_module_by_lcm(struct disp_lcm_handle *plcm);
 extern void check_mm0_clk_sts(void);
+int primary_display_is_directlink_mode(void);
+#ifdef MTK_FB_MMDVFS_SUPPORT
+int primary_display_get_dvfs_last_req(void);
+#endif
+
+extern struct lcm_fps_ctx_t lcm_fps_ctx;
+int lcm_fps_ctx_init(struct lcm_fps_ctx_t *fps_ctx);
+int lcm_fps_ctx_reset(struct lcm_fps_ctx_t *fps_ctx);
+int lcm_fps_ctx_update(struct lcm_fps_ctx_t *fps_ctx,
+		unsigned long long cur_ns);
+
+unsigned int primary_display_get_current_disp_fps(void);
+int primary_display_get_dvfs_last_req(void);
+/**************function for DynFPS start************************/
+unsigned int primary_display_is_support_DynFPS(void);
+unsigned int primary_display_get_default_disp_fps(int need_lock);
+unsigned int primary_display_get_def_timing_fps(int need_lock);
+int primary_display_get_cfg_fps(
+	int config_id, unsigned int *fps, unsigned int *vact_timing_fps);
+unsigned int primary_display_get_current_cfg_id(void);
+void primary_display_update_cfg_id(int cfg_id);
+void primary_display_init_multi_cfg_info(void);
+int primary_display_get_multi_configs(struct multi_configs *p_cfgs);
+void primary_display_dynfps_chg_fps(int cfg_id);
+unsigned int primary_display_is_support_ARR(void);
+unsigned int primary_display_get_vfp(unsigned int fps);
+unsigned int primary_display_get_current_cfg_id(void);
+
+void primary_display_dynfps_get_vfp_info(
+	unsigned int *vfp, unsigned int *vfp_for_lp);
 
 extern unsigned int dump_output;
 extern unsigned int dump_output_comp;

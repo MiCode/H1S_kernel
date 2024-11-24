@@ -700,13 +700,18 @@ struct perf_config_set *perf_config_set__new(void)
 
 	if (set) {
 		INIT_LIST_HEAD(&set->sections);
-		if (perf_config_set__init(set) < 0) {
-			perf_config_set__delete(set);
-			set = NULL;
-		}
+		perf_config_set__init(set);
 	}
 
 	return set;
+}
+
+static int perf_config__init(void)
+{
+	if (config_set == NULL)
+		config_set = perf_config_set__new();
+
+	return config_set == NULL;
 }
 
 int perf_config(config_fn_t fn, void *data)
@@ -716,7 +721,7 @@ int perf_config(config_fn_t fn, void *data)
 	struct perf_config_section *section;
 	struct perf_config_item *item;
 
-	if (config_set == NULL)
+	if (config_set == NULL && perf_config__init())
 		return -1;
 
 	perf_config_set__for_each_entry(config_set, section, item) {
@@ -735,12 +740,6 @@ int perf_config(config_fn_t fn, void *data)
 	}
 
 	return ret;
-}
-
-void perf_config__init(void)
-{
-	if (config_set == NULL)
-		config_set = perf_config_set__new();
 }
 
 void perf_config__exit(void)

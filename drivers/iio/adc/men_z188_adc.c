@@ -80,7 +80,6 @@ static int z188_iio_read_raw(struct iio_dev *iio_dev,
 
 static const struct iio_info z188_adc_info = {
 	.read_raw = &z188_iio_read_raw,
-	.driver_module = THIS_MODULE,
 };
 
 static void men_z188_config_channels(void __iomem *addr)
@@ -107,6 +106,7 @@ static int men_z188_probe(struct mcb_device *dev,
 	struct z188_adc *adc;
 	struct iio_dev *indio_dev;
 	struct resource *mem;
+	int ret;
 
 	indio_dev = devm_iio_device_alloc(&dev->dev, sizeof(struct z188_adc));
 	if (!indio_dev)
@@ -133,8 +133,14 @@ static int men_z188_probe(struct mcb_device *dev,
 	adc->mem = mem;
 	mcb_set_drvdata(dev, indio_dev);
 
-	return iio_device_register(indio_dev);
+	ret = iio_device_register(indio_dev);
+	if (ret)
+		goto err_unmap;
 
+	return 0;
+
+err_unmap:
+	iounmap(adc->base);
 err:
 	mcb_release_mem(mem);
 	return -ENXIO;

@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -85,7 +74,7 @@ static int cap_mem_blk_io;
  */
 static int mtk_capture_probe(struct platform_device *pdev);
 static int mtk_capture_pcm_close(struct snd_pcm_substream *substream);
-static int mtk_afe_capture_probe(struct snd_soc_platform *platform);
+static int mtk_afe_capture_component_probe(struct snd_soc_component *component);
 
 static const char *const capture_HD_input[] = {"Off", "On"};
 
@@ -534,6 +523,15 @@ static int mtk_capture_pcm_copy(struct snd_pcm_substream *substream,
 			       VUL_Control_context, cap_mem_blk);
 }
 
+static int mtk_capture_pcm_silence(struct snd_pcm_substream *substream,
+				   int channel,
+				   unsigned long pos,
+				   unsigned long bytes)
+{
+	pr_debug("dummy_pcm_silence\n");
+	return 0; /* do nothing */
+}
+
 static void *dummy_page[2];
 
 static struct page *mtk_capture_pcm_page(struct snd_pcm_substream *substream,
@@ -552,28 +550,37 @@ static struct snd_pcm_ops mtk_afe_capture_ops = {
 	.trigger = mtk_capture_pcm_trigger,
 	.pointer = mtk_capture_pcm_pointer,
 	.copy_user = mtk_capture_pcm_copy,
+	.fill_silence = mtk_capture_pcm_silence,
 	.page = mtk_capture_pcm_page,
 	.mmap = mtk_pcm_mmap,
 };
 
-static struct snd_soc_platform_driver mtk_soc_platform = {
-	.ops = &mtk_afe_capture_ops, .probe = mtk_afe_capture_probe,
+static struct snd_soc_component_driver mtk_soc_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_afe_capture_ops,
+	.probe = mtk_afe_capture_component_probe,
 };
 
 static int mtk_capture_probe(struct platform_device *pdev)
 {
-	if (pdev->dev.of_node) {
+	pr_debug("mtk_capture_probe\n");
+
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	if (pdev->dev.dma_mask == NULL)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_UL1_PCM);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
-	return snd_soc_register_platform(&pdev->dev, &mtk_soc_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_soc_component,
+					  NULL,
+					  0);
 }
 
-static int mtk_afe_capture_probe(struct snd_soc_platform *platform)
+static int mtk_afe_capture_component_probe(struct snd_soc_component *component)
 {
 	cap_mem_blk = get_usage_digital_block(AUDIO_USAGE_PCM_CAPTURE);
 	cap_mem_blk_io = get_usage_digital_block_io(AUDIO_USAGE_PCM_CAPTURE);
@@ -588,9 +595,9 @@ static int mtk_afe_capture_probe(struct snd_soc_platform *platform)
 	pr_debug("%s(), cap_mem_blk %d, cap_mem_blk_io %d\n", __func__,
 		 cap_mem_blk, cap_mem_blk_io);
 
-	snd_soc_add_platform_controls(platform, Audio_snd_capture_controls,
+	snd_soc_add_component_controls(component, Audio_snd_capture_controls,
 				      ARRAY_SIZE(Audio_snd_capture_controls));
-	AudDrv_Allocate_mem_Buffer(platform->dev, cap_mem_blk,
+	AudDrv_Allocate_mem_Buffer(component->dev, cap_mem_blk,
 				   UL1_MAX_BUFFER_SIZE);
 	Capture_dma_buf = Get_Mem_Buffer(cap_mem_blk);
 	return 0;
@@ -598,7 +605,7 @@ static int mtk_afe_capture_probe(struct snd_soc_platform *platform)
 
 static int mtk_capture_remove(struct platform_device *pdev)
 {
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

@@ -111,8 +111,8 @@ void r8712_recv_indicatepkt(struct _adapter *padapter,
 	_pkt *skb;
 	struct rx_pkt_attrib *pattrib = &precv_frame->u.hdr.attrib;
 
-	precvpriv = &(padapter->recvpriv);
-	pfree_recv_queue = &(precvpriv->free_recv_queue);
+	precvpriv = &padapter->recvpriv;
+	pfree_recv_queue = &precvpriv->free_recv_queue;
 	skb = precv_frame->u.hdr.pkt;
 	if (!skb)
 		goto _recv_indicatepkt_drop;
@@ -138,17 +138,16 @@ _recv_indicatepkt_drop:
 	precvpriv->rx_drop++;
 }
 
-static void _r8712_reordering_ctrl_timeout_handler (unsigned long data)
+static void _r8712_reordering_ctrl_timeout_handler (struct timer_list *t)
 {
 	struct recv_reorder_ctrl *preorder_ctrl =
-			 (struct recv_reorder_ctrl *)data;
+			 from_timer(preorder_ctrl, t, reordering_ctrl_timer);
 
 	r8712_reordering_ctrl_timeout_handler(preorder_ctrl);
 }
 
 void r8712_init_recv_timer(struct recv_reorder_ctrl *preorder_ctrl)
 {
-	setup_timer(&preorder_ctrl->reordering_ctrl_timer,
-		     _r8712_reordering_ctrl_timeout_handler,
-		     (unsigned long)preorder_ctrl);
+	timer_setup(&preorder_ctrl->reordering_ctrl_timer,
+		    _r8712_reordering_ctrl_timeout_handler, 0);
 }

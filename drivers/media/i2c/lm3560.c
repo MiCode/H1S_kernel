@@ -1,6 +1,6 @@
 /*
  * drivers/media/i2c/lm3560.c
- * General device driver for TI lm3560, FLASH LED Driver
+ * General device driver for TI lm3559, lm3560, FLASH LED Driver
  *
  * Copyright (C) 2013 Texas Instruments
  *
@@ -50,6 +50,7 @@ enum led_enable {
 /**
  * struct lm3560_flash
  *
+ * @dev: pointer to &struct device
  * @pdata: platform data
  * @regmap: reg. map for i2c
  * @lock: muxtex for serial access.
@@ -464,6 +465,7 @@ static int lm3560_remove(struct i2c_client *client)
 }
 
 static const struct i2c_device_id lm3560_id_table[] = {
+	{LM3559_NAME, 0},
 	{LM3560_NAME, 0},
 	{}
 };

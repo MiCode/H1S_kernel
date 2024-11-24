@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Sagy Shih <sagy.shih@mediatek.com>
  */
 
 #include <linux/kernel.h>
@@ -26,9 +19,9 @@
 #include <linux/of_fdt.h>
 #include <linux/of.h>
 #include <asm/cacheflush.h>
-#include <mt-plat/mtk_io.h>
 #include <mt-plat/sync_write.h>
 
+#include <dramc_io.h>
 #include "mtk_dramc.h"
 
 void __iomem *SLEEP_BASE_ADDR;
@@ -51,17 +44,17 @@ int acquire_dram_ctrl(void)
 		}
 
 		cnt--;
-		/* pr_err("[DRAMC] wait for SPM HW SEMAPHORE\n"); */
+		/* pr_info("[DRAMC] wait for SPM HW SEMAPHORE\n"); */
 		udelay(1);
 	} while (cnt > 0);
 
 	if (cnt == 0) {
 		spin_unlock_irqrestore(&dramc_lock, save_flags);
-		pr_warn("[DRAMC] can NOT get SPM HW SEMAPHORE!\n");
+		pr_info("[DRAMC] can NOT get SPM HW SEMAPHORE!\n");
 		return -1;
 	}
 
-	/* pr_err("[DRAMC] get SPM HW SEMAPHORE success!\n"); */
+	/* pr_info("[DRAMC] get SPM HW SEMAPHORE success!\n"); */
 
 	spin_unlock_irqrestore(&dramc_lock, save_flags);
 	return 0;
@@ -80,7 +73,7 @@ int release_dram_ctrl(void)
 		pr_err("[DRAMC] release SPM HW SEMAPHORE fail!\n");
 		/* BUG(); */
 	}
-	/* pr_err("[DRAMC] release SPM HW SEMAPHORE success!\n"); */
+	/* pr_info("[DRAMC] release SPM HW SEMAPHORE success!\n"); */
 	return 0;
 }
 

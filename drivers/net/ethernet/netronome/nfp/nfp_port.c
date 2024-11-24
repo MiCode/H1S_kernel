@@ -32,6 +32,7 @@
  */
 
 #include <linux/lockdep.h>
+#include <linux/netdevice.h>
 #include <net/switchdev.h>
 
 #include "nfpcore/nfp_cpp.h"
@@ -100,6 +101,23 @@ int nfp_port_setup_tc(struct net_device *netdev, enum tc_setup_type type,
 	return nfp_app_setup_tc(port->app, netdev, type, type_data);
 }
 
+int nfp_port_set_features(struct net_device *netdev, netdev_features_t features)
+{
+	struct nfp_port *port;
+
+	port = nfp_port_from_netdev(netdev);
+	if (!port)
+		return 0;
+
+	if ((netdev->features & NETIF_F_HW_TC) > (features & NETIF_F_HW_TC) &&
+	    port->tc_offload_cnt) {
+		netdev_err(netdev, "Cannot disable HW TC offload while offloads active\n");
+		return -EBUSY;
+	}
+
+	return 0;
+}
+
 struct nfp_port *
 nfp_port_from_id(struct nfp_pf *pf, enum nfp_port_type type, unsigned int id)
 {
@@ -163,7 +181,11 @@ nfp_port_get_phys_port_name(struct net_device *netdev, char *name, size_t len)
 				     eth_port->label_subport);
 		break;
 	case NFP_PORT_PF_PORT:
-		n = snprintf(name, len, "pf%d", port->pf_id);
+		if (!port->pf_split)
+			n = snprintf(name, len, "pf%d", port->pf_id);
+		else
+			n = snprintf(name, len, "pf%ds%d", port->pf_id,
+				     port->pf_split_id);
 		break;
 	case NFP_PORT_VF_PORT:
 		n = snprintf(name, len, "pf%dvf%d", port->pf_id, port->vf_id);
@@ -199,6 +221,8 @@ int nfp_port_configure(struct net_device *netdev, bool configed)
 	port = nfp_port_from_netdev(netdev);
 	eth_port = __nfp_port_get_eth_port(port);
 	if (!eth_port)
+		return 0;
+	if (port->eth_forced)
 		return 0;
 
 	err = nfp_eth_set_configured(port->app->cpp, eth_port->index, configed);

@@ -80,6 +80,7 @@
 
 #define ISMT_DESC_ENTRIES	2	/* number of descriptor entries */
 #define ISMT_MAX_RETRIES	3	/* number of SMBus retries to attempt */
+#define ISMT_LOG_ENTRIES	3	/* number of interrupt cause log entries */
 
 /* Hardware Descriptor Constants - Control Field */
 #define ISMT_DESC_CWRL	0x01	/* Command/Write Length */
@@ -172,7 +173,9 @@ struct ismt_priv {
 	dma_addr_t io_rng_dma;			/* descriptor HW base addr */
 	u8 head;				/* ring buffer head pointer */
 	struct completion cmp;			/* interrupt completion */
-	u8 dma_buffer[I2C_SMBUS_BLOCK_MAX + 1];	/* temp R/W data buffer */
+	u8 buffer[I2C_SMBUS_BLOCK_MAX + 16];	/* temp R/W data buffer */
+	dma_addr_t log_dma;
+	u32 *log;
 };
 
 /**
@@ -320,10 +323,12 @@ static int ismt_process_desc(const struct ismt_desc *desc,
 			     struct ismt_priv *priv, int size,
 			     char read_write)
 {
-	u8 *dma_buffer = priv->dma_buffer;
+	u8 *dma_buffer = PTR_ALIGN(&priv->buffer[0], 16);
 
 	dev_dbg(&priv->pci_dev->dev, "Processing completed descriptor\n");
 	__ismt_desc_dump(&priv->pci_dev->dev, desc);
+	ismt_gen_reg_dump(priv);
+	ismt_mstr_reg_dump(priv);
 
 	if (desc->status & ISMT_DESC_SCS) {
 		if (read_write == I2C_SMBUS_WRITE &&
@@ -393,15 +398,19 @@ static int ismt_access(struct i2c_adapter *adap, u16 addr,
 	struct ismt_desc *desc;
 	struct ismt_priv *priv = i2c_get_adapdata(adap);
 	struct device *dev = &priv->pci_dev->dev;
+	u8 *dma_buffer = PTR_ALIGN(&priv->buffer[0], 16);
 
 	desc = &priv->hw[priv->head];
 
 	/* Initialize the DMA buffer */
-	memset(priv->dma_buffer, 0, sizeof(priv->dma_buffer));
+	memset(priv->buffer, 0, sizeof(priv->buffer));
 
 	/* Initialize the descriptor */
 	memset(desc, 0, sizeof(struct ismt_desc));
 	desc->tgtaddr_rw = ISMT_DESC_ADDR_RW(addr, read_write);
+
+	/* Always clear the log entries */
+	memset(priv->log, 0, ISMT_LOG_ENTRIES * sizeof(u32));
 
 	/* Initialize common control bits */
 	if (likely(pci_dev_msi_enabled(priv->pci_dev)))
@@ -446,8 +455,8 @@ static int ismt_access(struct i2c_adapter *adap, u16 addr,
 			desc->wr_len_cmd = 2;
 			dma_size = 2;
 			dma_direction = DMA_TO_DEVICE;
-			priv->dma_buffer[0] = command;
-			priv->dma_buffer[1] = data->byte;
+			dma_buffer[0] = command;
+			dma_buffer[1] = data->byte;
 		} else {
 			/* Read Byte */
 			dev_dbg(dev, "I2C_SMBUS_BYTE_DATA:  READ\n");
@@ -466,9 +475,9 @@ static int ismt_access(struct i2c_adapter *adap, u16 addr,
 			desc->wr_len_cmd = 3;
 			dma_size = 3;
 			dma_direction = DMA_TO_DEVICE;
-			priv->dma_buffer[0] = command;
-			priv->dma_buffer[1] = data->word & 0xff;
-			priv->dma_buffer[2] = data->word >> 8;
+			dma_buffer[0] = command;
+			dma_buffer[1] = data->word & 0xff;
+			dma_buffer[2] = data->word >> 8;
 		} else {
 			/* Read Word */
 			dev_dbg(dev, "I2C_SMBUS_WORD_DATA:  READ\n");
@@ -486,21 +495,24 @@ static int ismt_access(struct i2c_adapter *adap, u16 addr,
 		desc->rd_len = 2;
 		dma_size = 3;
 		dma_direction = DMA_BIDIRECTIONAL;
-		priv->dma_buffer[0] = command;
-		priv->dma_buffer[1] = data->word & 0xff;
-		priv->dma_buffer[2] = data->word >> 8;
+		dma_buffer[0] = command;
+		dma_buffer[1] = data->word & 0xff;
+		dma_buffer[2] = data->word >> 8;
 		break;
 
 	case I2C_SMBUS_BLOCK_DATA:
 		if (read_write == I2C_SMBUS_WRITE) {
 			/* Block Write */
 			dev_dbg(dev, "I2C_SMBUS_BLOCK_DATA:  WRITE\n");
+			if (data->block[0] < 1 || data->block[0] > I2C_SMBUS_BLOCK_MAX)
+				return -EINVAL;
+
 			dma_size = data->block[0] + 1;
 			dma_direction = DMA_TO_DEVICE;
 			desc->wr_len_cmd = dma_size;
 			desc->control |= ISMT_DESC_BLK;
-			priv->dma_buffer[0] = command;
-			memcpy(&priv->dma_buffer[1], &data->block[1], dma_size - 1);
+			dma_buffer[0] = command;
+			memcpy(&dma_buffer[1], &data->block[1], dma_size - 1);
 		} else {
 			/* Block Read */
 			dev_dbg(dev, "I2C_SMBUS_BLOCK_DATA:  READ\n");
@@ -527,8 +539,8 @@ static int ismt_access(struct i2c_adapter *adap, u16 addr,
 			dma_direction = DMA_TO_DEVICE;
 			desc->wr_len_cmd = dma_size;
 			desc->control |= ISMT_DESC_I2C;
-			priv->dma_buffer[0] = command;
-			memcpy(&priv->dma_buffer[1], &data->block[1], dma_size - 1);
+			dma_buffer[0] = command;
+			memcpy(&dma_buffer[1], &data->block[1], dma_size - 1);
 		} else {
 			/* i2c Block Read */
 			dev_dbg(dev, "I2C_SMBUS_I2C_BLOCK_DATA:  READ\n");
@@ -557,23 +569,22 @@ static int ismt_access(struct i2c_adapter *adap, u16 addr,
 	if (dma_size != 0) {
 		dev_dbg(dev, " dev=%p\n", dev);
 		dev_dbg(dev, " data=%p\n", data);
-		dev_dbg(dev, " dma_buffer=%p\n", priv->dma_buffer);
+		dev_dbg(dev, " dma_buffer=%p\n", dma_buffer);
 		dev_dbg(dev, " dma_size=%d\n", dma_size);
 		dev_dbg(dev, " dma_direction=%d\n", dma_direction);
 
 		dma_addr = dma_map_single(dev,
-				      priv->dma_buffer,
+				      dma_buffer,
 				      dma_size,
 				      dma_direction);
 
 		if (dma_mapping_error(dev, dma_addr)) {
 			dev_err(dev, "Error in mapping dma buffer %p\n",
-				priv->dma_buffer);
+				dma_buffer);
 			return -EIO;
 		}
 
-		dev_dbg(dev, " dma_addr = 0x%016llX\n",
-			(unsigned long long)dma_addr);
+		dev_dbg(dev, " dma_addr = %pad\n", &dma_addr);
 
 		desc->dptr_low = lower_32_bits(dma_addr);
 		desc->dptr_high = upper_32_bits(dma_addr);
@@ -693,6 +704,8 @@ static void ismt_hw_init(struct ismt_priv *priv)
 	/* initialize the Master Descriptor Base Address (MDBA) */
 	writeq(priv->io_rng_dma, priv->smba + ISMT_MSTR_MDBA);
 
+	writeq(priv->log_dma, priv->smba + ISMT_GR_SMTICL);
+
 	/* initialize the Master Control Register (MCTRL) */
 	writel(ISMT_MCTRL_MEIE, priv->smba + ISMT_MSTR_MCTRL);
 
@@ -781,6 +794,12 @@ static int ismt_dev_init(struct ismt_priv *priv)
 
 	priv->head = 0;
 	init_completion(&priv->cmp);
+
+	priv->log = dmam_alloc_coherent(&priv->pci_dev->dev,
+					ISMT_LOG_ENTRIES * sizeof(u32),
+					&priv->log_dma, GFP_KERNEL);
+	if (!priv->log)
+		return -ENOMEM;
 
 	return 0;
 }

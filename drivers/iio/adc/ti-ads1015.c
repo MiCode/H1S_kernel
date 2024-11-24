@@ -312,6 +312,7 @@ static const struct iio_chan_spec ads1115_channels[] = {
 	IIO_CHAN_SOFT_TIMESTAMP(ADS1015_TIMESTAMP),
 };
 
+#ifdef CONFIG_PM
 static int ads1015_set_power_state(struct ads1015_data *data, bool on)
 {
 	int ret;
@@ -329,10 +330,19 @@ static int ads1015_set_power_state(struct ads1015_data *data, bool on)
 	return ret < 0 ? ret : 0;
 }
 
+#else /* !CONFIG_PM */
+
+static int ads1015_set_power_state(struct ads1015_data *data, bool on)
+{
+	return 0;
+}
+
+#endif /* !CONFIG_PM */
+
 static
 int ads1015_get_adc_result(struct ads1015_data *data, int chan, int *val)
 {
-	int ret, pga, dr, conv_time;
+	int ret, pga, dr, dr_old, conv_time;
 	unsigned int old, mask, cfg;
 
 	if (chan < 0 || chan >= ADS1015_CHANNELS)
@@ -358,15 +368,14 @@ int ads1015_get_adc_result(struct ads1015_data *data, int chan, int *val)
 	}
 
 	cfg = (old & ~mask) | (cfg & mask);
-
-	ret = regmap_write(data->regmap, ADS1015_CFG_REG, cfg);
-	if (ret)
-		return ret;
-
-	if (old != cfg || data->conv_invalid) {
-		int dr_old = (old & ADS1015_CFG_DR_MASK) >>
-				ADS1015_CFG_DR_SHIFT;
-
+	if (old != cfg) {
+		ret = regmap_write(data->regmap, ADS1015_CFG_REG, cfg);
+		if (ret)
+			return ret;
+		data->conv_invalid = true;
+	}
+	if (data->conv_invalid) {
+		dr_old = (old & ADS1015_CFG_DR_MASK) >> ADS1015_CFG_DR_SHIFT;
 		conv_time = DIV_ROUND_UP(USEC_PER_SEC, data->data_rate[dr_old]);
 		conv_time += DIV_ROUND_UP(USEC_PER_SEC, data->data_rate[dr]);
 		conv_time += conv_time / 10; /* 10% internal clock inaccuracy */
@@ -382,10 +391,14 @@ static irqreturn_t ads1015_trigger_handler(int irq, void *p)
 	struct iio_poll_func *pf = p;
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct ads1015_data *data = iio_priv(indio_dev);
-	s16 buf[8]; /* 1x s16 ADC val + 3x s16 padding +  4x s16 timestamp */
+	/* Ensure natural alignment of timestamp */
+	struct {
+		s16 chan;
+		s64 timestamp __aligned(8);
+	} scan;
 	int chan, ret, res;
 
-	memset(buf, 0, sizeof(buf));
+	memset(&scan, 0, sizeof(scan));
 
 	mutex_lock(&data->lock);
 	chan = find_first_bit(indio_dev->active_scan_mask,
@@ -396,10 +409,10 @@ static irqreturn_t ads1015_trigger_handler(int irq, void *p)
 		goto err;
 	}
 
-	buf[0] = res;
+	scan.chan = res;
 	mutex_unlock(&data->lock);
 
-	iio_push_to_buffers_with_timestamp(indio_dev, buf,
+	iio_push_to_buffers_with_timestamp(indio_dev, &scan,
 					   iio_get_time_ns(indio_dev));
 
 err:
@@ -822,7 +835,6 @@ static const struct attribute_group ads1115_attribute_group = {
 };
 
 static const struct iio_info ads1015_info = {
-	.driver_module	= THIS_MODULE,
 	.read_raw	= ads1015_read_raw,
 	.write_raw	= ads1015_write_raw,
 	.read_event_value = ads1015_read_event,
@@ -833,7 +845,6 @@ static const struct iio_info ads1015_info = {
 };
 
 static const struct iio_info ads1115_info = {
-	.driver_module	= THIS_MODULE,
 	.read_raw	= ads1015_read_raw,
 	.write_raw	= ads1015_write_raw,
 	.read_event_value = ads1015_read_event,

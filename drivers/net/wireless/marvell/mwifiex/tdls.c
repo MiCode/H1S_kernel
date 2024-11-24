@@ -737,6 +737,7 @@ mwifiex_construct_tdls_action_frame(struct mwifiex_private *priv,
 	int ret;
 	u16 capab;
 	struct ieee80211_ht_cap *ht_cap;
+	unsigned int extra;
 	u8 radio, *pos;
 
 	capab = priv->curr_bss_params.bss_descriptor.cap_info_bitmap;
@@ -755,7 +756,10 @@ mwifiex_construct_tdls_action_frame(struct mwifiex_private *priv,
 
 	switch (action_code) {
 	case WLAN_PUB_ACTION_TDLS_DISCOVER_RES:
-		skb_put(skb, sizeof(mgmt->u.action.u.tdls_discover_resp) + 1);
+		/* See the layout of 'struct ieee80211_mgmt'. */
+		extra = sizeof(mgmt->u.action.u.tdls_discover_resp) +
+			sizeof(mgmt->u.action.category);
+		skb_put(skb, extra);
 		mgmt->u.action.category = WLAN_CATEGORY_PUBLIC;
 		mgmt->u.action.u.tdls_discover_resp.action_code =
 					      WLAN_PUB_ACTION_TDLS_DISCOVER_RES;
@@ -764,8 +768,7 @@ mwifiex_construct_tdls_action_frame(struct mwifiex_private *priv,
 		mgmt->u.action.u.tdls_discover_resp.capability =
 							     cpu_to_le16(capab);
 		/* move back for addr4 */
-		memmove(pos + ETH_ALEN, &mgmt->u.action.category,
-			sizeof(mgmt->u.action.u.tdls_discover_resp));
+		memmove(pos + ETH_ALEN, &mgmt->u.action, extra);
 		/* init address 4 */
 		memcpy(pos, bc_addr, ETH_ALEN);
 
@@ -1428,9 +1431,9 @@ void mwifiex_auto_tdls_update_peer_signal(struct mwifiex_private *priv,
 	spin_unlock_irqrestore(&priv->auto_tdls_lock, flags);
 }
 
-void mwifiex_check_auto_tdls(unsigned long context)
+void mwifiex_check_auto_tdls(struct timer_list *t)
 {
-	struct mwifiex_private *priv = (struct mwifiex_private *)context;
+	struct mwifiex_private *priv = from_timer(priv, t, auto_tdls_timer);
 	struct mwifiex_auto_tdls_peer *tdls_peer;
 	unsigned long flags;
 	u16 reason = WLAN_REASON_TDLS_TEARDOWN_UNSPECIFIED;
@@ -1451,13 +1454,6 @@ void mwifiex_check_auto_tdls(unsigned long context)
 	}
 
 	priv->check_tdls_tx = false;
-
-	if (list_empty(&priv->auto_tdls_list)) {
-		mod_timer(&priv->auto_tdls_timer,
-			  jiffies +
-			  msecs_to_jiffies(MWIFIEX_TIMER_10S));
-		return;
-	}
 
 	spin_lock_irqsave(&priv->auto_tdls_lock, flags);
 	list_for_each_entry(tdls_peer, &priv->auto_tdls_list, list) {
@@ -1502,8 +1498,7 @@ void mwifiex_check_auto_tdls(unsigned long context)
 
 void mwifiex_setup_auto_tdls_timer(struct mwifiex_private *priv)
 {
-	setup_timer(&priv->auto_tdls_timer, mwifiex_check_auto_tdls,
-		    (unsigned long)priv);
+	timer_setup(&priv->auto_tdls_timer, mwifiex_check_auto_tdls, 0);
 	priv->auto_tdls_timer_active = true;
 	mod_timer(&priv->auto_tdls_timer,
 		  jiffies + msecs_to_jiffies(MWIFIEX_TIMER_10S));

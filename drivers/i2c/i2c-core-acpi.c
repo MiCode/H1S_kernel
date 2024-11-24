@@ -219,6 +219,7 @@ static acpi_status i2c_acpi_add_device(acpi_handle handle, u32 level,
 void i2c_acpi_register_devices(struct i2c_adapter *adap)
 {
 	acpi_status status;
+	acpi_handle handle;
 
 	if (!has_acpi_companion(&adap->dev))
 		return;
@@ -229,6 +230,15 @@ void i2c_acpi_register_devices(struct i2c_adapter *adap)
 				     adap, NULL);
 	if (ACPI_FAILURE(status))
 		dev_warn(&adap->dev, "failed to enumerate I2C slaves\n");
+
+	if (!adap->dev.parent)
+		return;
+
+	handle = ACPI_HANDLE(adap->dev.parent);
+	if (!handle)
+		return;
+
+	acpi_walk_dep_device_list(handle);
 }
 
 const struct acpi_device_id *
@@ -385,6 +395,7 @@ static int i2c_acpi_notify(struct notifier_block *nb, unsigned long value,
 			break;
 
 		i2c_acpi_register_device(adapter, adev, &info);
+		put_device(&adapter->dev);
 		break;
 	case ACPI_RECONFIG_DEVICE_REMOVE:
 		if (!acpi_device_enumerated(adev))
@@ -479,10 +490,21 @@ static int acpi_gsb_i2c_read_bytes(struct i2c_client *client,
 	msgs[1].buf = buffer;
 
 	ret = i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
-	if (ret < 0)
-		dev_err(&client->adapter->dev, "i2c read failed\n");
-	else
+	if (ret < 0) {
+		/* Getting a NACK is unfortunately normal with some DSTDs */
+		if (ret == -EREMOTEIO)
+			dev_dbg(&client->adapter->dev, "i2c read %d bytes from client@%#x starting at reg %#x failed, error: %d\n",
+				data_len, client->addr, cmd, ret);
+		else
+			dev_err(&client->adapter->dev, "i2c read %d bytes from client@%#x starting at reg %#x failed, error: %d\n",
+				data_len, client->addr, cmd, ret);
+	/* 2 transfers must have completed successfully */
+	} else if (ret == 2) {
 		memcpy(data, buffer, data_len);
+		ret = 0;
+	} else {
+		ret = -EIO;
+	}
 
 	kfree(buffer);
 	return ret;
@@ -622,8 +644,6 @@ i2c_acpi_space_handler(u32 function, acpi_physical_address command,
 		if (action == ACPI_READ) {
 			status = acpi_gsb_i2c_read_bytes(client, command,
 					gsb->data, info->access_length);
-			if (status > 0)
-				status = 0;
 		} else {
 			status = acpi_gsb_i2c_write_bytes(client, command,
 					gsb->data, info->access_length);
@@ -684,7 +704,6 @@ int i2c_acpi_install_space_handler(struct i2c_adapter *adapter)
 		return -ENOMEM;
 	}
 
-	acpi_walk_dep_device_list(handle);
 	return 0;
 }
 

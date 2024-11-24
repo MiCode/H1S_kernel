@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 #include "ccci_core.h"
 #include "ccci_platform.h"
 
@@ -18,10 +11,22 @@
 #include "modem_reg_base.h"
 #include "modem_secure_base.h"
 #include "ap_md_reg_dump.h"
+#include <mt-plat/mtk_secure_api.h>
+#include <linux/arm-smccc.h>
 
 #define TAG "mcd"
 
 #define RAnd2W(a, b, c)  ccci_write32(a, b, (ccci_read32(a, b)&c))
+
+static size_t mdreg_write32(size_t reg_id, size_t value)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(MTK_SIP_KERNEL_CCCI_GET_INFO, reg_id, value,
+		0, 0, 0, 0, 0, &res);
+
+	return res.a0;
+}
 
 /*
  * This file is generated.

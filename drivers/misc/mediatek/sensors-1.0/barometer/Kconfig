@@ -2,7 +2,10 @@
 config CUSTOM_KERNEL_BAROMETER
 	bool "CUSTOM KERNEL BAROMETER Config"
 	help
-	  To detect barometer raw data
+	  one load to support different barometer sensor.
+	  This feature Option is used for projects which using more than one
+	  barometer, and be auto detected by setting this option to yes
+	  If unsure, say N.
 
 source "drivers/misc/mediatek/sensors-1.0/barometer/barohub/Kconfig"
 source "drivers/misc/mediatek/sensors-1.0/barometer/BMP280-new/Kconfig"

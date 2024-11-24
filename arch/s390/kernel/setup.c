@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  S390 version
  *    Copyright IBM Corp. 1999, 2012
@@ -55,12 +56,12 @@
 #include <asm/mmu_context.h>
 #include <asm/cpcmd.h>
 #include <asm/lowcore.h>
+#include <asm/nmi.h>
 #include <asm/irq.h>
 #include <asm/page.h>
 #include <asm/ptrace.h>
 #include <asm/sections.h>
 #include <asm/ebcdic.h>
-#include <asm/kvm_virtio.h>
 #include <asm/diag.h>
 #include <asm/os_info.h>
 #include <asm/sclp.h>
@@ -140,7 +141,7 @@ static void __init set_preferred_console(void)
 	else if (CONSOLE_IS_3270)
 		add_preferred_console("tty3270", 0, NULL);
 	else if (CONSOLE_IS_VT220)
-		add_preferred_console("ttyS", 1, NULL);
+		add_preferred_console("ttysclp", 0, NULL);
 	else if (CONSOLE_IS_HVC)
 		add_preferred_console("hvc", 0, NULL);
 }
@@ -220,6 +221,8 @@ static void __init conmode_default(void)
 		SET_CONSOLE_SCLP;
 #endif
 	}
+	if (IS_ENABLED(CONFIG_VT) && IS_ENABLED(CONFIG_DUMMY_CONSOLE))
+		conswitchp = &dummy_con;
 }
 
 #ifdef CONFIG_CRASH_DUMP
@@ -340,16 +343,8 @@ static void __init setup_lowcore_dat_off(void)
 	       sizeof(lc->stfle_fac_list));
 	memcpy(lc->alt_stfle_fac_list, S390_lowcore.alt_stfle_fac_list,
 	       sizeof(lc->alt_stfle_fac_list));
-	if (MACHINE_HAS_VX || MACHINE_HAS_GS) {
-		unsigned long bits, size;
-
-		bits = MACHINE_HAS_GS ? 11 : 10;
-		size = 1UL << bits;
-		lc->mcesad = (__u64) memblock_virt_alloc(size, size);
-		if (MACHINE_HAS_GS)
-			lc->mcesad |= bits;
-	}
-	lc->vdso_per_cpu_data = (unsigned long) &lc->paste[0];
+	nmi_alloc_boot_cpu(lc);
+	vdso_alloc_boot_cpu(lc);
 	lc->sync_enter_timer = S390_lowcore.sync_enter_timer;
 	lc->async_enter_timer = S390_lowcore.async_enter_timer;
 	lc->exit_timer = S390_lowcore.exit_timer;
@@ -381,6 +376,8 @@ static void __init setup_lowcore_dat_off(void)
 
 #ifdef CONFIG_SMP
 	lc->spinlock_lockval = arch_spin_lockval(0);
+	lc->spinlock_index = 0;
+	arch_spin_lock_setup(0);
 #endif
 	lc->br_r1_trampoline = 0x07f1;	/* br %r1 */
 
@@ -425,12 +422,12 @@ static void __init setup_resources(void)
 	struct memblock_region *reg;
 	int j;
 
-	code_resource.start = (unsigned long) &_text;
-	code_resource.end = (unsigned long) &_etext - 1;
-	data_resource.start = (unsigned long) &_etext;
-	data_resource.end = (unsigned long) &_edata - 1;
-	bss_resource.start = (unsigned long) &__bss_start;
-	bss_resource.end = (unsigned long) &__bss_stop - 1;
+	code_resource.start = (unsigned long) _text;
+	code_resource.end = (unsigned long) _etext - 1;
+	data_resource.start = (unsigned long) _etext;
+	data_resource.end = (unsigned long) _edata - 1;
+	bss_resource.start = (unsigned long) __bss_start;
+	bss_resource.end = (unsigned long) __bss_stop - 1;
 
 	for_each_memblock(memory, reg) {
 		res = memblock_virt_alloc(sizeof(*res), 8);
@@ -540,7 +537,7 @@ static struct notifier_block kdump_mem_nb = {
 /*
  * Make sure that the area behind memory_end is protected
  */
-static void reserve_memory_end(void)
+static void __init reserve_memory_end(void)
 {
 #ifdef CONFIG_CRASH_DUMP
 	if (ipl_info.type == IPL_TYPE_FCP_DUMP &&
@@ -558,7 +555,7 @@ static void reserve_memory_end(void)
 /*
  * Make sure that oldmem, where the dump is stored, is protected
  */
-static void reserve_oldmem(void)
+static void __init reserve_oldmem(void)
 {
 #ifdef CONFIG_CRASH_DUMP
 	if (OLDMEM_BASE)
@@ -570,7 +567,7 @@ static void reserve_oldmem(void)
 /*
  * Make sure that oldmem, where the dump is stored, is protected
  */
-static void remove_oldmem(void)
+static void __init remove_oldmem(void)
 {
 #ifdef CONFIG_CRASH_DUMP
 	if (OLDMEM_BASE)
@@ -679,17 +676,17 @@ static void __init check_initrd(void)
  */
 static void __init reserve_kernel(void)
 {
-	unsigned long start_pfn = PFN_UP(__pa(&_end));
+	unsigned long start_pfn = PFN_UP(__pa(_end));
 
 #ifdef CONFIG_DMA_API_DEBUG
 	/*
 	 * DMA_API_DEBUG code stumbles over addresses from the
-	 * range [_ehead, _stext]. Mark the memory as reserved
+	 * range [PARMAREA_END, _stext]. Mark the memory as reserved
 	 * so it is not used for CONFIG_DMA_API_DEBUG=y.
 	 */
 	memblock_reserve(0, PFN_PHYS(start_pfn));
 #else
-	memblock_reserve(0, (unsigned long)_ehead);
+	memblock_reserve(0, PARMAREA_END);
 	memblock_reserve((unsigned long)_stext, PFN_PHYS(start_pfn)
 			 - (unsigned long)_stext);
 #endif
@@ -706,9 +703,6 @@ static void __init setup_memory(void)
 		storage_key_init_range(reg->base, reg->base + reg->size);
 	}
 	psw_set_key(PAGE_DEFAULT_KEY);
-
-	/* Only cosmetics */
-	memblock_enforce_memory_limit(memblock_end_of_DRAM());
 }
 
 /*
@@ -776,7 +770,7 @@ static int __init setup_hwcaps(void)
 	/*
 	 * Transactional execution support HWCAP_S390_TE is bit 10.
 	 */
-	if (test_facility(50) && test_facility(73))
+	if (MACHINE_HAS_TE)
 		elf_hwcap |= HWCAP_S390_TE;
 
 	/*
@@ -831,6 +825,7 @@ static int __init setup_hwcaps(void)
 		strcpy(elf_platform, "z13");
 		break;
 	case 0x3906:
+	case 0x3907:
 		strcpy(elf_platform, "z14");
 		break;
 	}
@@ -856,6 +851,11 @@ static void __init setup_randomness(void)
 	if (stsi(vmms, 3, 2, 2) == 0 && vmms->count)
 		add_device_randomness(&vmms->vm, sizeof(vmms->vm[0]) * vmms->count);
 	memblock_free((unsigned long) vmms, PAGE_SIZE);
+
+#ifdef CONFIG_ARCH_RANDOM
+	if (cpacf_query_func(CPACF_PRNO, CPACF_PRNO_TRNG))
+		static_branch_enable(&s390_arch_random_available);
+#endif
 }
 
 /*
@@ -902,13 +902,14 @@ void __init setup_arch(char **cmdline_p)
 
 	/* Is init_mm really needed? */
 	init_mm.start_code = PAGE_OFFSET;
-	init_mm.end_code = (unsigned long) &_etext;
-	init_mm.end_data = (unsigned long) &_edata;
-	init_mm.brk = (unsigned long) &_end;
+	init_mm.end_code = (unsigned long) _etext;
+	init_mm.end_data = (unsigned long) _edata;
+	init_mm.brk = (unsigned long) _end;
 
 	if (IS_ENABLED(CONFIG_EXPOLINE_AUTO))
 		nospec_auto_detect();
 
+	jump_label_init();
 	parse_early_param();
 #ifdef CONFIG_CRASH_DUMP
 	/* Deactivate elfcorehdr= kernel parameter */

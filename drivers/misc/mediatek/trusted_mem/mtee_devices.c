@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define PR_FMT_HEADER_MUST_BE_INCLUDED_BEFORE_ALL_HDRS
@@ -52,6 +45,29 @@ static struct trusted_mem_configs mchunk_general_configs = {
 };
 
 static struct tmem_device_description mtee_mchunks[] = {
+#if defined(CONFIG_MTK_SECURE_MEM_SUPPORT) \
+	&& defined(CONFIG_MTK_SVP_ON_MTEE_SUPPORT)
+	{
+		.kern_tmem_type = TRUSTED_MEM_SVP,
+		.tee_smem_type = TEE_SMEM_SVP,
+		.mtee_chunks_id = MTEE_MCHUNKS_SVP,
+#if defined(CONFIG_MTK_SSMR) || (defined(CONFIG_CMA) && defined(CONFIG_MTK_SVP))
+		.ssmr_feature_id = SSMR_FEAT_SVP,
+#endif
+		.u_ops_data.mtee = {.mem_type = TRUSTED_MEM_SVP},
+#if defined(CONFIG_TRUSTONIC_TEE_SUPPORT)                                     \
+	|| defined(CONFIG_MICROTRUST_TEE_SUPPORT)
+		.notify_remote = true,
+		.notify_remote_fn = secmem_fr_set_svp_region,
+#else
+		.notify_remote = false,
+		.notify_remote_fn = NULL,
+#endif
+		.mem_cfg = &mchunk_general_configs,
+		.dev_name = "MTEE_SVP",
+	},
+#endif
+
 #ifdef CONFIG_MTK_PROT_MEM_SUPPORT
 	{
 		.kern_tmem_type = TRUSTED_MEM_PROT,
@@ -71,6 +87,29 @@ static struct tmem_device_description mtee_mchunks[] = {
 #endif
 		.mem_cfg = &mchunk_general_configs,
 		.dev_name = "PMEM",
+	},
+#endif
+
+#if defined(CONFIG_MTK_WFD_SMEM_SUPPORT) \
+	&& defined(CONFIG_MTK_SVP_ON_MTEE_SUPPORT)
+	{
+		.kern_tmem_type = TRUSTED_MEM_WFD,
+		.tee_smem_type = TEE_SMEM_WFD,
+		.mtee_chunks_id = MTEE_MCHUNKS_WFD,
+#if defined(CONFIG_MTK_SSMR) || (defined(CONFIG_CMA) && defined(CONFIG_MTK_SVP))
+		.ssmr_feature_id = SSMR_FEAT_WFD,
+#endif
+		.u_ops_data.mtee = {.mem_type = TRUSTED_MEM_WFD},
+#if defined(CONFIG_TRUSTONIC_TEE_SUPPORT)                                     \
+	|| defined(CONFIG_MICROTRUST_TEE_SUPPORT)
+		.notify_remote = true,
+		.notify_remote_fn = secmem_fr_set_wfd_region,
+#else
+		.notify_remote = false,
+		.notify_remote_fn = NULL,
+#endif
+		.mem_cfg = &mchunk_general_configs,
+		.dev_name = "MTEE_WFD",
 	},
 #endif
 
@@ -180,7 +219,7 @@ create_mtee_mchunk_device(enum TRUSTED_MEM_TYPE mem_type,
 	return t_device;
 }
 
-static int __init mtee_mchunks_init(void)
+int mtee_mchunks_init(void)
 {
 	struct trusted_mem_device *t_device;
 	int idx = 0;
@@ -206,13 +245,6 @@ static int __init mtee_mchunks_init(void)
 	return TMEM_OK;
 }
 
-static void __exit mtee_mchunks_exit(void)
+void mtee_mchunks_exit(void)
 {
 }
-
-module_init(mtee_mchunks_init);
-module_exit(mtee_mchunks_exit);
-
-MODULE_AUTHOR("MediaTek Inc.");
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("MediaTek MTEE Multiple Chunks Memory Driver");

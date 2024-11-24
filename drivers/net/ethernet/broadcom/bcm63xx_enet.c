@@ -295,16 +295,13 @@ static int bcm_enet_refill_rx(struct net_device *dev)
 /*
  * timer callback to defer refill rx queue in case we're OOM
  */
-static void bcm_enet_refill_rx_timer(unsigned long data)
+static void bcm_enet_refill_rx_timer(struct timer_list *t)
 {
-	struct net_device *dev;
-	struct bcm_enet_priv *priv;
-
-	dev = (struct net_device *)data;
-	priv = netdev_priv(dev);
+	struct bcm_enet_priv *priv = from_timer(priv, t, rx_timeout);
+	struct net_device *dev = priv->net_dev;
 
 	spin_lock(&priv->rx_lock);
-	bcm_enet_refill_rx((struct net_device *)data);
+	bcm_enet_refill_rx(dev);
 	spin_unlock(&priv->rx_lock);
 }
 
@@ -1720,13 +1717,10 @@ static int bcm_enet_probe(struct platform_device *pdev)
 	struct bcm63xx_enet_platform_data *pd;
 	struct resource *res_mem, *res_irq, *res_irq_rx, *res_irq_tx;
 	struct mii_bus *bus;
-	const char *clk_name;
 	int i, ret;
 
-	/* stop if shared driver failed, assume driver->probe will be
-	 * called in the same order we register devices (correct ?) */
 	if (!bcm_enet_shared_base[0])
-		return -ENODEV;
+		return -EPROBE_DEFER;
 
 	res_irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
 	res_irq_rx = platform_get_resource(pdev, IORESOURCE_IRQ, 1);
@@ -1757,27 +1751,15 @@ static int bcm_enet_probe(struct platform_device *pdev)
 	dev->irq = priv->irq = res_irq->start;
 	priv->irq_rx = res_irq_rx->start;
 	priv->irq_tx = res_irq_tx->start;
-	priv->mac_id = pdev->id;
 
-	/* get rx & tx dma channel id for this mac */
-	if (priv->mac_id == 0) {
-		priv->rx_chan = 0;
-		priv->tx_chan = 1;
-		clk_name = "enet0";
-	} else {
-		priv->rx_chan = 2;
-		priv->tx_chan = 3;
-		clk_name = "enet1";
-	}
-
-	priv->mac_clk = clk_get(&pdev->dev, clk_name);
+	priv->mac_clk = devm_clk_get(&pdev->dev, "enet");
 	if (IS_ERR(priv->mac_clk)) {
 		ret = PTR_ERR(priv->mac_clk);
 		goto out;
 	}
 	ret = clk_prepare_enable(priv->mac_clk);
 	if (ret)
-		goto out_put_clk_mac;
+		goto out;
 
 	/* initialize default and fetch platform data */
 	priv->rx_ring_size = BCMENET_DEF_RX_DESC;
@@ -1801,11 +1783,13 @@ static int bcm_enet_probe(struct platform_device *pdev)
 		priv->dma_chan_width = pd->dma_chan_width;
 		priv->dma_has_sram = pd->dma_has_sram;
 		priv->dma_desc_shift = pd->dma_desc_shift;
+		priv->rx_chan = pd->rx_chan;
+		priv->tx_chan = pd->tx_chan;
 	}
 
-	if (priv->mac_id == 0 && priv->has_phy && !priv->use_external_mii) {
+	if (priv->has_phy && !priv->use_external_mii) {
 		/* using internal PHY, enable clock */
-		priv->phy_clk = clk_get(&pdev->dev, "ephy");
+		priv->phy_clk = devm_clk_get(&pdev->dev, "ephy");
 		if (IS_ERR(priv->phy_clk)) {
 			ret = PTR_ERR(priv->phy_clk);
 			priv->phy_clk = NULL;
@@ -1813,7 +1797,7 @@ static int bcm_enet_probe(struct platform_device *pdev)
 		}
 		ret = clk_prepare_enable(priv->phy_clk);
 		if (ret)
-			goto out_put_clk_phy;
+			goto out_disable_clk_mac;
 	}
 
 	/* do minimal hardware init to be able to probe mii bus */
@@ -1834,7 +1818,7 @@ static int bcm_enet_probe(struct platform_device *pdev)
 		bus->priv = priv;
 		bus->read = bcm_enet_mdio_read_phylib;
 		bus->write = bcm_enet_mdio_write_phylib;
-		sprintf(bus->id, "%s-%d", pdev->name, priv->mac_id);
+		sprintf(bus->id, "%s-%d", pdev->name, pdev->id);
 
 		/* only probe bus where we think the PHY is, because
 		 * the mdio read operation return 0 instead of 0xffff
@@ -1863,9 +1847,7 @@ static int bcm_enet_probe(struct platform_device *pdev)
 	spin_lock_init(&priv->rx_lock);
 
 	/* init rx timeout (used for oom) */
-	init_timer(&priv->rx_timeout);
-	priv->rx_timeout.function = bcm_enet_refill_rx_timer;
-	priv->rx_timeout.data = (unsigned long)dev;
+	timer_setup(&priv->rx_timeout, bcm_enet_refill_rx_timer, 0);
 
 	/* init the mib update lock&work */
 	mutex_init(&priv->mib_update_lock);
@@ -1907,17 +1889,10 @@ out_free_mdio:
 out_uninit_hw:
 	/* turn off mdc clock */
 	enet_writel(priv, 0, ENET_MIISC_REG);
-	if (priv->phy_clk)
-		clk_disable_unprepare(priv->phy_clk);
-
-out_put_clk_phy:
-	if (priv->phy_clk)
-		clk_put(priv->phy_clk);
+	clk_disable_unprepare(priv->phy_clk);
 
 out_disable_clk_mac:
 	clk_disable_unprepare(priv->mac_clk);
-out_put_clk_mac:
-	clk_put(priv->mac_clk);
 out:
 	free_netdev(dev);
 	return ret;
@@ -1953,12 +1928,8 @@ static int bcm_enet_remove(struct platform_device *pdev)
 	}
 
 	/* disable hw block clocks */
-	if (priv->phy_clk) {
-		clk_disable_unprepare(priv->phy_clk);
-		clk_put(priv->phy_clk);
-	}
+	clk_disable_unprepare(priv->phy_clk);
 	clk_disable_unprepare(priv->mac_clk);
-	clk_put(priv->mac_clk);
 
 	free_netdev(dev);
 	return 0;
@@ -2030,9 +2001,9 @@ static inline int bcm_enet_port_is_rgmii(int portid)
 /*
  * enet sw PHY polling
  */
-static void swphy_poll_timer(unsigned long data)
+static void swphy_poll_timer(struct timer_list *t)
 {
-	struct bcm_enet_priv *priv = (struct bcm_enet_priv *)data;
+	struct bcm_enet_priv *priv = from_timer(priv, t, swphy_poll);
 	unsigned int i;
 
 	for (i = 0; i < priv->num_ports; i++) {
@@ -2158,31 +2129,29 @@ static int bcm_enetsw_open(struct net_device *dev)
 
 	/* allocate rx dma ring */
 	size = priv->rx_ring_size * sizeof(struct bcm_enet_desc);
-	p = dma_alloc_coherent(kdev, size, &priv->rx_desc_dma, GFP_KERNEL);
+	p = dma_zalloc_coherent(kdev, size, &priv->rx_desc_dma, GFP_KERNEL);
 	if (!p) {
 		dev_err(kdev, "cannot allocate rx ring %u\n", size);
 		ret = -ENOMEM;
 		goto out_freeirq_tx;
 	}
 
-	memset(p, 0, size);
 	priv->rx_desc_alloc_size = size;
 	priv->rx_desc_cpu = p;
 
 	/* allocate tx dma ring */
 	size = priv->tx_ring_size * sizeof(struct bcm_enet_desc);
-	p = dma_alloc_coherent(kdev, size, &priv->tx_desc_dma, GFP_KERNEL);
+	p = dma_zalloc_coherent(kdev, size, &priv->tx_desc_dma, GFP_KERNEL);
 	if (!p) {
 		dev_err(kdev, "cannot allocate tx ring\n");
 		ret = -ENOMEM;
 		goto out_free_rx_ring;
 	}
 
-	memset(p, 0, size);
 	priv->tx_desc_alloc_size = size;
 	priv->tx_desc_cpu = p;
 
-	priv->tx_skb = kzalloc(sizeof(struct sk_buff *) * priv->tx_ring_size,
+	priv->tx_skb = kcalloc(priv->tx_ring_size, sizeof(struct sk_buff *),
 			       GFP_KERNEL);
 	if (!priv->tx_skb) {
 		dev_err(kdev, "cannot allocate rx skb queue\n");
@@ -2196,7 +2165,7 @@ static int bcm_enetsw_open(struct net_device *dev)
 	spin_lock_init(&priv->tx_lock);
 
 	/* init & fill rx ring with skbs */
-	priv->rx_skb = kzalloc(sizeof(struct sk_buff *) * priv->rx_ring_size,
+	priv->rx_skb = kcalloc(priv->rx_ring_size, sizeof(struct sk_buff *),
 			       GFP_KERNEL);
 	if (!priv->rx_skb) {
 		dev_err(kdev, "cannot allocate rx skb queue\n");
@@ -2341,11 +2310,8 @@ static int bcm_enetsw_open(struct net_device *dev)
 	}
 
 	/* start phy polling timer */
-	init_timer(&priv->swphy_poll);
-	priv->swphy_poll.function = swphy_poll_timer;
-	priv->swphy_poll.data = (unsigned long)priv;
-	priv->swphy_poll.expires = jiffies;
-	add_timer(&priv->swphy_poll);
+	timer_setup(&priv->swphy_poll, swphy_poll_timer, 0);
+	mod_timer(&priv->swphy_poll, jiffies);
 	return 0;
 
 out:
@@ -2701,11 +2667,8 @@ static int bcm_enetsw_probe(struct platform_device *pdev)
 	struct resource *res_mem;
 	int ret, irq_rx, irq_tx;
 
-	/* stop if shared driver failed, assume driver->probe will be
-	 * called in the same order we register devices (correct ?)
-	 */
 	if (!bcm_enet_shared_base[0])
-		return -ENODEV;
+		return -EPROBE_DEFER;
 
 	res_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	irq_rx = platform_get_irq(pdev, 0);
@@ -2744,35 +2707,27 @@ static int bcm_enetsw_probe(struct platform_device *pdev)
 	if (ret)
 		goto out;
 
-	if (!request_mem_region(res_mem->start, resource_size(res_mem),
-				"bcm63xx_enetsw")) {
-		ret = -EBUSY;
+	priv->base = devm_ioremap_resource(&pdev->dev, res_mem);
+	if (IS_ERR(priv->base)) {
+		ret = PTR_ERR(priv->base);
 		goto out;
 	}
 
-	priv->base = ioremap(res_mem->start, resource_size(res_mem));
-	if (priv->base == NULL) {
-		ret = -ENOMEM;
-		goto out_release_mem;
-	}
-
-	priv->mac_clk = clk_get(&pdev->dev, "enetsw");
+	priv->mac_clk = devm_clk_get(&pdev->dev, "enetsw");
 	if (IS_ERR(priv->mac_clk)) {
 		ret = PTR_ERR(priv->mac_clk);
-		goto out_unmap;
+		goto out;
 	}
 	ret = clk_prepare_enable(priv->mac_clk);
 	if (ret)
-		goto out_put_clk;
+		goto out;
 
 	priv->rx_chan = 0;
 	priv->tx_chan = 1;
 	spin_lock_init(&priv->rx_lock);
 
 	/* init rx timeout (used for oom) */
-	init_timer(&priv->rx_timeout);
-	priv->rx_timeout.function = bcm_enet_refill_rx_timer;
-	priv->rx_timeout.data = (unsigned long)dev;
+	timer_setup(&priv->rx_timeout, bcm_enet_refill_rx_timer, 0);
 
 	/* register netdevice */
 	dev->netdev_ops = &bcm_enetsw_ops;
@@ -2795,15 +2750,6 @@ static int bcm_enetsw_probe(struct platform_device *pdev)
 
 out_disable_clk:
 	clk_disable_unprepare(priv->mac_clk);
-
-out_put_clk:
-	clk_put(priv->mac_clk);
-
-out_unmap:
-	iounmap(priv->base);
-
-out_release_mem:
-	release_mem_region(res_mem->start, resource_size(res_mem));
 out:
 	free_netdev(dev);
 	return ret;
@@ -2815,20 +2761,13 @@ static int bcm_enetsw_remove(struct platform_device *pdev)
 {
 	struct bcm_enet_priv *priv;
 	struct net_device *dev;
-	struct resource *res;
 
 	/* stop netdevice */
 	dev = platform_get_drvdata(pdev);
 	priv = netdev_priv(dev);
 	unregister_netdev(dev);
 
-	/* release device resources */
-	iounmap(priv->base);
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	release_mem_region(res->start, resource_size(res));
-
 	clk_disable_unprepare(priv->mac_clk);
-	clk_put(priv->mac_clk);
 
 	free_netdev(dev);
 	return 0;

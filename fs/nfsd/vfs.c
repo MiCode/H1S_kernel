@@ -777,7 +777,7 @@ nfsd_open(struct svc_rqst *rqstp, struct svc_fh *fhp, umode_t type,
 		goto out_nfserr;
 	}
 
-	host_err = ima_file_check(file, may_flags, 0);
+	host_err = ima_file_check(file, may_flags);
 	if (host_err) {
 		fput(file);
 		goto out_nfserr;
@@ -895,20 +895,24 @@ static int nfsd_direct_splice_actor(struct pipe_inode_info *pipe,
 	return __splice_from_pipe(pipe, sd, nfsd_splice_actor);
 }
 
-static __be32
-nfsd_finish_read(struct file *file, unsigned long *count, int host_err)
+static __be32 nfsd_finish_read(struct svc_rqst *rqstp, struct svc_fh *fhp,
+			       struct file *file, loff_t offset,
+			       unsigned long *count, int host_err)
 {
 	if (host_err >= 0) {
 		nfsdstats.io_read += host_err;
 		*count = host_err;
 		fsnotify_access(file);
+		trace_nfsd_read_io_done(rqstp, fhp, offset, *count);
 		return 0;
-	} else 
+	} else {
+		trace_nfsd_read_err(rqstp, fhp, offset, host_err);
 		return nfserrno(host_err);
+	}
 }
 
-__be32 nfsd_splice_read(struct svc_rqst *rqstp,
-		     struct file *file, loff_t offset, unsigned long *count)
+__be32 nfsd_splice_read(struct svc_rqst *rqstp, struct svc_fh *fhp,
+			struct file *file, loff_t offset, unsigned long *count)
 {
 	struct splice_desc sd = {
 		.len		= 0,
@@ -918,21 +922,23 @@ __be32 nfsd_splice_read(struct svc_rqst *rqstp,
 	};
 	int host_err;
 
+	trace_nfsd_read_splice(rqstp, fhp, offset, *count);
 	rqstp->rq_next_page = rqstp->rq_respages + 1;
 	host_err = splice_direct_to_actor(file, &sd, nfsd_direct_splice_actor);
-	return nfsd_finish_read(file, count, host_err);
+	return nfsd_finish_read(rqstp, fhp, file, offset, count, host_err);
 }
 
-__be32 nfsd_readv(struct file *file, loff_t offset, struct kvec *vec, int vlen,
-		unsigned long *count)
+__be32 nfsd_readv(struct svc_rqst *rqstp, struct svc_fh *fhp,
+		  struct file *file, loff_t offset,
+		  struct kvec *vec, int vlen, unsigned long *count)
 {
 	struct iov_iter iter;
 	int host_err;
 
+	trace_nfsd_read_vector(rqstp, fhp, offset, *count);
 	iov_iter_kvec(&iter, READ | ITER_KVEC, vec, vlen, *count);
 	host_err = vfs_iter_read(file, &iter, &offset, 0);
-
-	return nfsd_finish_read(file, count, host_err);
+	return nfsd_finish_read(rqstp, fhp, file, offset, count, host_err);
 }
 
 /*
@@ -979,12 +985,14 @@ nfsd_vfs_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 {
 	struct svc_export	*exp;
 	struct iov_iter		iter;
-	__be32			err = 0;
+	__be32			nfserr;
 	int			host_err;
 	int			use_wgather;
 	loff_t			pos = offset;
 	unsigned int		pflags = current->flags;
 	rwf_t			flags = 0;
+
+	trace_nfsd_write_opened(rqstp, fhp, offset, *cnt);
 
 	if (test_bit(RQ_LOCAL, &rqstp->rq_flags))
 		/*
@@ -1009,21 +1017,23 @@ nfsd_vfs_write(struct svc_rqst *rqstp, struct svc_fh *fhp, struct file *file,
 	if (host_err < 0)
 		goto out_nfserr;
 	*cnt = host_err;
-	nfsdstats.io_write += host_err;
+	nfsdstats.io_write += *cnt;
 	fsnotify_modify(file);
 
 	if (stable && use_wgather)
 		host_err = wait_for_concurrent_writes(file);
 
 out_nfserr:
-	dprintk("nfsd: write complete host_err=%d\n", host_err);
-	if (host_err >= 0)
-		err = 0;
-	else
-		err = nfserrno(host_err);
+	if (host_err >= 0) {
+		trace_nfsd_write_io_done(rqstp, fhp, offset, *cnt);
+		nfserr = nfs_ok;
+	} else {
+		trace_nfsd_write_err(rqstp, fhp, offset, host_err);
+		nfserr = nfserrno(host_err);
+	}
 	if (test_bit(RQ_LOCAL, &rqstp->rq_flags))
 		current_restore_flags(pflags, PF_LESS_THROTTLE);
-	return err;
+	return nfserr;
 }
 
 /*
@@ -1038,27 +1048,23 @@ __be32 nfsd_read(struct svc_rqst *rqstp, struct svc_fh *fhp,
 	struct raparms	*ra;
 	__be32 err;
 
-	trace_read_start(rqstp, fhp, offset, vlen);
+	trace_nfsd_read_start(rqstp, fhp, offset, *count);
 	err = nfsd_open(rqstp, fhp, S_IFREG, NFSD_MAY_READ, &file);
 	if (err)
 		return err;
 
 	ra = nfsd_init_raparms(file);
 
-	trace_read_opened(rqstp, fhp, offset, vlen);
-
 	if (file->f_op->splice_read && test_bit(RQ_SPLICE_OK, &rqstp->rq_flags))
-		err = nfsd_splice_read(rqstp, file, offset, count);
+		err = nfsd_splice_read(rqstp, fhp, file, offset, count);
 	else
-		err = nfsd_readv(file, offset, vec, vlen, count);
-
-	trace_read_io_done(rqstp, fhp, offset, vlen);
+		err = nfsd_readv(rqstp, fhp, file, offset, vec, vlen, count);
 
 	if (ra)
 		nfsd_put_raparams(file, ra);
 	fput(file);
 
-	trace_read_done(rqstp, fhp, offset, vlen);
+	trace_nfsd_read_done(rqstp, fhp, offset, *count);
 
 	return err;
 }
@@ -1075,18 +1081,16 @@ nfsd_write(struct svc_rqst *rqstp, struct svc_fh *fhp, loff_t offset,
 	struct file *file = NULL;
 	__be32 err = 0;
 
-	trace_write_start(rqstp, fhp, offset, vlen);
+	trace_nfsd_write_start(rqstp, fhp, offset, *cnt);
 
 	err = nfsd_open(rqstp, fhp, S_IFREG, NFSD_MAY_WRITE, &file);
 	if (err)
 		goto out;
 
-	trace_write_opened(rqstp, fhp, offset, vlen);
 	err = nfsd_vfs_write(rqstp, fhp, file, offset, vec, vlen, cnt, stable);
-	trace_write_io_done(rqstp, fhp, offset, vlen);
 	fput(file);
 out:
-	trace_write_done(rqstp, fhp, offset, vlen);
+	trace_nfsd_write_done(rqstp, fhp, offset, *cnt);
 	return err;
 }
 
@@ -1202,6 +1206,9 @@ nfsd_create_locked(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		iap->ia_mode = 0;
 	iap->ia_mode = (iap->ia_mode & S_IALLUGO) | type;
 
+	if (!IS_POSIXACL(dirp))
+		iap->ia_mode &= ~current_umask();
+
 	err = 0;
 	host_err = 0;
 	switch (type) {
@@ -1212,6 +1219,28 @@ nfsd_create_locked(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		break;
 	case S_IFDIR:
 		host_err = vfs_mkdir(dirp, dchild, iap->ia_mode);
+		if (!host_err && unlikely(d_unhashed(dchild))) {
+			struct dentry *d;
+			d = lookup_one_len(dchild->d_name.name,
+					   dchild->d_parent,
+					   dchild->d_name.len);
+			if (IS_ERR(d)) {
+				host_err = PTR_ERR(d);
+				break;
+			}
+			if (unlikely(d_is_negative(d))) {
+				dput(d);
+				err = nfserr_serverfault;
+				goto out;
+			}
+			dput(resfhp->fh_dentry);
+			resfhp->fh_dentry = dget(d);
+			err = fh_update(resfhp);
+			dput(dchild);
+			dchild = d;
+			if (err)
+				goto out;
+		}
 		break;
 	case S_IFCHR:
 	case S_IFBLK:
@@ -1412,6 +1441,9 @@ do_nfsd_create(struct svc_rqst *rqstp, struct svc_fh *fhp,
 		fh_drop_write(fhp);
 		goto out;
 	}
+
+	if (!IS_POSIXACL(dirp))
+		iap->ia_mode &= ~current_umask();
 
 	host_err = vfs_create(dirp, dchild, iap->ia_mode, true);
 	if (host_err < 0) {
@@ -1659,6 +1691,12 @@ nfsd_rename(struct svc_rqst *rqstp, struct svc_fh *ffhp, char *fname, int flen,
 	if (!flen || isdotent(fname, flen) || !tlen || isdotent(tname, tlen))
 		goto out;
 
+	err = (rqstp->rq_vers == 2) ? nfserr_acces : nfserr_xdev;
+	if (ffhp->fh_export->ex_path.mnt != tfhp->fh_export->ex_path.mnt)
+		goto out;
+	if (ffhp->fh_export->ex_path.dentry != tfhp->fh_export->ex_path.dentry)
+		goto out;
+
 	host_err = fh_want_write(ffhp);
 	if (host_err) {
 		err = nfserrno(host_err);
@@ -1690,12 +1728,6 @@ nfsd_rename(struct svc_rqst *rqstp, struct svc_fh *ffhp, char *fname, int flen,
 		goto out_dput_old;
 	host_err = -ENOTEMPTY;
 	if (ndentry == trap)
-		goto out_dput_new;
-
-	host_err = -EXDEV;
-	if (ffhp->fh_export->ex_path.mnt != tfhp->fh_export->ex_path.mnt)
-		goto out_dput_new;
-	if (ffhp->fh_export->ex_path.dentry != tfhp->fh_export->ex_path.dentry)
 		goto out_dput_new;
 
 	host_err = vfs_rename(fdir, odentry, tdir, ndentry, NULL, 0);

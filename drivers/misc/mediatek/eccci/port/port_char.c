@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 #include <linux/cdev.h>
 #include <linux/device.h>
@@ -21,6 +13,7 @@
 #include <linux/compat.h>
 #endif
 #include "ccci_config.h"
+#include "ccci_common_config.h"
 #include "ccci_bm.h"
 #include "port_proxy.h"
 #include "port_char.h"
@@ -75,7 +68,7 @@ static const struct file_operations char_dev_fops = {
 };
 static int port_char_init(struct port_t *port)
 {
-	struct cdev *dev;
+	struct cdev *dev = NULL;
 	int ret = 0;
 	int md_id = port->md_id;
 
@@ -140,7 +133,7 @@ static int c2k_req_push_to_usb(struct port_t *port, struct sk_buff *skb)
 		return ret;
 	}
 
-	/* caculate available data */
+	/* calculate available data */
 	ccci_h = (struct ccci_header *)skb->data;
 	read_len = skb->len - sizeof(struct ccci_header);
 	/* remove CCCI header */
@@ -197,6 +190,7 @@ static int port_char_recv_skb(struct port_t *port, struct sk_buff *skb)
 		return 0;
 	}
 #endif
+
 	CCCI_DEBUG_LOG(md_id, CHAR, "recv on %s, len=%d\n",
 		port->name, port->rx_skb_list.qlen);
 	return port_recv_skb(port, skb);

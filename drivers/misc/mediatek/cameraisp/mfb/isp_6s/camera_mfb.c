@@ -1,23 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
 
-/**************************************************************
- * camera_MFB.c - Linux MFB Device Driver
- *
- * DESCRIPTION:
- *     This file provid the other drivers MFB relative functions
- *
- **************************************************************/
 #include <linux/types.h>
 #include <linux/device.h>
 #include <linux/cdev.h>
@@ -309,10 +294,11 @@ static unsigned int g_SuspendCnt;
 #define IRQ_USER_NUM_MAX 31
 
 #ifdef MFB_PMQOS
-static struct pm_qos_request mfb_pmqos_request;
+static struct mtk_pm_qos_request mfb_pmqos_request;
 static u64 max_img_freq[4];
+#define MFB_PORT_NUM 8
 struct plist_head module_request_list;  /* all module list */
-struct mm_qos_request mfb_mmqos_request;
+struct mm_qos_request mfb_mmqos_request[MFB_PORT_NUM];
 
 static spinlock_t SpinLockMfbPmqos;
 static unsigned int qos_scen[4];
@@ -789,9 +775,10 @@ void MFBQOS_Init(void)
 	s32 result = 0;
 	u64 img_freq_steps[MAX_FREQ_STEP];
 	u32 step_size;
+	int i = 0;
 
-	/* Call pm_qos_add_request when initialize module or driver prob */
-	pm_qos_add_request(
+	/* Call mtk_pm_qos_add_request when initialize module or driver prob */
+	mtk_pm_qos_add_request(
 		&mfb_pmqos_request,
 		PM_QOS_IMG_FREQ,
 		PM_QOS_MM_FREQ_DEFAULT_VALUE);
@@ -817,17 +804,21 @@ void MFBQOS_Init(void)
 	/* Call mm_qos_add_request */
 	/* when initialize module or driver prob */
 #if (MTK_MFB_REG_VERSION >= 2)
-	mm_qos_add_request(&module_request_list,
-		&mfb_mmqos_request, M4U_PORT_L11_IMG_MFB_RDMA0);
+	for (i = 0; i < MFB_PORT_NUM; i++) {
+		mm_qos_add_request(&module_request_list,
+			&mfb_mmqos_request[i], M4U_PORT_L11_IMG_MFB_RDMA0+i);
+	}
 #else
-	mm_qos_add_request(&module_request_list,
-		&mfb_mmqos_request, M4U_PORT_L9_IMG_MFB_RDMA0_MDP);
+	for (i = 0; i < MFB_PORT_NUM; i++) {
+		mm_qos_add_request(&module_request_list,
+			&mfb_mmqos_request[i], M4U_PORT_L9_IMG_MFB_RDMA0_MDP+i);
+	}
 #endif
 }
 
 void MFBQOS_Uninit(void)
 {
-	pm_qos_remove_request(&mfb_pmqos_request);
+	mtk_pm_qos_remove_request(&mfb_pmqos_request);
 
 	/* Call mm_qos_remove_request */
 	/* when de-initialize module or driver remove */
@@ -836,63 +827,62 @@ void MFBQOS_Uninit(void)
 
 void MFBQOS_Update(bool start, unsigned int scen, unsigned long bw)
 {
+	int i;
+
 	LOG_DBG("start: %d, MFB scen: %d, bw: %lu", start, scen, bw);
 	if (start) { /* start MFB, configure MMDVFS to highest CLK */
 		LOG_DBG("MFB total: %ld", qos_total);
 		spin_lock(&(SpinLockMfbPmqos));
 		if (bw != 0)
-			qos_scen[scen] = bw;
+			qos_scen[scen] = qos_scen[scen] + bw;
 		qos_total = qos_total + bw;
 		if (qos_total > 600000000) {
 			spin_unlock(&(SpinLockMfbPmqos));
-			pm_qos_update_request(&mfb_pmqos_request,
+			mtk_pm_qos_update_request(&mfb_pmqos_request,
 						max_img_freq[0]);
 		} else if (qos_total > 300000000) {
 			spin_unlock(&(SpinLockMfbPmqos));
-			pm_qos_update_request(&mfb_pmqos_request,
+			mtk_pm_qos_update_request(&mfb_pmqos_request,
 						max_img_freq[1]);
 		} else if (qos_total > 100000000) {
 			spin_unlock(&(SpinLockMfbPmqos));
-			pm_qos_update_request(&mfb_pmqos_request,
+			mtk_pm_qos_update_request(&mfb_pmqos_request,
 						max_img_freq[2]);
 		} else {
 			spin_unlock(&(SpinLockMfbPmqos));
-			pm_qos_update_request(&mfb_pmqos_request, 0);
+			mtk_pm_qos_update_request(&mfb_pmqos_request, 0);
 		}
 	} else { /* finish MFB, config MMDVFS to lowest CLK */
 		LOG_DBG("MFB total: %ld", qos_total);
 		spin_lock(&(SpinLockMfbPmqos));
 		qos_total = qos_total - qos_scen[scen];
+		qos_scen[scen] = 0;
 		if (qos_total > 600000000) {
 			spin_unlock(&(SpinLockMfbPmqos));
-			pm_qos_update_request(&mfb_pmqos_request,
+			mtk_pm_qos_update_request(&mfb_pmqos_request,
 						max_img_freq[0]);
 		} else if (qos_total > 300000000) {
 			spin_unlock(&(SpinLockMfbPmqos));
-			pm_qos_update_request(&mfb_pmqos_request,
+			mtk_pm_qos_update_request(&mfb_pmqos_request,
 						max_img_freq[1]);
 		} else if (qos_total > 100000000) {
 			spin_unlock(&(SpinLockMfbPmqos));
-			pm_qos_update_request(&mfb_pmqos_request,
+			mtk_pm_qos_update_request(&mfb_pmqos_request,
 						max_img_freq[2]);
 		} else {
 			spin_unlock(&(SpinLockMfbPmqos));
-			pm_qos_update_request(&mfb_pmqos_request, 0);
+			mtk_pm_qos_update_request(&mfb_pmqos_request, 0);
 		}
 	}
-#if 0 /*YWtodo*/
-	if (start) {
-		/* Call mm_qos_set_request API to setup estimated data bw */
-		mm_qos_set_request(&mfb_mmqos_request,
-					bw/1000000, 0, BW_COMP_NONE);
-		/* Call mm_qos_update_all_requests API */
-		/* update necessary HW configuration for MM BW */
-		mm_qos_update_all_request(&module_request_list);
-	} else {
-		mm_qos_set_request(&mfb_mmqos_request, 0, 0, BW_COMP_NONE);
-		mm_qos_update_all_request(&module_request_list);
+
+	for (i = 0; i < MFB_PORT_NUM; i++) {
+	/* Call mm_qos_set_request API to setup estimated data bw */
+		mm_qos_set_request(&mfb_mmqos_request[i],
+					qos_total/1000000, 0, BW_COMP_NONE);
 	}
-#endif
+	/* Call mm_qos_update_all_requests API */
+	/* update necessary HW configuration for MM BW */
+	mm_qos_update_all_request(&module_request_list);
 }
 #endif
 
@@ -992,7 +982,7 @@ static void mss_pkt_tcmds(struct cmdq_pkt *handle,
 					pMssConfig->MSSDMT_TDRI_BASE[t]);
 	}
 	LOG_DBG("%s: tpipe_used is %d", __func__, pMssConfig->tpipe_used);
-	LOG_INF("mss cmdq write done %d", pMssConfig->tpipe_used);
+	LOG_DBG("mss cmdq write done %d", pMssConfig->tpipe_used);
 
 }
 
@@ -3256,6 +3246,9 @@ static long MFB_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 				goto EXIT;
 			}
 
+			/* Protect the Multi Process */
+			mutex_lock(&gMfbMsfMutex);
+
 			if (copy_from_user(
 				g_MsfEnqueReq_Struct.MsfFrameConfig,
 				(void *)mfb_MsfReq.m_pMsfConfig,
@@ -3268,9 +3261,6 @@ static long MFB_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			}
 			msf_get_reqs(mfb_MsfReq.exec, &reqs);
 			pUserInfo->reqs = reqs;
-
-			/* Protect the Multi Process */
-			mutex_lock(&gMfbMsfMutex);
 
 			spin_lock_irqsave(
 				&(MFBInfo.SpinLockIrq[MFB_IRQ_TYPE_INT_MSF_ST]),
@@ -3422,14 +3412,17 @@ static int compat_get_MFB_mss_enque_req_data(
 	struct compat_MFB_MSSRequest __user *data32,
 	struct MFB_MSSRequest __user *data)
 {
-	compat_uint_t count;
+	compat_uint_t num;
+	compat_uint_t exe;
 	compat_uptr_t uptr;
 	int err = 0;
 
 	err = get_user(uptr, &data32->m_pMssConfig);
 	err |= put_user(compat_ptr(uptr), &data->m_pMssConfig);
-	err |= get_user(count, &data32->m_ReqNum);
-	err |= put_user(count, &data->m_ReqNum);
+	err |= get_user(num, &data32->m_ReqNum);
+	err |= put_user(num, &data->m_ReqNum);
+	err |= get_user(exe, &data32->exec);
+	err |= put_user(exe, &data->exec);
 	return err;
 }
 
@@ -3438,14 +3431,17 @@ static int compat_put_MFB_mss_enque_req_data(
 	struct compat_MFB_MSSRequest __user *data32,
 	struct MFB_MSSRequest __user *data)
 {
-	compat_uint_t count;
+	compat_uint_t num;
+	compat_uint_t exe;
 	/*compat_uptr_t uptr;*/
 	int err = 0;
 	/* Assume data pointer is unchanged. */
 	/* err = get_user(compat_ptr(uptr), &data->m_pMssConfig); */
 	/* err |= put_user(uptr, &data32->m_pMssConfig); */
-	err |= get_user(count, &data->m_ReqNum);
-	err |= put_user(count, &data32->m_ReqNum);
+	err |= get_user(num, &data->m_ReqNum);
+	err |= put_user(num, &data32->m_ReqNum);
+	err |= get_user(exe, &data->exec);
+	err |= put_user(exe, &data32->exec);
 	return err;
 }
 
@@ -3454,14 +3450,17 @@ static int compat_get_MFB_mss_deque_req_data(
 	struct compat_MFB_MSSRequest __user *data32,
 	struct MFB_MSSRequest __user *data)
 {
-	compat_uint_t count;
+	compat_uint_t num;
+	compat_uint_t exe;
 	compat_uptr_t uptr;
 	int err = 0;
 
 	err = get_user(uptr, &data32->m_pMssConfig);
 	err |= put_user(compat_ptr(uptr), &data->m_pMssConfig);
-	err |= get_user(count, &data32->m_ReqNum);
-	err |= put_user(count, &data->m_ReqNum);
+	err |= get_user(num, &data32->m_ReqNum);
+	err |= put_user(num, &data->m_ReqNum);
+	err |= get_user(exe, &data32->exec);
+	err |= put_user(exe, &data->exec);
 	return err;
 }
 
@@ -3470,14 +3469,17 @@ static int compat_put_MFB_mss_deque_req_data(
 	struct compat_MFB_MSSRequest __user *data32,
 	struct MFB_MSSRequest __user *data)
 {
-	compat_uint_t count;
+	compat_uint_t num;
+	compat_uint_t exe;
 	/*compat_uptr_t uptr;*/
 	int err = 0;
 	/* Assume data pointer is unchanged. */
 	/* err = get_user(compat_ptr(uptr), &data->m_pMssConfig); */
 	/* err |= put_user(uptr, &data32->m_pMssConfig); */
-	err |= get_user(count, &data->m_ReqNum);
-	err |= put_user(count, &data32->m_ReqNum);
+	err |= get_user(num, &data->m_ReqNum);
+	err |= put_user(num, &data32->m_ReqNum);
+	err |= get_user(exe, &data->exec);
+	err |= put_user(exe, &data32->exec);
 	return err;
 }
 
@@ -3485,14 +3487,17 @@ static int compat_get_MFB_msf_enque_req_data(
 	struct compat_MFB_MSFRequest __user *data32,
 	struct MFB_MSFRequest __user *data)
 {
-	compat_uint_t count;
+	compat_uint_t num;
+	compat_uint_t exe;
 	compat_uptr_t uptr;
 	int err = 0;
 
 	err = get_user(uptr, &data32->m_pMsfConfig);
 	err |= put_user(compat_ptr(uptr), &data->m_pMsfConfig);
-	err |= get_user(count, &data32->m_ReqNum);
-	err |= put_user(count, &data->m_ReqNum);
+	err |= get_user(num, &data32->m_ReqNum);
+	err |= put_user(num, &data->m_ReqNum);
+	err |= get_user(exe, &data32->exec);
+	err |= put_user(exe, &data->exec);
 	return err;
 }
 
@@ -3501,14 +3506,17 @@ static int compat_put_MFB_msf_enque_req_data(
 	struct compat_MFB_MSFRequest __user *data32,
 	struct MFB_MSFRequest __user *data)
 {
-	compat_uint_t count;
+	compat_uint_t num;
+	compat_uint_t exe;
 	/*compat_uptr_t uptr;*/
 	int err = 0;
 	/* Assume data pointer is unchanged. */
 	/* err = get_user(compat_ptr(uptr), &data->m_pMsfConfig); */
 	/* err |= put_user(uptr, &data32->m_pMsfConfig); */
-	err |= get_user(count, &data->m_ReqNum);
-	err |= put_user(count, &data32->m_ReqNum);
+	err |= get_user(num, &data->m_ReqNum);
+	err |= put_user(num, &data32->m_ReqNum);
+	err |= get_user(exe, &data->exec);
+	err |= put_user(exe, &data32->exec);
 	return err;
 }
 
@@ -3517,14 +3525,17 @@ static int compat_get_MFB_msf_deque_req_data(
 	struct compat_MFB_MSFRequest __user *data32,
 	struct MFB_MSFRequest __user *data)
 {
-	compat_uint_t count;
+	compat_uint_t num;
+	compat_uint_t exe;
 	compat_uptr_t uptr;
 	int err = 0;
 
 	err = get_user(uptr, &data32->m_pMsfConfig);
 	err |= put_user(compat_ptr(uptr), &data->m_pMsfConfig);
-	err |= get_user(count, &data32->m_ReqNum);
-	err |= put_user(count, &data->m_ReqNum);
+	err |= get_user(num, &data32->m_ReqNum);
+	err |= put_user(num, &data->m_ReqNum);
+	err |= get_user(exe, &data32->exec);
+	err |= put_user(exe, &data->exec);
 	return err;
 }
 
@@ -3533,14 +3544,17 @@ static int compat_put_MFB_msf_deque_req_data(
 	struct compat_MFB_MSFRequest __user *data32,
 	struct MFB_MSFRequest __user *data)
 {
-	compat_uint_t count;
+	compat_uint_t num;
+	compat_uint_t exe;
 	/*compat_uptr_t uptr;*/
 	int err = 0;
 	/* Assume data pointer is unchanged. */
 	/* err = get_user(compat_ptr(uptr), &data->m_pMsfConfig); */
 	/* err |= put_user(uptr, &data32->m_pMsfConfig); */
-	err |= get_user(count, &data->m_ReqNum);
-	err |= put_user(count, &data32->m_ReqNum);
+	err |= get_user(num, &data->m_ReqNum);
+	err |= put_user(num, &data32->m_ReqNum);
+	err |= get_user(exe, &data->exec);
+	err |= put_user(exe, &data32->exec);
 	return err;
 }
 
@@ -4298,9 +4312,10 @@ static signed int MFB_probe(struct platform_device *pDev)
 			create_singlethread_workqueue("MSF-CMDQ-WQ");
 		if (!MFBInfo.wkqueueMsf)
 			LOG_ERR("NULL MSF-CMDQ-WQ\n");
-
+#ifdef WAKE_UP
 		wakeup_source_init(&MSS_wake_lock, "mss_lock_wakelock");
 		wakeup_source_init(&MSF_wake_lock, "msf_lock_wakelock");
+#endif
 		INIT_WORK(&logWork, logPrint);
 
 		for (i = 0; i < MFB_IRQ_TYPE_AMOUNT; i++)

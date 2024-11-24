@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __DISP_DRV_PLATFORM_H__
@@ -30,7 +22,7 @@
 
 #define ALIGN_TO(x, n)  (((x) + ((n) - 1)) & ~((n) - 1))
 
-#if defined(CONFIG_FPGA_EARLY_PORTING) || !defined(CONFIG_MTK_GPU_SUPPORT)
+#if defined(CONFIG_FPGA_EARLY_PORTING) || !IS_ENABLED(CONFIG_MTK_GPU_SUPPORT)
 /* SW 3D already use 32 */
 #define MTK_FB_ALIGNMENT 32 /* SW 3D */
 #else
@@ -39,13 +31,19 @@
 
 /* Wrap SPM/MMDVFS code for early porting */
 #define MTK_FB_SPM_SUPPORT
+#ifdef CONFIG_MTK_SMI_EXT
 #define MTK_FB_MMDVFS_SUPPORT
+#endif
 #define MTK_FB_SHARE_WDMA0_SUPPORT
 
+/* defined in makefile controlled by CONFIG_MMPROFILE */
+#ifdef CONFIG_MMPROFILE
 #define SUPPORT_MMPROFILE
+#endif
+
 #define MTK_FB_ION_SUPPORT
-//#define FPGA_DEBUG_PAN
-//#define DISP_SYNC_ENABLE
+/* #define FPGA_DEBUG_PAN */
+/* #define DISP_SYNC_ENABLE */
 #define VIDEO_LAYER_COUNT            (3)
 /* #define HW_OVERLAY_COUNT                  (4) */
 
@@ -82,8 +80,5 @@ enum DISP_SESSION_ENUM {
 /* Other platform-dependent features */
 #define DISP_PATH_DELAYED_TRIGGER_33ms_SUPPORT
 /* #define DISP_PLATFORM_HAS_SHADOW_REG */
-
-/* define MET ready to use*/
-#define CONFIG_MTK_MET
 
 #endif				/* __DISP_DRV_PLATFORM_H__ */

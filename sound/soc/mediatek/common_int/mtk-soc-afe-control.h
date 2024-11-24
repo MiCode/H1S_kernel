@@ -1,20 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
-
 
 /*******************************************************************************
  *
@@ -298,10 +286,10 @@ int memif_lpbk_disable(struct memif_lpbk *memif_lbpk);
 
 /* GetEnableAudioBlockRegOffset */
 enum MEM_BLOCK_ENABLE_REG_INDEX {
-	MEM_EN_REG_IDX_AUDIO_BLOCK = 0,
-	MEM_EN_REG_IDX_REG,
-	MEM_EN_REG_IDX_OFFSET,
-	MEM_EN_REG_IDX_NUM
+	MEM_BLOCK_ENABLE_REG_INDEX_AUDIO_BLOCK = 0,
+	MEM_BLOCK_ENABLE_REG_INDEX_REG,
+	MEM_BLOCK_ENABLE_REG_INDEX_OFFSET,
+	MEM_BLOCK_ENABLE_REG_INDEX_NUM
 };
 unsigned int GetEnableAudioBlockRegOffset(unsigned int Aud_block);
 unsigned int GetEnableAudioBlockRegAddr(unsigned int Aud_block);
@@ -318,6 +306,10 @@ int SetFmI2sAsrcConfig(bool bIsUseASRC, unsigned int dToSampleRate);
 
 /* ANC AP Dependent */
 bool SetAncRecordReg(unsigned int value, unsigned int mask);
+
+/*Auxadc Interface*/
+int audio_get_auxadc_value(void);
+int get_accdet_auxadc(void);
 
 /* irq from other module */
 bool is_irq_from_ext_module(void);
@@ -392,5 +384,9 @@ int get_usage_digital_block(enum audio_usage_id id);
 int get_usage_digital_block_io(enum audio_usage_id id);
 int mtk_pcm_mmap(struct snd_pcm_substream *substream,
 		 struct vm_area_struct *vma);
+
+int mtk_afe_pcm_copy(struct snd_pcm_substream *substream,
+		     int channel, unsigned long hwoff,
+		     void *buf, unsigned long bytes);
 
 #endif

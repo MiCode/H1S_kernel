@@ -62,7 +62,8 @@ static int si_ih_irq_init(struct amdgpu_device *adev)
 	u64 wptr_off;
 
 	si_ih_disable_interrupts(adev);
-	WREG32(INTERRUPT_CNTL2, adev->irq.ih.gpu_addr >> 8);
+	/* set dummy read address to dummy page address */
+	WREG32(INTERRUPT_CNTL2, adev->dummy_page_addr >> 8);
 	interrupt_cntl = RREG32(INTERRUPT_CNTL);
 	interrupt_cntl &= ~IH_DUMMY_RD_OVERRIDE;
 	interrupt_cntl &= ~IH_REQ_NONSNOOP_EN;
@@ -118,6 +119,19 @@ static u32 si_ih_get_wptr(struct amdgpu_device *adev)
 	return (wptr & adev->irq.ih.ptr_mask);
 }
 
+/**
+ * si_ih_prescreen_iv - prescreen an interrupt vector
+ *
+ * @adev: amdgpu_device pointer
+ *
+ * Returns true if the interrupt vector should be further processed.
+ */
+static bool si_ih_prescreen_iv(struct amdgpu_device *adev)
+{
+	/* Process all interrupts */
+	return true;
+}
+
 static void si_ih_decode_iv(struct amdgpu_device *adev,
 			     struct amdgpu_iv_entry *entry)
 {
@@ -133,7 +147,7 @@ static void si_ih_decode_iv(struct amdgpu_device *adev,
 	entry->src_id = dw[0] & 0xff;
 	entry->src_data[0] = dw[1] & 0xfffffff;
 	entry->ring_id = dw[2] & 0xff;
-	entry->vm_id = (dw[2] >> 8) & 0xff;
+	entry->vmid = (dw[2] >> 8) & 0xff;
 
 	adev->irq.ih.rptr += 16;
 }
@@ -288,6 +302,7 @@ static const struct amd_ip_funcs si_ih_ip_funcs = {
 
 static const struct amdgpu_ih_funcs si_ih_funcs = {
 	.get_wptr = si_ih_get_wptr,
+	.prescreen_iv = si_ih_prescreen_iv,
 	.decode_iv = si_ih_decode_iv,
 	.set_rptr = si_ih_set_rptr
 };

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2019 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -99,21 +91,21 @@ EXPORT_SYMBOL(set_sram_flag_etb_user);
 int set_sram_flag_timestamp(void)
 {
 	u64 tick, ts, boot_time;
-
 	if (check_sram_base() < 0)
 		return -1;
-
 	ts = sched_clock_get_cyc(&tick);
 	pr_notice("%s: tick=0x%llx, ts=%llu\n", __func__, tick, ts);
-
 	ts = sched_clock();
 	boot_time = mtk_get_archcounter_time(arch_counter_get_cntvct());
 	boot_time -= ts;
+#if BITS_PER_LONG == 32
+	boot_time = div_u64((boot_time*13), 1000);
+#else
 	boot_time = (boot_time*13)/1000;
+#endif
 	plat->plat_sram_flag0 = boot_time;
 	pr_notice("%s: kernel_start_tick = 0x%x\n", __func__,
 			plat->plat_sram_flag0);
-
 	return 0;
 }
 EXPORT_SYMBOL(set_sram_flag_timestamp);

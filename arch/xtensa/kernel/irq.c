@@ -145,7 +145,7 @@ unsigned xtensa_get_ext_irq_no(unsigned irq)
 
 void __init init_IRQ(void)
 {
-#ifdef CONFIG_OF
+#ifdef CONFIG_USE_OF
 	irqchip_init();
 #else
 #ifdef CONFIG_HAVE_SMP
@@ -158,7 +158,6 @@ void __init init_IRQ(void)
 #ifdef CONFIG_SMP
 	ipi_init();
 #endif
-	variant_init_irq();
 }
 
 #ifdef CONFIG_HOTPLUG_CPU

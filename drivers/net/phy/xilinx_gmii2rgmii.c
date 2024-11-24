@@ -33,12 +33,14 @@ struct gmii2rgmii {
 	struct phy_device *phy_dev;
 	struct phy_driver *phy_drv;
 	struct phy_driver conv_phy_drv;
-	int addr;
+	struct mdio_device *mdio;
 };
 
 static int xgmiitorgmii_read_status(struct phy_device *phydev)
 {
 	struct gmii2rgmii *priv = phydev->priv;
+	struct mii_bus *bus = priv->mdio->bus;
+	int addr = priv->mdio->addr;
 	u16 val = 0;
 	int err;
 
@@ -49,7 +51,7 @@ static int xgmiitorgmii_read_status(struct phy_device *phydev)
 	if (err < 0)
 		return err;
 
-	val = mdiobus_read(phydev->mdio.bus, priv->addr, XILINX_GMII2RGMII_REG);
+	val = mdiobus_read(bus, addr, XILINX_GMII2RGMII_REG);
 	val &= ~XILINX_GMII2RGMII_SPEED_MASK;
 
 	if (phydev->speed == SPEED_1000)
@@ -59,7 +61,7 @@ static int xgmiitorgmii_read_status(struct phy_device *phydev)
 	else
 		val |= BMCR_SPEED10;
 
-	mdiobus_write(phydev->mdio.bus, priv->addr, XILINX_GMII2RGMII_REG, val);
+	mdiobus_write(bus, addr, XILINX_GMII2RGMII_REG, val);
 
 	return 0;
 }
@@ -89,10 +91,11 @@ static int xgmiitorgmii_probe(struct mdio_device *mdiodev)
 
 	if (!priv->phy_dev->drv) {
 		dev_info(dev, "Attached phy not ready\n");
+		put_device(&priv->phy_dev->mdio.dev);
 		return -EPROBE_DEFER;
 	}
 
-	priv->addr = mdiodev->addr;
+	priv->mdio = mdiodev;
 	priv->phy_drv = priv->phy_dev->drv;
 	memcpy(&priv->conv_phy_drv, priv->phy_dev->drv,
 	       sizeof(struct phy_driver));

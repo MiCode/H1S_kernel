@@ -213,8 +213,7 @@ static void close_one_chan(struct chan *chan, int delay_free_irq)
 		spin_lock_irqsave(&irqs_to_free_lock, flags);
 		list_add(&chan->free_list, &irqs_to_free);
 		spin_unlock_irqrestore(&irqs_to_free_lock, flags);
-	}
-	else {
+	} else {
 		if (chan->input && chan->enabled)
 			um_free_irq(chan->line->driver->read_irq, chan);
 		if (chan->output && chan->enabled)

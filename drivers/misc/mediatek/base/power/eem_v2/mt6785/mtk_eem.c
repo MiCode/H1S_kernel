@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 /**
  * @file	mtk_eem.
@@ -3466,7 +3458,7 @@ void eem_init01(void)
 #endif
 			}
 			timeout = 0;
-#if 1//angus todo
+#ifndef CONFIG_MACH_MT6785//angus todo
 			while (det->real_vboot != det->VBOOT) {
 				eem_debug
 			("@%s():%d, get_volt(%s) = 0x%08X, VBOOT = 0x%08X\n",

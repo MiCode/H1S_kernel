@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "disp_drv_log.h"
@@ -69,9 +61,9 @@ int rect_intersect(const struct disp_rect *src, const struct disp_rect *dst,
 			fBottom = bottom;
 		rect_set(out, fLeft, fTop, fRight, fBottom);
 		DISPDBG(
-			"%s (%d,%d,%d,%d) & (%d,%d,%d,%d) to (%d,%d,%d,%d)\n",
-			__func__, src->x, src->y, src->width, src->height,
-			dst->x, dst->y, dst->width, dst->height,
+			"rect_intersect (%d,%d,%d,%d) & (%d,%d,%d,%d) to (%d,%d,%d,%d)\n",
+			src->x, src->y, src->width, src->height,
+			dst->x, dst->y, dst->width,	dst->height,
 			out->x, out->y, out->width, out->height);
 		return 1;
 	}
@@ -126,8 +118,8 @@ void rect_join(const struct disp_rect *in1, const struct disp_rect *in2,
 			rect_set(out, fLeft, fTop, fRight, fBottom);
 		}
 	}
-	DISPDBG("%s (%d,%d,%d,%d) & (%d,%d,%d,%d) to (%d,%d,%d,%d)\n",
-		__func__, in1->x, in1->y, in1->width, in1->height, in2_x, in2_y,
+	DISPDBG("rect_join (%d,%d,%d,%d) & (%d,%d,%d,%d) to (%d,%d,%d,%d)\n",
+		in1->x, in1->y, in1->width, in1->height, in2_x, in2_y,
 		in2_w, in2_h, in2->x, in2->y, in2->width, in2->height);
 }
 

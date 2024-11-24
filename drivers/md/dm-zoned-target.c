@@ -51,12 +51,12 @@ struct dmz_target {
 	struct dmz_reclaim	*reclaim;
 
 	/* For chunk work */
-	struct mutex		chunk_lock;
 	struct radix_tree_root	chunk_rxtree;
 	struct workqueue_struct *chunk_wq;
+	struct mutex		chunk_lock;
 
 	/* For cloned BIOs to zones */
-	struct bio_set		*bio_set;
+	struct bio_set		bio_set;
 
 	/* For flush */
 	spinlock_t		flush_lock;
@@ -120,7 +120,7 @@ static int dmz_submit_bio(struct dmz_target *dmz, struct dm_zone *zone,
 	struct dmz_bioctx *bioctx = dm_per_bio_data(bio, sizeof(struct dmz_bioctx));
 	struct bio *clone;
 
-	clone = bio_clone_fast(bio, GFP_NOIO, dmz->bio_set);
+	clone = bio_clone_fast(bio, GFP_NOIO, &dmz->bio_set);
 	if (!clone)
 		return -ENOMEM;
 
@@ -789,7 +789,7 @@ static int dmz_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	}
 
 	/* Set target (no write same support) */
-	ti->max_io_len = dev->zone_nr_sectors << 9;
+	ti->max_io_len = dev->zone_nr_sectors;
 	ti->num_flush_bios = 1;
 	ti->num_discard_bios = 1;
 	ti->num_write_zeroes_bios = 1;
@@ -802,10 +802,9 @@ static int dmz_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->len = (sector_t)dmz_nr_chunks(dmz->metadata) << dev->zone_nr_sectors_shift;
 
 	/* Zone BIO */
-	dmz->bio_set = bioset_create(DMZ_MIN_BIOS, 0, 0);
-	if (!dmz->bio_set) {
+	ret = bioset_init(&dmz->bio_set, DMZ_MIN_BIOS, 0, 0);
+	if (ret) {
 		ti->error = "Create BIO set failed";
-		ret = -ENOMEM;
 		goto err_meta;
 	}
 
@@ -850,7 +849,8 @@ err_fwq:
 err_cwq:
 	destroy_workqueue(dmz->chunk_wq);
 err_bio:
-	bioset_free(dmz->bio_set);
+	mutex_destroy(&dmz->chunk_lock);
+	bioset_exit(&dmz->bio_set);
 err_meta:
 	dmz_dtr_metadata(dmz->metadata);
 err_dev:
@@ -880,9 +880,11 @@ static void dmz_dtr(struct dm_target *ti)
 
 	dmz_dtr_metadata(dmz->metadata);
 
-	bioset_free(dmz->bio_set);
+	bioset_exit(&dmz->bio_set);
 
 	dmz_put_zoned_device(ti);
+
+	mutex_destroy(&dmz->chunk_lock);
 
 	kfree(dmz);
 }
@@ -918,8 +920,7 @@ static void dmz_io_hints(struct dm_target *ti, struct queue_limits *limits)
 /*
  * Pass on ioctl to the backend device.
  */
-static int dmz_prepare_ioctl(struct dm_target *ti,
-			     struct block_device **bdev, fmode_t *mode)
+static int dmz_prepare_ioctl(struct dm_target *ti, struct block_device **bdev)
 {
 	struct dmz_target *dmz = ti->private;
 

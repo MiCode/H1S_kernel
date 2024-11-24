@@ -139,24 +139,24 @@
 		fman@400000 {
 			ethernet@e6000 {
 				phy-handle = <&phy_rgmii_0>;
-				phy-connection-type = "rgmii";
+				phy-connection-type = "rgmii-id";
 			};
 
 			ethernet@e8000 {
 				phy-handle = <&phy_rgmii_1>;
-				phy-connection-type = "rgmii";
+				phy-connection-type = "rgmii-id";
 			};
 
 			mdio0: mdio@fc000 {
-				phy_sgmii_2: ethernet-phy@03 {
+				phy_sgmii_2: ethernet-phy@3 {
 					reg = <0x03>;
 				};
 
-				phy_rgmii_0: ethernet-phy@01 {
+				phy_rgmii_0: ethernet-phy@1 {
 					reg = <0x01>;
 				};
 
-				phy_rgmii_1: ethernet-phy@02 {
+				phy_rgmii_1: ethernet-phy@2 {
 					reg = <0x02>;
 				};
 			};

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -399,17 +391,17 @@ static int chg_tcp_notifier_call(struct notifier_block *nb,
 			if (irq) {
 				if (dp_sw_connect == false) {
 					usbc_dbg(K_INFO, "Force connect\n");
-					mtk_dp_SWInterruptSet(0x4);
+					//mtk_dp_SWInterruptSet(0x4);
 					dp_sw_connect = true;
 				}
-				mtk_dp_SWInterruptSet(0x8);
+				//mtk_dp_SWInterruptSet(0x8);
 			} else {
-				mtk_dp_SWInterruptSet(0x4);
+				//mtk_dp_SWInterruptSet(0x4);
 				dp_sw_connect = true;
 			}
 		} else {
 			pi3dpx1205a_hpd(usbdp_client, 0);
-			mtk_dp_SWInterruptSet(0x2);
+			//mtk_dp_SWInterruptSet(0x2);
 			dp_sw_connect = false;
 		}
 	} else if (event == TCP_NOTIFY_TYPEC_STATE) {
@@ -417,7 +409,7 @@ static int chg_tcp_notifier_call(struct notifier_block *nb,
 			noti->typec_state.old_state == TYPEC_ATTACHED_SNK) &&
 			noti->typec_state.new_state == TYPEC_UNATTACHED) {
 			usbc_dbg(K_INFO, "Plug out\n");
-			mtk_dp_SWInterruptSet(0x2);
+			//mtk_dp_SWInterruptSet(0x2);
 			dp_sw_connect = false;
 			pi3dpx1205a_set_eq_fg_sw(usbdp_client, 0);
 		}
@@ -460,7 +452,7 @@ static void check_hpd(struct work_struct *work)
 	if (hdp_state == 0) {
 		usbc_dbg(K_INFO, "%s No HPD connection event", __func__);
 		pi3dpx1205a_hpd(usbdp_client, 1);
-		mtk_dp_SWInterruptSet(0x4);
+		//mtk_dp_SWInterruptSet(0x4);
 	}
 }
 

@@ -312,7 +312,7 @@ static unsigned int process_tx_data_blocks(struct amdtp_stream *s,
 	if (p->midi_ports)
 		read_midi_messages(s, buffer, data_blocks);
 
-	pcm = ACCESS_ONCE(s->pcm);
+	pcm = READ_ONCE(s->pcm);
 	if (data_blocks > 0 && pcm)
 		read_pcm_s32(s, pcm->runtime, buffer, data_blocks);
 
@@ -376,7 +376,7 @@ static unsigned int process_rx_data_blocks(struct amdtp_stream *s,
 	if (p->midi_ports)
 		write_midi_messages(s, buffer, data_blocks);
 
-	pcm = ACCESS_ONCE(s->pcm);
+	pcm = READ_ONCE(s->pcm);
 	if (pcm)
 		write_pcm_s32(s, pcm->runtime, buffer, data_blocks);
 	else

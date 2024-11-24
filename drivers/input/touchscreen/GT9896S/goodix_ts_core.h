@@ -1,22 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Goodix Touchscreen Driver
- * Core layer of touchdriver architecture.
- *
- * Copyright (C) 2019 - 2020 Goodix, Inc.
- * Authors: Wang Yafei <wangyafei@goodix.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be a reference
- * to you, when you are integrating the GOODiX's CTP IC into your system,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 #ifndef _GOODIX_TS_CORE_H_
 #define _GOODIX_TS_CORE_H_
 
@@ -132,6 +118,8 @@ struct gt9896s_ts_board_data {
 	/* For MTK Internal Touch End */
 
 	unsigned int swap_axis;
+	unsigned int lcm_max_x;
+	unsigned int lcm_max_y;
 	unsigned int panel_max_x;
 	unsigned int panel_max_y;
 	unsigned int panel_max_w; /*major and minor*/
@@ -765,7 +753,7 @@ void gt9896s_msg_printf(const char *fmt, ...);
 
 int gt9896s_do_fw_update(int mode);
 
-static int gt9896s_ts_remove(struct platform_device *pdev);
+int gt9896s_ts_remove(struct platform_device *pdev);
 
 int gt9896s_start_later_init(struct gt9896s_ts_core *ts_core);
 

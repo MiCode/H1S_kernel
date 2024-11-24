@@ -146,12 +146,12 @@ int __sensor_read(const char* fname, const int sensor, int* cal)
 	char buf[MSGLEN];
 	mm_segment_t old_fs = get_fs();
 	set_fs(KERNEL_DS);
-	fd = sys_open(fname, O_RDONLY, 0);
+	fd = ksys_open(fname, O_RDONLY, 0);
 
 	if(fd < 0)
 		goto cal_read_error;
 
-	res = sys_read(fd, buf , MSGLEN);
+	res = ksys_read(fd, buf , MSGLEN);
         pr_err("++++xuquan+++ fname: %c, buf[0]: %d, buf[1]: %d, buf[2]: %d\n", *fname, buf[0], buf[1], buf[2]);
 	if(res <= 0)
 		goto cal_read_error;
@@ -170,7 +170,7 @@ int __sensor_read(const char* fname, const int sensor, int* cal)
 		break;
 	}
 cal_read_error:
-	sys_close(fd);
+	ksys_close(fd);
 	set_fs(old_fs);
 	return (res <=0) ? -EINVAL : 0;
 }
@@ -181,12 +181,12 @@ int __sensor_write(const char* fname, const char* msg, int flag )
 	mm_segment_t old_fs = get_fs();
 	set_fs(KERNEL_DS);
 
-	fd = sys_open(fname, flag, 0666);
+	fd = ksys_open(fname, flag, 0666);
 	if(fd < 0)
 	{
 		goto cal_write_error;
 	}
-	res = sys_write(fd, msg, strlen(msg));
+	res = ksys_write(fd, msg, strlen(msg));
 	if(res <= 0)
 		goto cal_write_error;
 	else
@@ -194,7 +194,7 @@ int __sensor_write(const char* fname, const char* msg, int flag )
 
 //	sys_fsync(fd);
 cal_write_error:
-	sys_close(fd);
+	ksys_close(fd);
 	set_fs(old_fs);
 	return (res <= 0) ? -EINVAL : 0;
 }

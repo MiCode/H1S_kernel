@@ -276,7 +276,7 @@ static int vc4_hdmi_connector_get_modes(struct drm_connector *connector)
 	edid = drm_get_edid(connector, vc4->hdmi->ddc);
 	cec_s_phys_addr_from_edid(vc4->hdmi->cec_adap, edid);
 	if (!edid)
-		return -ENODEV;
+		return 0;
 
 	vc4_encoder->hdmi_monitor = drm_detect_hdmi_monitor(edid);
 
@@ -285,9 +285,8 @@ static int vc4_hdmi_connector_get_modes(struct drm_connector *connector)
 			drm_rgb_quant_range_selectable(edid);
 	}
 
-	drm_mode_connector_update_edid_property(connector, edid);
+	drm_connector_update_edid_property(connector, edid);
 	ret = drm_add_edid_modes(connector, edid);
-	drm_edid_to_eld(connector, edid);
 	kfree(edid);
 
 	return ret;
@@ -309,16 +308,13 @@ static const struct drm_connector_helper_funcs vc4_hdmi_connector_helper_funcs =
 static struct drm_connector *vc4_hdmi_connector_init(struct drm_device *dev,
 						     struct drm_encoder *encoder)
 {
-	struct drm_connector *connector = NULL;
+	struct drm_connector *connector;
 	struct vc4_hdmi_connector *hdmi_connector;
-	int ret = 0;
 
 	hdmi_connector = devm_kzalloc(dev->dev, sizeof(*hdmi_connector),
 				      GFP_KERNEL);
-	if (!hdmi_connector) {
-		ret = -ENOMEM;
-		goto fail;
-	}
+	if (!hdmi_connector)
+		return ERR_PTR(-ENOMEM);
 	connector = &hdmi_connector->base;
 
 	hdmi_connector->encoder = encoder;
@@ -333,15 +329,9 @@ static struct drm_connector *vc4_hdmi_connector_init(struct drm_device *dev,
 	connector->interlace_allowed = 1;
 	connector->doublescan_allowed = 0;
 
-	drm_mode_connector_attach_encoder(connector, encoder);
+	drm_connector_attach_encoder(connector, encoder);
 
 	return connector;
-
- fail:
-	if (connector)
-		vc4_hdmi_connector_destroy(connector);
-
-	return ERR_PTR(ret);
 }
 
 static void vc4_hdmi_encoder_destroy(struct drm_encoder *encoder)
@@ -691,7 +681,7 @@ static void vc4_hdmi_encoder_enable(struct drm_encoder *encoder)
 			   drift & ~VC4_HDMI_FIFO_CTL_RECENTER);
 		HDMI_WRITE(VC4_HDMI_FIFO_CTL,
 			   drift | VC4_HDMI_FIFO_CTL_RECENTER);
-		udelay(1000);
+		usleep_range(1000, 1100);
 		HDMI_WRITE(VC4_HDMI_FIFO_CTL,
 			   drift & ~VC4_HDMI_FIFO_CTL_RECENTER);
 		HDMI_WRITE(VC4_HDMI_FIFO_CTL,
@@ -704,7 +694,34 @@ static void vc4_hdmi_encoder_enable(struct drm_encoder *encoder)
 	}
 }
 
+static enum drm_mode_status
+vc4_hdmi_encoder_mode_valid(struct drm_encoder *crtc,
+			    const struct drm_display_mode *mode)
+{
+	/*
+	 * As stated in RPi's vc4 firmware "HDMI state machine (HSM) clock must
+	 * be faster than pixel clock, infinitesimally faster, tested in
+	 * simulation. Otherwise, exact value is unimportant for HDMI
+	 * operation." This conflicts with bcm2835's vc4 documentation, which
+	 * states HSM's clock has to be at least 108% of the pixel clock.
+	 *
+	 * Real life tests reveal that vc4's firmware statement holds up, and
+	 * users are able to use pixel clocks closer to HSM's, namely for
+	 * 1920x1200@60Hz. So it was decided to have leave a 1% margin between
+	 * both clocks. Which, for RPi0-3 implies a maximum pixel clock of
+	 * 162MHz.
+	 *
+	 * Additionally, the AXI clock needs to be at least 25% of
+	 * pixel clock, but HSM ends up being the limiting factor.
+	 */
+	if (mode->clock > HSM_CLOCK_FREQ / (1000 * 101 / 100))
+		return MODE_CLOCK_HIGH;
+
+	return MODE_OK;
+}
+
 static const struct drm_encoder_helper_funcs vc4_hdmi_encoder_helper_funcs = {
+	.mode_valid = vc4_hdmi_encoder_mode_valid,
 	.disable = vc4_hdmi_encoder_disable,
 	.enable = vc4_hdmi_encoder_enable,
 };
@@ -990,15 +1007,17 @@ static const struct snd_soc_dapm_route vc4_hdmi_audio_routes[] = {
 	{ "TX", NULL, "Playback" },
 };
 
-static const struct snd_soc_codec_driver vc4_hdmi_audio_codec_drv = {
-	.component_driver = {
-		.controls = vc4_hdmi_audio_controls,
-		.num_controls = ARRAY_SIZE(vc4_hdmi_audio_controls),
-		.dapm_widgets = vc4_hdmi_audio_widgets,
-		.num_dapm_widgets = ARRAY_SIZE(vc4_hdmi_audio_widgets),
-		.dapm_routes = vc4_hdmi_audio_routes,
-		.num_dapm_routes = ARRAY_SIZE(vc4_hdmi_audio_routes),
-	},
+static const struct snd_soc_component_driver vc4_hdmi_audio_component_drv = {
+	.controls		= vc4_hdmi_audio_controls,
+	.num_controls		= ARRAY_SIZE(vc4_hdmi_audio_controls),
+	.dapm_widgets		= vc4_hdmi_audio_widgets,
+	.num_dapm_widgets	= ARRAY_SIZE(vc4_hdmi_audio_widgets),
+	.dapm_routes		= vc4_hdmi_audio_routes,
+	.num_dapm_routes	= ARRAY_SIZE(vc4_hdmi_audio_routes),
+	.idle_bias_on		= 1,
+	.use_pmdown_time	= 1,
+	.endianness		= 1,
+	.non_legacy_dai_naming	= 1,
 };
 
 static const struct snd_soc_dai_ops vc4_hdmi_audio_dai_ops = {
@@ -1096,11 +1115,11 @@ static int vc4_hdmi_audio_init(struct vc4_hdmi *hdmi)
 		return ret;
 	}
 
-	/* register codec and codec dai */
-	ret = snd_soc_register_codec(dev, &vc4_hdmi_audio_codec_drv,
+	/* register component and codec dai */
+	ret = devm_snd_soc_register_component(dev, &vc4_hdmi_audio_component_drv,
 				     &vc4_hdmi_audio_codec_dai_drv, 1);
 	if (ret) {
-		dev_err(dev, "Could not register codec: %d\n", ret);
+		dev_err(dev, "Could not register component: %d\n", ret);
 		return ret;
 	}
 
@@ -1115,6 +1134,7 @@ static int vc4_hdmi_audio_init(struct vc4_hdmi *hdmi)
 	card->num_links = 1;
 	card->name = "vc4-hdmi";
 	card->dev = dev;
+	card->owner = THIS_MODULE;
 
 	/*
 	 * Be careful, snd_soc_register_card() calls dev_set_drvdata() and
@@ -1125,29 +1145,11 @@ static int vc4_hdmi_audio_init(struct vc4_hdmi *hdmi)
 	 */
 	snd_soc_card_set_drvdata(card, hdmi);
 	ret = devm_snd_soc_register_card(dev, card);
-	if (ret) {
+	if (ret)
 		dev_err(dev, "Could not register sound card: %d\n", ret);
-		goto unregister_codec;
-	}
-
-	return 0;
-
-unregister_codec:
-	snd_soc_unregister_codec(dev);
 
 	return ret;
-}
 
-static void vc4_hdmi_audio_cleanup(struct vc4_hdmi *hdmi)
-{
-	struct device *dev = &hdmi->pdev->dev;
-
-	/*
-	 * If drvdata is not set this means the audio card was not
-	 * registered, just skip codec unregistration in this case.
-	 */
-	if (dev_get_drvdata(dev))
-		snd_soc_unregister_codec(dev);
 }
 
 #ifdef CONFIG_DRM_VC4_HDMI_CEC
@@ -1475,7 +1477,6 @@ static void vc4_hdmi_unbind(struct device *dev, struct device *master,
 	struct vc4_dev *vc4 = drm->dev_private;
 	struct vc4_hdmi *hdmi = vc4->hdmi;
 
-	vc4_hdmi_audio_cleanup(hdmi);
 	cec_unregister_adapter(hdmi->cec_adap);
 	vc4_hdmi_connector_destroy(hdmi->connector);
 	vc4_hdmi_encoder_destroy(hdmi->encoder);

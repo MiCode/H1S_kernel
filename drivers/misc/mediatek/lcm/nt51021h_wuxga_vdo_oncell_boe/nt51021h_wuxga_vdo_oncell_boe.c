@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "LCM"
@@ -380,7 +372,7 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 #if (LCM_DSI_CMD_MODE)
 	params->dsi.PLL_CLOCK = 270;
 #else
-	params->dsi.PLL_CLOCK = 480;
+	params->dsi.PLL_CLOCK = 504;
 #endif
 	/* params->dsi.PLL_CK_CMD = 220; */
 	/* params->dsi.PLL_CK_VDO = 255; */
@@ -500,54 +492,7 @@ static void lcm_setbacklight(unsigned int level)
 
 static unsigned int lcm_ata_check(unsigned char *buffer)
 {
-#if 0 /* #ifndef BUILD_LK */
-	unsigned int ret = 0;
-	unsigned int x0 = FRAME_WIDTH / 4;
-	unsigned int x1 = FRAME_WIDTH * 3 / 4;
-
-	unsigned char x0_MSB = ((x0 >> 8) & 0xFF);
-	unsigned char x0_LSB = (x0 & 0xFF);
-	unsigned char x1_MSB = ((x1 >> 8) & 0xFF);
-	unsigned char x1_LSB = (x1 & 0xFF);
-
-	unsigned int data_array[3];
-	unsigned char read_buf[4];
-
-	LCM_LOGI("ATA check size = 0x%x,0x%x,0x%x,0x%x\n",
-		x0_MSB, x0_LSB, x1_MSB, x1_LSB);
-	data_array[0] = 0x0005390A;	/* HS packet */
-	data_array[1] = (x1_MSB << 24) | (x0_LSB << 16) | (x0_MSB << 8) | 0x2a;
-	data_array[2] = (x1_LSB);
-	dsi_set_cmdq(data_array, 3, 1);
-
-	/* read id return two byte,version and id */
-	data_array[0] = 0x00043700;
-	dsi_set_cmdq(data_array, 1, 1);
-
-	read_reg_v2(0x2A, read_buf, 4);
-
-	if ((read_buf[0] == x0_MSB) && (read_buf[1] == x0_LSB)
-	    && (read_buf[2] == x1_MSB) && (read_buf[3] == x1_LSB))
-		ret = 1;
-	else
-		ret = 0;
-
-	x0 = 0;
-	x1 = FRAME_WIDTH - 1;
-
-	x0_MSB = ((x0 >> 8) & 0xFF);
-	x0_LSB = (x0 & 0xFF);
-	x1_MSB = ((x1 >> 8) & 0xFF);
-	x1_LSB = (x1 & 0xFF);
-
-	data_array[0] = 0x0005390A;	/* HS packet */
-	data_array[1] = (x1_MSB << 24) | (x0_LSB << 16) | (x0_MSB << 8) | 0x2a;
-	data_array[2] = (x1_LSB);
-	dsi_set_cmdq(data_array, 3, 1);
-	return ret;
-#else
 	return 1;
-#endif
 }
 
 static void *lcm_switch_mode(int mode)

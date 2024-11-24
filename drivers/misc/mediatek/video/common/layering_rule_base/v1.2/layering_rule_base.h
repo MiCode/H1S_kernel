@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Joey Pan <joey.pan@mediatek.com>
  */
 
 #ifndef __LAYERING_RULE_BASE__
@@ -145,7 +138,7 @@ struct layering_rule_info_t {
 	int disp_path;
 	int scale_rate;
 	int dal_enable;
-	unsigned int primary_fps;
+	int primary_fps;
 	int hrt_sys_state;
 	int wrot_sram;
 	unsigned int hrt_idx;
@@ -160,8 +153,7 @@ struct layering_rule_ops {
 	/* should be removed */
 	int (*get_hrt_bound)(int is_larb, int hrt_level);
 
-	void (*copy_hrt_bound_table)(int is_larb, int *hrt_table,
-					int config_id);
+	void (*copy_hrt_bound_table)(int is_larb, int *hrt_table, int config_id);
 	void (*rsz_by_gpu_info_change)(void);
 	bool (*rollback_to_gpu_by_hw_limitation)(
 					struct disp_layer_info *disp_info);

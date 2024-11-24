@@ -23,16 +23,10 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <linux/pci.h>
 #include <linux/virtio.h>
 #include <linux/virtio_config.h>
 #include <drm/drmP.h>
 #include "virtgpu_drv.h"
-
-static int virtio_gpu_fbdev = 1;
-
-MODULE_PARM_DESC(fbdev, "Disable/Enable framebuffer device & console");
-module_param_named(fbdev, virtio_gpu_fbdev, int, 0400);
 
 static void virtio_gpu_config_changed_work_func(struct work_struct *work)
 {
@@ -55,39 +49,23 @@ static void virtio_gpu_config_changed_work_func(struct work_struct *work)
 		      events_clear, &events_clear);
 }
 
-static void virtio_gpu_ctx_id_get(struct virtio_gpu_device *vgdev,
-				  uint32_t *resid)
+static int virtio_gpu_context_create(struct virtio_gpu_device *vgdev,
+				      uint32_t nlen, const char *name)
 {
-	int handle;
+	int handle = ida_alloc(&vgdev->ctx_id_ida, GFP_KERNEL);
 
-	idr_preload(GFP_KERNEL);
-	spin_lock(&vgdev->ctx_id_idr_lock);
-	handle = idr_alloc(&vgdev->ctx_id_idr, NULL, 1, 0, 0);
-	spin_unlock(&vgdev->ctx_id_idr_lock);
-	idr_preload_end();
-	*resid = handle;
-}
-
-static void virtio_gpu_ctx_id_put(struct virtio_gpu_device *vgdev, uint32_t id)
-{
-	spin_lock(&vgdev->ctx_id_idr_lock);
-	idr_remove(&vgdev->ctx_id_idr, id);
-	spin_unlock(&vgdev->ctx_id_idr_lock);
-}
-
-static void virtio_gpu_context_create(struct virtio_gpu_device *vgdev,
-				      uint32_t nlen, const char *name,
-				      uint32_t *ctx_id)
-{
-	virtio_gpu_ctx_id_get(vgdev, ctx_id);
-	virtio_gpu_cmd_context_create(vgdev, *ctx_id, nlen, name);
+	if (handle < 0)
+		return handle;
+	handle += 1;
+	virtio_gpu_cmd_context_create(vgdev, handle, nlen, name);
+	return handle;
 }
 
 static void virtio_gpu_context_destroy(struct virtio_gpu_device *vgdev,
 				      uint32_t ctx_id)
 {
 	virtio_gpu_cmd_context_destroy(vgdev, ctx_id);
-	virtio_gpu_ctx_id_put(vgdev, ctx_id);
+	ida_free(&vgdev->ctx_id_ida, ctx_id - 1);
 }
 
 static void virtio_gpu_init_vq(struct virtio_gpu_queue *vgvq,
@@ -116,8 +94,10 @@ static void virtio_gpu_get_capsets(struct virtio_gpu_device *vgdev,
 					 vgdev->capsets[i].id > 0, 5 * HZ);
 		if (ret == 0) {
 			DRM_ERROR("timed out waiting for cap set %d\n", i);
+			spin_lock(&vgdev->display_info_lock);
 			kfree(vgdev->capsets);
 			vgdev->capsets = NULL;
+			spin_unlock(&vgdev->display_info_lock);
 			return;
 		}
 		DRM_INFO("cap set %d: id %d, max-version %d, max-size %d\n",
@@ -154,12 +134,8 @@ int virtio_gpu_init(struct drm_device *dev)
 	vgdev->dev = dev->dev;
 
 	spin_lock_init(&vgdev->display_info_lock);
-	spin_lock_init(&vgdev->ctx_id_idr_lock);
-	idr_init(&vgdev->ctx_id_idr);
-	spin_lock_init(&vgdev->resource_idr_lock);
-	idr_init(&vgdev->resource_idr);
-	spin_lock_init(&vgdev->request_idr_lock);
-	idr_init(&vgdev->request_idr);
+	ida_init(&vgdev->ctx_id_ida);
+	ida_init(&vgdev->resource_ida);
 	init_waitqueue_head(&vgdev->resp_wq);
 	virtio_gpu_init_vq(&vgdev->ctrlq, virtio_gpu_dequeue_ctrl_func);
 	virtio_gpu_init_vq(&vgdev->cursorq, virtio_gpu_dequeue_cursor_func);
@@ -182,32 +158,6 @@ int virtio_gpu_init(struct drm_device *dev)
 	if (virtio_has_feature(vgdev->vdev, VIRTIO_GPU_F_EDID)) {
 		vgdev->has_edid = true;
 		DRM_INFO("EDID support available.\n");
-	}
-
-	if (virtio_has_feature(vgdev->vdev, VIRTIO_GPU_F_RESOURCE_BLOB)) {
-		vgdev->cbar = 4;
-		vgdev->caddr = pci_resource_start(dev->pdev, vgdev->cbar);
-		vgdev->csize = pci_resource_len(dev->pdev, vgdev->cbar);
-		ret = pci_request_region(
-			dev->pdev,
-			vgdev->cbar,
-			"virtio-gpu-coherent");
-		if (ret != 0) {
-			DRM_WARN("Cannot request coherent memory bar\n");
-		} else {
-			DRM_INFO("coherent host resources enabled\n");
-			DRM_INFO(
-				"using %s bar %d, at 0x%lx, size %ld MB\n",
-				dev_name(&dev->pdev->dev),
-				vgdev->cbar,
-				vgdev->caddr,
-				vgdev->csize >> 20);
-			vgdev->has_host_visible = true;
-		}
-
-		vgdev->has_resource_blob = true;
-		DRM_INFO("resource_v2: %u, host visible %u\n",
-			  vgdev->has_resource_blob, vgdev->has_host_visible);
 	}
 
 	ret = virtio_find_vqs(vgdev->vdev, 2, vqs, callbacks, names, NULL);
@@ -257,9 +207,6 @@ int virtio_gpu_init(struct drm_device *dev)
 	virtio_gpu_cmd_get_display_info(vgdev);
 	wait_event_timeout(vgdev->resp_wq, !vgdev->display_info_pending,
 			   5 * HZ);
-	if (virtio_gpu_fbdev)
-		virtio_gpu_fbdev_init(vgdev);
-
 	return 0;
 
 err_scanouts:
@@ -269,6 +216,7 @@ err_ttm:
 err_vbufs:
 	vgdev->vdev->config->del_vqs(vgdev->vdev);
 err_vqs:
+	dev->dev_private = NULL;
 	kfree(vgdev);
 	return ret;
 }
@@ -306,7 +254,7 @@ int virtio_gpu_driver_open(struct drm_device *dev, struct drm_file *file)
 {
 	struct virtio_gpu_device *vgdev = dev->dev_private;
 	struct virtio_gpu_fpriv *vfpriv;
-	uint32_t id;
+	int id;
 	char dbgname[TASK_COMM_LEN];
 
 	/* can't create contexts without 3d renderer */
@@ -319,7 +267,7 @@ int virtio_gpu_driver_open(struct drm_device *dev, struct drm_file *file)
 		return -ENOMEM;
 
 	get_task_comm(dbgname, current);
-	virtio_gpu_context_create(vgdev, strlen(dbgname), dbgname, &id);
+	id = virtio_gpu_context_create(vgdev, strlen(dbgname), dbgname);
 	if (id < 0) {
 		kfree(vfpriv);
 		return id;

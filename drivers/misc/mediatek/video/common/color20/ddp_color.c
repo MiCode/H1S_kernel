@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -16,18 +8,16 @@
 #include <linux/spinlock.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/io.h>
 #include <disp_drv_platform.h>
 #if defined(CONFIG_MACH_MT6755) || defined(CONFIG_MACH_MT6797) || \
 	defined(CONFIG_MACH_MT6757) || defined(CONFIG_MACH_KIBOPLUS) || \
 	defined(CONFIG_MACH_MT6799) || defined(CONFIG_MACH_MT6759) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT8168) || defined(CONFIG_MACH_MT6885) || \
-	defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) || \
-	defined(CONFIG_MACH_MT6833)
+	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT3967) || \
+	defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6768) || \
+	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT6785)
 
 #include <disp_helper.h>
 #endif
@@ -40,12 +30,9 @@
 	defined(CONFIG_MACH_MT6799) || defined(CONFIG_MACH_MT6759) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT8168) || defined(CONFIG_MACH_MT6885) || \
-	defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) || \
-	defined(CONFIG_MACH_MT6833)
+	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT3967) || \
+	defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6768) || \
+	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT6785)
 
 #include "ddp_clkmgr.h"
 #endif
@@ -61,19 +48,16 @@
 #include "cmdq_def.h"
 
 #if defined(CONFIG_MACH_MT6757) || defined(CONFIG_MACH_MT6799)
-#include "mt-plat/mtk_chip.h"
+/* #include "mt-plat/mtk_chip.h" */
 #endif
 
 #if defined(CONFIG_MACH_MT6797) || defined(CONFIG_MACH_MT6757) || \
 	defined(CONFIG_MACH_KIBOPLUS) || defined(CONFIG_MACH_MT6799) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT8168) || defined(CONFIG_MACH_MT6885) || \
-	defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) || \
-	defined(CONFIG_MACH_MT6833)
+	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT3967) || \
+	defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6768) || \
+	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT6785)
 
 #define COLOR_SUPPORT_PARTIAL_UPDATE
 #endif
@@ -143,10 +127,7 @@ param:
 	 1, 1, 0, 0, 0, 0, 0, 0, 0, 0x0A,
 	 0x30, 0x40, 0x06, 0x12, 40, 0x40, 0x80, 0x40, 0x40, 1,
 	 0x80, 0x60, 0x80, 0x10, 0x34, 0x40, 0x40, 1, 0x80, 0xa,
-	 0x19, 0x00, 0x20, 0, 0, 1, 2, 1, 80, 1,
-	 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	 0, 0, 0, 0
-	}
+	 0x19, 0x00, 0x20, 0, 0, 1, 2, 1, 80, 1}
 };
 
 static struct DISP_PQ_DS_PARAM g_PQ_DS_Param = {
@@ -985,94 +966,94 @@ COLOR_3D :
 {
 	{			/* 0 */
 		/* Windows  1 */
-		{ 0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		{ 0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF},
 		/* Windows  2 */
-		{ 0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		{ 0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF},
 		/* Windows  3 */
-		{ 0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		{ 0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF},
 	},
 	{			/* 1 */
 		/* Windows  1 */
-		{ 0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		{ 0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF},
 		/* Windows  2 */
-		{ 0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		{ 0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF},
 		/* Windows  3 */
-		{ 0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		{ 0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF},
 	},
 	{			/* 2 */
 		/* Windows  1 */
-		{ 0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		{ 0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF},
 		/* Windows  2 */
-		{ 0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		{ 0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF},
 		/* Windows  3 */
-		{ 0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		{ 0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF},
 	},
 	{			/* 3 */
 		/* Windows  1 */
-		{ 0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		{ 0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF},
 		/* Windows  2 */
-		{ 0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		{ 0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF},
 		/* Windows  3 */
-		{ 0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		{ 0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF,
-		  0x80,  0x80,	0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
+		  0x80,  0x80,  0x80,  0x80,  0x80,  0x80, 0x3FF, 0x3FF,
 		 0x000, 0x050, 0x100, 0x200, 0x300, 0x350, 0x3FF},
 	},
 }
@@ -1141,27 +1122,22 @@ static bool g_get_va_flag;
 #endif
 
 #if defined(CONFIG_MACH_MT6595) || defined(CONFIG_MACH_MT6795)
-#define TDSHP_PA_BASE	0x14009000
-#define TDSHP1_PA_BASE	0x1400A000
+#define TDSHP_PA_BASE   0x14009000
+#define TDSHP1_PA_BASE  0x1400A000
 static unsigned long g_tdshp1_va;
 #elif defined(CONFIG_MACH_MT6797) || defined(CONFIG_MACH_MT6757) || \
 	defined(CONFIG_MACH_KIBOPLUS) || defined(CONFIG_MACH_MT6799) || \
 	defined(CONFIG_MACH_MT6739)
-#define TDSHP_PA_BASE	0x14009000
+#define TDSHP_PA_BASE   0x14009000
 #elif defined(CONFIG_MACH_MT6759) || defined(CONFIG_MACH_MT6763) || \
-	defined(CONFIG_MACH_MT6758) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT3967)
-#define TDSHP_PA_BASE	0x14007000
-
+	defined(CONFIG_MACH_MT6758) || defined(CONFIG_MACH_MT3967) || \
+	defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6771)
+#define TDSHP_PA_BASE   0x14007000
 #elif defined(CONFIG_MACH_MT6765) || defined(CONFIG_MACH_MT6761) || \
-	defined(CONFIG_MACH_MT8168) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) || \
-	defined(CONFIG_MACH_MT6833)
-
-#define TDSHP_PA_BASE	0x1400A000
+	defined(CONFIG_MACH_MT6768)
+#define TDSHP_PA_BASE   0x1400A000
 #else
-#define TDSHP_PA_BASE	0x14006000
+#define TDSHP_PA_BASE   0x14006000
 #endif
 
 #if defined(NO_COLOR_SHARED)
@@ -1200,13 +1176,13 @@ static unsigned long g_mdp_hdr_va;
 
 #if defined(SUPPORT_MDP_AAL)
 #include <linux/delay.h>
-#if defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT6785)
+#if defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)
 #define MDP_AAL0_PA_BASE 0x1401b000
 #else
 #define MDP_AAL0_PA_BASE 0x1401c000
 #endif
-#define DRE30_HIST_START	 (1024)
-#define DRE30_HIST_END		 (4092)
+#define DRE30_HIST_START         (1024)
+#define DRE30_HIST_END           (4092)
 static unsigned long g_mdp_aal0_va;
 #endif
 
@@ -1256,7 +1232,7 @@ static atomic_t g_color_is_clock_on[COLOR_TOTAL_MODULE_NUM] = {
 	ATOMIC_INIT(0)};
 #endif
 
-#if defined(CONFIG_MACH_MT6785)
+#if defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)
 struct color_backup {
 	unsigned int COLOR_CFG_MAIN;
 };
@@ -1271,14 +1247,17 @@ static void ddp_color_backup(enum DISP_MODULE_ENUM module)
 		DISP_REG_GET(offset + DISP_COLOR_CFG_MAIN);
 }
 
-static void ddp_color_restore(enum DISP_MODULE_ENUM module)
+static void ddp_color_restore(enum DISP_MODULE_ENUM module, void *cmdq_handle)
 {
 	int offset = C0_OFFSET;
+	struct cmdqRecStruct *cmdq = (struct cmdqRecStruct *) cmdq_handle;
 
+	COLOR_DBG("g_color_backup.COLOR_CFG_MAIN = 0x%08x", g_color_backup.COLOR_CFG_MAIN);
 	offset = color_get_offset(module);
-	DISP_REG_SET(NULL, offset + DISP_COLOR_CFG_MAIN, g_color_backup.COLOR_CFG_MAIN);
+	DISP_REG_SET(cmdq, offset + DISP_COLOR_CFG_MAIN, g_color_backup.COLOR_CFG_MAIN);
 }
 #endif
+
 
 bool disp_color_reg_get(enum DISP_MODULE_ENUM module, unsigned long addr,
 		unsigned int *value)
@@ -2303,11 +2282,7 @@ static unsigned long color_get_TDSHP_VA(void)
 #if defined(CONFIG_MACH_MT6595) || defined(CONFIG_MACH_MT6795) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
 	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT8168) || defined(CONFIG_MACH_MT6885) || \
-	defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) || \
-	defined(CONFIG_MACH_MT6833)
-
+	defined(CONFIG_MACH_MT6785)
 	node = of_find_compatible_node(NULL, NULL, "mediatek,mdp_tdshp0");
 #else
 	node = of_find_compatible_node(NULL, NULL, "mediatek,mdp_tdshp");
@@ -2405,7 +2380,7 @@ static unsigned long color_get_MDP_HDR_VA(void)
 	unsigned long VA;
 	struct device_node *node = NULL;
 
-	node = of_find_compatible_node(NULL, NULL, "mediatek,mdp_hdr");
+	node = of_find_compatible_node(NULL, NULL, "mediatek,mdp_hdr0");
 	VA = (unsigned long)of_iomap(node, 0);
 	COLOR_DBG("MDP_HDR VA: 0x%lx\n", VA);
 
@@ -2535,12 +2510,9 @@ static unsigned int color_is_reg_addr_valid(unsigned long addr)
 #if defined(CONFIG_MACH_MT6759) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6739) || \
 	defined(CONFIG_MACH_MT6765) || defined(CONFIG_MACH_MT6761) || \
-	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT3967) || \
-	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6785) || \
-	defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) || \
-	defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
-
+	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6779) || \
+	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6771) || \
+	defined(CONFIG_MACH_MT6785)
 	i = is_reg_addr_valid(1, addr);
 	if (i) {
 		COLOR_DBG("addr valid, addr=0x%lx, module=%s!\n",
@@ -2679,11 +2651,9 @@ static unsigned long color_pa2va(unsigned int addr)
 #if defined(CONFIG_MACH_MT6759) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6739) || \
 	defined(CONFIG_MACH_MT6765) || defined(CONFIG_MACH_MT6761) || \
-	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT3967) || \
-	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6785) || \
-	defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) || \
-	defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
+	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6779) || \
+	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6771) || \
+	defined(CONFIG_MACH_MT6785)
 
 	i = is_reg_addr_valid(0, addr);
 	if (i) {
@@ -2815,7 +2785,7 @@ static unsigned int color_read_sw_reg(unsigned int reg_id)
 	if (reg_id >= SWREG_PQDC_BLACK_EFFECT_ENABLE &&
 		reg_id <= SWREG_PQDC_DC_ENABLE) {
 		ret = (unsigned int)g_PQ_DC_Param.param
-			[reg_id - SWREG_PQDC_BLACK_EFFECT_ENABLE];
+				[reg_id - SWREG_PQDC_BLACK_EFFECT_ENABLE];
 		return ret;
 	}
 
@@ -2829,12 +2799,9 @@ static unsigned int color_read_sw_reg(unsigned int reg_id)
 #elif defined(CONFIG_MACH_MT6759) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6739) || \
 	defined(CONFIG_MACH_MT6765) || defined(CONFIG_MACH_MT6761) || \
-	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT3967) || \
-	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6785) || \
-	defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) || \
-	defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
-
+	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6779) || \
+	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6771) || \
+	defined(CONFIG_MACH_MT6785)
 			ret = ddp_get_module_pa(DISP_MODULE_COLOR0);
 #else
 			ret = ddp_reg_pa_base[DISP_REG_COLOR];
@@ -2851,13 +2818,9 @@ static unsigned int color_read_sw_reg(unsigned int reg_id)
 			ret = ddp_get_module_pa(DISP_MODULE_GAMMA);
 #elif defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT8168) || defined(CONFIG_MACH_MT6885) || \
-	defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) || \
-	defined(CONFIG_MACH_MT6833)
-
+	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT3967) || \
+	defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6768) || \
+	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT6785)
 			ret = ddp_get_module_pa(DISP_MODULE_GAMMA0);
 
 #else
@@ -2875,12 +2838,9 @@ static unsigned int color_read_sw_reg(unsigned int reg_id)
 			ret = ddp_get_module_pa(DISP_MODULE_AAL);
 #elif defined(CONFIG_MACH_MT6758) || defined(CONFIG_MACH_MT6763) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT8168) || defined(CONFIG_MACH_MT6885) || \
-	defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) || \
-	defined(CONFIG_MACH_MT6833)
+	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT3967) || \
+	defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6768) || \
+	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT6785)
 			ret = ddp_get_module_pa(DISP_MODULE_AAL0);
 #else
 			ret = ddp_reg_pa_base[DISP_REG_AAL];
@@ -2898,13 +2858,9 @@ static unsigned int color_read_sw_reg(unsigned int reg_id)
 			ret = ddp_get_module_pa(DISP_MODULE_CCORR);
 #elif defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT8168) || defined(CONFIG_MACH_MT6885) || \
-	defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) || \
-	defined(CONFIG_MACH_MT6833)
-
+	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT3967) || \
+	defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6768) || \
+	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT6785)
 			ret = ddp_get_module_pa(DISP_MODULE_CCORR0);
 
 #else
@@ -3084,6 +3040,10 @@ static void color_write_sw_reg(unsigned int reg_id, unsigned int value)
 
 static int _color_clock_on(enum DISP_MODULE_ENUM module, void *cmq_handle)
 {
+
+#if defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)
+	bool is_color_restore = (g_color_backup.COLOR_CFG_MAIN != 0);
+#endif
 	atomic_set(&g_color_is_clock_on[index_of_color(module)], 1);
 
 #if defined(CONFIG_MACH_MT6755)
@@ -3094,16 +3054,15 @@ static int _color_clock_on(enum DISP_MODULE_ENUM module, void *cmq_handle)
 #if defined(CONFIG_MACH_MT6759) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6739) || \
 	defined(CONFIG_MACH_MT6765) || defined(CONFIG_MACH_MT6761) || \
-	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT3967) || \
-	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6785) || \
-	defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) || \
-	defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
-
+	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6779) || \
+	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6771) || \
+	defined(CONFIG_MACH_MT6785)
 	ddp_clk_prepare_enable(ddp_get_module_clk_id(module));
 
-#if defined(CONFIG_MACH_MT6785)
-	ddp_color_restore(module);
+#if defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)
+	COLOR_DBG("is_color_restore = %d", is_color_restore);
+	if (is_color_restore)
+		ddp_color_restore(module, cmq_handle);
 #endif
 
 	return 0;
@@ -3139,6 +3098,7 @@ static int _color_clock_on(enum DISP_MODULE_ENUM module, void *cmq_handle)
 		DISP_REG_GET(DISP_REG_CONFIG_MMSYS_CG_CON0));
 #endif
 #endif
+
 	return 0;
 #endif
 
@@ -3153,19 +3113,16 @@ static int _color_clock_off(enum DISP_MODULE_ENUM module, void *cmq_handle)
 	return 0;
 #endif
 
-#if defined(CONFIG_MACH_MT6785)
+#if defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)
 	ddp_color_backup(module);
 #endif
 
 #if defined(CONFIG_MACH_MT6759) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6739) || \
 	defined(CONFIG_MACH_MT6765) || defined(CONFIG_MACH_MT6761) || \
-	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT3967) || \
-	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6785) || \
-	defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) || \
-	defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
-
+	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6779) || \
+	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6771) || \
+	defined(CONFIG_MACH_MT6785)
 	ddp_clk_disable_unprepare(ddp_get_module_clk_id(module));
 	return 0;
 #else
@@ -3736,7 +3693,7 @@ int disp_color_ioctl(enum DISP_MODULE_ENUM module, unsigned int msg,
 		/* if TDSHP, write PA directly */
 		if (ret == 2) {
 			if (cmdq == NULL) {
-				mt_reg_sync_writel((unsigned int)(INREG32(va) &
+				writel((unsigned int)(INREG32(va) &
 					~(wParams.mask)) | (wParams.val),
 					(unsigned long *)(va));
 			} else {
@@ -4075,12 +4032,9 @@ static int _color_build_cmdq(enum DISP_MODULE_ENUM module,
 #elif defined(CONFIG_MACH_MT6759) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6739) || \
 	defined(CONFIG_MACH_MT6765) || defined(CONFIG_MACH_MT6761) ||  \
-	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT3967) || \
-	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6785) || \
-	defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) || \
-	defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
-
+	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6779) ||  \
+	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6771) || \
+	defined(CONFIG_MACH_MT6785)
 		ret = cmdqRecReadToDataRegister(cmdq_trigger_handle,
 			ddp_get_module_pa(DISP_MODULE_COLOR0) +
 			(DISP_COLOR_TWO_D_W1_RESULT - DISPSYS_COLOR0_BASE),
@@ -4097,19 +4051,19 @@ static int _color_build_cmdq(enum DISP_MODULE_ENUM module,
 	return ret;
 }
 
-#if defined(CONFIG_MACH_MT6785)
-void mtk_color_setbypass(enum DISP_MODULE_ENUM module, bool bypass)
+#if defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)
+void mtk_color_setbypass(enum DISP_MODULE_ENUM module, bool bypass, void *cmdq)
 {
 	int offset = C0_OFFSET;
 
 	offset = color_get_offset(module);
 	COLOR_DBG("%s, bypass: %d\n", __func__, bypass);
 	if (bypass) {
-		_color_reg_mask(NULL, DISP_COLOR_CFG_MAIN + offset, (1 << 7),
+		_color_reg_mask(cmdq, DISP_COLOR_CFG_MAIN + offset, (1 << 7),
 			0x000000FF);	/* bypass all */
 		g_color_bypass[index_of_color(module)] = 0x1;
 	} else {
-		_color_reg_mask(NULL, DISP_COLOR_CFG_MAIN + offset, (0 << 7),
+		_color_reg_mask(cmdq, DISP_COLOR_CFG_MAIN + offset, (0 << 7),
 			0x000000FF);	/* resume all */
 		g_color_bypass[index_of_color(module)] = 0x0;
 	}

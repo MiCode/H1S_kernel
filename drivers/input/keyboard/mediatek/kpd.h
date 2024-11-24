@@ -1,14 +1,7 @@
 /*
- * Copyright (C) 2016 MediaTek Inc.
+ * SPDX-License-Identifier: GPL-2.0
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2021 MediaTek Inc.
  */
 
 #ifndef __KPD_H__
@@ -48,6 +41,7 @@ struct keypad_dts_data {
 	u32 kpd_hw_dl_key3;
 	u32 kpd_hw_recovery_key;
 	u32 kpd_hw_factory_key;
+	u32 boot_mode;
 };
 
 extern struct keypad_dts_data kpd_dts_data;

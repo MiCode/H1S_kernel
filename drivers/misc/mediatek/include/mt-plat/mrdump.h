@@ -1,23 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #if !defined(__MRDUMP_H__)
 #define __MRDUMP_H__
 
-#include <stdarg.h>
+#include <asm/ptrace.h>
 #include <linux/elf.h>
 #include <linux/elfcore.h>
-#include <asm/ptrace.h>
+#include <stdarg.h>
 #include <mt-plat/aee.h>
 
 #ifdef __aarch64__
@@ -37,7 +29,7 @@
 
 #define MRDUMP_ENABLE_COOKIE 0x590d2ba3
 
-#define MRDUMP_GO_DUMP "MRDUMP09"
+#define MRDUMP_GO_DUMP "MRDUMP11"
 
 #define KSYM_32        1
 #define KSYM_64        2
@@ -53,9 +45,9 @@ struct arm32_ctrl_regs {
 };
 
 struct aarch64_ctrl_regs {
-	uint32_t sctlr_el1;
-	uint32_t sctlr_el2;
-	uint32_t sctlr_el3;
+	uint64_t sctlr_el1;
+	uint64_t sctlr_el2;
+	uint64_t sctlr_el3;
 
 	uint64_t tcr_el1;
 	uint64_t tcr_el2;
@@ -70,6 +62,16 @@ struct aarch64_ctrl_regs {
 	uint64_t sp_el[4];
 };
 
+struct mrdump_arm32_reg {
+	arm32_gregset_t arm32_regs;
+	struct arm32_ctrl_regs arm32_creg;
+};
+
+struct mrdump_arm64_reg {
+	aarch64_gregset_t arm64_regs;
+	struct aarch64_ctrl_regs arm64_creg;
+};
+
 struct mrdump_crash_record {
 	int reboot_mode;
 
@@ -78,14 +80,9 @@ struct mrdump_crash_record {
 	uint32_t fault_cpu;
 
 	union {
-		arm32_gregset_t arm32_regs;
-		aarch64_gregset_t aarch64_regs;
-	} cpu_regs[MRDUMP_CPU_MAX];
-
-	union {
-		struct arm32_ctrl_regs arm32_creg;
-		struct aarch64_ctrl_regs aarch64_creg;
-	} cpu_creg[MRDUMP_CPU_MAX];
+		struct mrdump_arm32_reg arm32_reg;
+		struct mrdump_arm64_reg arm64_reg;
+	} cpu_reg[0];
 };
 
 struct mrdump_ksyms_param {
@@ -167,7 +164,8 @@ struct mrdump_mini_header {
 #define MRDUMP_MINI_NR_SECTION 60
 #define MRDUMP_MINI_SECTION_SIZE (32 * 1024)
 #define NT_IPANIC_MISC 4095
-#define MRDUMP_MINI_NR_MISC 20
+#define MRDUMP_MINI_NR_MISC 40
+#define MRDUMP_MINI_MISC_LOAD "load"
 
 struct mrdump_mini_elf_misc {
 	unsigned long vaddr;
@@ -180,34 +178,29 @@ struct mrdump_mini_elf_misc {
 #define NOTE_NAME_LONG  20
 
 struct mrdump_mini_elf_psinfo {
-		struct elf_note note;
-		char name[NOTE_NAME_SHORT];
-		struct elf_prpsinfo data;
+	struct elf_note note;
+	char name[NOTE_NAME_SHORT];
+	struct elf_prpsinfo data;
 };
 
 struct mrdump_mini_elf_prstatus {
-		struct elf_note note;
-		char name[NOTE_NAME_SHORT];
-		struct elf_prstatus data;
+	struct elf_note note;
+	char name[NOTE_NAME_SHORT];
+	struct elf_prstatus data;
 };
 
 struct mrdump_mini_elf_note {
-		struct elf_note note;
-		char name[NOTE_NAME_LONG];
-		struct mrdump_mini_elf_misc data;
+	struct elf_note note;
+	char name[NOTE_NAME_LONG];
+	struct mrdump_mini_elf_misc data;
 };
 
 struct mrdump_mini_elf_header {
 	struct elfhdr ehdr;
 	struct elf_phdr phdrs[MRDUMP_MINI_NR_SECTION];
 	struct mrdump_mini_elf_psinfo psinfo;
-	struct mrdump_mini_elf_prstatus prstatus[NR_CPUS + 1];
+	struct mrdump_mini_elf_prstatus prstatus[AEE_MTK_CPU_NUMS];
 	struct mrdump_mini_elf_note misc[MRDUMP_MINI_NR_MISC];
-};
-
-struct mrdump_rsvmem_block {
-	phys_addr_t start_addr;
-	phys_addr_t size;
 };
 
 
@@ -219,22 +212,12 @@ struct mrdump_rsvmem_block {
 
 int mrdump_init(void);
 void __mrdump_create_oops_dump(enum AEE_REBOOT_MODE reboot_mode,
-		struct pt_regs *regs, const char *msg, ...);
-void mrdump_save_ctrlreg(int cpu);
-void mrdump_save_per_cpu_reg(int cpu, struct pt_regs *regs);
-
-int mrdump_common_die(int fiq_step, int reboot_reason, const char *msg,
+				struct pt_regs *regs, const char *msg, ...);
+int mrdump_common_die(u8 fiq_step, int reboot_reason, const char *msg,
 		      struct pt_regs *regs);
-
-
-__weak void dis_D_inner_flush_all(void)
-{
-	pr_notice("%s:weak function.\n", __func__);
-}
-
-__weak void __inner_flush_dcache_all(void)
-{
-	pr_notice("%s:weak function.\n", __func__);
-}
-
+void mrdump_mini_add_hang_raw(unsigned long vaddr, unsigned long size);
+void mrdump_mini_add_extra_misc(void);
+extern void mlog_get_buffer(char **ptr, int *size)__attribute__((weak));
+extern void get_msdc_aee_buffer(unsigned long *buff,
+	unsigned long *size)__attribute__((weak));
 #endif

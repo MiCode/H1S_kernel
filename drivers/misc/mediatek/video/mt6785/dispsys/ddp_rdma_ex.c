@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #define LOG_TAG "RDMA"
 #include "ddp_log.h"
@@ -414,6 +406,11 @@ void rdma_cal_golden_setting(unsigned int idx, unsigned int bpp,
 	/* DISP_RDMA_SRAM_CASCADE */
 	gs[GS_RDMA_SELF_FIFO_SIZE] = 1536;
 	gs[GS_RDMA_RSZ_FIFO_SIZE] = 1536;
+	if (gs[GS_RDMA_OUTPUT_VALID_FIFO_TH] > gs[GS_RDMA_RSZ_FIFO_SIZE]) {
+		gs[GS_RDMA_OUTPUT_VALID_FIFO_TH] = gs[GS_RDMA_RSZ_FIFO_SIZE] - 80;
+		DISPMSG("%s, force set output_valid = %d\n",
+			__func__, gs[GS_RDMA_OUTPUT_VALID_FIFO_TH]);
+	};
 }
 
 /* Set register with value from rdma_cal_golden_setting.

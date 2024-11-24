@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2011-2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include <linux/module.h>       /* needed by all modules */
@@ -209,13 +201,19 @@ static int sspm_device_probe(struct platform_device *pdev)
 	}
 
 	pr_info("SSPM is ready to service IPI\n");
-
-#ifdef SSPM_SHARE_BUFFER_SUPPORT
-	if (sspm_sbuf_init()) {
-		pr_err("[SSPM] Shared Buffer Init Failed\n");
+#ifdef CONFIG_OF_RESERVED_MEM
+	if (sspm_reserve_memory_init(sspm_pdev)) {
+		pr_err("[SSPM] Reserved Memory Failed\n");
+		atomic_set(&sspm_inited, 1);
 		return -1;
 	}
 #endif
+	if (of_property_read_bool(pdev->dev.of_node, "sspm_share_buffer_supported")) {
+		if (sspm_sbuf_init()) {
+			pr_err("[SSPM] Shared Buffer Init Failed\n");
+			return -1;
+		}
+	}
 
 	return 0;
 }
@@ -266,14 +264,6 @@ static int __init sspm_init(void)
 		pr_err("[SSPM] Device Init Failed\n");
 		goto error;
 	}
-
-#ifdef CONFIG_OF_RESERVED_MEM
-	if (sspm_reserve_memory_init()) {
-		pr_err("[SSPM] Reserved Memory Failed\n");
-		goto error;
-	}
-#endif
-
 	pr_debug("[SSPM] Helper Init\n");
 
 	sspm_ready = 1;

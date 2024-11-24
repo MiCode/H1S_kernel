@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
-
 
 #include "conn_md.h"
 #include "conn_md_dbg.h"
@@ -365,10 +356,11 @@ static int conn_md_thread(void *p_data)
 	struct ipc_ilm *p_cur_ilm = NULL;
 
 	while (1) {
-		wait_for_completion_interruptible(&p_conn_md->tx_comp);
+		if (wait_for_completion_interruptible(&p_conn_md->tx_comp))
+			CONN_MD_WARN_FUNC("wait_for_completion is interrupted.\n");
 
 		if (kthread_should_stop()) {
-			CONN_MD_WARN_FUNC("conn-md-thread stoping ...\n");
+			CONN_MD_WARN_FUNC("conn-md-thread stopping ...\n");
 			break;
 		}
 

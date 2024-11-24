@@ -6,6 +6,7 @@
  *
  */
 
+#include <linux/module.h>
 #include "pinctrl-mtk-mt6785.h"
 #include "pinctrl-paris.h"
 
@@ -787,8 +788,8 @@ static const struct mtk_pin_soc mt6785_data = {
 	.race_free_access = true,
 	.bias_set_combo = mtk_pinconf_bias_set_combo,
 	.bias_get_combo = mtk_pinconf_bias_get_combo,
-	.drive_set = mtk_pinconf_drive_set_direct_val,
-	.drive_get = mtk_pinconf_drive_get_direct_val,
+	.drive_set = mtk_pinconf_drive_set_raw,
+	.drive_get = mtk_pinconf_drive_get_raw,
 };
 
 static const struct of_device_id mt6785_pinctrl_of_match[] = {
@@ -798,6 +799,7 @@ static const struct of_device_id mt6785_pinctrl_of_match[] = {
 
 static int mt6785_pinctrl_probe(struct platform_device *pdev)
 {
+pr_err("mt6785_pinctrl_probe called\n");
 	return mtk_paris_pinctrl_probe(pdev, &mt6785_data);
 }
 
@@ -812,6 +814,7 @@ static struct platform_driver mt6785_pinctrl_driver = {
 
 static int __init mt6785_pinctrl_init(void)
 {
+pr_err("mt6785_pinctrl_init called\n");
 	return platform_driver_register(&mt6785_pinctrl_driver);
 }
 arch_initcall(mt6785_pinctrl_init);

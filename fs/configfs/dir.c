@@ -50,6 +50,14 @@ DECLARE_RWSEM(configfs_rename_sem);
  */
 DEFINE_SPINLOCK(configfs_dirent_lock);
 
+/*
+ * All of link_obj/unlink_obj/link_group/unlink_group require that
+ * subsys->su_mutex is held.
+ * But parent configfs_subsystem is NULL when config_item is root.
+ * Use this mutex when config_item is root.
+ */
+static DEFINE_MUTEX(configfs_subsystem_mutex);
+
 static void configfs_d_iput(struct dentry * dentry,
 			    struct inode * inode)
 {
@@ -613,7 +621,7 @@ static void detach_attrs(struct config_item * item)
 
 static int populate_attrs(struct config_item *item)
 {
-	struct config_item_type *t = item->ci_type;
+	const struct config_item_type *t = item->ci_type;
 	struct configfs_attribute *attr;
 	struct configfs_bin_attribute *bin_attr;
 	int error = 0;
@@ -935,7 +943,7 @@ static void configfs_detach_group(struct config_item *item)
 static void client_disconnect_notify(struct config_item *parent_item,
 				     struct config_item *item)
 {
-	struct config_item_type *type;
+	const struct config_item_type *type;
 
 	type = parent_item->ci_type;
 	BUG_ON(!type);
@@ -954,7 +962,7 @@ static void client_disconnect_notify(struct config_item *parent_item,
 static void client_drop_item(struct config_item *parent_item,
 			     struct config_item *item)
 {
-	struct config_item_type *type;
+	const struct config_item_type *type;
 
 	type = parent_item->ci_type;
 	BUG_ON(!type);
@@ -1294,7 +1302,7 @@ static int configfs_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode
 	struct config_item *parent_item;
 	struct configfs_subsystem *subsys;
 	struct configfs_dirent *sd;
-	struct config_item_type *type;
+	const struct config_item_type *type;
 	struct module *subsys_owner = NULL, *new_item_owner = NULL;
 	struct configfs_fragment *frag;
 	char *name;
@@ -1884,7 +1892,7 @@ EXPORT_SYMBOL(configfs_unregister_group);
 struct config_group *
 configfs_register_default_group(struct config_group *parent_group,
 				const char *name,
-				struct config_item_type *item_type)
+				const struct config_item_type *item_type)
 {
 	int ret;
 	struct config_group *group;
@@ -1937,7 +1945,9 @@ int configfs_register_subsystem(struct configfs_subsystem *subsys)
 		group->cg_item.ci_name = group->cg_item.ci_namebuf;
 
 	sd = root->d_fsdata;
+	mutex_lock(&configfs_subsystem_mutex);
 	link_group(to_config_group(sd->s_element), group);
+	mutex_unlock(&configfs_subsystem_mutex);
 
 	inode_lock_nested(d_inode(root), I_MUTEX_PARENT);
 
@@ -1962,7 +1972,9 @@ int configfs_register_subsystem(struct configfs_subsystem *subsys)
 	inode_unlock(d_inode(root));
 
 	if (err) {
+		mutex_lock(&configfs_subsystem_mutex);
 		unlink_group(group);
+		mutex_unlock(&configfs_subsystem_mutex);
 		configfs_release_fs();
 	}
 	put_fragment(frag);
@@ -2008,7 +2020,9 @@ void configfs_unregister_subsystem(struct configfs_subsystem *subsys)
 
 	dput(dentry);
 
+	mutex_lock(&configfs_subsystem_mutex);
 	unlink_group(group);
+	mutex_unlock(&configfs_subsystem_mutex);
 	configfs_release_fs();
 }
 

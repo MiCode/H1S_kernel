@@ -1,18 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
-
-#if defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6765)
+#ifndef __HELIO_DVFSRC_H
+#define __HELIO_DVFSRC_H
+#if IS_ENABLED(CONFIG_MTK_DVFSRC)
+extern void dvfsrc_enable_dvfs_freq_hopping(int on);
+#else
+static inline void dvfsrc_enable_dvfs_freq_hopping(int on)
+{ }
+#if defined(CONFIG_MACH_MT6768)
 #include <helio-dvfsrc_v2.h>
 #elif defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT6885)
 #include <helio-dvfsrc_v3.h>
@@ -24,6 +22,12 @@
 #include <helio-dvfsrc_v3.h>
 #elif defined(CONFIG_MACH_MT6833)
 #include <helio-dvfsrc_v3.h>
+#elif defined(CONFIG_MACH_MT6877)
+#include <helio-dvfsrc_v3.h>
+#elif defined(CONFIG_MACH_MT6781)
+#include <helio-dvfsrc_v3.h>
 #else
 #include <helio-dvfsrc_v1.h>
+#endif
+#endif
 #endif

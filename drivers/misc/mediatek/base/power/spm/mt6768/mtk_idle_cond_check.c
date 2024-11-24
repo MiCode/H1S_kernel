@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -18,13 +10,13 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/io.h>
-
+#include "mtk_spm_internal.h"
 #include <trace/events/mtk_idle_event.h>
 
 #include <mtk_idle.h> /* IDLE_TYPE_xxx */
 #include <mtk_idle_internal.h>
 
-#include "mtk_spm_internal.h"
+
 
 #include <mtk_idle_module_plat.h>
 /***********************************************************
@@ -52,6 +44,7 @@ static void __iomem *apmixedsys_base;  /* APMIXEDSYS */
 #define APMIXEDSYS(ofs)     (apmixedsys_base + ofs)
 
 #undef SPM_PWR_STATUS
+#define SPM_PWR_STATUS_2ND  SPM_REG(0x0184)
 #define SPM_PWR_STATUS      SPM_REG(0x0180)
 #define	INFRA_SW_CG_0_STA   INFRA_REG(0x0094)
 #define	INFRA_SW_CG_1_STA   INFRA_REG(0x0090)
@@ -354,7 +347,8 @@ void mtk_idle_cond_update_state(void)
 		idle_value[i] = clk[i] = 0;
 
 		/* check mtcmos, if off set idle_value and clk to 0 disable */
-		if (!(idle_readl(SPM_PWR_STATUS) & idle_cg_info[i].subsys_mask))
+		if (!(idle_readl(SPM_PWR_STATUS) & idle_cg_info[i].subsys_mask) ||
+			!(idle_readl(SPM_PWR_STATUS_2ND) & idle_cg_info[i].subsys_mask))
 			continue;
 		/* check clkmux */
 		if (check_clkmux_pdn(idle_cg_info[i].clkmux_id))

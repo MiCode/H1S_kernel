@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 /**
@@ -36,7 +28,6 @@
 #include <mt-plat/sync_write.h>
 #include <mt-plat/upmu_common.h>
 
-#define TAG     "[Power/clkbuf]"
 #ifdef pr_fmt
 #undef pr_fmt
 #endif
@@ -47,6 +38,7 @@
 		if (clkbuf_debug)			\
 			pr_info(fmt, ##args);		\
 	} while (0)
+
 #define clkbuf_readl(addr)			__raw_readl(addr)
 #define clkbuf_writel(addr, val)	mt_reg_sync_writel(val, addr)
 
@@ -77,7 +69,6 @@ extern struct mutex clk_buf_ctrl_lock;
 extern bool is_clkbuf_initiated;
 extern bool is_pmic_clkbuf;
 extern bool clkbuf_debug;
-extern unsigned int bblpm_cnt;
 extern unsigned int clkbuf_ctrl_stat;
 
 short is_clkbuf_bringup(void);

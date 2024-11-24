@@ -172,11 +172,7 @@ static int abx80x_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	tm->tm_mon = bcd2bin(buf[ABX8XX_REG_MO] & 0x1F) - 1;
 	tm->tm_year = bcd2bin(buf[ABX8XX_REG_YR]) + 100;
 
-	err = rtc_valid_tm(tm);
-	if (err < 0)
-		dev_err(&client->dev, "retrieved date/time is not valid.\n");
-
-	return err;
+	return 0;
 }
 
 static int abx80x_rtc_set_time(struct device *dev, struct rtc_time *tm)
@@ -614,11 +610,11 @@ static int abx80x_probe(struct i2c_client *client,
 	if (err)
 		return err;
 
-	rtc = devm_rtc_device_register(&client->dev, "abx8xx",
-				       &abx80x_rtc_ops, THIS_MODULE);
-
+	rtc = devm_rtc_allocate_device(&client->dev);
 	if (IS_ERR(rtc))
 		return PTR_ERR(rtc);
+
+	rtc->ops = &abx80x_rtc_ops;
 
 	i2c_set_clientdata(client, rtc);
 
@@ -646,10 +642,14 @@ static int abx80x_probe(struct i2c_client *client,
 	err = devm_add_action_or_reset(&client->dev,
 				       rtc_calib_remove_sysfs_group,
 				       &client->dev);
-	if (err)
+	if (err) {
 		dev_err(&client->dev,
 			"Failed to add sysfs cleanup action: %d\n",
 			err);
+		return err;
+	}
+
+	err = rtc_register_device(rtc);
 
 	return err;
 }

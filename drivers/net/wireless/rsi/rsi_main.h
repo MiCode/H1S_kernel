@@ -20,6 +20,7 @@
 #include <linux/string.h>
 #include <linux/skbuff.h>
 #include <net/mac80211.h>
+#include <net/rsi_91x.h>
 
 struct rsi_sta {
 	struct ieee80211_sta *sta;
@@ -60,12 +61,15 @@ enum RSI_FSM_STATES {
 extern u32 rsi_zone_enabled;
 extern __printf(2, 3) void rsi_dbg(u32 zone, const char *fmt, ...);
 
-#define RSI_MAX_VIFS                    1
+#define RSI_MAX_BANDS			2
+#define RSI_MAX_VIFS                    3
 #define NUM_EDCA_QUEUES                 4
 #define IEEE80211_ADDR_LEN              6
 #define FRAME_DESC_SZ                   16
 #define MIN_802_11_HDR_LEN              24
 #define RSI_DEF_KEEPALIVE               90
+#define RSI_WOW_KEEPALIVE                5
+#define RSI_BCN_MISS_THRESHOLD           24
 
 #define DATA_QUEUE_WATER_MARK           400
 #define MIN_DATA_QUEUE_WATER_MARK       300
@@ -83,10 +87,6 @@ extern __printf(2, 3) void rsi_dbg(u32 zone, const char *fmt, ...);
 #define MGMT_HW_Q			10
 #define BEACON_HW_Q			11
 
-/* Queue information */
-#define RSI_COEX_Q			0x0
-#define RSI_WIFI_MGMT_Q                 0x4
-#define RSI_WIFI_DATA_Q                 0x5
 #define IEEE80211_MGMT_FRAME            0x00
 #define IEEE80211_CTL_FRAME             0x04
 
@@ -108,13 +108,23 @@ extern __printf(2, 3) void rsi_dbg(u32 zone, const char *fmt, ...);
 	((_q) == VI_Q) ? IEEE80211_AC_VI : \
 	IEEE80211_AC_VO)
 
+/* WoWLAN flags */
+#define RSI_WOW_ENABLED			BIT(0)
+#define RSI_WOW_NO_CONNECTION		BIT(1)
+
 #define RSI_DEV_9113		1
+#define RSI_MAX_RX_PKTS		64
 
 struct version_info {
 	u16 major;
 	u16 minor;
-	u16 release_num;
-	u16 patch_num;
+	u8 release_num;
+	u8 patch_num;
+	union {
+		struct {
+			u8 fw_ver[8];
+		} info;
+	} ver;
 } __packed;
 
 struct skb_info {
@@ -124,6 +134,9 @@ struct skb_info {
 	s8 tid;
 	s8 sta_id;
 	u8 internal_hdr_size;
+	struct ieee80211_vif *vif;
+	u8 vap_id;
+	bool have_key;
 };
 
 enum edca_queue {
@@ -136,7 +149,6 @@ enum edca_queue {
 };
 
 struct security_info {
-	bool security_enable;
 	u32 ptk_cipher;
 	u32 gtk_cipher;
 };
@@ -157,6 +169,7 @@ struct vif_priv {
 	bool is_ht;
 	bool sgi;
 	u16 seq_start;
+	int vap_id;
 };
 
 struct rsi_event {
@@ -178,12 +191,6 @@ struct cqm_info {
 	u32 rssi_hyst;
 };
 
-struct xtended_desc {
-	u8 confirm_frame_type;
-	u8 retry_cnt;
-	u16 reserved;
-};
-
 enum rsi_dfs_regions {
 	RSI_REGION_FCC = 0,
 	RSI_REGION_ETSI,
@@ -191,16 +198,23 @@ enum rsi_dfs_regions {
 	RSI_REGION_WORLD
 };
 
+struct rsi_rate_config {
+	u32 configured_mask;	/* configured by mac80211 bits 0-11=legacy 12+ mcs */
+	u16 fixed_hw_rate;
+	bool fixed_enabled;
+};
+
 struct rsi_common {
 	struct rsi_hw *priv;
 	struct vif_priv vif_info[RSI_MAX_VIFS];
 
+	void *coex_cb;
 	bool mgmt_q_block;
-	struct version_info driver_ver;
-	struct version_info fw_ver;
+	struct version_info lmac_ver;
 
 	struct rsi_thread tx_thread;
 	struct sk_buff_head tx_queue[NUM_EDCA_QUEUES + 2];
+	struct completion wlan_init_completion;
 	/* Mutex declaration */
 	struct mutex mutex;
 	/* Mutex used for tx thread */
@@ -215,8 +229,8 @@ struct rsi_common {
 	u8 channel_width;
 
 	u16 rts_threshold;
-	u16 bitrate_mask[2];
-	u32 fixedrate_mask[2];
+	u32 bitrate_mask[RSI_MAX_BANDS];
+	struct rsi_rate_config rate_config[RSI_MAX_BANDS];
 
 	u8 rf_reset;
 	struct transmit_q_stats tx_stats;
@@ -237,7 +251,6 @@ struct rsi_common {
 	u8 mac_id;
 	u8 radio_id;
 	u16 rate_pwr[20];
-	u16 min_rate;
 
 	/* WMM algo related */
 	u8 selected_qnum;
@@ -259,7 +272,11 @@ struct rsi_common {
 	u8 obm_ant_sel_val;
 	int tx_power;
 	u8 ant_in_use;
-
+	/* Mutex used for writing packet to bus */
+	struct mutex tx_bus_mutex;
+	bool hibernate_resume;
+	bool reinit_hw;
+	u8 wow_flags;
 	u16 beacon_interval;
 	u8 dtim_cnt;
 
@@ -270,11 +287,15 @@ struct rsi_common {
 	int num_stations;
 	int max_stations;
 	struct ieee80211_key_conf *key;
-};
 
-enum host_intf {
-	RSI_HOST_INTF_SDIO = 0,
-	RSI_HOST_INTF_USB
+	/* Wi-Fi direct mode related */
+	bool p2p_enabled;
+	struct timer_list roc_timer;
+	struct ieee80211_vif *roc_vif;
+
+	bool eapol4_confirm;
+	bool bt_defer_attach;
+	void *bt_adapter;
 };
 
 struct eepromrw_info {
@@ -301,7 +322,7 @@ struct rsi_hw {
 	struct device *device;
 	u8 sc_nvifs;
 
-	enum host_intf rsi_host_intf;
+	enum rsi_host_intf rsi_host_intf;
 	u16 block_size;
 	enum ps_state ps_state;
 	struct rsi_ps_info ps_info;
@@ -322,9 +343,10 @@ struct rsi_hw {
 	void *rsi_dev;
 	struct rsi_host_intf_ops *host_intf_ops;
 	int (*check_hw_queue_status)(struct rsi_hw *adapter, u8 q_num);
-	int (*rx_urb_submit)(struct rsi_hw *adapter);
 	int (*determine_event_timeout)(struct rsi_hw *adapter);
 };
+
+void rsi_print_version(struct rsi_common *common);
 
 struct rsi_host_intf_ops {
 	int (*read_pkt)(struct rsi_hw *adapter, u8 *pkt, u32 len);
@@ -342,5 +364,11 @@ struct rsi_host_intf_ops {
 	int (*load_data_master_write)(struct rsi_hw *adapter, u32 addr,
 				      u32 instructions_size, u16 block_size,
 				      u8 *fw);
+	int (*reinit_device)(struct rsi_hw *adapter);
 };
+
+enum rsi_host_intf rsi_get_host_intf(void *priv);
+void rsi_set_bt_context(void *priv, void *bt_context);
+void rsi_attach_bt(struct rsi_common *common);
+
 #endif

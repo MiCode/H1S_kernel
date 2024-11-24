@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __M4U_V2_EXT_H__
@@ -84,9 +76,9 @@ struct sg_table *m4u_create_sgtable(unsigned long va, unsigned int size);
 int m4u_alloc_mva_sg(struct port_mva_info_t *port_info,
 		struct sg_table *sg_table);
 
-int m4u_dealloc_mva_sg(int eModuleID,
+int m4u_dealloc_mva_sg(int module_id,
 		       struct sg_table *sg_table,
-		       const unsigned int buf_size, const unsigned int MVA);
+		       const unsigned int BufSize, const unsigned int MVA);
 int m4u_config_port_ext(struct M4U_PORT_STRUCT *pM4uPort);
 int m4u_mva_map_kernel(unsigned int mva, unsigned int size,
 		       unsigned long *map_va, unsigned int *map_size);
@@ -105,6 +97,6 @@ typedef enum m4u_callback_ret_t(m4u_fault_callback_t) (int port,
 int m4u_register_fault_callback(int port, m4u_fault_callback_t *fn,
 				void *data);
 int m4u_unregister_fault_callback(int port);
-int m4u_enable_tf(unsigned int port, bool fgenable);
+int m4u_enable_tf(int port, bool fgenable);
 
 #endif

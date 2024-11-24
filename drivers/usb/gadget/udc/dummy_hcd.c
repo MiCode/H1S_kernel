@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * dummy_hcd.c -- Dummy/Loopback USB host and device emulator driver.
  *
@@ -5,11 +6,6 @@
  *
  * Copyright (C) 2003 David Brownell
  * Copyright (C) 2003-2005 Alan Stern
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 
@@ -570,10 +566,12 @@ static int dummy_enable(struct usb_ep *_ep,
 			if (max <= 1024)
 				break;
 			/* save a return statement */
+			/* fall through */
 		case USB_SPEED_FULL:
 			if (max <= 64)
 				break;
 			/* save a return statement */
+			/* fall through */
 		default:
 			if (max <= 8)
 				break;
@@ -591,6 +589,7 @@ static int dummy_enable(struct usb_ep *_ep,
 			if (max <= 1024)
 				break;
 			/* save a return statement */
+			/* fall through */
 		case USB_SPEED_FULL:
 			if (max <= 1023)
 				break;
@@ -915,6 +914,21 @@ static int dummy_pullup(struct usb_gadget *_gadget, int value)
 	spin_lock_irqsave(&dum->lock, flags);
 	dum->pullup = (value != 0);
 	set_link_state(dum_hcd);
+	if (value == 0) {
+		/*
+		 * Emulate synchronize_irq(): wait for callbacks to finish.
+		 * This seems to be the best place to emulate the call to
+		 * synchronize_irq() that's in usb_gadget_remove_driver().
+		 * Doing it in dummy_udc_stop() would be too late since it
+		 * is called after the unbind callback and unbind shouldn't
+		 * be invoked until all the other callbacks are finished.
+		 */
+		while (dum->callback_usage > 0) {
+			spin_unlock_irqrestore(&dum->lock, flags);
+			usleep_range(1000, 2000);
+			spin_lock_irqsave(&dum->lock, flags);
+		}
+	}
 	spin_unlock_irqrestore(&dum->lock, flags);
 
 	usb_hcd_poll_rh_status(dummy_hcd_to_hcd(dum_hcd));
@@ -927,20 +941,8 @@ static void dummy_udc_set_speed(struct usb_gadget *_gadget,
 	struct dummy	*dum;
 
 	dum = gadget_dev_to_dummy(&_gadget->dev);
-
-	 if (mod_data.is_super_speed)
-		 dum->gadget.speed = min_t(u8, USB_SPEED_SUPER, speed);
-	 else if (mod_data.is_high_speed)
-		 dum->gadget.speed = min_t(u8, USB_SPEED_HIGH, speed);
-	 else
-		 dum->gadget.speed = USB_SPEED_FULL;
-
+	dum->gadget.speed = speed;
 	dummy_udc_update_ep0(dum);
-
-	if (dum->gadget.speed < speed)
-		dev_dbg(udc_dev(dum), "This device can perform faster"
-			" if you connect it to a %s port...\n",
-			usb_speed_string(speed));
 }
 
 static int dummy_udc_start(struct usb_gadget *g,
@@ -1028,14 +1030,6 @@ static int dummy_udc_stop(struct usb_gadget *g)
 	spin_lock_irq(&dum->lock);
 	dum->ints_enabled = 0;
 	stop_activity(dum);
-
-	/* emulate synchronize_irq(): wait for callbacks to finish */
-	while (dum->callback_usage > 0) {
-		spin_unlock_irq(&dum->lock);
-		usleep_range(1000, 2000);
-		spin_lock_irq(&dum->lock);
-	}
-
 	dum->driver = NULL;
 	spin_unlock_irq(&dum->lock);
 
@@ -1783,9 +1777,9 @@ static int handle_control_request(struct dummy_hcd *dum_hcd, struct urb *urb,
 /* drive both sides of the transfers; looks like irq handlers to
  * both drivers except the callbacks aren't in_irq().
  */
-static void dummy_timer(unsigned long _dum_hcd)
+static void dummy_timer(struct timer_list *t)
 {
-	struct dummy_hcd	*dum_hcd = (struct dummy_hcd *) _dum_hcd;
+	struct dummy_hcd	*dum_hcd = from_timer(dum_hcd, t, timer);
 	struct dummy		*dum = dum_hcd->dum;
 	struct urbp		*urbp, *tmp;
 	unsigned long		flags;
@@ -2206,8 +2200,6 @@ static int dummy_hub_control(
 							USB_PORT_STAT_LOW_SPEED;
 						break;
 					default:
-						dum_hcd->dum->gadget.speed =
-							USB_SPEED_FULL;
 						break;
 					}
 				}
@@ -2393,7 +2385,7 @@ static inline ssize_t show_urb(char *buf, size_t size, struct urb *urb)
 {
 	int ep = usb_pipeendpoint(urb->pipe);
 
-	return snprintf(buf, size,
+	return scnprintf(buf, size,
 		"urb/%p %s ep%d%s%s len %d/%d\n",
 		urb,
 		({ char *s;
@@ -2458,9 +2450,7 @@ static DEVICE_ATTR_RO(urbs);
 
 static int dummy_start_ss(struct dummy_hcd *dum_hcd)
 {
-	init_timer(&dum_hcd->timer);
-	dum_hcd->timer.function = dummy_timer;
-	dum_hcd->timer.data = (unsigned long)dum_hcd;
+	timer_setup(&dum_hcd->timer, dummy_timer, 0);
 	dum_hcd->rh_state = DUMMY_RH_RUNNING;
 	dum_hcd->stream_en_ep = 0;
 	INIT_LIST_HEAD(&dum_hcd->urbp_list);
@@ -2489,9 +2479,7 @@ static int dummy_start(struct usb_hcd *hcd)
 		return dummy_start_ss(dum_hcd);
 
 	spin_lock_init(&dum_hcd->dum->lock);
-	init_timer(&dum_hcd->timer);
-	dum_hcd->timer.function = dummy_timer;
-	dum_hcd->timer.data = (unsigned long)dum_hcd;
+	timer_setup(&dum_hcd->timer, dummy_timer, 0);
 	dum_hcd->rh_state = DUMMY_RH_RUNNING;
 
 	INIT_LIST_HEAD(&dum_hcd->urbp_list);
@@ -2766,7 +2754,7 @@ static int __init init(void)
 {
 	int	retval = -ENOMEM;
 	int	i;
-	struct	dummy *dum[MAX_NUM_UDC];
+	struct	dummy *dum[MAX_NUM_UDC] = {};
 
 	if (usb_disabled())
 		return -ENODEV;

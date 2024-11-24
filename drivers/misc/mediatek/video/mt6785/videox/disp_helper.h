@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _DISP_HELPER_H_
 #define _DISP_HELPER_H_
@@ -58,6 +50,7 @@ enum DISP_HELPER_OPT {
 	DISP_OPT_SHOW_VISUAL_DEBUG_INFO,
 	DISP_OPT_RDMA_UNDERFLOW_AEE,
 	DISP_OPT_HRT,
+	DISP_OPT_HRT_MODE,
 	DISP_OPT_PARTIAL_UPDATE,
 	DISP_OPT_CV_BYSUSPEND,
 	DISP_OPT_DELAYED_TRIGGER,

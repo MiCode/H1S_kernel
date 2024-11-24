@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 #include "tpd.h"
 #include <linux/slab.h>
 #include <linux/device.h>
@@ -56,6 +47,8 @@ bool tpd_gesture_flag;
 const struct of_device_id touch_of_match[] = {
 	{ .compatible = "mediatek,touch", },
 	{ .compatible = "mediatek,mt8167-touch", },
+	{ .compatible = "mediatek,touch-himax", },
+	{ .compatible = "goodix,touch", },
 	{},
 };
 
@@ -196,11 +189,13 @@ int tpd_get_gpio_info(struct platform_device *pdev)
 		dev_info(&pdev->dev, "fwq Cannot find pinctrl1!\n");
 		return ret;
 	}
+#ifndef CONFIG_TOUCHSCREEN_HIMAX_CHIPSET_8789P1_8185P3
 	pins_default = pinctrl_lookup_state(pinctrl1, "default");
 	if (IS_ERR(pins_default)) {
 		ret = PTR_ERR(pins_default);
 		TPD_DMESG("Cannot find pinctrl default %d!\n", ret);
 	}
+#endif
 	eint_as_int = pinctrl_lookup_state(pinctrl1, "state_eint_as_int");
 	if (IS_ERR(eint_as_int)) {
 		ret = PTR_ERR(eint_as_int);
@@ -551,6 +546,7 @@ static int tpd_probe(struct platform_device *pdev)
 #endif
 
 	TPD_DMESG("enter %s, %d\n", __func__, __LINE__);
+	pr_info("enter %s, %d\n", __func__, __LINE__);
 
 	if (misc_register(&tpd_misc_device))
 		pr_info("mtk_tpd: tpd_misc_device register failed\n");
@@ -737,7 +733,7 @@ static void tpd_init_work_callback(struct work_struct *work)
 static int __init tpd_device_init(void)
 {
 	int res = 0;
-
+	pr_info("[%s-%s-%d]\n", __FILE__, __func__, __LINE__);
 	tpd_init_workqueue = create_singlethread_workqueue("mtk-tpd");
 	INIT_WORK(&tpd_init_work, tpd_init_work_callback);
 

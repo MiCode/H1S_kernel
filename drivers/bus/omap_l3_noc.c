@@ -285,7 +285,7 @@ static int omap_l3_probe(struct platform_device *pdev)
 	 */
 	l3->debug_irq = platform_get_irq(pdev, 0);
 	ret = devm_request_irq(l3->dev, l3->debug_irq, l3_interrupt_handler,
-			       0x0, "l3-dbg-irq", l3);
+			       IRQF_NO_THREAD, "l3-dbg-irq", l3);
 	if (ret) {
 		dev_err(l3->dev, "request_irq failed for %d\n",
 			l3->debug_irq);
@@ -294,7 +294,7 @@ static int omap_l3_probe(struct platform_device *pdev)
 
 	l3->app_irq = platform_get_irq(pdev, 1);
 	ret = devm_request_irq(l3->dev, l3->app_irq, l3_interrupt_handler,
-			       0x0, "l3-app-irq", l3);
+			       IRQF_NO_THREAD, "l3-app-irq", l3);
 	if (ret)
 		dev_err(l3->dev, "request_irq failed for %d\n", l3->app_irq);
 
@@ -375,3 +375,8 @@ static void __exit omap_l3_exit(void)
 	platform_driver_unregister(&omap_l3_driver);
 }
 module_exit(omap_l3_exit);
+
+MODULE_AUTHOR("Santosh Shilimkar");
+MODULE_AUTHOR("Sricharan R");
+MODULE_DESCRIPTION("OMAP L3 Interconnect error handling driver");
+MODULE_LICENSE("GPL v2");

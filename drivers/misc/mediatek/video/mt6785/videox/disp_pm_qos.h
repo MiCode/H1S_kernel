@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __DISP_PM_QOS_H__
 #define __DISP_PM_QOS_H__
@@ -22,7 +14,7 @@
 void disp_pm_qos_init(void);
 void disp_pm_qos_deinit(void);
 int disp_pm_qos_request_dvfs(enum HRT_LEVEL hrt);
-
+int disp_pm_qos_update_mmclk(int mm_freq);
 int disp_pm_qos_update_bw(unsigned long long bandwidth);
 int disp_pm_qos_set_default_bw(unsigned long long *bandwidth);
 int disp_pm_qos_set_ovl_bw(unsigned long long in_fps,

@@ -10,8 +10,6 @@
 #include <linux/jump_label.h>
 #include <asm/ipl.h>
 
-#ifdef HAVE_JUMP_LABEL
-
 struct insn {
 	u16 opcode;
 	s32 offset;
@@ -43,7 +41,7 @@ static void jump_label_bug(struct jump_entry *entry, struct insn *expected,
 	unsigned char *ipe = (unsigned char *)expected;
 	unsigned char *ipn = (unsigned char *)new;
 
-	pr_emerg("Jump label code mismatch at %pS [%p]\n", ipc, ipc);
+	pr_emerg("Jump label code mismatch at %pS [%px]\n", ipc, ipc);
 	pr_emerg("Found:    %6ph\n", ipc);
 	pr_emerg("Expected: %6ph\n", ipe);
 	pr_emerg("New:      %6ph\n", ipn);
@@ -102,5 +100,3 @@ void arch_jump_label_transform_static(struct jump_entry *entry,
 {
 	__jump_label_transform(entry, type, 1);
 }
-
-#endif

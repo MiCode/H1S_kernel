@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -254,6 +246,9 @@ int mtk_idle_cond_append_info(
 		s -= l; \
 	} while (0)
 
+	if (unlikely(idle_type < 0 || idle_type >= NR_IDLE_TYPES))
+		return 0;
+
 	if (short_log) {
 		for (i = 0; i < NR_CG_GRPS; i++)
 			log("0x%08x, ", idle_block_mask[idle_type][i]);
@@ -280,6 +275,9 @@ int mtk_idle_cond_append_info(
 void mtk_idle_cond_update_mask(
 	int idle_type, unsigned int reg, unsigned int mask)
 {
+	if (unlikely(idle_type < 0 || idle_type >= NR_IDLE_TYPES))
+		return;
+
 	if (reg < NR_CG_GRPS)
 		idle_cond_mask[idle_type][reg] = mask;
 	/* special case for sodi3 pll check */
@@ -391,6 +389,9 @@ bool mtk_idle_cond_check(int idle_type)
 {
 	bool ret = false;
 
+	if (unlikely(idle_type < 0 || idle_type >= NR_IDLE_TYPES))
+		return false;
+
 	/* check cg state */
 	ret = !(idle_block_mask[idle_type][NR_CG_GRPS]);
 
@@ -440,14 +441,14 @@ static int get_base_from_node(
 
 int __init mtk_idle_cond_check_init(void)
 {
-	get_base_from_node("mediatek,infracfg_ao", &infrasys_base, 0);
-	get_base_from_node("mediatek,mmsys_config", &mmsys_base, 0);
-	get_base_from_node("mediatek,imgsys", &imgsys_base, 0);
+	get_base_from_node("mediatek,mt6765-infracfg", &infrasys_base, 0);
+	get_base_from_node("mediatek,mt6765-mmsys_config", &mmsys_base, 0);
+	get_base_from_node("mediatek,mt6765-imgsys", &imgsys_base, 0);
 	get_base_from_node("mediatek,mfgcfg", &mfgsys_base, 0);
 	get_base_from_node("mediatek,venc_gcon", &vencsys_base, 0);
-	get_base_from_node("mediatek,apmixed", &apmixedsys_base, 0);
+	get_base_from_node("mediatek,mt6765-apmixedsys", &apmixedsys_base, 0);
 	get_base_from_node("mediatek,sleep", &sleepsys_base, 0);
-	get_base_from_node("mediatek,topckgen", &topck_base, 0);
+	get_base_from_node("mediatek,mt6765-topckgen", &topck_base, 0);
 	/* update cg address in idle_cg_info */
 	get_cg_addrs();
 

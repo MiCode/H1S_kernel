@@ -75,7 +75,6 @@
 static struct platform_device *
 lpe_audio_platdev_create(struct drm_i915_private *dev_priv)
 {
-	int ret;
 	struct drm_device *dev = &dev_priv->drm;
 	struct platform_device_info pinfo = {};
 	struct resource *rsc;
@@ -120,22 +119,17 @@ lpe_audio_platdev_create(struct drm_i915_private *dev_priv)
 	spin_lock_init(&pdata->lpe_audio_slock);
 
 	platdev = platform_device_register_full(&pinfo);
-	if (IS_ERR(platdev)) {
-		ret = PTR_ERR(platdev);
-		DRM_ERROR("Failed to allocate LPE audio platform device\n");
-		goto err;
-	}
-
 	kfree(rsc);
+	kfree(pdata);
+
+	if (IS_ERR(platdev)) {
+		DRM_ERROR("Failed to allocate LPE audio platform device\n");
+		return platdev;
+	}
 
 	pm_runtime_no_callbacks(&platdev->dev);
 
 	return platdev;
-
-err:
-	kfree(rsc);
-	kfree(pdata);
-	return ERR_PTR(ret);
 }
 
 static void lpe_audio_platdev_destroy(struct drm_i915_private *dev_priv)
@@ -192,7 +186,7 @@ static bool lpe_audio_detect(struct drm_i915_private *dev_priv)
 		};
 
 		if (!pci_dev_present(atom_hdaudio_ids)) {
-			DRM_INFO("%s\n", "HDaudio controller not detected, using LPE audio instead\n");
+			DRM_INFO("HDaudio controller not detected, using LPE audio instead\n");
 			lpe_present = true;
 		}
 	}

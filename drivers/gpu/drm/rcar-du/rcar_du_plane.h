@@ -50,7 +50,6 @@ static inline struct rcar_du_plane *to_rcar_plane(struct drm_plane *plane)
  * @state: base DRM plane state
  * @format: information about the pixel format used by the plane
  * @hwindex: 0-based hardware plane index, -1 means unused
- * @alpha: value of the plane alpha property
  * @colorkey: value of the plane colorkey property
  */
 struct rcar_du_plane_state {
@@ -60,7 +59,6 @@ struct rcar_du_plane_state {
 	int hwindex;
 	enum rcar_du_plane_source source;
 
-	unsigned int alpha;
 	unsigned int colorkey;
 };
 
@@ -72,6 +70,10 @@ to_rcar_plane_state(struct drm_plane_state *state)
 
 int rcar_du_atomic_check_planes(struct drm_device *dev,
 				struct drm_atomic_state *state);
+
+int __rcar_du_plane_atomic_check(struct drm_plane *plane,
+				 struct drm_plane_state *state,
+				 const struct rcar_du_format_info **format);
 
 int rcar_du_planes_init(struct rcar_du_group *rgrp);
 

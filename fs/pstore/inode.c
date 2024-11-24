@@ -99,11 +99,11 @@ static void *pstore_ftrace_seq_next(struct seq_file *s, void *v, loff_t *pos)
 	struct pstore_private *ps = s->private;
 	struct pstore_ftrace_seq_data *data = v;
 
+	(*pos)++;
 	data->off += REC_SIZE;
 	if (data->off + REC_SIZE > ps->total_size)
 		return NULL;
 
-	(*pos)++;
 	return data;
 }
 
@@ -112,6 +112,9 @@ static int pstore_ftrace_seq_show(struct seq_file *s, void *v)
 	struct pstore_private *ps = s->private;
 	struct pstore_ftrace_seq_data *data = v;
 	struct pstore_ftrace_record *rec;
+
+	if (!data)
+		return 0;
 
 	rec = (struct pstore_ftrace_record *)(ps->record->buf + data->off);
 
@@ -330,10 +333,6 @@ int pstore_mkfile(struct dentry *root, struct pstore_record *record)
 		goto fail;
 	inode->i_mode = S_IFREG | 0444;
 	inode->i_fop = &pstore_file_operations;
-	private = kzalloc(sizeof(*private), GFP_KERNEL);
-	if (!private)
-		goto fail_alloc;
-	private->record = record;
 
 	switch (record->type) {
 	case PSTORE_TYPE_DMESG:
@@ -342,12 +341,8 @@ int pstore_mkfile(struct dentry *root, struct pstore_record *record)
 			  record->compressed ? ".enc.z" : "");
 		break;
 	case PSTORE_TYPE_CONSOLE:
-		if (record->id)
-			scnprintf(name, sizeof(name), "console-%s-%llu",
-				  record->psi->name, record->id);
-		else
-			scnprintf(name, sizeof(name), "console-%s",
-				  record->psi->name);
+		scnprintf(name, sizeof(name), "console-%s-%llu",
+			  record->psi->name, record->id);
 		break;
 	case PSTORE_TYPE_FTRACE:
 		scnprintf(name, sizeof(name), "ftrace-%s-%llu",
@@ -387,12 +382,16 @@ int pstore_mkfile(struct dentry *root, struct pstore_record *record)
 		break;
 	}
 
+	private = kzalloc(sizeof(*private), GFP_KERNEL);
+	if (!private)
+		goto fail_inode;
+
 	dentry = d_alloc_name(root, name);
 	if (!dentry)
 		goto fail_private;
 
+	private->record = record;
 	inode->i_size = private->total_size = size;
-
 	inode->i_private = private;
 
 	if (record->time.tv_sec)
@@ -408,7 +407,7 @@ int pstore_mkfile(struct dentry *root, struct pstore_record *record)
 
 fail_private:
 	free_pstore_private(private);
-fail_alloc:
+fail_inode:
 	iput(inode);
 
 fail:
@@ -486,7 +485,7 @@ static struct file_system_type pstore_fs_type = {
 	.kill_sb	= pstore_kill_sb,
 };
 
-static int __init init_pstore_fs(void)
+int __init pstore_init_fs(void)
 {
 	int err;
 
@@ -502,14 +501,9 @@ static int __init init_pstore_fs(void)
 out:
 	return err;
 }
-module_init(init_pstore_fs)
 
-static void __exit exit_pstore_fs(void)
+void __exit pstore_exit_fs(void)
 {
 	unregister_filesystem(&pstore_fs_type);
 	sysfs_remove_mount_point(fs_kobj, "pstore");
 }
-module_exit(exit_pstore_fs)
-
-MODULE_AUTHOR("Tony Luck <tony.luck@intel.com>");
-MODULE_LICENSE("GPL");

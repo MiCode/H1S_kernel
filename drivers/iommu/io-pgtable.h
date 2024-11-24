@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2019 MediaTek Inc.
+ */
 #ifndef __IO_PGTABLE_H
 #define __IO_PGTABLE_H
 #include <linux/bitops.h>
@@ -32,6 +35,8 @@ struct iommu_gather_ops {
 	void (*tlb_add_flush)(unsigned long iova, size_t size, size_t granule,
 			      bool leaf, void *cookie);
 	void (*tlb_sync)(void *cookie);
+	void *(*alloc_pages_exact)(void *cookie, size_t size, gfp_t gfp_mask);
+	void (*free_pages_exact)(void *cookie, void *virt, size_t size);
 };
 
 /**
@@ -119,7 +124,7 @@ struct io_pgtable_cfg {
 struct io_pgtable_ops {
 	int (*map)(struct io_pgtable_ops *ops, unsigned long iova,
 		   phys_addr_t paddr, size_t size, int prot);
-	int (*unmap)(struct io_pgtable_ops *ops, unsigned long iova,
+	size_t (*unmap)(struct io_pgtable_ops *ops, unsigned long iova,
 		     size_t size);
 	phys_addr_t (*iova_to_phys)(struct io_pgtable_ops *ops,
 				    unsigned long iova);

@@ -1,15 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
+/**************************************************************
+ * camera_wpe.c - Linux WPE Device Driver
+ *
+ * DESCRIPTION:
+ *     This file provid the other drivers WPE relative functions
+ *
+ **************************************************************/
 
 #include <linux/types.h>
 #include <linux/device.h>
@@ -64,7 +63,7 @@
 #include <linux/met_drv.h>
 #include <linux/mtk_ftrace.h>
 #endif
-#if 0
+#ifdef Another_Performance
 /* Another Performance Measure Usage */
 #include <linux/kallsyms.h>
 #include <linux/ftrace_event.h>
@@ -130,7 +129,7 @@ unsigned int ver;
 /*#define WPE_USE_GCE_IRQ */
 
 /*#define WPE_DEBUG_USE */
-/* #define WPE_MULTIPROCESS_TIMEING_ISSUE  */
+/* #define WPE_MULTIPROCESS_TIMING_ISSUE  */
 /*I can' test the situation in FPGA, because the velocity of FPGA is so slow. */
 #define MyTag "[WPE]"
 #define IRQTag "KEEPER"
@@ -193,7 +192,7 @@ pr_debug(MyTag "[%s] " format, __func__, ##args)
 /*
  *    IRQ signal mask
  */
-
+#define IRQ_LOG_EN
 #define INT_ST_MASK_WPE     ( \
 			WPE_INT_ST)
 
@@ -253,8 +252,8 @@ static struct Tasklet_table WPE_tasklet[WPE_IRQ_TYPE_AMOUNT] = {
 };
 
 #ifdef CONFIG_PM_SLEEP
-struct wakeup_source WPE_wake_lock;
-struct wakeup_source WPE_MDP_wake_lock;
+struct wakeup_source *WPE_wake_lock;
+struct wakeup_source *WPE_MDP_wake_lock;
 #endif
 
 static DEFINE_MUTEX(gWpeMutex);
@@ -422,7 +421,7 @@ static struct SV_LOG_STR gSvLog[WPE_IRQ_TYPE_AMOUNT];
  *    each log must shorter than 512 bytes
  *    total log length in each irq/logtype can't over 1024 bytes
  */
-#if 1
+#ifdef IRQ_LOG_EN
 #define IRQ_LOG_KEEPER(irq, ppb, logT, fmt, ...) do {                         \
 	char *ptr;                                                            \
 	char *pDes;                                                           \
@@ -464,7 +463,7 @@ static struct SV_LOG_STR gSvLog[WPE_IRQ_TYPE_AMOUNT];
 						(logi+1) - 1] = '\0';         \
 						LOG_DBG("%s",                 \
 						&ptr[NORMAL_STR_LEN*logi]);   \
-					} else{                               \
+					} else {                               \
 						LOG_DBG("%s",                 \
 						&ptr[NORMAL_STR_LEN*logi]);   \
 						break;                        \
@@ -479,7 +478,7 @@ static struct SV_LOG_STR gSvLog[WPE_IRQ_TYPE_AMOUNT];
 						(logi+1) - 1] = '\0';         \
 						LOG_INF("%s",                 \
 						&ptr[NORMAL_STR_LEN*logi]);   \
-					} else{                               \
+					} else {                               \
 						LOG_INF("%s",                 \
 						&ptr[NORMAL_STR_LEN*logi]);   \
 						break;                        \
@@ -494,7 +493,7 @@ static struct SV_LOG_STR gSvLog[WPE_IRQ_TYPE_AMOUNT];
 						(logi+1) - 1] = '\0';         \
 						LOG_INF("%s",                 \
 						&ptr[NORMAL_STR_LEN*logi]);   \
-					} else{                               \
+					} else {                               \
 						LOG_INF("%s",                 \
 						&ptr[NORMAL_STR_LEN*logi]);   \
 						break;                        \
@@ -519,7 +518,7 @@ static struct SV_LOG_STR gSvLog[WPE_IRQ_TYPE_AMOUNT];
 } while (0)
 #endif
 
-#if 1
+#ifdef IRQ_LOG_EN
 #define IRQ_LOG_PRINTER(irq, ppb_in, logT_in) do {\
 	struct SV_LOG_STR *pSrc = &gSvLog[irq];\
 	char *ptr;\
@@ -528,12 +527,12 @@ static struct SV_LOG_STR gSvLog[WPE_IRQ_TYPE_AMOUNT];
 	signed int logT = 0;\
 	if (ppb_in > 1) {\
 		ppb = 1;\
-	} else{\
+	} else {\
 		ppb = ppb_in;\
 	} \
 	if (logT_in > _LOG_ERR) {\
 		logT = _LOG_ERR;\
-	} else{\
+	} else {\
 		logT = logT_in;\
 	} \
 	ptr = pSrc->_str[ppb][logT];\
@@ -543,7 +542,7 @@ static struct SV_LOG_STR gSvLog[WPE_IRQ_TYPE_AMOUNT];
 				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 					LOG_DBG("%s", &ptr[NORMAL_STR_LEN*i]);\
-				} else{\
+				} else {\
 					LOG_DBG("%s", &ptr[NORMAL_STR_LEN*i]);\
 					break;\
 				} \
@@ -554,7 +553,7 @@ static struct SV_LOG_STR gSvLog[WPE_IRQ_TYPE_AMOUNT];
 			if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 				ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 				LOG_INF("%s", &ptr[NORMAL_STR_LEN*i]);\
-			} else{\
+			} else {\
 				LOG_INF("%s", &ptr[NORMAL_STR_LEN*i]);\
 				break;\
 			} \
@@ -565,7 +564,7 @@ static struct SV_LOG_STR gSvLog[WPE_IRQ_TYPE_AMOUNT];
 			if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 				ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 				LOG_ERR("%s", &ptr[NORMAL_STR_LEN*i]);\
-			} else{\
+			} else {\
 				LOG_ERR("%s", &ptr[NORMAL_STR_LEN*i]);\
 				break;\
 			} \
@@ -1319,7 +1318,7 @@ static inline unsigned int WPE_GetIRQState
 	spin_lock_irqsave(&(WPEInfo.SpinLockIrq[type]), flags);
 #ifdef WPE_USE_GCE
 
-#ifdef WPE_MULTIPROCESS_TIMEING_ISSUE
+#ifdef WPE_MULTIPROCESS_TIMING_ISSUE
 	if (stus & WPE_INT_ST) {
 		ret = ((WPEInfo.IrqInfo.WpeIrqCnt > 0)
 		       && (WPEInfo.ProcessID[WPEInfo.ReadReqIdx] == ProcessID));
@@ -3487,7 +3486,7 @@ static signed int WPE_WaitIrq(struct WPE_WAIT_IRQ_STRUCT *WaitIrq)
 				&(WPEInfo.SpinLockIrq[WaitIrq->Type]), flags);
 #ifdef WPE_USE_GCE
 
-#ifdef WPE_MULTIPROCESS_TIMEING_ISSUE
+#ifdef WPE_MULTIPROCESS_TIMING_ISSUE
 			WPEInfo.ReadReqIdx =
 			    (WPEInfo.ReadReqIdx + 1) %
 			    _SUPPORT_MAX_WPE_FRAME_REQUEST_;
@@ -3581,7 +3580,7 @@ static inline unsigned int WPE_GetFrameState(unsigned int WPEReadIdx)
 static long WPE_ioctl(struct file *pFile,
 				unsigned int Cmd, unsigned long Param)
 {
-	 signed int Ret = 0;
+	signed int Ret = 0;
 
 	/*unsigned int pid = 0; */
 	struct WPE_REG_IO_STRUCT RegIo;
@@ -4771,7 +4770,7 @@ static long WPE_ioctl_compat(
 
 			err = compat_put_WPE_deque_req_data(data32, data);
 			if (err) {
-				LOG_INF("COMPAT_WPE_WPE_DEQUE_REQ error!!!\n");
+				LOG_INF("COMPAT_WPE_WPE_DEQUE_DONE error!!!\n");
 				return err;
 			}
 			return ret;
@@ -4871,12 +4870,12 @@ static signed int WPE_open(struct inode *pInode, struct file *pFile)
 
 	/* Enable clock */
 #ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&WPE_wake_lock);
+	__pm_stay_awake(WPE_wake_lock);
 #endif
 	WPE_EnableClock(MTRUE);
 	g_u4WpeCnt = 0;
 #ifdef CONFIG_PM_SLEEP
-	__pm_relax(&WPE_wake_lock);
+	__pm_relax(WPE_wake_lock);
 #endif
 	LOG_INF("WPE open g_u4EnableClockCount: %d", g_u4EnableClockCount);
 	/*  */
@@ -4951,11 +4950,11 @@ static signed int WPE_release(struct inode *pInode, struct file *pFile)
 
 	/* Disable clock. */
 #ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&WPE_wake_lock);
+	__pm_stay_awake(WPE_wake_lock);
 #endif
 	WPE_EnableClock(MFALSE);
 #ifdef CONFIG_PM_SLEEP
-	__pm_relax(&WPE_wake_lock);
+	__pm_relax(WPE_wake_lock);
 #endif
 	LOG_INF("WPE release g_u4EnableClockCount: %d", g_u4EnableClockCount);
 
@@ -5252,8 +5251,8 @@ static signed int WPE_probe(struct platform_device *pDev)
 		INIT_WORK(&WPEInfo.ScheduleWpeWork, WPE_ScheduleWork);
 
 #ifdef CONFIG_PM_SLEEP
-		wakeup_source_init(&WPE_wake_lock, "WPE_lock_wakelock");
-		wakeup_source_init(&WPE_MDP_wake_lock, "WPE_MDP_wake_lock");
+		WPE_wake_lock = wakeup_source_register(&pDev->dev, "WPE_lock_wakelock");
+		WPE_MDP_wake_lock = wakeup_source_register(&pDev->dev, "WPE_MDP_wake_lock");
 #endif
 
 		for (i = 0; i < WPE_IRQ_TYPE_AMOUNT; i++)
@@ -5316,7 +5315,7 @@ static signed int WPE_remove(struct platform_device *pDev)
 	/* kill tasklet */
 	for (i = 0; i < WPE_IRQ_TYPE_AMOUNT; i++)
 		tasklet_kill(WPE_tasklet[i].pWPE_tkt);
-#if 0
+#ifdef all_registered_irq
 	/* free all registered irq(child nodes) */
 	WPE_UnRegister_AllregIrq();
 	/* free father nodes of irq user list */
@@ -5607,7 +5606,7 @@ static ssize_t wpe_reg_write(
 	char valSzBuf[24];
 	char *pszTmp;
 	int addr = 0, val = 0;
-	long int tempval;
+	long tempval;
 
 	if (WPEInfo.UserCount <= 0)
 		return 0;
@@ -5622,7 +5621,7 @@ static ssize_t wpe_reg_write(
 		pszTmp = strstr(addrSzBuf, "0x");
 		if (pszTmp == NULL) {
 			/*if (sscanf(addrSzBuf, "%d", &addr) != 1) */
-			if (kstrtol(addrSzBuf, 10, (long int *)&tempval) != 0)
+			if (kstrtol(addrSzBuf, 10, (long *)&tempval) != 0)
 				LOG_ERR("scan decimal addr is wrong !!:%s",
 				addrSzBuf);
 		} else {
@@ -5639,7 +5638,7 @@ static ssize_t wpe_reg_write(
 		pszTmp = strstr(valSzBuf, "0x");
 		if (pszTmp == NULL) {
 			/*if (sscanf(valSzBuf, "%d", &val) != 1) */
-			if (kstrtol(valSzBuf, 10, (long int *)&tempval) != 0)
+			if (kstrtol(valSzBuf, 10, (long *)&tempval) != 0)
 				LOG_ERR(
 				"scan decimal value is wrong !!:%s",
 				valSzBuf);
@@ -5671,7 +5670,7 @@ static ssize_t wpe_reg_write(
 		pszTmp = strstr(addrSzBuf, "0x");
 		if (pszTmp == NULL) {
 			/*if (1 != sscanf(addrSzBuf, "%d", &addr)) */
-			if (kstrtol(addrSzBuf, 10, (long int *)&tempval) != 0)
+			if (kstrtol(addrSzBuf, 10, (long *)&tempval) != 0)
 				LOG_ERR("scan decimal addr is wrong !!:%s",
 				addrSzBuf);
 			else
@@ -5727,7 +5726,7 @@ int32_t WPE_ClockOnCallback(uint64_t engineFlag)
 	/* LOG_DBG("+CmdqEn:%d", g_u4EnableClockCount); */
 	/* WPE_EnableClock(MTRUE); */
 #ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&WPE_MDP_wake_lock);
+	__pm_stay_awake(WPE_MDP_wake_lock);
 #endif
 	WPE_EnableClock(1);
 	return 0;
@@ -5757,7 +5756,7 @@ int32_t WPE_ClockOffCallback(uint64_t engineFlag)
 	/* LOG_DBG("-CmdqEn:%d", g_u4EnableClockCount); */
 	WPE_EnableClock(0);
 #ifdef CONFIG_PM_SLEEP
-	__pm_relax(&WPE_MDP_wake_lock);
+	__pm_relax(WPE_MDP_wake_lock);
 #endif
 	return 0;
 }
@@ -5782,7 +5781,7 @@ static signed int __init WPE_Init(void)
 		LOG_ERR("platform_driver_register fail");
 		return Ret;
 	}
-#if 0
+#ifdef find_compatible_node
 	struct device_node *node = NULL;
 
 	node = of_find_compatible_node(NULL, NULL, "mediatek,WPE");
@@ -5860,7 +5859,7 @@ static signed int __init WPE_Init(void)
 		/* log buffer ,in case of overflow */
 	}
 
-#if 1
+//#if 1
 	/* Cmdq */
 	/* Register WPE callback */
 	LOG_DBG("register wpe callback for CMDQ");
@@ -5869,7 +5868,7 @@ static signed int __init WPE_Init(void)
 			   WPE_DumpCallback,
 			   WPE_ResetCallback,
 			   WPE_ClockOffCallback);
-#endif
+//#endif
 
 	LOG_DBG("- X. Ret: %d.", Ret);
 	return Ret;
@@ -5886,11 +5885,11 @@ static void __exit WPE_Exit(void)
 	/*  */
 	platform_driver_unregister(&WPEDriver);
 	/*  */
-#if 1
+//#if 1
 	/* Cmdq */
 	/* Unregister WPE callback */
 	cmdqCoreRegisterCB(CMDQ_GROUP_WPE, NULL, NULL, NULL, NULL);
-#endif
+//#endif
 
 	kfree(pLog_kmalloc);
 
@@ -5951,7 +5950,7 @@ static irqreturn_t ISP_Irq_WPE(signed int Irq, void *DeviceId)
 			WPEInfo.WriteReqIdx =
 			    (WPEInfo.WriteReqIdx + 1) %
 					_SUPPORT_MAX_WPE_FRAME_REQUEST_;
-#ifdef WPE_MULTIPROCESS_TIMEING_ISSUE
+#ifdef WPE_MULTIPROCESS_TIMING_ISSUE
 			/* check the write value is equal to read value ? */
 			/* actually, it doesn't happen!! */
 			if (WPEInfo.WriteReqIdx == WPEInfo.ReadReqIdx) {

@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define PR_FMT_HEADER_MUST_BE_INCLUDED_BEFORE_ALL_HDRS
@@ -248,6 +241,9 @@ static int mtee_mem_reg_add(u64 pa, u32 size, void *peer_data, void *dev_desc)
 		MTEE_SESSION_UNLOCK();
 		return TMEM_MTEE_APPEND_MEMORY_FAILED;
 	}
+
+	pr_debug("[%d] MTEE append reg mem PASS: PA=0x%lx, size=0x%lx\n",
+		       mtee_dev_desc->kern_tmem_type, pa, size);
 
 	if (mtee_dev_desc->notify_remote && mtee_dev_desc->notify_remote_fn) {
 		ret = mtee_dev_desc->notify_remote_fn(

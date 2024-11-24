@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /************************************************************************
  *
  *	USBVEND.H		Vendor-specific USB definitions
@@ -8,10 +9,6 @@
  ************************************************************************
  *
  *	Copyright (C) 1998 Inside Out Networks, Inc.
- *	This program is free software; you can redistribute it and/or modify
- *	it under the terms of the GNU General Public License as published by
- *	the Free Software Foundation; either version 2 of the License, or
- *	(at your option) any later version.
  *
  ************************************************************************/
 
@@ -215,6 +212,7 @@
 //
 // Definitions for other product IDs
 #define ION_DEVICE_ID_MT4X56USB			0x1403	// OEM device
+#define ION_DEVICE_ID_E5805A			0x1A01  // OEM device (rebranded Edgeport/4)
 
 
 #define	GENERATION_ID_FROM_USB_PRODUCT_ID(ProductId)				\

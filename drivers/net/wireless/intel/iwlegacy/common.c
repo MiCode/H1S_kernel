@@ -435,7 +435,7 @@ EXPORT_SYMBOL(il_send_cmd_pdu_async);
 
 /* default: IL_LED_BLINK(0) using blinking idx table */
 static int led_mode;
-module_param(led_mode, int, S_IRUGO);
+module_param(led_mode, int, 0444);
 MODULE_PARM_DESC(led_mode,
 		 "0=system default, " "1=On(RF On)/Off(RF Off), 2=blinking");
 
@@ -922,7 +922,7 @@ il_init_channel_map(struct il_priv *il)
 	D_EEPROM("Parsing data for %d channels.\n", il->channel_count);
 
 	il->channel_info =
-	    kzalloc(sizeof(struct il_channel_info) * il->channel_count,
+	    kcalloc(il->channel_count, sizeof(struct il_channel_info),
 		    GFP_KERNEL);
 	if (!il->channel_info) {
 		IL_ERR("Could not allocate channel_info\n");
@@ -3041,9 +3041,9 @@ il_tx_queue_init(struct il_priv *il, u32 txq_id)
 	}
 
 	txq->meta =
-	    kzalloc(sizeof(struct il_cmd_meta) * actual_slots, GFP_KERNEL);
+	    kcalloc(actual_slots, sizeof(struct il_cmd_meta), GFP_KERNEL);
 	txq->cmd =
-	    kzalloc(sizeof(struct il_device_cmd *) * actual_slots, GFP_KERNEL);
+	    kcalloc(actual_slots, sizeof(struct il_device_cmd *), GFP_KERNEL);
 
 	if (!txq->meta || !txq->cmd)
 		goto out_free_arrays;
@@ -3372,7 +3372,7 @@ MODULE_LICENSE("GPL");
  * default: bt_coex_active = true (BT_COEX_ENABLE)
  */
 static bool bt_coex_active = true;
-module_param(bt_coex_active, bool, S_IRUGO);
+module_param(bt_coex_active, bool, 0444);
 MODULE_PARM_DESC(bt_coex_active, "enable wifi/bluetooth co-exist");
 
 u32 il_debug_level;
@@ -3455,7 +3455,7 @@ il_init_geos(struct il_priv *il)
 	}
 
 	channels =
-	    kzalloc(sizeof(struct ieee80211_channel) * il->channel_count,
+	    kcalloc(il->channel_count, sizeof(struct ieee80211_channel),
 		    GFP_KERNEL);
 	if (!channels)
 		return -ENOMEM;
@@ -4302,8 +4302,8 @@ il_apm_init(struct il_priv *il)
 	 *    power savings, even without L1.
 	 */
 	if (il->cfg->set_l0s) {
-		pcie_capability_read_word(il->pci_dev, PCI_EXP_LNKCTL, &lctl);
-		if (lctl & PCI_EXP_LNKCTL_ASPM_L1) {
+		ret = pcie_capability_read_word(il->pci_dev, PCI_EXP_LNKCTL, &lctl);
+		if (!ret && (lctl & PCI_EXP_LNKCTL_ASPM_L1)) {
 			/* L1-ASPM enabled; disable(!) L0S  */
 			il_set_bit(il, CSR_GIO_REG,
 				   CSR_GIO_REG_VAL_L0S_ENABLED);
@@ -4654,8 +4654,9 @@ il_alloc_txq_mem(struct il_priv *il)
 {
 	if (!il->txq)
 		il->txq =
-		    kzalloc(sizeof(struct il_tx_queue) *
-			    il->cfg->num_of_queues, GFP_KERNEL);
+		    kcalloc(il->cfg->num_of_queues,
+			    sizeof(struct il_tx_queue),
+			    GFP_KERNEL);
 	if (!il->txq) {
 		IL_ERR("Not enough memory for txq\n");
 		return -ENOMEM;
@@ -4844,9 +4845,9 @@ il_check_stuck_queue(struct il_priv *il, int cnt)
  * we reset the firmware. If everything is fine just rearm the timer.
  */
 void
-il_bg_watchdog(unsigned long data)
+il_bg_watchdog(struct timer_list *t)
 {
-	struct il_priv *il = (struct il_priv *)data;
+	struct il_priv *il = from_timer(il, t, watchdog);
 	int cnt;
 	unsigned long timeout;
 
@@ -4985,6 +4986,8 @@ il_pci_resume(struct device *device)
 	 */
 	pci_write_config_byte(pdev, PCI_CFG_RETRY_TIMEOUT, 0x00);
 
+	_il_wr(il, CSR_INT, 0xffffffff);
+	_il_wr(il, CSR_FH_INT_STATUS, 0xffffffff);
 	il_enable_interrupts(il);
 
 	if (!(_il_rd(il, CSR_GP_CNTRL) & CSR_GP_CNTRL_REG_FLAG_HW_RF_KILL_SW))

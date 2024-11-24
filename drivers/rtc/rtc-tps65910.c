@@ -426,23 +426,14 @@ static int tps65910_rtc_probe(struct platform_device *pdev)
 	device_set_wakeup_capable(&pdev->dev, 1);
 
 	tps_rtc->rtc->ops = &tps65910_rtc_ops;
+	tps_rtc->rtc->range_min = RTC_TIMESTAMP_BEGIN_2000;
+	tps_rtc->rtc->range_max = RTC_TIMESTAMP_END_2099;
 
 	ret = rtc_register_device(tps_rtc->rtc);
 	if (ret) {
 		dev_err(&pdev->dev, "RTC device register: err %d\n", ret);
 		return ret;
 	}
-
-	return 0;
-}
-
-/*
- * Disable tps65910 RTC interrupts.
- * Sets status flag to free.
- */
-static int tps65910_rtc_remove(struct platform_device *pdev)
-{
-	tps65910_rtc_alarm_irq_enable(&pdev->dev, 0);
 
 	return 0;
 }
@@ -472,7 +463,6 @@ static SIMPLE_DEV_PM_OPS(tps65910_rtc_pm_ops, tps65910_rtc_suspend,
 
 static struct platform_driver tps65910_rtc_driver = {
 	.probe		= tps65910_rtc_probe,
-	.remove		= tps65910_rtc_remove,
 	.driver		= {
 		.name	= "tps65910-rtc",
 		.pm	= &tps65910_rtc_pm_ops,
@@ -480,6 +470,6 @@ static struct platform_driver tps65910_rtc_driver = {
 };
 
 module_platform_driver(tps65910_rtc_driver);
-MODULE_ALIAS("platform:rtc-tps65910");
+MODULE_ALIAS("platform:tps65910-rtc");
 MODULE_AUTHOR("Venu Byravarasu <vbyravarasu@nvidia.com>");
 MODULE_LICENSE("GPL");

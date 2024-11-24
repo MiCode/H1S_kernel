@@ -1,18 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _MT_PMIC_API_BUCK_H_
 #define _MT_PMIC_API_BUCK_H_
+
+#include <mach/upmu_hw.h>
 
 void vmd1_pmic_setting_on(void);
 void vmd1_pmic_setting_off(void);
@@ -98,6 +92,11 @@ enum PMU_LP_TABLE_ENUM {
 	VUSB_0,
 	VUSB_1,
 	VBIF28,
+#if defined(USE_PMIC_MT6366) && USE_PMIC_MT6366
+	VM18,
+	VMDDR,
+	VSRAM_CORE,
+#endif
 	TABLE_COUNT_END
 };
 
@@ -188,5 +187,10 @@ extern int pmic_ldo_vusb_lp(enum BUCK_LDO_EN_USER user,
 			    unsigned char op_en, unsigned char op_cfg);
 extern int pmic_ldo_vbif28_lp(enum BUCK_LDO_EN_USER user,
 			      unsigned char op_en, unsigned char op_cfg);
-
+#if defined(USE_PMIC_MT6366) && USE_PMIC_MT6366
+extern int pmic_ldo_vm18_lp(enum BUCK_LDO_EN_USER user, unsigned char op_en, unsigned char op_cfg);
+extern int pmic_ldo_vmddr_lp(enum BUCK_LDO_EN_USER user, unsigned char op_en, unsigned char op_cfg);
+extern int pmic_ldo_vsram_core_lp(enum BUCK_LDO_EN_USER user, unsigned char op_en,
+				  unsigned char op_cfg);
+#endif
 #endif

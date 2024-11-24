@@ -92,7 +92,7 @@ static bool linkwatch_urgent_event(struct net_device *dev)
 	if (dev->ifindex != dev_get_iflink(dev))
 		return true;
 
-	if (dev->priv_flags & IFF_TEAM_PORT)
+	if (netif_is_lag_port(dev) || netif_is_lag_master(dev))
 		return true;
 
 	return netif_carrier_ok(dev) &&	qdisc_tx_changing(dev);
@@ -135,9 +135,9 @@ static void linkwatch_schedule_work(int urgent)
 	 * override the existing timer.
 	 */
 	if (test_bit(LW_URGENT, &linkwatch_flags))
-		mod_delayed_work(system_wq, &linkwatch_work, 0);
+		mod_delayed_work(system_unbound_wq, &linkwatch_work, 0);
 	else
-		schedule_delayed_work(&linkwatch_work, delay);
+		queue_delayed_work(system_unbound_wq, &linkwatch_work, delay);
 }
 
 

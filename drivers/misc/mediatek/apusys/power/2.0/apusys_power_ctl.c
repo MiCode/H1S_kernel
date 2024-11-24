@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 
@@ -105,6 +97,29 @@ int32_t apusys_thermal_dis_throttle_cb(enum DVFS_USER user)
 	return 0;
 }
 
+int apusys_opp_to_boost_value(enum DVFS_USER user, uint8_t opp)
+{
+	int boost_value;
+	uint32_t max_freq = 0, freq = 0;
+	enum DVFS_VOLTAGE_DOMAIN buck_domain = apusys_user_to_buck_domain[user];
+
+	if (opp >= APUSYS_MAX_NUM_OPPS) {
+		PWR_LOG_ERR("%s invalid opp : %d\n", __func__, opp);
+		return -1;
+	}
+
+	max_freq = apusys_opps.opps[0][buck_domain].freq;
+	freq = apusys_opps.opps[opp][buck_domain].freq;
+	boost_value = (freq * 100) / max_freq;
+
+	if (boost_value > 100 || boost_value < 0) {
+		PWR_LOG_ERR("%s invalid boost : %d\n", __func__, boost_value);
+		return -1;
+	}
+
+	return boost_value;
+}
+
 uint8_t apusys_boost_value_to_opp(enum DVFS_USER user, uint8_t boost_value)
 {
 	uint8_t i = 0;
@@ -140,12 +155,12 @@ enum DVFS_FREQ apusys_opp_to_freq(enum DVFS_USER user, uint8_t opp)
 	enum DVFS_FREQ freq = DVFS_FREQ_NOT_SUPPORT;
 	enum DVFS_VOLTAGE_DOMAIN buck_domain;
 
-	if (user < 0 || user >= APUSYS_DVFS_USER_NUM)
+	if (user >= APUSYS_DVFS_USER_NUM)
 		return freq;
 
 	buck_domain = apusys_user_to_buck_domain[user];
 
-	if (opp >= 0 && opp < APUSYS_MAX_NUM_OPPS)
+	if (opp < APUSYS_MAX_NUM_OPPS)
 		freq = apusys_opps.opps[opp][buck_domain].freq;
 
 	return freq;
@@ -172,7 +187,7 @@ int8_t apusys_get_opp(enum DVFS_USER user)
 {
 	enum DVFS_VOLTAGE_DOMAIN buck_domain;
 
-	if (user < 0 || user >= APUSYS_DVFS_USER_NUM)
+	if (user >= APUSYS_DVFS_USER_NUM)
 		return -1;
 
 	buck_domain = apusys_user_to_buck_domain[user];
@@ -187,7 +202,7 @@ int8_t apusys_get_ceiling_opp(enum DVFS_USER user)
 	uint8_t used_opp;
 	enum DVFS_VOLTAGE_DOMAIN buck_domain;
 
-	if (user < 0 || user >= APUSYS_DVFS_USER_NUM)
+	if (user >= APUSYS_DVFS_USER_NUM)
 		return -1;
 
 	buck_domain = apusys_user_to_buck_domain[user];
@@ -377,8 +392,14 @@ void apusys_pwr_efficiency_check(void)
 			continue;
 		buck_index = apusys_buck_domain_to_buck[buck_domain_index];
 	for (opp_index = 0;	opp_index < APUSYS_MAX_NUM_OPPS; opp_index++) {
+#ifndef CONFIG_MACH_MT6877
 		if (apusys_opps.opps[opp_index][buck_domain_index].voltage <=
 			apusys_opps.next_buck_volt[buck_index]){
+#else
+		if ((apusys_opps.opps[opp_index][buck_domain_index].voltage <=
+			apusys_opps.next_buck_volt[buck_index]) ||
+			(opp_index == (APUSYS_MAX_NUM_OPPS - 1))) {
+#endif
 			user = apusys_buck_domain_to_user[buck_domain_index];
 			if (user < APUSYS_DVFS_USER_NUM) {
 				if (apusys_opps.is_power_on[user] == false)
@@ -543,7 +564,7 @@ void apusys_frequency_check(void)
 			if (apusys_power_on == false &&
 #ifndef CONFIG_MACH_MT6853
 			apusys_opps.is_power_on[EDMA] == false &&
-#ifndef CONFIG_MACH_MT6873
+#if !defined(CONFIG_MACH_MT6873) && !defined(CONFIG_MACH_MT6877)
 			apusys_opps.is_power_on[EDMA2] == false &&
 #endif
 #endif
@@ -688,11 +709,16 @@ void apusys_dvfs_info(void)
 	int ret, ret_v, ret_f = 0;
 
 	ret = sprintf(log_str, "(u_op,T,min,max)");
-	ret_v = sprintf(logv_str, "v[");
-	ret_f = sprintf(logf_str, "f[");
+	if (ret < 0)
+		LOG_ERR("%s sprintf fail (%d)\n", __func__, ret);
 
-	if (ret < 0 || ret_v < 0 || ret_f < 0)
-		LOG_ERR("%s sprintf fail\n", __func__);
+	ret_v = sprintf(logv_str, "v[");
+	if (ret_v < 0)
+		LOG_ERR("%s sprintf fail (%d)\n", __func__, ret_v);
+
+	ret_f = sprintf(logf_str, "f[");
+	if (ret_f < 0)
+		LOG_ERR("%s sprintf fail (%d)\n", __func__, ret_f);
 
 	for (user = 0; user < APUSYS_DVFS_USER_NUM; user++) {
 		if (dvfs_user_support(user) == false)
@@ -722,25 +748,32 @@ void apusys_dvfs_info(void)
 		ret_v = sprintf(logv_str + strlen(logv_str), ",(%d,%d)",
 			apusys_opps.opps[c_opp_index][domain].voltage / div,
 			apusys_opps.opps[n_opp_index][domain].voltage / div);
+		if (ret_v < 0)
+			LOG_ERR("%s sprintf fail (%d)\n", __func__, ret_v);
 
 		ret_f = sprintf(logf_str + strlen(logf_str), ",(%d,%d)",
 			apusys_opps.opps[c_opp_index][domain].freq / div,
 			apusys_opps.opps[n_opp_index][domain].freq / div);
-
-		if (ret_v < 0 || ret_f < 0)
-			LOG_ERR("%s sprintf fail\n", __func__);
+		if (ret_f < 0)
+			LOG_ERR("%s sprintf fail (%d)\n", __func__, ret_f);
 	}
 
 	rem_nsec = do_div(apusys_opps.id, 1000000000);
 	ret = sprintf(log_str + strlen(log_str), "] [%5lu.%06lu]",
 		(unsigned long)apusys_opps.id, rem_nsec / 1000);
+	if (ret < 0)
+		LOG_ERR("%s sprintf fail (%d)\n", __func__, ret);
+
 	ret_v = sprintf(logv_str + strlen(logv_str), "] [%5lu.%06lu]",
 		(unsigned long)apusys_opps.id, rem_nsec / 1000);
+	if (ret_v < 0)
+		LOG_ERR("%s sprintf fail (%d)\n", __func__, ret_v);
+
 	ret_f = sprintf(logf_str + strlen(logf_str), "] [%5lu.%06lu]",
 		(unsigned long)apusys_opps.id, rem_nsec / 1000);
+	if (ret_f < 0)
+		LOG_ERR("%s sprintf fail (%d)\n", __func__, ret_f);
 
-	if (ret < 0 || ret_v < 0 || ret_f < 0)
-		LOG_ERR("%s sprintf fail\n", __func__);
 
 	PWR_LOG_PM("APUPWR DVFS %s\n", log_str);
 	PWR_LOG_PM("APUPWR DVFS %s\n", logv_str);
@@ -1103,7 +1136,7 @@ int apusys_power_off(enum DVFS_USER user)
 int apusys_power_init(enum DVFS_USER user, void *init_power_data)
 {
 	int i = 0, j = 0;
-	struct hal_param_seg_support  seg_data;
+	struct hal_param_seg_support seg_data = {0};
 	enum DVFS_VOLTAGE_DOMAIN domain;
 	int ret = 0;
 

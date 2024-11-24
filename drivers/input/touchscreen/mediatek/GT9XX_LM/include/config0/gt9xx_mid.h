@@ -1,3 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 #ifndef GT9XX_MID_H
 #define GT9XX_MID_H
 

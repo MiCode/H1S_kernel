@@ -1,25 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2012-2019, FocalTech Systems, Ltd., all rights reserved.
+ * Copyright (C) 2016 MediaTek Inc.
  */
 
-/*****************************************************************************
- *
- * File Name: Focaltech_ex_fun.c
- *
- * Author: Focaltech Driver Team
- *
- * Created: 2016-08-08
- *
- * Abstract:
- *
- * Reference:
- *
- *****************************************************************************/
-
-/*****************************************************************************
- * 1.Included header files
- *****************************************************************************/
 #include "focaltech_core.h"
 
 /*****************************************************************************

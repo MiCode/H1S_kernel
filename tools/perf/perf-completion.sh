@@ -162,8 +162,42 @@ __perf_main ()
 	# List possible events for -e option
 	elif [[ $prev == @("-e"|"--event") &&
 		$prev_skip_opts == @(record|stat|top) ]]; then
-		evts=$($cmd list --raw-dump)
-		__perfcomp_colon "$evts" "$cur"
+
+		local cur1=${COMP_WORDS[COMP_CWORD]}
+		local raw_evts=$($cmd list --raw-dump)
+		local arr s tmp result cpu_evts
+
+		# aarch64 doesn't have /sys/bus/event_source/devices/cpu/events
+		if [[ `uname -m` != aarch64 ]]; then
+			cpu_evts=$(ls /sys/bus/event_source/devices/cpu/events)
+		fi
+
+		if [[ "$cur1" == */* && ${cur1#*/} =~ ^[A-Z] ]]; then
+			OLD_IFS="$IFS"
+			IFS=" "
+			arr=($raw_evts)
+			IFS="$OLD_IFS"
+
+			for s in ${arr[@]}
+			do
+				if [[ "$s" == *cpu/* ]]; then
+					tmp=${s#*cpu/}
+					result=$result" ""cpu/"${tmp^^}
+				else
+					result=$result" "$s
+				fi
+			done
+
+			evts=${result}" "${cpu_evts}
+		else
+			evts=${raw_evts}" "${cpu_evts}
+		fi
+
+		if [[ "$cur1" == , ]]; then
+			__perfcomp_colon "$evts" ""
+		else
+			__perfcomp_colon "$evts" "$cur1"
+		fi
 	else
 		# List subcommands for perf commands
 		if [[ $prev_skip_opts == @(kvm|kmem|mem|lock|sched|
@@ -246,11 +280,21 @@ fi
 type perf &>/dev/null &&
 _perf()
 {
+	if [[ "$COMP_WORDBREAKS" != *,* ]]; then
+		COMP_WORDBREAKS="${COMP_WORDBREAKS},"
+		export COMP_WORDBREAKS
+	fi
+
+	if [[ "$COMP_WORDBREAKS" == *:* ]]; then
+		COMP_WORDBREAKS="${COMP_WORDBREAKS/:/}"
+		export COMP_WORDBREAKS
+	fi
+
 	local cur words cword prev
 	if [ $preload_get_comp_words_by_ref = "true" ]; then
-		_get_comp_words_by_ref -n =: cur words cword prev
+		_get_comp_words_by_ref -n =:, cur words cword prev
 	else
-		__perf_get_comp_words_by_ref -n =: cur words cword prev
+		__perf_get_comp_words_by_ref -n =:, cur words cword prev
 	fi
 	__perf_main
 } &&

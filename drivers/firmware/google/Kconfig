@@ -2,9 +2,9 @@ menuconfig GOOGLE_FIRMWARE
 	bool "Google Firmware Drivers"
 	default n
 	help
-	  These firmware drivers are used by Google's servers.  They are
-	  only useful if you are working directly on one of their
-	  proprietary servers.  If in doubt, say "N".
+	  These firmware drivers are used by Google servers,
+	  Chromebooks and other devices using coreboot firmware.
+	  If in doubt, say "N".
 
 if GOOGLE_FIRMWARE
 
@@ -54,6 +54,14 @@ config GOOGLE_MEMCONSOLE_X86_LEGACY
 	  This option enables the kernel to search for a firmware log in
 	  the EBDA on Google servers.  If found, this log is exported to
 	  userland in the file /sys/firmware/log.
+
+config GOOGLE_FRAMEBUFFER_COREBOOT
+	tristate "Coreboot Framebuffer"
+	depends on FB_SIMPLE
+	depends on GOOGLE_COREBOOT_TABLE
+	help
+	  This option enables the kernel to search for a framebuffer in
+	  the coreboot table.  If found, it is registered with simplefb.
 
 config GOOGLE_MEMCONSOLE_COREBOOT
 	tristate "Firmware Memory Console"

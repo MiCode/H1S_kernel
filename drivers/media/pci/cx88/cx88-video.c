@@ -5,7 +5,7 @@
  *
  * (c) 2003-04 Gerd Knorr <kraxel@bytesex.org> [SuSE Labs]
  *
- * (c) 2005-2006 Mauro Carvalho Chehab <mchehab@infradead.org>
+ * (c) 2005-2006 Mauro Carvalho Chehab <mchehab@kernel.org>
  *	- Multituner support
  *	- video_ioctl2 conversion
  *	- PAL/M fixes
@@ -452,6 +452,7 @@ static int queue_setup(struct vb2_queue *q,
 
 static int buffer_prepare(struct vb2_buffer *vb)
 {
+	int ret;
 	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct cx8800_dev *dev = vb->vb2_queue->drv_priv;
 	struct cx88_core *core = dev->core;
@@ -466,35 +467,35 @@ static int buffer_prepare(struct vb2_buffer *vb)
 
 	switch (core->field) {
 	case V4L2_FIELD_TOP:
-		cx88_risc_buffer(dev->pci, &buf->risc,
-				 sgt->sgl, 0, UNSET,
-				 buf->bpl, 0, core->height);
+		ret = cx88_risc_buffer(dev->pci, &buf->risc,
+				       sgt->sgl, 0, UNSET,
+				       buf->bpl, 0, core->height);
 		break;
 	case V4L2_FIELD_BOTTOM:
-		cx88_risc_buffer(dev->pci, &buf->risc,
-				 sgt->sgl, UNSET, 0,
-				 buf->bpl, 0, core->height);
+		ret = cx88_risc_buffer(dev->pci, &buf->risc,
+				       sgt->sgl, UNSET, 0,
+				       buf->bpl, 0, core->height);
 		break;
 	case V4L2_FIELD_SEQ_TB:
-		cx88_risc_buffer(dev->pci, &buf->risc,
-				 sgt->sgl,
-				 0, buf->bpl * (core->height >> 1),
-				 buf->bpl, 0,
-				 core->height >> 1);
+		ret = cx88_risc_buffer(dev->pci, &buf->risc,
+				       sgt->sgl,
+				       0, buf->bpl * (core->height >> 1),
+				       buf->bpl, 0,
+				       core->height >> 1);
 		break;
 	case V4L2_FIELD_SEQ_BT:
-		cx88_risc_buffer(dev->pci, &buf->risc,
-				 sgt->sgl,
-				 buf->bpl * (core->height >> 1), 0,
-				 buf->bpl, 0,
-				 core->height >> 1);
+		ret = cx88_risc_buffer(dev->pci, &buf->risc,
+				       sgt->sgl,
+				       buf->bpl * (core->height >> 1), 0,
+				       buf->bpl, 0,
+				       core->height >> 1);
 		break;
 	case V4L2_FIELD_INTERLACED:
 	default:
-		cx88_risc_buffer(dev->pci, &buf->risc,
-				 sgt->sgl, 0, buf->bpl,
-				 buf->bpl, buf->bpl,
-				 core->height >> 1);
+		ret = cx88_risc_buffer(dev->pci, &buf->risc,
+				       sgt->sgl, 0, buf->bpl,
+				       buf->bpl, buf->bpl,
+				       core->height >> 1);
 		break;
 	}
 	dprintk(2,
@@ -502,7 +503,7 @@ static int buffer_prepare(struct vb2_buffer *vb)
 		buf, buf->vb.vb2_buf.index,
 		core->width, core->height, dev->fmt->depth, dev->fmt->name,
 		(unsigned long)buf->risc.dma);
-	return 0;
+	return ret;
 }
 
 static void buffer_finish(struct vb2_buffer *vb)
@@ -806,8 +807,8 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 	return 0;
 }
 
-void cx88_querycap(struct file *file, struct cx88_core *core,
-		   struct v4l2_capability *cap)
+int cx88_querycap(struct file *file, struct cx88_core *core,
+		  struct v4l2_capability *cap)
 {
 	struct video_device *vdev = video_devdata(file);
 
@@ -825,11 +826,14 @@ void cx88_querycap(struct file *file, struct cx88_core *core,
 	case VFL_TYPE_VBI:
 		cap->device_caps |= V4L2_CAP_VBI_CAPTURE;
 		break;
+	default:
+		return -EINVAL;
 	}
 	cap->capabilities = cap->device_caps | V4L2_CAP_VIDEO_CAPTURE |
 		V4L2_CAP_VBI_CAPTURE | V4L2_CAP_DEVICE_CAPS;
 	if (core->board.radio.type == CX88_RADIO)
 		cap->capabilities |= V4L2_CAP_RADIO;
+	return 0;
 }
 EXPORT_SYMBOL(cx88_querycap);
 
@@ -841,8 +845,7 @@ static int vidioc_querycap(struct file *file, void  *priv,
 
 	strcpy(cap->driver, "cx8800");
 	sprintf(cap->bus_info, "PCI:%s", pci_name(dev->pci));
-	cx88_querycap(file, core, cap);
-	return 0;
+	return cx88_querycap(file, core, cap);
 }
 
 static int vidioc_enum_fmt_vid_cap(struct file *file, void  *priv,
@@ -1376,7 +1379,7 @@ static int cx8800_initdev(struct pci_dev *pci_dev,
 		if (vc->id == V4L2_CID_CHROMA_AGC)
 			core->chroma_agc = vc;
 	}
-	v4l2_ctrl_add_handler(&core->video_hdl, &core->audio_hdl, NULL);
+	v4l2_ctrl_add_handler(&core->video_hdl, &core->audio_hdl, NULL, false);
 
 	/* load and configure helper modules */
 

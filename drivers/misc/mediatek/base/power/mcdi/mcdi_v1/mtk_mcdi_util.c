@@ -1,19 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 #include <linux/printk.h>
 #include <linux/types.h>
 #include <linux/kconfig.h>
-#include <linux/sched.h>
+#include <linux/sched/clock.h>
 
 #include <mtk_mcdi.h>
 #include <mtk_mcdi_util.h>
@@ -21,10 +13,10 @@
 #include <mtk_mcdi_reg.h>
 #include <mtk_mcdi_mcupm.h>
 
-#include <mt-plat/mtk_secure_api.h>
+/* #include <mt-plat/mtk_secure_api.h> */
 
 #ifdef CONFIG_MTK_TINYSYS_SSPM_SUPPORT
-#include <v1/sspm_mbox.h>
+#include <sspm_mbox.h>
 #endif
 
 /**
@@ -55,36 +47,29 @@ static inline int mcdi_sspm_ready(void)
 
 static inline unsigned int mcdi_mcupm_read(int id)
 {
+#if defined(CONFIG_MACH_MT6739)
 	if (mcdi_mcupm_sram_is_ready())
 		return mcdi_read((uintptr_t)(MCDI_MBOX + (4 * id)));
-	else
-		return 0;
+#else
+	return mcdi_read((uintptr_t)id);
+#endif
+	return 0;
+
 }
 
 static inline void mcdi_mcupm_write(int id, unsigned int val)
 {
+#if defined(CONFIG_MACH_MT6739)
 	if (mcdi_mcupm_sram_is_ready())
 		mcdi_write((uintptr_t)(MCDI_MBOX + (4 * id)), val);
+#else
+	mcdi_write((uintptr_t)id, val);
+#endif
 }
 
 static inline int mcdi_mcupm_ready(void)
 {
-	int sta = get_mcupmfw_load_info();
-	bool ret = false;
-
-	ret = (sta) ? true : false;
-	if (sta == -1) {
-		sta = mt_secure_call(MTK_SIP_KERNEL_MCDI_ARGS,
-			MCDI_SMC_EVENT_MCUPM_FW_STA, 0, 0, 0);
-		ret = (sta == MCUPM_FW_KICK) ? true : false;
-		set_mcupmfw_load_info((ret == true) ? 1 : 0);
-		if (!ret)
-			printk_deferred("[MCDI] load mcupmfw fail(%s - 0x%x)\n",
-				(sta == MCUPM_SMC_CALL) ? "smc fail" :
-				(sta == MCUPM_FW_PARSE) ? "fw parse fail" :
-				"unknown", sta);
-	}
-	return ret;
+	return false;
 }
 
 #if defined(MCDI_SSPM_INTF)
@@ -148,19 +133,8 @@ unsigned int mcdi_get_cluster_off_cnt(unsigned int cluster)
 {
 	unsigned int cnt = mcdi_read(CPC_DORMANT_COUNTER);
 
-	/* Get off count if dormant count is 0 (cluster is off mode) */
-	if ((cnt & 0x7FFF) == 0)
-		cnt = ((cnt >> 16) & 0x7FFF);
-	else
-		cnt = cnt & 0x7FFF;
-
+	cnt = ((cnt >> 16) & 0xFFFF) + (cnt & 0xFFFF);
 	cnt += mcdi_read(SYSRAM_CPC_CLUSTER_CNT);
-
-	mt_secure_call(MTK_SIP_KERNEL_MCDI_ARGS,
-			MCDI_SMC_EVENT_CPC_CONFIG,
-			MCDI_CPC_CFG_CNT_CLR,
-			0, 0);
-	mcdi_write(SYSRAM_CPC_CLUSTER_CNT, cnt);
 
 	return cnt;
 }
@@ -221,6 +195,8 @@ unsigned long long idle_get_current_time_us(void)
 {
 	unsigned long long idle_current_time = sched_clock();
 
-	do_div(idle_current_time, 1000);
+	if (idle_current_time > 0)
+		do_div(idle_current_time, 1000);
 	return idle_current_time;
 }
+

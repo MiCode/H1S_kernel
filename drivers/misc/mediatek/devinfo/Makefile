@@ -11,4 +11,5 @@
 # GNU General Public License for more details.
 #
 
+# legacy chip devinfo driver
 obj-y += devinfo.o

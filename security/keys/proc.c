@@ -18,7 +18,6 @@
 #include <asm/errno.h>
 #include "internal.h"
 
-static int proc_keys_open(struct inode *inode, struct file *file);
 static void *proc_keys_start(struct seq_file *p, loff_t *_pos);
 static void *proc_keys_next(struct seq_file *p, void *v, loff_t *_pos);
 static void proc_keys_stop(struct seq_file *p, void *v);
@@ -31,14 +30,6 @@ static const struct seq_operations proc_keys_ops = {
 	.show	= proc_keys_show,
 };
 
-static const struct file_operations proc_keys_fops = {
-	.open		= proc_keys_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release,
-};
-
-static int proc_key_users_open(struct inode *inode, struct file *file);
 static void *proc_key_users_start(struct seq_file *p, loff_t *_pos);
 static void *proc_key_users_next(struct seq_file *p, void *v, loff_t *_pos);
 static void proc_key_users_stop(struct seq_file *p, void *v);
@@ -51,13 +42,6 @@ static const struct seq_operations proc_key_users_ops = {
 	.show	= proc_key_users_show,
 };
 
-static const struct file_operations proc_key_users_fops = {
-	.open		= proc_key_users_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release,
-};
-
 /*
  * Declare the /proc files.
  */
@@ -65,11 +49,11 @@ static int __init key_proc_init(void)
 {
 	struct proc_dir_entry *p;
 
-	p = proc_create("keys", 0, NULL, &proc_keys_fops);
+	p = proc_create_seq("keys", 0, NULL, &proc_keys_ops);
 	if (!p)
 		panic("Cannot create /proc/keys\n");
 
-	p = proc_create("key-users", 0, NULL, &proc_key_users_fops);
+	p = proc_create_seq("key-users", 0, NULL, &proc_key_users_ops);
 	if (!p)
 		panic("Cannot create /proc/key-users\n");
 
@@ -94,11 +78,6 @@ static struct rb_node *key_serial_next(struct seq_file *p, struct rb_node *n)
 		n = rb_next(n);
 	}
 	return n;
-}
-
-static int proc_keys_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &proc_keys_ops);
 }
 
 static struct key *find_ge_key(struct seq_file *p, key_serial_t id)
@@ -165,6 +144,8 @@ static void *proc_keys_next(struct seq_file *p, void *v, loff_t *_pos)
 	n = key_serial_next(p, v);
 	if (n)
 		*_pos = key_node_serial(n);
+	else
+		(*_pos)++;
 	return n;
 }
 
@@ -178,13 +159,12 @@ static int proc_keys_show(struct seq_file *m, void *v)
 {
 	struct rb_node *_p = v;
 	struct key *key = rb_entry(_p, struct key, serial_node);
-	struct timespec now;
-	time_t expiry;
-	unsigned long timo;
 	unsigned long flags;
 	key_ref_t key_ref, skey_ref;
+	time64_t now, expiry;
 	char xbuf[16];
 	short state;
+	u64 timo;
 	int rc;
 
 	struct keyring_search_context ctx = {
@@ -214,7 +194,7 @@ static int proc_keys_show(struct seq_file *m, void *v)
 	if (rc < 0)
 		return 0;
 
-	now = current_kernel_time();
+	now = ktime_get_real_seconds();
 
 	rcu_read_lock();
 
@@ -222,21 +202,21 @@ static int proc_keys_show(struct seq_file *m, void *v)
 	expiry = READ_ONCE(key->expiry);
 	if (expiry == 0) {
 		memcpy(xbuf, "perm", 5);
-	} else if (now.tv_sec >= expiry) {
+	} else if (now >= expiry) {
 		memcpy(xbuf, "expd", 5);
 	} else {
-		timo = expiry - now.tv_sec;
+		timo = expiry - now;
 
 		if (timo < 60)
-			sprintf(xbuf, "%lus", timo);
+			sprintf(xbuf, "%llus", timo);
 		else if (timo < 60*60)
-			sprintf(xbuf, "%lum", timo / 60);
+			sprintf(xbuf, "%llum", div_u64(timo, 60));
 		else if (timo < 60*60*24)
-			sprintf(xbuf, "%luh", timo / (60*60));
+			sprintf(xbuf, "%lluh", div_u64(timo, 60 * 60));
 		else if (timo < 60*60*24*7)
-			sprintf(xbuf, "%lud", timo / (60*60*24));
+			sprintf(xbuf, "%llud", div_u64(timo, 60 * 60 * 24));
 		else
-			sprintf(xbuf, "%luw", timo / (60*60*24*7));
+			sprintf(xbuf, "%lluw", div_u64(timo, 60 * 60 * 24 * 7));
 	}
 
 	state = key_read_state(key);
@@ -291,15 +271,6 @@ static struct rb_node *key_user_first(struct user_namespace *user_ns, struct rb_
 {
 	struct rb_node *n = rb_first(r);
 	return __key_user_next(user_ns, n);
-}
-
-/*
- * Implement "/proc/key-users" to provides a list of the key users and their
- * quotas.
- */
-static int proc_key_users_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &proc_key_users_ops);
 }
 
 static void *proc_key_users_start(struct seq_file *p, loff_t *_pos)

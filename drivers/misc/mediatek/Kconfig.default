@@ -1,17 +1,18 @@
 config ANDROID_DEFAULT_SETTING
-	bool "Select android common setting by default"
+	bool "Select android base config by default"
 	select ADVISE_SYSCALLS
+	select AEABI if ARM
 	select AIO
 	select ANDROID
 	select ANDROID_BINDERFS
 	select ANDROID_BINDER_IPC
-	select ARM64_SW_TTBR0_PAN
-	select ARM64_PAN
-	select ARMV8_DEPRECATED if COMPAT
+	select ARM64_SW_TTBR0_PAN if ARM64
+	select ARMV8_DEPRECATED if ARM64
 	select ASHMEM
 	select AUDIT
 	select BINFMT_ELF
 	select BINFMT_SCRIPT
+	select BLK_DEV_DM
 	select BLK_DEV_INITRD
 	select BLK_DEV_LOOP
 	select BLK_DEV_RAM
@@ -19,21 +20,18 @@ config ANDROID_DEFAULT_SETTING
 	select BPF_JIT
 	select BPF_JIT_ALWAYS_ON if ARM64
 	select BPF_SYSCALL
-	select CC_STACKPROTECTOR_STRONG
 	select CGROUP_BPF
 	select CGROUP_CPUACCT
 	select CGROUP_FREEZER
 	select CGROUPS
 	select CGROUP_SCHED
-	select CP15_BARRIER_EMULATION if ARMV8_DEPRECATED
+	select COMPAT if ARM64
+	select CP15_BARRIER_EMULATION if ARM64
 	select CPU_FREQ_TIMES
-	select CPU_SW_DOMAIN_PAN
+	select CPU_SW_DOMAIN_PAN if ARM
 	select CROSS_MEMORY_ATTACH
 	select CRYPTO_AES
-	select CRYPTO_BLOWFISH
 	select CRYPTO_CBC
-	select CRYPTO_CCM
-	select CRYPTO_CMAC
 	select CRYPTO_ECB
 	select CRYPTO_GCM
 	select CRYPTO_HMAC
@@ -42,10 +40,9 @@ config ANDROID_DEFAULT_SETTING
 	select CRYPTO_SHA1
 	select CRYPTO_SHA256
 	select CRYPTO_SHA512
-	select CRYPTO_XCBC
+	select CRYPTO_CHACHA20POLY1305
+	select DEBUG_KINFO if ARM64
 	select DEBUG_LIST
-	select DEBUG_RODATA
-	select DEBUG_SET_MODULE_RONX
 	select DEFAULT_SECURITY_SELINUX
 	select DM_SNAPSHOT
 	select DM_VERITY
@@ -55,7 +52,6 @@ config ANDROID_DEFAULT_SETTING
 	select EVENTFD
 	select EXT4_FS_POSIX_ACL if EXT4_FS
 	select F2FS_FS_POSIX_ACL if F2FS_FS
-	select FB
 	select FILE_LOCKING
 	select FS_ENCRYPTION
 	select FS_VERITY
@@ -65,12 +61,12 @@ config ANDROID_DEFAULT_SETTING
 	select HARDENED_USERCOPY
 	select HID_GENERIC
 	select HID_NINTENDO
-	select HID_MULTITOUCH
-	select HID_PLANTRONICS
-	select HID_SONY if INPUT && HID && USB_HID && NEW_LEDS && LEDS_CLASS
+	select HID_PLAYSTATION
+	select HID_SONY
 	select HIGH_RES_TIMERS
 	select IKCONFIG
 	select IKCONFIG_PROC
+	select IKPROC
 	select INET
 	select INET6_ESP
 	select INET6_IPCOMP
@@ -127,7 +123,6 @@ config ANDROID_DEFAULT_SETTING
 	select MODULES
 	select MODULE_UNLOAD
 	select MODVERSIONS
-	select MTK_AMMS
 	select MULTIUSER
 	select NAMESPACES
 	select NET
@@ -186,8 +181,6 @@ config ANDROID_DEFAULT_SETTING
 	select NF_CONNTRACK_EVENTS
 	select NF_CONNTRACK_FTP
 	select NF_CONNTRACK_H323
-	select NF_CONNTRACK_IPV4
-	select NF_CONNTRACK_IPV6
 	select NF_CONNTRACK_IRC
 	select NF_CONNTRACK_NETBIOS_NS
 	select NF_CONNTRACK_PPTP
@@ -203,6 +196,7 @@ config ANDROID_DEFAULT_SETTING
 	select NF_SOCKET_IPV6
 	select NO_HZ
 	select PACKET
+	select PLAYSTATION_FF
 	select PM_WAKELOCKS
 	select POSIX_TIMERS
 	select PPP
@@ -227,31 +221,31 @@ config ANDROID_DEFAULT_SETTING
 	select SECURITY_NETWORK
 	select SECURITY_PERF_EVENTS_RESTRICT
 	select SECURITY_SELINUX
-	select SETEND_EMULATION if ARMV8_DEPRECATED
+	select SETEND_EMULATION if ARM64
 	select SHMEM
 	select SIGNALFD
 	select SND
 	select SOUND
+	select STACKPROTECTOR
+	select STACKPROTECTOR_STRONG
 	select STAGING
-	select STATIC_USERMODEHELPER
 	select STRICT_KERNEL_RWX
 	select STRICT_MODULE_RWX
 	select SUSPEND
-	select SWP_EMULATION if ARMV8_DEPRECATED
+	select SWP_EMULATION if ARM64
 	select SYNC_FILE
 	select SYSFS
 	select TASK_IO_ACCOUNTING
 	select TASKSTATS
 	select TASK_XACCT
-	select TCP_CONG_ADVANCED
-	select TCP_CONG_BIC
 	select TIMERFD
 	select TTY
 	select TUN
 	select UHID
 	select UID_SYS_STATS
+	select UNICODE
 	select UNIX
-	select UNMAP_KERNEL_AT_EL0
+	select UNMAP_KERNEL_AT_EL0 if ARM64
 	select USB
 	select USB_CONFIGFS
 	select USB_CONFIGFS_F_ACC
@@ -260,34 +254,209 @@ config ANDROID_DEFAULT_SETTING
 	select USB_CONFIGFS_F_MIDI
 	select USB_CONFIGFS_UEVENT
 	select USB_GADGET
-	select USB_RTL8152 if NETDEVICES && USB_NET_DRIVERS
 	select USB_SUPPORT
 	select UTS_NS
 	select VETH
 	select XFRM_INTERFACE
 	select XFRM_STATISTICS
-	select XFRM_SUB_POLICY
 	select XFRM_USER
 	help
-	  Select the android base and recommended config by default
-	  to avoid missing basic or common setting
-	  Say Y here if the project is for android product
-	  If unsure, say N
+	  This option enables the android base config by default which
+	  definded in android-base.config and android-base-conditional.xml
+	  Say Y here if the project is for android product.
+	  If unsure, say N.
 
 config MTK_ANDROID_DEFAULT_SETTING
 	bool "Select MTK android common setting by default"
+	select ARM_MTK_CPUIDLE if (!ARM_MTK_NEW_ARCH_CPUIDLE && !CPU_IDLE_NO_MTK)
+	select BRIDGE
+	select BRIDGE_NETFILTER
+	select CONSOLE_LOCK_DURATION_DETECT if MTK_ENG_BUILD
+	select CRYPTO
+	select CRYPTO_ABLK_HELPER
+	select CRYPTO_AEAD
+	select CRYPTO_AEAD2
+	select CRYPTO_AKCIPHER2
+	select CRYPTO_ALGAPI
+	select CRYPTO_ALGAPI2
+	select CRYPTO_ARC4
+	select CRYPTO_AUTHENC
+	select CRYPTO_BLKCIPHER
+	select CRYPTO_BLKCIPHER2
+	select CRYPTO_BLOWFISH
+	select CRYPTO_CCM
+	select CRYPTO_CMAC
+	select CRYPTO_CRC32C
+	select CRYPTO_CRYPTD
+	select CRYPTO_CTR
+	select CRYPTO_DEFLATE
+	select CRYPTO_DES
+	select CRYPTO_DRBG
+	select CRYPTO_DRBG_MENU
+	select CRYPTO_ECHAINIV
+	select CRYPTO_HASH
+	select CRYPTO_HASH2
+	select CRYPTO_JITTERENTROPY
+	select CRYPTO_LZ4 if ZRAM
+	select CRYPTO_LZO
+	select CRYPTO_MANAGER
+	select CRYPTO_MANAGER2
+	select CRYPTO_NULL2
+	select CRYPTO_RNG
+	select CRYPTO_RNG2
+	select CRYPTO_RNG_DEFAULT
+	select CRYPTO_SEQIV
+	select CRYPTO_TWOFISH_COMMON
+	select CRYPTO_USER
+	select CRYPTO_WORKQUEUE
+	select CRYPTO_XCBC
+	select DEBUG_RODATA
+	select DEBUG_SET_MODULE_RONX
+	select FB
+	select FIB_RULES
+	select HAVE_MTK_MC
+	select HAVE_NET_DSA
 	select HW_RANDOM
-	select HW_RANDOM_MT67XX
+	select INET6_AH
+	select INET6_TUNNEL
+	select INET6_XFRM_MODE_BEET
+	select INET6_XFRM_MODE_ROUTEOPTIMIZATION
+	select INET6_XFRM_TUNNEL
+	select INET_AH
+	select INET_IPCOMP
+	select INET_SCTP_DIAG
+	select INET_TCP_DIAG
+	select INET_TUNNEL
+	select IP6_NF_MATCH_FRAG
+	select IP6_NF_MATCH_IPV6HEADER
+	select IP6_NF_TARGET_HL
+	select IP_MROUTE
+	select IP_MROUTE_MULTIPLE_TABLES
+	select IP_NF_MATCH_AH
+	select IP_PIMSM_V1
+	select IP_PIMSM_V2
+	select IP_PNP
+	select IP_PNP_BOOTP
+	select IP_PNP_DHCP
+	select IP_ROUTE_CLASSID
+	select IP_SCTP
+	select IPV6_MROUTE
+	select IPV6_NDISC_NODETYPE
+	select IPV6_PIMSM_V2
+	select IPV6_ROUTER_PREF
+	select IPV6_SIT_6RD
+	select IPV6_SUBTREES
+	select LIBCRC32C
+	select LLC
+	select LOG_TOO_MUCH_WARNING if (MTK_ENG_BUILD && MTK_AEE_FEATURE)
+	select MEDIATEK_CACHE_API
 	select MTK_AEE_AED
-	select MTK_AEE_IPANIC if MTK_RAM_CONSOLE
-	select MTK_MIX_DEVICES
+	select MTK_AEE_FEATURE
+	select MTK_AEE_IPANIC
+	select MTK_AMMS
+	select MTK_ATF_LOGGER
+	select MTK_CAMERA_ISP
+	select MTK_DRAMC if (!MACH_MT6877) && (!MACH_MT6833) && (!MACH_MT6885) && (!MACH_MT6873) && (!MACH_MT6853) && (!MACH_MT6893)
+	select MTK_EMI if (!MACH_MT6739 ) && (!MACH_MT6877) && (!MACH_MT6833) && (!MACH_MT6781) && (!MACH_MT6885) && (!MACH_MT6873) && (!MACH_MT6853) && (!MACH_MT6893)
+	select MTK_FB_SUPPORT_ASSERTION_LAYER if MTK_FB
+	select MTK_HANG_DETECT
+	select MTK_HANG_DETECT_DB if (MTK_HANG_DETECT && MTK_AEE_FEATURE)
+	select MTK_MM_DEBUG if(!MTK_GMO_RAM_OPTIMIZE)
+	select MTK_MMC_DEBUG if (MMC_MTK_PRO || MMC_MTK_SDIO) && (!MTK_GMO_RAM_OPTIMIZE)
+	select MTK_MTEE_MULTI_CHUNK_SUPPORT if (MTK_HAPP_MEM_SUPPORT || MTK_SDSP_MEM_SUPPORT || MTK_SDSP_SHARED_PERM_MTEE_TEE || MTK_SDSP_SHARED_PERM_VPU_MTEE_TEE)
+	select MTK_PERFORMANCE_MODULE
+	select MTK_PLAT_SRAM_FLAG
+	select MTK_PROT_MEM_SUPPORT if (MTK_GZ_KREE && MTK_CAM_SECURITY_SUPPORT)
+	select MTK_SECURE_MEM_SUPPORT if (TRUSTONIC_TEE_SUPPORT || MICROTRUST_TEE_SUPPORT)
+	select MTK_SYSTRACKER_V2
+	select HAVE_MTK_TRUSTED_MEMORY_SUBSYSTEM if (MTK_PROT_MEM_SUPPORT || MTK_SECURE_MEM_SUPPORT || MTK_MTEE_MULTI_CHUNK_SUPPORT || MTK_GZ_KREE)
+	select MTK_WFD_SMEM_SUPPORT if (MTK_SECURE_MEM_SUPPORT && MTK_SEC_VIDEO_PATH_SUPPORT)
+	select NET_ACT_IPT
+	select NET_ACT_MIRRED
+	select NET_ACT_POLICE
+	select NET_CLS
+	select NET_CLS_FLOW
+	select NET_CLS_FW
+	select NET_CLS_IND
+	select NET_EGRESS
+	select NETFILTER_NETLINK
+	select NETFILTER_NETLINK_LOG
+	select NETFILTER_NETLINK_QUEUE
+	select NETFILTER_XTABLES
+	select NETFILTER_XT_CONNMARK
+	select NETFILTER_XT_MARK
+	select NETFILTER_XT_MATCH_CONNBYTES
+	select NETFILTER_XT_MATCH_ECN
 	select NETFILTER_XT_MATCH_ESP
+	select NETFILTER_XT_MATCH_HL
+	select NETFILTER_XT_MATCH_MULTIPORT
+	select NETFILTER_XT_MATCH_PHYSDEV
+	select NETFILTER_XT_MATCH_QTAGUID
+	select NETFILTER_XT_MATCH_QUOTA2_LOG
+	select NETFILTER_XT_MATCH_REALM
+	select NETFILTER_XT_MATCH_RECENT
+	select NETFILTER_XT_MATCH_TCPMSS
+	select NETFILTER_XT_NAT
+	select NETFILTER_XT_TARGET_HL
+	select NETFILTER_XT_TARGET_NETMAP
+	select NETFILTER_XT_TARGET_NFLOG
+	select NETFILTER_XT_TARGET_REDIRECT
+	select NET_IPIP
+	select NET_IP_TUNNEL
+	select NET_SCH_FIFO
+	select NET_SCH_INGRESS
+	select NETWORK_SECMARK
+	select NF_CONNTRACK_BROADCAST
+	select NF_CONNTRACK_IPV4
+	select NF_CONNTRACK_IPV6
+	select NF_CONNTRACK_MARK
+	select NF_CT_PROTO_GRE
+	select NF_DEFRAG_IPV4
+	select NF_DEFRAG_IPV6
+	select NF_NAT
+	select NF_NAT_AMANDA
+	select NF_NAT_FTP
+	select NF_NAT_H323
+	select NF_NAT_IPV4
+	select NF_NAT_IPV6
+	select NF_NAT_IRC
+	select NF_NAT_MASQUERADE_IPV4
+	select NF_NAT_PPTP
+	select NF_NAT_PROTO_DCCP
+	select NF_NAT_PROTO_GRE
+	select NF_NAT_PROTO_SCTP
+	select NF_NAT_PROTO_UDPLITE
+	select NF_NAT_REDIRECT
+	select NF_NAT_TFTP
+	select NF_REJECT_IPV4
+	select NF_REJECT_IPV6
 	select PGTABLE_MAPPING if ZSMALLOC && (ARM || ARM64)
-	select PSI
+	select PRINTK_MTK
+	select PRINTK_MTK_UART_CONSOLE if PRINTK_MTK
+	select PRINTK_PREFIX_ENHANCE if PRINTK
+	select REGULATOR
+	select SOCK_CGROUP_DATA
 	select SPECULATIVE_PAGE_FAULT if (ARCH_SUPPORTS_SPECULATIVE_PAGE_FAULT && ARCH_HAS_PTE_SPECIAL && MMU && SMP)
+	select STP
+	select SYNC
+	select POWER_RESET
+	select SYSCON_REBOOT_MODE
+	select TCP_CONG_ADVANCED
+	select TCP_CONG_BIC
+	select TMPFS
+	select USB_CONFIGFS_F_MTP
+	select USB_CONFIGFS_F_PTP
+	select WEXT_PRIV
+	select WEXT_PROC
+	select WIRELESS
+	select WIRELESS_EXT
+	select XFRM
+	select XFRM_ALGO
+	select XFRM_IPCOMP
+	select XFRM_SUB_POLICY
+	select MTK_SOCINFO
 	help
-	  Select the MTK android config by default
-	  to avoid missing basic or common setting
-	  Say Y here if the project is for android product
-	  If unsure, say N
-
+	  This adds some MTK specific config by default which is
+	  not defined in ANDROID_DEFAULT_SETTING.
+	  Say Y here for MTK android product (e.g. smart phone)
+	  If unsure, say N.

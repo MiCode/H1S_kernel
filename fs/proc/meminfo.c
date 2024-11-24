@@ -7,6 +7,7 @@
 #include <linux/mman.h>
 #include <linux/mmzone.h>
 #include <linux/proc_fs.h>
+#include <linux/percpu.h>
 #include <linux/quicklist.h>
 #include <linux/seq_file.h>
 #include <linux/swap.h>
@@ -26,20 +27,7 @@ void __attribute__((weak)) arch_report_meminfo(struct seq_file *m)
 
 static void show_val_kb(struct seq_file *m, const char *s, unsigned long num)
 {
-	char v[32];
-	static const char blanks[7] = {' ', ' ', ' ', ' ',' ', ' ', ' '};
-	int len;
-
-	len = num_to_str(v, sizeof(v), num << (PAGE_SHIFT - 10));
-
-	seq_write(m, s, 16);
-
-	if (len > 0) {
-		if (len < 8)
-			seq_write(m, blanks, 8 - len);
-
-		seq_write(m, v, len);
-	}
+	seq_put_decimal_ull_width(m, s, num << (PAGE_SHIFT - 10), 8);
 	seq_write(m, " kB\n", 4);
 }
 
@@ -138,6 +126,7 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 		   (unsigned long)VMALLOC_TOTAL >> 10);
 	show_val_kb(m, "VmallocUsed:    ", vmalloc_nr_pages());
 	show_val_kb(m, "VmallocChunk:   ", 0ul);
+	show_val_kb(m, "Percpu:         ", pcpu_nr_pages());
 
 #ifdef CONFIG_MEMORY_FAILURE
 	seq_printf(m, "HardwareCorrupted: %5lu kB\n",
@@ -166,21 +155,9 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static int meminfo_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, meminfo_proc_show, NULL);
-}
-
-static const struct file_operations meminfo_proc_fops = {
-	.open		= meminfo_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
 static int __init proc_meminfo_init(void)
 {
-	proc_create("meminfo", 0, NULL, &meminfo_proc_fops);
+	proc_create_single("meminfo", 0, NULL, meminfo_proc_show);
 	return 0;
 }
 fs_initcall(proc_meminfo_init);

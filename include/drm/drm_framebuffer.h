@@ -121,6 +121,12 @@ struct drm_framebuffer {
 	 * @base: base modeset object structure, contains the reference count.
 	 */
 	struct drm_mode_object base;
+
+	/**
+	 * @comm: Name of the process allocating the fb, used for fb dumping.
+	 */
+	char comm[TASK_COMM_LEN];
+
 	/**
 	 * @format: framebuffer format information
 	 */
@@ -158,7 +164,7 @@ struct drm_framebuffer {
 	 * buffers. For userspace created object this is copied from
 	 * drm_mode_fb_cmd2.
 	 */
-	uint64_t modifier[4];
+	uint64_t modifier;
 	/**
 	 * @width: Logical width of the visible area of the framebuffer, in
 	 * pixels.
@@ -174,10 +180,6 @@ struct drm_framebuffer {
 	 * DRM_MODE_FB_MODIFIERS.
 	 */
 	int flags;
-	/**
-	 * @pixel_format: DRM FOURCC code describing the pixel format.
-	 */
-	uint32_t pixel_format; /* fourcc format */
 	/**
 	 * @hot_x: X coordinate of the cursor hotspot. Used by the legacy cursor
 	 * IOCTL when the driver supports cursor through a DRM_PLANE_TYPE_CURSOR
@@ -268,7 +270,7 @@ static inline void drm_framebuffer_unreference(struct drm_framebuffer *fb)
  *
  * This functions returns the framebuffer's reference count.
  */
-static inline uint32_t drm_framebuffer_read_refcount(struct drm_framebuffer *fb)
+static inline uint32_t drm_framebuffer_read_refcount(const struct drm_framebuffer *fb)
 {
 	return kref_read(&fb->base.refcount);
 }

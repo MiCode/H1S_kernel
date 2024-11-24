@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
-
 
 #ifndef __MT_PPM_INTERNAL_H__
 #define __MT_PPM_INTERNAL_H__
@@ -30,6 +21,7 @@ extern "C" {
 #include <linux/printk.h>
 #include <linux/sched.h>
 #include <linux/cpumask.h>
+#include <linux/topology.h>
 
 #include "mtk_ppm_api.h"
 #include "mtk_ppm_platform.h"
@@ -312,13 +304,54 @@ extern void ppm_profile_update_ipi_exec_time(int id, unsigned long long time);
 #endif
 
 /* SRAM debugging */
-#ifdef CONFIG_MTK_RAM_CONSOLE
+#ifdef CONFIG_MTK_AEE_IPANIC
 extern void aee_rr_rec_ppm_cluster_limit(int id, u32 val);
 extern void aee_rr_rec_ppm_step(u8 val);
 extern void aee_rr_rec_ppm_min_pwr_bgt(u32 val);
 extern void aee_rr_rec_ppm_policy_mask(u32 val);
 extern void aee_rr_rec_ppm_waiting_for_pbm(u8 val);
 #endif
+
+#define trace_ppm_update(a, b, c, d) do { } while (0)
+static inline int arch_get_cluster_cpus(struct cpumask *cpus, int cluster_id)
+{
+	int cpu = 0;
+
+	cpumask_clear(cpus);
+#ifdef CONFIG_MACH_MT6761
+	while (cpu < 4) {
+		cpumask_set_cpu(cpu, cpus);
+		cpu++;
+	}
+#else
+	if (cluster_id == 0) {
+		cpu = 0;
+
+		while (cpu < CORE_NUM_L) {
+			cpumask_set_cpu(cpu, cpus);
+			cpu++;
+		}
+	} else {
+		cpu = CORE_NUM_L;
+
+		while (cpu < TOTAL_CORE_NUM) {
+			cpumask_set_cpu(cpu, cpus);
+			cpu++;
+		}
+	}
+#endif
+
+	return 0;
+}
+
+static inline int arch_get_nr_clusters(void)
+{
+#ifdef CONFIG_MACH_MT6761
+	return 1;
+#else
+	return NR_PPM_CLUSTERS;
+#endif
+}
 
 #ifdef __cplusplus
 }

@@ -518,6 +518,9 @@ qla2x00_sysfs_write_vpd(struct file *filp, struct kobject *kobj,
 	if (unlikely(pci_channel_offline(ha->pdev)))
 		return 0;
 
+	if (qla2x00_chip_is_down(vha))
+		return 0;
+
 	if (!capable(CAP_SYS_ADMIN) || off != 0 || count != ha->vpd_size ||
 	    !ha->isp_ops->write_nvram)
 		return 0;
@@ -570,7 +573,7 @@ qla2x00_sysfs_read_sfp(struct file *filp, struct kobject *kobj,
 	if (!capable(CAP_SYS_ADMIN) || off != 0 || count < SFP_DEV_SIZE)
 		return 0;
 
-	if (qla2x00_reset_active(vha))
+	if (qla2x00_chip_is_down(vha))
 		return 0;
 
 	rval = qla2x00_read_sfp_dev(vha, buf, count);
@@ -734,6 +737,15 @@ qla2x00_issue_logo(struct file *filp, struct kobject *kobj,
 	int type;
 	port_id_t did;
 
+	if (!capable(CAP_SYS_ADMIN))
+		return 0;
+
+	if (unlikely(pci_channel_offline(vha->hw->pdev)))
+		return 0;
+
+	if (qla2x00_chip_is_down(vha))
+		return 0;
+
 	type = simple_strtol(buf, NULL, 10);
 
 	did.b.domain = (type & 0x00ff0000) >> 16;
@@ -770,6 +782,12 @@ qla2x00_sysfs_read_xgmac_stats(struct file *filp, struct kobject *kobj,
 	uint16_t actual_size;
 
 	if (!capable(CAP_SYS_ADMIN) || off != 0 || count > XGMAC_DATA_SIZE)
+		return 0;
+
+	if (unlikely(pci_channel_offline(ha->pdev)))
+		return 0;
+
+	if (qla2x00_chip_is_down(vha))
 		return 0;
 
 	if (ha->xgmac_data)
@@ -825,6 +843,9 @@ qla2x00_sysfs_read_dcbx_tlv(struct file *filp, struct kobject *kobj,
 
 	if (ha->dcbx_tlv)
 		goto do_read;
+
+	if (qla2x00_chip_is_down(vha))
+		return 0;
 
 	ha->dcbx_tlv = dma_alloc_coherent(&ha->pdev->dev, DCBX_TLV_DATA_SIZE,
 	    &ha->dcbx_tlv_dma, GFP_KERNEL);
@@ -1037,7 +1058,7 @@ qla2x00_link_state_show(struct device *dev, struct device_attribute *attr,
 	    vha->device_flags & DFLG_NO_CABLE)
 		len = scnprintf(buf, PAGE_SIZE, "Link Down\n");
 	else if (atomic_read(&vha->loop_state) != LOOP_READY ||
-	    qla2x00_reset_active(vha))
+	    qla2x00_chip_is_down(vha))
 		len = scnprintf(buf, PAGE_SIZE, "Unknown Link State\n");
 	else {
 		len = scnprintf(buf, PAGE_SIZE, "Link Up - ");
@@ -1164,7 +1185,7 @@ qla2x00_beacon_store(struct device *dev, struct device_attribute *attr,
 	if (IS_QLA2100(ha) || IS_QLA2200(ha))
 		return -EPERM;
 
-	if (test_bit(ABORT_ISP_ACTIVE, &vha->dpc_flags)) {
+	if (qla2x00_chip_is_down(vha)) {
 		ql_log(ql_log_warn, vha, 0x707a,
 		    "Abort ISP active -- ignoring beacon request.\n");
 		return -EBUSY;
@@ -1351,7 +1372,7 @@ qla2x00_thermal_temp_show(struct device *dev,
 	scsi_qla_host_t *vha = shost_priv(class_to_shost(dev));
 	uint16_t temp = 0;
 
-	if (qla2x00_reset_active(vha)) {
+	if (qla2x00_chip_is_down(vha)) {
 		ql_log(ql_log_warn, vha, 0x70dc, "ISP reset active.\n");
 		goto done;
 	}
@@ -1382,7 +1403,7 @@ qla2x00_fw_state_show(struct device *dev, struct device_attribute *attr,
 		return scnprintf(buf, PAGE_SIZE, "0x%x\n", pstate);
 	}
 
-	if (qla2x00_reset_active(vha))
+	if (qla2x00_chip_is_down(vha))
 		ql_log(ql_log_warn, vha, 0x707c,
 		    "ISP reset active.\n");
 	else if (!vha->hw->flags.eeh_busy)
@@ -1779,6 +1800,7 @@ static void
 qla2x00_terminate_rport_io(struct fc_rport *rport)
 {
 	fc_port_t *fcport = *(fc_port_t **)rport->dd_data;
+	scsi_qla_host_t *vha;
 
 	if (!fcport)
 		return;
@@ -1788,9 +1810,12 @@ qla2x00_terminate_rport_io(struct fc_rport *rport)
 
 	if (test_bit(ABORT_ISP_ACTIVE, &fcport->vha->dpc_flags))
 		return;
+	vha = fcport->vha;
 
 	if (unlikely(pci_channel_offline(fcport->vha->hw->pdev))) {
 		qla2x00_abort_all_cmds(fcport->vha, DID_NO_CONNECT << 16);
+		qla2x00_eh_wait_for_pending_commands(fcport->vha, fcport->d_id.b24,
+			0, WAIT_TARGET);
 		return;
 	}
 	/*
@@ -1804,6 +1829,15 @@ qla2x00_terminate_rport_io(struct fc_rport *rport)
 			    fcport->d_id.b.area, fcport->d_id.b.al_pa);
 		else
 			qla2x00_port_logout(fcport->vha, fcport);
+	}
+
+	/* check for any straggling io left behind */
+	if (qla2x00_eh_wait_for_pending_commands(fcport->vha, fcport->d_id.b24, 0, WAIT_TARGET)) {
+		ql_log(ql_log_warn, vha, 0x300b,
+		       "IO not return.  Resetting. \n");
+		set_bit(ISP_ABORT_NEEDED, &vha->dpc_flags);
+		qla2xxx_wake_dpc(vha);
+		qla2x00_wait_for_chip_reset(vha);
 	}
 }
 
@@ -1841,17 +1875,16 @@ qla2x00_get_fc_host_stats(struct Scsi_Host *shost)
 	if (unlikely(pci_channel_offline(ha->pdev)))
 		goto done;
 
-	if (qla2x00_reset_active(vha))
+	if (qla2x00_chip_is_down(vha))
 		goto done;
 
-	stats = dma_alloc_coherent(&ha->pdev->dev,
-	    sizeof(*stats), &stats_dma, GFP_KERNEL);
+	stats = dma_zalloc_coherent(&ha->pdev->dev, sizeof(*stats),
+				    &stats_dma, GFP_KERNEL);
 	if (!stats) {
 		ql_log(ql_log_warn, vha, 0x707d,
 		    "Failed to allocate memory for stats.\n");
 		goto done;
 	}
-	memset(stats, 0, sizeof(*stats));
 
 	rval = QLA_FUNCTION_FAILED;
 	if (IS_FWI2_CAPABLE(ha)) {
@@ -1914,6 +1947,8 @@ qla2x00_reset_host_stats(struct Scsi_Host *shost)
 	vha->qla_stats.jiffies_at_last_reset = get_jiffies_64();
 
 	if (IS_FWI2_CAPABLE(ha)) {
+		int rval;
+
 		stats = dma_alloc_coherent(&ha->pdev->dev,
 		    sizeof(*stats), &stats_dma, GFP_KERNEL);
 		if (!stats) {
@@ -1923,7 +1958,11 @@ qla2x00_reset_host_stats(struct Scsi_Host *shost)
 		}
 
 		/* reset firmware statistics */
-		qla24xx_get_isp_stats(base_vha, stats, stats_dma, BIT_0);
+		rval = qla24xx_get_isp_stats(base_vha, stats, stats_dma, BIT_0);
+		if (rval != QLA_SUCCESS)
+			ql_log(ql_log_warn, vha, 0x70de,
+			       "Resetting ISP statistics failed: rval = %d\n",
+			       rval);
 
 		dma_free_coherent(&ha->pdev->dev, sizeof(*stats),
 		    stats, stats_dma);
@@ -2049,8 +2088,6 @@ qla24xx_vport_create(struct fc_vport *fc_vport, bool disable)
 			vha->flags.difdix_supported = 1;
 			ql_dbg(ql_dbg_user, vha, 0x7082,
 			    "Registered for DIF/DIX type 1 and 3 protection.\n");
-			if (ql2xenabledif == 1)
-				prot = SHOST_DIX_TYPE0_PROTECTION;
 			scsi_host_set_prot(vha->host,
 			    prot | SHOST_DIF_TYPE1_PROTECTION
 			    | SHOST_DIF_TYPE2_PROTECTION
@@ -2142,9 +2179,11 @@ qla24xx_vport_delete(struct fc_vport *fc_vport)
 	    test_bit(FCPORT_UPDATE_NEEDED, &vha->dpc_flags))
 		msleep(1000);
 
+
 	qla24xx_disable_vp(vha);
 	qla2x00_wait_for_sess_deletion(vha);
 
+	qla_nvme_delete(vha);
 	vha->flags.delete_progress = 1;
 
 	qlt_remove_target(ha, vha);
@@ -2171,6 +2210,10 @@ qla24xx_vport_delete(struct fc_vport *fc_vport)
 
 	dma_free_coherent(&ha->pdev->dev, vha->gnl.size, vha->gnl.l,
 	    vha->gnl.ldma);
+
+	vha->gnl.l = NULL;
+
+	vfree(vha->scan.l);
 
 	if (vha->qpair && vha->qpair->vp_idx == vha->vp_idx) {
 		if (qla2xxx_delete_qpair(vha, vha->qpair) != QLA_SUCCESS)

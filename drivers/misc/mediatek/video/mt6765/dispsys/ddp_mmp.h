@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __H_DDP_MMP__
@@ -153,9 +145,15 @@ struct DDP_MMP_Events {
 	mmp_event Dsi_Update;
 	mmp_event primary_set_cmd;
 	mmp_event primary_pm_qos;
+	mmp_event primary_hrt_bw;
 };
 
+#ifdef CONFIG_MMPROFILE
 struct DDP_MMP_Events *ddp_mmp_get_events(void);
+#else
+#define ddp_mmp_get_events() ((struct DDP_MMP_Events *)NULL)
+#endif
+
 void init_ddp_mmp_events(void);
 void ddp_mmp_init(void);
 void ddp_mmp_ovl_layer(struct OVL_CONFIG_STRUCT *pLayer,

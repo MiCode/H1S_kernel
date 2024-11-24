@@ -46,8 +46,8 @@
 static atomic_t fl_size = ATOMIC_INIT(0);
 static struct ip6_flowlabel __rcu *fl_ht[FL_HASH_MASK+1];
 
-static void ip6_fl_gc(unsigned long dummy);
-static DEFINE_TIMER(ip6_fl_gc_timer, ip6_fl_gc, 0, 0);
+static void ip6_fl_gc(struct timer_list *unused);
+static DEFINE_TIMER(ip6_fl_gc_timer, ip6_fl_gc);
 
 /* FL hash table lock: it protects only of GC */
 
@@ -133,7 +133,7 @@ static void fl_release(struct ip6_flowlabel *fl)
 	spin_unlock_bh(&ip6_fl_lock);
 }
 
-static void ip6_fl_gc(unsigned long dummy)
+static void ip6_fl_gc(struct timer_list *unused)
 {
 	int i;
 	unsigned long now = jiffies;
@@ -379,7 +379,6 @@ fl_create(struct net *net, struct sock *sk, struct in6_flowlabel_req *freq,
 	if (olen > 0) {
 		struct msghdr msg;
 		struct flowi6 flowi6;
-		struct sockcm_cookie sockc_junk;
 		struct ipcm6_cookie ipc6;
 
 		err = -ENOMEM;
@@ -398,7 +397,7 @@ fl_create(struct net *net, struct sock *sk, struct in6_flowlabel_req *freq,
 		memset(&flowi6, 0, sizeof(flowi6));
 
 		ipc6.opt = fl->opt;
-		err = ip6_datagram_send_ctl(net, sk, &msg, &flowi6, &ipc6, &sockc_junk);
+		err = ip6_datagram_send_ctl(net, sk, &msg, &flowi6, &ipc6);
 		if (err)
 			goto done;
 		err = -EINVAL;
@@ -519,7 +518,7 @@ int ipv6_flowlabel_opt_get(struct sock *sk, struct in6_flowlabel_req *freq,
 
 int ipv6_flowlabel_opt(struct sock *sk, char __user *optval, int optlen)
 {
-	int uninitialized_var(err);
+	int err;
 	struct net *net = sock_net(sk);
 	struct ipv6_pinfo *np = inet6_sk(sk);
 	struct in6_flowlabel_req freq;
@@ -761,6 +760,10 @@ static struct ip6_flowlabel *ip6fl_get_idx(struct seq_file *seq, loff_t pos)
 static void *ip6fl_seq_start(struct seq_file *seq, loff_t *pos)
 	__acquires(RCU)
 {
+	struct ip6fl_iter_state *state = ip6fl_seq_private(seq);
+
+	state->pid_ns = proc_pid_ns(file_inode(seq->file));
+
 	rcu_read_lock_bh();
 	return *pos ? ip6fl_get_idx(seq, *pos - 1) : SEQ_START_TOKEN;
 }
@@ -815,45 +818,10 @@ static const struct seq_operations ip6fl_seq_ops = {
 	.show	=	ip6fl_seq_show,
 };
 
-static int ip6fl_seq_open(struct inode *inode, struct file *file)
-{
-	struct seq_file *seq;
-	struct ip6fl_iter_state *state;
-	int err;
-
-	err = seq_open_net(inode, file, &ip6fl_seq_ops,
-			   sizeof(struct ip6fl_iter_state));
-
-	if (!err) {
-		seq = file->private_data;
-		state = ip6fl_seq_private(seq);
-		rcu_read_lock();
-		state->pid_ns = get_pid_ns(task_active_pid_ns(current));
-		rcu_read_unlock();
-	}
-	return err;
-}
-
-static int ip6fl_seq_release(struct inode *inode, struct file *file)
-{
-	struct seq_file *seq = file->private_data;
-	struct ip6fl_iter_state *state = ip6fl_seq_private(seq);
-	put_pid_ns(state->pid_ns);
-	return seq_release_net(inode, file);
-}
-
-static const struct file_operations ip6fl_seq_fops = {
-	.owner		=	THIS_MODULE,
-	.open		=	ip6fl_seq_open,
-	.read		=	seq_read,
-	.llseek		=	seq_lseek,
-	.release	=	ip6fl_seq_release,
-};
-
 static int __net_init ip6_flowlabel_proc_init(struct net *net)
 {
-	if (!proc_create("ip6_flowlabel", S_IRUGO, net->proc_net,
-			 &ip6fl_seq_fops))
+	if (!proc_create_net("ip6_flowlabel", 0444, net->proc_net,
+			&ip6fl_seq_ops, sizeof(struct ip6fl_iter_state)))
 		return -ENOMEM;
 	return 0;
 }

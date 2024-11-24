@@ -95,6 +95,20 @@ static bool supported_iv_ino_lblk_policy(const struct fscrypt_policy_v2 *policy,
 	int ino_bits = 64, lblk_bits = 64;
 
 	/*
+	 * IV_INO_LBLK_* exist only because of hardware limitations, and
+	 * currently the only known use case for them involves AES-256-XTS.
+	 * That's also all we test currently.  For these reasons, for now only
+	 * allow AES-256-XTS here.  This can be relaxed later if a use case for
+	 * IV_INO_LBLK_* with other encryption modes arises.
+	 */
+	if (policy->contents_encryption_mode != FSCRYPT_MODE_AES_256_XTS) {
+		fscrypt_warn(inode,
+			     "Can't use %s policy with contents mode other than AES-256-XTS",
+			     type);
+		return false;
+	}
+
+	/*
 	 * It's unsafe to include inode numbers in the IVs if the filesystem can
 	 * potentially renumber inodes, e.g. via filesystem shrinking.
 	 */
@@ -133,7 +147,7 @@ static bool fscrypt_supported_v1_policy(const struct fscrypt_policy_v1 *policy,
 			     policy->filenames_encryption_mode);
 		return false;
 	}
-	/* add LBLK_32 for eMMC + F2FS */
+	/* let LBLK_32 go for eMMC + F2FS security fix */
 	if (policy->flags & ~(FSCRYPT_POLICY_FLAGS_PAD_MASK |
 			      FSCRYPT_POLICY_FLAG_DIRECT_KEY |
 			      FSCRYPT_POLICY_FLAG_IV_INO_LBLK_32)) {
@@ -196,10 +210,15 @@ static bool fscrypt_supported_v2_policy(const struct fscrypt_policy_v2 *policy,
 					  32, 32))
 		return false;
 
+	/*
+	 * IV_INO_LBLK_32 hashes the inode number, so in principle it can
+	 * support any ino_bits.  However, currently the inode number is gotten
+	 * from inode::i_ino which is 'unsigned long'.  So for now the
+	 * implementation limit is 32 bits.
+	 */
 	if ((policy->flags & FSCRYPT_POLICY_FLAG_IV_INO_LBLK_32) &&
-	    /* This uses hashed inode numbers, so ino_bits doesn't matter. */
 	    !supported_iv_ino_lblk_policy(policy, inode, "IV_INO_LBLK_32",
-					  INT_MAX, 32))
+					  32, 32))
 		return false;
 
 	if (memchr_inv(policy->__reserved, 0, sizeof(policy->__reserved))) {
@@ -631,24 +650,6 @@ int fscrypt_has_permitted_context(struct inode *parent, struct inode *child)
 }
 EXPORT_SYMBOL(fscrypt_has_permitted_context);
 
-/*
- * only used for eMMC + F2FS security OTA fix
- * 1: HWcmdq; 2: SWcdmq; 0: non-eMMC
- */
-#define BOOTDEV_SDMMC           (1)
-#define BOOTDEV_UFS             (2)
-int fscrypt_force_iv_ino_lblk_32(void)
-{
-	if (get_boot_type() == BOOTDEV_SDMMC)
-#ifdef CONFIG_MTK_EMMC_HW_CQ
-		return 1;
-#else
-		return 2;
-#endif
-	else
-		return 0;
-}
-
 /**
  * fscrypt_inherit_context() - Sets a child context from its parent
  * @parent: Parent inode from which the context is inherited.
@@ -680,7 +681,7 @@ int fscrypt_inherit_context(struct inode *parent, struct inode *child,
 	if (S_ISREG(child->i_mode) &&
 		ctx.version == FSCRYPT_CONTEXT_V1 &&
 		ctx.v1.contents_encryption_mode == 1 &&
-		fscrypt_force_iv_ino_lblk_32() == 1)
+		is_emmc_type() == 1)
 		ctx.v1.flags |= FSCRYPT_POLICY_FLAG_IV_INO_LBLK_32;
 
 	BUILD_BUG_ON(sizeof(ctx) != FSCRYPT_SET_CONTEXT_MAX_SIZE);

@@ -1,38 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Universal Flash Storage Feature Support
- *
  * Copyright (C) 2017-2018 Samsung Electronics Co., Ltd.
- *
- * Authors:
- *	Yongmyung Lee <ymhungry.lee@samsung.com>
- *	Jinyoung Choi <j-young.choi@samsung.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- * See the COPYING file in the top-level directory or visit
- * <http://www.gnu.org/licenses/gpl-2.0.html>
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * This program is provided "AS IS" and "WITH ALL FAULTS" and
- * without warranty of any kind. You are solely responsible for
- * determining the appropriateness of using and distributing
- * the program and assume all risks associated with your exercise
- * of rights with respect to the program, including but not limited
- * to infringement of third party rights, the risks and costs of
- * program errors, damage to or loss of data, programs or equipment,
- * and unavailability or interruption of operations. Under no
- * circumstances will the contributor of this Program be liable for
- * any damages of any kind arising from your use or distribution of
- * this program.
- *
- * The Linux Foundation chooses to take subject only to the GPLv2
- * license terms, and distributes only under these terms.
  */
 
 #ifndef _UFSFEATURE_H_
@@ -41,12 +9,12 @@
 #include "ufs.h"
 #include <scsi/ufs/ufs-mtk-ioctl.h>
 
-#if defined(CONFIG_UFSHPB)
+#if defined(CONFIG_SCSI_UFS_HPB)
 #include "ufshpb.h"
 #endif
 #include <scsi/scsi_cmnd.h>
 
-#if defined(CONFIG_UFSTW)
+#if defined(CONFIG_SCSI_UFS_TW)
 #include "ufstw.h"
 #endif
 
@@ -118,13 +86,13 @@ struct ufsf_lu_desc {
 	int lu_logblk_size;	/* 0Ah bLogicalBlockSize. default 0x0C = 4KB */
 	u64 lu_logblk_cnt;	/* 0Bh qLogicalBlockCount. */
 
-#if defined(CONFIG_UFSHPB)
+#if defined(CONFIG_SCSI_UFS_HPB)
 	u16 lu_max_active_hpb_rgns;	/* 23h:24h wLUMaxActiveHPBRegions */
 	u16 lu_hpb_pinned_rgn_startidx;	/* 25h:26h wHPBPinnedRegionStartIdx */
 	u16 lu_num_hpb_pinned_rgns;	/* 27h:28h wNumHPBPinnedRegions */
 	int lu_hpb_pinned_end_offset;
 #endif
-#if defined(CONFIG_UFSTW)
+#if defined(CONFIG_SCSI_UFS_TW)
 	unsigned int tw_lu_buf_size;
 #endif
 };
@@ -134,7 +102,7 @@ struct ufsf_feature {
 	int num_lu;
 	int slave_conf_cnt;
 	struct scsi_device *sdev_ufs_lu[UFS_UPIU_MAX_GENERAL_LUN];
-#if defined(CONFIG_UFSHPB)
+#if defined(CONFIG_SCSI_UFS_HPB)
 	struct ufshpb_dev_info hpb_dev_info;
 	struct ufshpb_lu *ufshpb_lup[UFS_UPIU_MAX_GENERAL_LUN];
 	struct work_struct ufshpb_init_work;
@@ -145,7 +113,7 @@ struct ufsf_feature {
 	struct kref ufshpb_kref;
 	bool issue_ioctl;
 #endif
-#if defined(CONFIG_UFSTW)
+#if defined(CONFIG_SCSI_UFS_TW)
 	struct ufstw_dev_info tw_dev_info;
 	struct ufstw_lu *tw_lup[UFS_UPIU_MAX_GENERAL_LUN];
 	struct work_struct tw_init_work;

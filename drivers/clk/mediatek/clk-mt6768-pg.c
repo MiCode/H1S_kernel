@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -20,6 +12,11 @@
 #include <linux/clkdev.h>
 #include <linux/clk-provider.h>
 #include <linux/clk.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
 
 
 #include "clk-mtk-v1.h"
@@ -182,18 +179,18 @@ static void __iomem *vdec_base;		/* vdec */
 #define POWERON_CONFIG_EN		SPM_REG(0x0000)
 #define SPM_POWER_ON_VAL0		SPM_REG(0x0004)
 #define SPM_POWER_ON_VAL1		SPM_REG(0x0008)
-#define PWR_STATUS			SPM_REG(0x0180)
+#define PWR_STATUS				SPM_REG(0x0180)
 #define PWR_STATUS_2ND			SPM_REG(0x0184)
 #define VCODEC_PWR_CON			SPM_REG(0x0300)
 #define VEN_PWR_CON			SPM_REG(0x0304)
-#define ISP_PWR_CON			SPM_REG(0x0308)
-#define DIS_PWR_CON			SPM_REG(0x030C)
+#define ISP_PWR_CON				SPM_REG(0x0308)
+#define DIS_PWR_CON				SPM_REG(0x030C)
 #define MFG_CORE1_PWR_CON		SPM_REG(0x0310)
 #define AUDIO_PWR_CON			SPM_REG(0x0314)
-#define IFR_PWR_CON			SPM_REG(0x0318)
+#define IFR_PWR_CON				SPM_REG(0x0318)
 #define DPY_PWR_CON			SPM_REG(0x031C)
 #define MD1_PWR_CON			SPM_REG(0x0320)
-#define VPU_TOP_PWR_CON			SPM_REG(0x0324)
+#define VPU_TOP_PWR_CON		SPM_REG(0x0324)
 #define CONN_PWR_CON			SPM_REG(0x032C)
 #define VPU_CORE2_PWR_CON		SPM_REG(0x0330)
 #define MFG_ASYNC_PWR_CON		SPM_REG(0x0334)
@@ -204,7 +201,7 @@ static void __iomem *vdec_base;		/* vdec */
 #define MFG_2D_PWR_CON			SPM_REG(0x0348)
 #define MFG_CORE0_PWR_CON		SPM_REG(0x034C)
 #define VDE_PWR_CON			SPM_REG(0x0370)
-#define MD_SRAM_ISO_CON			SPM_REG(0x0394)
+#define MD_SRAM_ISO_CON		SPM_REG(0x0394)
 #define MD_EXTRA_PWR_CON		SPM_REG(0x0398)
 
 #define SPM_PROJECT_CODE		0xB16
@@ -594,7 +591,7 @@ static void vdec_pre_busprotect(void)
 	data_latched[14] = clk_readl(VDEC_REG10);
 	data_latched[15] = clk_readl(VDEC_REG11);
 }
-
+#ifdef CONFIG_MTK_RAM_CONSOLE
 static void vdec_dump_regs(void)
 {
 	int i;
@@ -680,7 +677,7 @@ static void vdec_dump_regs(void)
 		clk_readl(UFO+i*4), clk_readl(UFO+(i+1)*4),
 		clk_readl(UFO+(i+2)*4), clk_readl(UFO+(i+3)*4));
 }
-
+#endif
 enum dbg_id {
 	DBG_ID_MD1_BUS = 0,
 	DBG_ID_CONN_BUS,
@@ -3357,7 +3354,7 @@ struct clk *mt_clk_register_power_gate(const char *name,
 {
 	struct mt_power_gate *pg;
 	struct clk *clk;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 
 	pg = kzalloc(sizeof(*pg), GFP_KERNEL);
 	if (!pg)
@@ -3491,7 +3488,7 @@ struct mtk_power_gate scp_clks[] __initdata = {
 	PGATE2(SCP_SYS_VDEC, pg_vdec, pg_dis, NULL, &vdec_cg, SYS_VDEC),
 };
 
-static void __init init_clk_scpsys(struct clk_onecell_data *clk_data)
+static int  init_clk_scpsys(struct platform_device *pdev, struct clk_onecell_data *clk_data)
 {
 	int i;
 	struct clk *clk;
@@ -3535,6 +3532,7 @@ static void __init init_clk_scpsys(struct clk_onecell_data *clk_data)
 		pr_notice("[CCF] %s: pgate %3d: %s\n", __func__, i, pg->name);
 #endif				/* MT_CCF_DEBUG */
 	}
+	return 0;
 }
 
 /*
@@ -3575,11 +3573,16 @@ static void __iomem *get_reg(struct device_node *np, int index)
 #endif
 }
 
-static void __init mt_scpsys_init(struct device_node *node)
+static int  clk_mt6768_scpsys_probe(struct platform_device *pdev)
 {
 	struct clk_onecell_data *clk_data;
 	int r;
+	struct device_node *node = pdev->dev.of_node;
 
+	if(!node) {
+		pr_err("%s node is null\n", __func__);
+		return -EINVAL;
+	}
 	infracfg_base = get_reg(node, 0);
 	spm_base = get_reg(node, 1);
 	smi_common_base = get_reg(node, 2);
@@ -3594,12 +3597,15 @@ static void __init mt_scpsys_init(struct device_node *node)
 	if (!infracfg_base || !spm_base || !smi_common_base || !infra_base ||
 		!conn_base || !conn_mcu_base) {
 		pr_debug("clk-pg-mt6758: missing reg\n");
-		return;
+		return  -EINVAL;
 	}
 
 	clk_data = alloc_clk_data(SCP_NR_SYSS);
-
-	init_clk_scpsys(clk_data);
+	if (!clk_data) {
+		pr_err("%s clk_data is null\n", __func__);
+		return -ENOMEM;
+	}
+	init_clk_scpsys(pdev, clk_data);
 
 	r = of_clk_add_provider(node, of_clk_src_onecell_get, clk_data);
 	if (r) {
@@ -3650,27 +3656,12 @@ static void __init mt_scpsys_init(struct device_node *node)
 			__func__);
 #endif
 	}
+	return r;
 }
 
-CLK_OF_DECLARE_DRIVER(mtk_pg_regs, "mediatek,scpsys", mt_scpsys_init);
 
-#if 0
-int mtcmos_mfg_series_on(void)
-{
-	unsigned int sta = spm_read(PWR_STATUS);
-	unsigned int sta_s = spm_read(PWR_STATUS_2ND);
 
-	int ret;
 
-	ret = 0;
-	ret |= (sta & (1U << 1)) && (sta_s & (1U << 1));
-	ret |= ((sta & (1U << 2)) && (sta_s & (1U << 2))) << 1;
-	ret |= ((sta & (1U << 3)) && (sta_s & (1U << 3))) << 2;
-	ret |= ((sta & (1U << 4)) && (sta_s & (1U << 4))) << 3;
-	/*mfgsys_cg_check();*/
-	return ret;
-}
-#endif
 
 void subsys_if_on(void)
 {
@@ -3769,6 +3760,25 @@ void mtcmos_force_off(void)
 
 }
 #endif
+static const struct of_device_id of_match_clk_mt6768_scpsys[] = {
+	{ .compatible = "mediatek,scpsys", },
+	{}
+};
+
+static struct platform_driver clk_mt6768_scpsys_drv = {
+	.probe = clk_mt6768_scpsys_probe,
+	.driver = {
+		.name = "clk-mt6768-scpsys",
+		.owner = THIS_MODULE,
+		.of_match_table = of_match_clk_mt6768_scpsys,
+	},
+};
+
+
+
+
+
+
 
 /*
  * Workaround for mm dvfs: Poll mm rdma before clkmux switching.
@@ -3993,7 +4003,28 @@ static void __exit debug_exit(void)
 	remove_proc_entry("test_pg", NULL);
 }
 
+
+
 module_init(debug_init);
 module_exit(debug_exit);
-
 #endif				/* CLK_DEBUG */
+
+static int __init clk_mt6768_scpsys_init(void)
+{
+
+	return platform_driver_register(&clk_mt6768_scpsys_drv);
+}
+
+static void __exit clk_mt6768_scpsys_exit(void)
+{
+	pr_notice("%s: clk_mt6768_scpsys exit!\n", __func__);
+}
+
+
+
+
+arch_initcall(clk_mt6768_scpsys_init);
+module_exit(clk_mt6768_scpsys_exit);
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("MTK");
+MODULE_DESCRIPTION("MTK CCF  Driver");

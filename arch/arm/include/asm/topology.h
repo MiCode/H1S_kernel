@@ -24,8 +24,7 @@ extern struct cputopo_arm cpu_topology[NR_CPUS];
 void init_cpu_topology(void);
 void store_cpu_topology(unsigned int cpuid);
 const struct cpumask *cpu_coregroup_mask(int cpu);
-int arch_is_multi_cluster(void);
-int arch_is_smp(void);
+int topology_nr_clusters(void);
 
 #include <linux/arch_topology.h>
 
@@ -41,12 +40,9 @@ int arch_is_smp(void);
 /* Enable topology flag updates */
 #define arch_update_cpu_topology topology_update_cpu_topology
 
-/* Arch max frequency */
-#define arch_max_cpu_freq topology_get_max_cpu_freq
-
-/* Ceiling/floor frequency sacle */
-#define arch_max_freq_scale topology_get_max_freq_scale
-#define arch_min_freq_scale topology_get_min_freq_scale
+/* Cpu and cluster informantion */
+#define arch_cpu_cluster_id topology_physical_package_id
+#define arch_nr_clusters topology_nr_clusters
 
 #else
 
@@ -54,8 +50,6 @@ static inline void init_cpu_topology(void) { }
 static inline void store_cpu_topology(unsigned int cpuid) { }
 
 #endif
-
-void arch_build_cpu_topology_domain(void);
 
 #include <asm-generic/topology.h>
 

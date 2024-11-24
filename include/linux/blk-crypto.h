@@ -8,8 +8,6 @@
 
 #include <linux/bio.h>
 
-#define SECTOR_SHIFT 9
-
 #ifdef CONFIG_BLK_INLINE_ENCRYPTION
 
 int blk_crypto_submit_bio(struct bio **bio_ptr);

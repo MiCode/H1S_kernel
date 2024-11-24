@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _FLASHLIGHT_H
@@ -31,11 +23,13 @@
 /* scenario */
 #define FLASHLIGHT_SCENARIO_CAMERA_MASK 1
 #define FLASHLIGHT_SCENARIO_DECOUPLE_MASK 2
+#define FLASHLIGHT_SCENARIO_KEEPSTATE_DECOUPLE_MASK 3
 #define FLASHLIGHT_SCENARIO_FLASHLIGHT (0 << 0)
 #define FLASHLIGHT_SCENARIO_CAMERA     (1 << 0)
 #define FLASHLIGHT_SCENARIO_COUPLE     (0 << 1)
 #define FLASHLIGHT_SCENARIO_DECOUPLE   (1 << 1)
-
+#define FLASHLIGHT_SCENARIO_KEEPSTATE_COUPLE     (0 << 2)
+#define FLASHLIGHT_SCENARIO_KEEPSTATE_DECOUPLE   (1 << 2)
 /* charger status */
 #define FLASHLIGHT_CHARGER_NOT_READY 0
 #define FLASHLIGHT_CHARGER_READY     1

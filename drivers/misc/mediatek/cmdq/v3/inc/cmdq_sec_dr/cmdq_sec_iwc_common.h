@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
  */
 
 #ifndef __CMDQ_SEC_IWC_COMMON_H__
@@ -151,6 +150,9 @@ struct iwcCmdqAddrMetadata_t {
 	uint32_t offset;	/* [IN]_b, buffser offset to secure handle */
 	uint32_t size;		/* buffer size */
 	uint32_t port;		/* hw port id (i.e. M4U port id)*/
+	uint32_t sec_id;
+	uint32_t useSecIdinMeta;
+	int32_t ionFd;
 };
 
 struct iwcCmdqDebugConfig_t {
@@ -167,26 +169,12 @@ struct iwcCmdqSecStatus_t {
 	char dispatch[CMDQ_SEC_DISPATCH_LEN];
 };
 
-#ifdef CONFIG_MTK_IN_HOUSE_TEE_SUPPORT
-/* tablet use */
-enum CMDQ_IWC_DISP_MODE {
-	CMDQ_IWC_DISP_NON_SUPPORTED_MODE = 0,
-	CMDQ_IWC_DISP_SINGLE_MODE = 1,
-	CMDQ_IWC_DISP_VIDEO_MODE = 2,
-	CMDQ_IWC_MDP_USER_MODE = 3,
-};
-#endif
-
-
 struct iwcCmdqMetadata_t {
 	uint32_t addrListLength;
 	struct iwcCmdqAddrMetadata_t addrList[CMDQ_IWC_MAX_ADDR_LIST_LENGTH];
 
 	uint64_t enginesNeedDAPC;
 	uint64_t enginesNeedPortSecurity;
-#ifdef CONFIG_MTK_IN_HOUSE_TEE_SUPPORT
-	uint32_t secMode;
-#endif
 };
 
 struct iwcCmdqPathResource_t {
@@ -285,6 +273,7 @@ struct iwcCmdqCommand_t {
 	uint32_t mdp_extension;
 	struct readback_engine readback_engs[CMDQ_MAX_READBACK_ENG];
 	uint32_t readback_cnt;
+	int32_t sec_id;
 
 };
 

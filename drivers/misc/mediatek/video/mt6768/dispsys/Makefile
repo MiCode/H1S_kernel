@@ -13,6 +13,12 @@
 
 # drivers/dispsys
 
+CMDQ_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+ifeq ($(CONFIG_MTK_PLATFORM), "mt6768")
+	MTK_PLATFORM := mt6768
+else
+	MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
+endif
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/video/include/ \
              -I$(srctree)/drivers/misc/mediatek/video/common/ \
              -I$(srctree)/drivers/misc/mediatek/video/common/rdma20/ \
@@ -24,16 +30,20 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/video/include/ \
              -I$(srctree)/drivers/misc/mediatek/gpu/ged/include/ \
              -I$(srctree)/drivers/iommu/ \
              -I$(srctree)/drivers/misc/mediatek/smi/variant/ \
-             -I$(srctree)/drivers/misc/mediatek/dramc/$(MTK_PLATFORM)
+			 -I$(srctree)/drivers/staging/android/mtk_ion \
+		     -I$(srctree)/drivers/staging/android/mtk_ion/mtk \
+             -I$(srctree)/drivers/misc/mediatek/dramc/$(MTK_PLATFORM) \
+			 -I$(srctree)/drivers/misc/mediatek/cmdq/v3/
 
 
 subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/m4u/$(MTK_PLATFORM) \
 		    -I$(srctree)/drivers/misc/mediatek/m4u/2.0
 
-subdir-ccflags-y += -I$(srctree)/drivers/staging/android/ion \
-		    -I$(srctree)/drivers/staging/android/ion/mtk
+subdir-ccflags-y += -I$(srctree)/drivers/staging/android/mtk_ion \
+		    -I$(srctree)/drivers/staging/android/mtk_ion/mtk
 
-subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/ \
+		    -I$(srctree)/drivers/misc/mediatek/cmdq/bridge
 
 ifeq ($(CONFIG_MACH_MT6761),y)
     subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/cmdq/v3/mt6765/
@@ -50,16 +60,16 @@ ifeq ($(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT),y)
 ifeq ($(CONFIG_TRUSTONIC_TEE_SUPPORT),y)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/$(MTK_PLATFORM)/include/trustzone/tplay/Tltplay/public/
 
-include $(srctree)/drivers/misc/mediatek/gud/Makefile.include
+include $(srctree)/drivers/tee/gud/Makefile.include
 endif
 
 ifeq ($(CONFIG_MTK_TEE_GP_SUPPORT),y)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/$(MTK_PLATFORM)/include/trustzone/tplay/Tltplay/public/
 ifeq ($(CONFIG_TRUSTONIC_TEE_SUPPORT),y)
-  include $(srctree)/drivers/misc/mediatek/gud/Makefile.include
+  include $(srctree)/drivers/tee/gud/Makefile.include
 endif
 ifeq ($(CONFIG_MICROTRUST_TEE_SUPPORT),y)
-  include $(srctree)/drivers/misc/mediatek/teei/Makefile.include
+  include $(srctree)/drivers/tee/teei/Makefile.include
 endif
 endif
 
@@ -86,8 +96,9 @@ obj-y += ddp_irq.o
 obj-y += ddp_info.o
 obj-y += ddp_color_format.o
 obj-y += ddp_pwm_mux.o
-
-
+ifeq ($(CONFIG_MACH_MT6768),y)
+obj-y += ddp_disp_bdg.o
+endif
 ifeq ($(CONFIG_MMPROFILE), y)
 obj-y += ddp_mmp.o
 endif
@@ -114,4 +125,10 @@ ifeq ($(strip $(CONFIG_MTK_PQ_COLOR_MODE)),"DISP")
 else ifeq ($(strip $(CONFIG_MTK_PQ_COLOR_MODE)),"OFF")
     ccflags-y += -DDISP_COLOR_ON
 endif
+
+ifeq ($(CONFIG_MTK_TRUSTED_MEMORY_SUBSYSTEM),y)
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/trusted_mem/public/
+endif
+subdir-ccflags-y += -I$(srctree)/drivers/staging/android/mtk_ion \
+		    -I$(srctree)/drivers/staging/android/mtk_ion/mtk
 # EOF

@@ -67,14 +67,15 @@ static struct sctp_endpoint *sctp_endpoint_init(struct sctp_endpoint *ep,
 	if (!ep->digest)
 		return NULL;
 
+	ep->asconf_enable = net->sctp.addip_enable;
 	ep->auth_enable = net->sctp.auth_enable;
 	if (ep->auth_enable) {
 		/* Allocate space for HMACS and CHUNKS authentication
 		 * variables.  There are arrays that we encode directly
 		 * into parameters to make the rest of the operations easier.
 		 */
-		auth_hmacs = kzalloc(sizeof(*auth_hmacs) +
-				     sizeof(__u16) * SCTP_AUTH_NUM_HMACS, gfp);
+		auth_hmacs = kzalloc(struct_size(auth_hmacs, hmac_ids,
+						 SCTP_AUTH_NUM_HMACS), gfp);
 		if (!auth_hmacs)
 			goto nomem;
 
@@ -101,7 +102,7 @@ static struct sctp_endpoint *sctp_endpoint_init(struct sctp_endpoint *ep,
 		/* If the Add-IP functionality is enabled, we must
 		 * authenticate, ASCONF and ASCONF-ACK chunks
 		 */
-		if (net->sctp.addip_enable) {
+		if (ep->asconf_enable) {
 			auth_chunks->chunks[0] = SCTP_CID_ASCONF;
 			auth_chunks->chunks[1] = SCTP_CID_ASCONF_ACK;
 			auth_chunks->param_hdr.length =
@@ -233,7 +234,7 @@ void sctp_endpoint_free(struct sctp_endpoint *ep)
 {
 	ep->base.dead = true;
 
-	ep->base.sk->sk_state = SCTP_SS_CLOSED;
+	inet_sk_set_state(ep->base.sk, SCTP_SS_CLOSED);
 
 	/* Unlink this endpoint, so we can't find it again! */
 	sctp_unhash_endpoint(ep);
@@ -242,6 +243,18 @@ void sctp_endpoint_free(struct sctp_endpoint *ep)
 }
 
 /* Final destructor for endpoint.  */
+static void sctp_endpoint_destroy_rcu(struct rcu_head *head)
+{
+	struct sctp_endpoint *ep = container_of(head, struct sctp_endpoint, rcu);
+	struct sock *sk = ep->base.sk;
+
+	sctp_sk(sk)->ep = NULL;
+	sock_put(sk);
+
+	kfree(ep);
+	SCTP_DBG_OBJCNT_DEC(ep);
+}
+
 static void sctp_endpoint_destroy(struct sctp_endpoint *ep)
 {
 	struct sock *sk;
@@ -275,18 +288,13 @@ static void sctp_endpoint_destroy(struct sctp_endpoint *ep)
 	if (sctp_sk(sk)->bind_hash)
 		sctp_put_port(sk);
 
-	sctp_sk(sk)->ep = NULL;
-	/* Give up our hold on the sock */
-	sock_put(sk);
-
-	kfree(ep);
-	SCTP_DBG_OBJCNT_DEC(ep);
+	call_rcu(&ep->rcu, sctp_endpoint_destroy_rcu);
 }
 
 /* Hold a reference to an endpoint. */
-void sctp_endpoint_hold(struct sctp_endpoint *ep)
+int sctp_endpoint_hold(struct sctp_endpoint *ep)
 {
-	refcount_inc(&ep->base.refcnt);
+	return refcount_inc_not_zero(&ep->base.refcnt);
 }
 
 /* Release a reference to an endpoint and clean up if there are
@@ -350,8 +358,8 @@ out:
 /* Look for any peeled off association from the endpoint that matches the
  * given peer address.
  */
-int sctp_endpoint_is_peeled_off(struct sctp_endpoint *ep,
-				const union sctp_addr *paddr)
+bool sctp_endpoint_is_peeled_off(struct sctp_endpoint *ep,
+				 const union sctp_addr *paddr)
 {
 	struct sctp_sockaddr_entry *addr;
 	struct sctp_bind_addr *bp;
@@ -363,10 +371,10 @@ int sctp_endpoint_is_peeled_off(struct sctp_endpoint *ep,
 	 */
 	list_for_each_entry(addr, &bp->address_list, list) {
 		if (sctp_has_association(net, &addr->a, paddr))
-			return 1;
+			return true;
 	}
 
-	return 0;
+	return false;
 }
 
 /* Do delayed input processing.  This is scheduled by sctp_rcv().

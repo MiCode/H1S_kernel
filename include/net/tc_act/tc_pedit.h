@@ -14,9 +14,11 @@ struct tcf_pedit {
 	struct tc_action	common;
 	unsigned char		tcfp_nkeys;
 	unsigned char		tcfp_flags;
+	u32			tcfp_off_max_hint;
 	struct tc_pedit_key	*tcfp_keys;
 	struct tcf_pedit_key_ex	*tcfp_keys_ex;
 };
+
 #define to_pedit(a) ((struct tcf_pedit *)a)
 
 static inline bool is_tcf_pedit(const struct tc_action *a)

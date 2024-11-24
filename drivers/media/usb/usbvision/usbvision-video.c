@@ -72,7 +72,6 @@
 #define DRIVER_NAME "usbvision"
 #define DRIVER_ALIAS "USBVision"
 #define DRIVER_DESC "USBVision USB Video Device Driver for Linux"
-#define DRIVER_LICENSE "GPL"
 #define USBVISION_VERSION_STRING "0.9.11"
 
 #define	ENABLE_HEXDUMP	0	/* Enable if you need it */
@@ -141,7 +140,7 @@ MODULE_PARM_DESC(radio_nr, "Set radio device number (/dev/radioX).  Default: -1 
 /* Misc stuff */
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
-MODULE_LICENSE(DRIVER_LICENSE);
+MODULE_LICENSE("GPL");
 MODULE_VERSION(USBVISION_VERSION_STRING);
 MODULE_ALIAS(DRIVER_ALIAS);
 
@@ -1506,7 +1505,8 @@ static int usbvision_probe(struct usb_interface *intf,
 
 	usbvision->num_alt = uif->num_altsetting;
 	PDEBUG(DBG_PROBE, "Alternate settings: %i", usbvision->num_alt);
-	usbvision->alt_max_pkt_size = kmalloc(32 * usbvision->num_alt, GFP_KERNEL);
+	usbvision->alt_max_pkt_size = kmalloc_array(32, usbvision->num_alt,
+						    GFP_KERNEL);
 	if (!usbvision->alt_max_pkt_size) {
 		ret = -ENOMEM;
 		goto err_pkt;

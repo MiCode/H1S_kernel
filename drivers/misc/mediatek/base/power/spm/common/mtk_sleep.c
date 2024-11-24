@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/init.h>
@@ -47,8 +39,6 @@ static bool slp_ck26m_on;
 
 bool slp_dump_gpio;
 bool slp_dump_golden_setting;
-bool slp_dump_subsys_sleep_duration;
-bool slp_dump_ap_awake_duration;
 int slp_dump_golden_setting_type = GS_PMIC;
 
 static int slp_suspend_ops_valid(suspend_state_t state)
@@ -72,10 +62,6 @@ static int slp_suspend_ops_begin(suspend_state_t state)
 
 static int slp_suspend_ops_prepare(void)
 {
-#if 0
-	/* legacy log */
-	printk_deferred("[name:spm&][SLP] @@@@@@@@@@@@@@\tChip_pm_prepare\t@@@@@@@@@@@@@@\n");
-#endif
 	return 0;
 }
 
@@ -146,19 +132,6 @@ spm_go_to_sleep(void)
 {
 	return 0;
 }
-unsigned int __attribute__((weak))
-spm_go_to_sleep_ex(unsigned int ex_flag)
-{
-	unsigned int bRet = 0;
-
-	if ((ex_flag & SPM_SUSPEND_PLAT_SLP_DP) != 0)
-		printk_deferred(
-			"[name:spm&][%s:%d] - Spm suspend sleep dpidle not support!!\n"
-			, __func__, __LINE__);
-	else
-		bRet = spm_go_to_sleep();
-	return bRet;
-}
 
 bool __attribute__((weak))
 spm_get_is_cpu_pdn(void)
@@ -181,18 +154,13 @@ static int slp_suspend_ops_enter(suspend_state_t state)
 #if SLP_SLEEP_DPIDLE_EN
 #if defined(CONFIG_MTK_SND_SOC_NEW_ARCH) \
 || defined(CONFIG_SND_SOC_MTK_SMART_PHONE)
-	unsigned int fm_radio_is_playing = 0;
+	int fm_radio_is_playing = 0;
 
 	if (ConditionEnterSuspend() == true)
 		fm_radio_is_playing = 0;
 	else
 		fm_radio_is_playing = 1;
 #endif /* CONFIG_MTK_SND_SOC_NEW_ARCH || CONFIG_SND_SOC_MTK_SMART_PHONE */
-#endif
-
-#if 0
-	/* legacy log */
-	printk_deferred("[name:spm&][SLP] @@@@@@@@@@@@@@@\tChip_pm_enter\t@@@@@@@@@@@@@@@\n");
 #endif
 
 #if !defined(CONFIG_FPGA_EARLY_PORTING)
@@ -238,14 +206,15 @@ static int slp_suspend_ops_enter(suspend_state_t state)
 #else
 	if (slp_ck26m_on) {
 #endif /* CONFIG_MTK_SND_SOC_NEW_ARCH */
-		slp_wake_reason = spm_go_to_sleep_ex(
-			SPM_SUSPEND_PLAT_SLP_DP);
+		mtk_idle_enter(IDLE_TYPE_DP, smp_processor_id(),
+					MTK_IDLE_OPT_SLEEP_DPIDLE, 0);
+		slp_wake_reason = get_slp_dp_last_wr();
 		slp_dp_cnt[smp_processor_id()]++;
 	} else {
 #endif
 		mtk_suspend_cond_info();
 
-		slp_wake_reason = spm_go_to_sleep_ex(0);
+		slp_wake_reason = spm_go_to_sleep();
 	}
 
 	mcdi_task_pause(false);
@@ -265,18 +234,10 @@ LEAVE_SLEEP:
 
 static void slp_suspend_ops_finish(void)
 {
-#if 0
-	/* legacy log */
-	printk_deferred("[name:spm&][SLP] @@@@@@@@@@@@\tChip_pm_finish\t@@@@@@@@@@\n");
-#endif
 }
 
 static void slp_suspend_ops_end(void)
 {
-#if 0
-	/* legacy log */
-	printk_deferred("[name:spm&][SLP] @@@@@@@@@@@@\tChip_pm_end\t@@@@@@@@@@@@\n");
-#endif
 }
 
 static const struct platform_suspend_ops slp_suspend_ops = {
@@ -365,7 +326,7 @@ static ssize_t suspend_state_read(char *ToUserBuf, size_t sz, void *priv)
 		log("cpu%d: slp_dp=%lu\n", i, slp_dp_cnt[i]);
 
 	log("*********** suspend command ************\n");
-	log("echo suspend 1/0 > /sys/kernel/debug/cpuidle/slp/suspend_state\n");
+	log("echo suspend 1/0 > %s\n", MTK_PROCFS_SUSPEND);
 
 	return p - ToUserBuf;
 }
@@ -438,17 +399,12 @@ void slp_module_init(void)
 #if SLP_SUSPEND_LOG_EN
 	console_suspend_enabled = 0;
 #endif
-#ifdef CONFIG_PM_SLEEP_DEBUG
-	pm_print_times_enabled = false;
-#endif
 }
 
 module_param(slp_ck26m_on, bool, 0644);
 
 module_param(slp_dump_gpio, bool, 0644);
 module_param(slp_dump_golden_setting, bool, 0644);
-module_param(slp_dump_subsys_sleep_duration, bool, 0644);
-module_param(slp_dump_ap_awake_duration, bool, 0644);
 module_param(slp_dump_golden_setting_type, int, 0644);
 
 MODULE_DESCRIPTION("Sleep Driver v0.1");

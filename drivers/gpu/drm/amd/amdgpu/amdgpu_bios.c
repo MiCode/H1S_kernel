@@ -93,7 +93,7 @@ static bool igp_read_bios_from_vram(struct amdgpu_device *adev)
 	resource_size_t size = 256 * 1024; /* ??? */
 
 	if (!(adev->flags & AMD_IS_APU))
-		if (amdgpu_need_post(adev))
+		if (amdgpu_device_need_post(adev))
 			return false;
 
 	adev->bios = NULL;
@@ -191,30 +191,35 @@ static bool amdgpu_read_bios_from_rom(struct amdgpu_device *adev)
 
 static bool amdgpu_read_platform_bios(struct amdgpu_device *adev)
 {
-	uint8_t __iomem *bios;
-	size_t size;
+	phys_addr_t rom = adev->pdev->rom;
+	size_t romlen = adev->pdev->romlen;
+	void __iomem *bios;
 
 	adev->bios = NULL;
 
-	bios = pci_platform_rom(adev->pdev, &size);
-	if (!bios) {
-		return false;
-	}
-
-	adev->bios = kzalloc(size, GFP_KERNEL);
-	if (adev->bios == NULL)
+	if (!rom || romlen == 0)
 		return false;
 
-	memcpy_fromio(adev->bios, bios, size);
-
-	if (!check_atom_bios(adev->bios, size)) {
-		kfree(adev->bios);
+	adev->bios = kzalloc(romlen, GFP_KERNEL);
+	if (!adev->bios)
 		return false;
-	}
 
-	adev->bios_size = size;
+	bios = ioremap(rom, romlen);
+	if (!bios)
+		goto free_bios;
+
+	memcpy_fromio(adev->bios, bios, romlen);
+	iounmap(bios);
+
+	if (!check_atom_bios(adev->bios, romlen))
+		goto free_bios;
+
+	adev->bios_size = romlen;
 
 	return true;
+free_bios:
+	kfree(adev->bios);
+	return false;
 }
 
 #ifdef CONFIG_ACPI
@@ -307,6 +312,7 @@ static bool amdgpu_atrm_get_bios(struct amdgpu_device *adev)
 
 	if (!found)
 		return false;
+	pci_dev_put(pdev);
 
 	adev->bios = kmalloc(size, GFP_KERNEL);
 	if (!adev->bios) {

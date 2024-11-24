@@ -155,6 +155,7 @@ static int cops_irqlist[] = {
 };
 
 static struct timer_list cops_timer;
+static struct net_device *cops_timer_dev;
 
 /* use 0 for production, 1 for verification, 2 for debug, 3 for verbose debug */
 #ifndef COPS_DEBUG
@@ -187,7 +188,7 @@ static void cops_load (struct net_device *dev);
 static int  cops_nodeid (struct net_device *dev, int nodeid);
 
 static irqreturn_t cops_interrupt (int irq, void *dev_id);
-static void cops_poll (unsigned long ltdev);
+static void cops_poll(struct timer_list *t);
 static void cops_timeout(struct net_device *dev);
 static void cops_rx (struct net_device *dev);
 static netdev_tx_t  cops_send_packet (struct sk_buff *skb,
@@ -324,14 +325,14 @@ static int __init cops_probe1(struct net_device *dev, int ioaddr)
 			break;
 	}
 
+	dev->base_addr = ioaddr;
+
 	/* Reserve any actual interrupt. */
 	if (dev->irq) {
 		retval = request_irq(dev->irq, cops_interrupt, 0, dev->name, dev);
 		if (retval)
 			goto err_out;
 	}
-
-	dev->base_addr = ioaddr;
 
         lp = netdev_priv(dev);
         spin_lock_init(&lp->lock);
@@ -424,9 +425,8 @@ static int cops_open(struct net_device *dev)
 		 */
 		if(lp->board==TANGENT)	/* Poll 20 times per second */
 		{
-		    init_timer(&cops_timer);
-		    cops_timer.function = cops_poll;
-		    cops_timer.data 	= (unsigned long)dev;
+		    cops_timer_dev = dev;
+		    timer_setup(&cops_timer, cops_poll, 0);
 		    cops_timer.expires 	= jiffies + HZ/20;
 		    add_timer(&cops_timer);
 		} 
@@ -673,12 +673,11 @@ static int cops_nodeid (struct net_device *dev, int nodeid)
  *	Poll the Tangent type cards to see if we have work.
  */
  
-static void cops_poll(unsigned long ltdev)
+static void cops_poll(struct timer_list *unused)
 {
 	int ioaddr, status;
 	int boguscount = 0;
-
-	struct net_device *dev = (struct net_device *)ltdev;
+	struct net_device *dev = cops_timer_dev;
 
 	del_timer(&cops_timer);
 

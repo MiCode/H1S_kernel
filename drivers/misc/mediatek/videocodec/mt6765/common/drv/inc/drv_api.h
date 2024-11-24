@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #ifndef __MT6758_DRVBASE_H__
@@ -29,9 +21,9 @@ struct VAL_NON_CACHE_MEMORY_LIST_T {
 	unsigned long ulKVA;	/* Kernel virtual address */
 	unsigned long ulKPA;	/* Kernel physical address */
 	unsigned long pvHandle;	/*  */
-	unsigned int u4ThreadNum;	/* Hybrid vcodec thread num */
+	unsigned int u4VCodecThreadNum;	/* Hybrid vcodec thread num */
 	/* hybrid vcodec thread ids */
-	unsigned int u4ThreadID[VCODEC_THREAD_MAX_NUM];
+	unsigned int u4VCodecThreadID[VCODEC_THREAD_MAX_NUM];
 	unsigned long  ulSize;
 };
 

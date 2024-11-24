@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _AUTOK_DVFS_H_
@@ -17,7 +9,7 @@
 
 #include "autok.h"
 
-#define VCOREFS_READY
+//#define VCOREFS_READY
 #if defined(VCOREFS_READY)
 #include <linux/pm_qos.h>
 #include "helio-dvfsrc-opp.h"
@@ -58,5 +50,11 @@ extern void msdc_dump_autok(char **buff, unsigned long *size,
 	struct seq_file *m, struct msdc_host *host);
 extern void msdc_dvfs_reg_backup_init(struct msdc_host *host);
 extern void msdc_dvfs_reg_restore(struct msdc_host *host);
+#ifdef SD_RUNTIME_AUTOK_MERGE
+extern int sd_runtime_autok_merge(struct msdc_host *host);
+#endif
+#ifdef EMMC_RUNTIME_AUTOK_MERGE
+extern int emmc_runtime_autok_merge(u32 opcode);
+#endif
 #endif /* _AUTOK_DVFS_H_ */
 

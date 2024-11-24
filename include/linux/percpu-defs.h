@@ -173,6 +173,20 @@
 	DEFINE_PER_CPU_SECTION(type, name, "..read_mostly")
 
 /*
+ * Declaration/definition used for per-CPU variables that should be accessed
+ * as decrypted when memory encryption is enabled in the guest.
+ */
+#ifdef CONFIG_AMD_MEM_ENCRYPT
+#define DECLARE_PER_CPU_DECRYPTED(type, name)				\
+	DECLARE_PER_CPU_SECTION(type, name, "..decrypted")
+
+#define DEFINE_PER_CPU_DECRYPTED(type, name)				\
+	DEFINE_PER_CPU_SECTION(type, name, "..decrypted")
+#else
+#define DEFINE_PER_CPU_DECRYPTED(type, name)	DEFINE_PER_CPU(type, name)
+#endif
+
+/*
  * Intermodule exports for per-CPU variables.  sparse forgets about
  * address space across EXPORT_SYMBOL(), change EXPORT_SYMBOL() to
  * noop if __CHECKER__.
@@ -254,10 +268,6 @@ do {									\
 #endif	/* CONFIG_SMP */
 
 #define per_cpu(var, cpu)	(*per_cpu_ptr(&(var), cpu))
-
-#if defined(CONFIG_MTK_RT_THROTTLE_MON) || defined(CONFIG_MTK_SCHED_MONITOR)
-#define __raw_get_cpu_var(var)  (*raw_cpu_ptr(&(var)))
-#endif
 
 /*
  * Must be an lvalue. Since @var must be a simple identifier,

@@ -1,19 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
-#include <mach/mtk_pbm.h>
+#include <mtk_pbm.h>
 #include "mtk_mdpm.h"
 #include "mtk_mdpm_common.h"
 
@@ -89,7 +81,7 @@ static int md1_section_level_c2k[SECTION_NUM+1] = { GUARDING_PATTERN,
 						VAL_MD1_C2K_SECTION_5,
 						VAL_MD1_C2K_SECTION_6 };
 
-static int md1_scenario_pwr[POWER_CATEGORY_NUM][SCENARIO_NUM] = {
+static int md1_scenario_pwr[POWER_TYPE_NUM][SCENARIO_NUM] = {
 				{MAX_PW_STANDBY,
 				 MAX_PW_2G_CONNECT,
 				 MAX_PW_3G_C2K_TALKING,
@@ -106,7 +98,7 @@ static int md1_scenario_pwr[POWER_CATEGORY_NUM][SCENARIO_NUM] = {
 				 AVG_PW_4G_DL_2CC}
 				};
 
-static int md1_pa_pwr_2g[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
+static int md1_pa_pwr_2g[POWER_TYPE_NUM][SECTION_NUM+1] = {
 				{GUARDING_PATTERN,
 				 MAX_PW_MD1_PA_2G_SECTION_1,
 				 MAX_PW_MD1_PA_2G_SECTION_2,
@@ -123,7 +115,7 @@ static int md1_pa_pwr_2g[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
 				 AVG_PW_MD1_PA_2G_SECTION_6}
 				};
 
-static int md1_pa_pwr_3g[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
+static int md1_pa_pwr_3g[POWER_TYPE_NUM][SECTION_NUM+1] = {
 				{GUARDING_PATTERN,
 				 MAX_PW_MD1_PA_3G_SECTION_1,
 				 MAX_PW_MD1_PA_3G_SECTION_2,
@@ -140,7 +132,7 @@ static int md1_pa_pwr_3g[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
 				 AVG_PW_MD1_PA_3G_SECTION_6}
 				};
 
-static int md1_pa_pwr_4g_upL1[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
+static int md1_pa_pwr_4g_upL1[POWER_TYPE_NUM][SECTION_NUM+1] = {
 				{GUARDING_PATTERN,
 				 MAX_PW_MD1_PA_4G_upL1_SECTION_1,
 				 MAX_PW_MD1_PA_4G_upL1_SECTION_2,
@@ -157,7 +149,7 @@ static int md1_pa_pwr_4g_upL1[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
 				 AVG_PW_MD1_PA_4G_upL1_SECTION_6}
 				};
 
-static int md1_pa_pwr_4g_upL2[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
+static int md1_pa_pwr_4g_upL2[POWER_TYPE_NUM][SECTION_NUM+1] = {
 				{GUARDING_PATTERN,
 				  MAX_PW_MD1_PA_4G_upL2_SECTION_1,
 				  MAX_PW_MD1_PA_4G_upL2_SECTION_2,
@@ -174,7 +166,7 @@ static int md1_pa_pwr_4g_upL2[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
 				  AVG_PW_MD1_PA_4G_upL2_SECTION_6}
 				};
 
-static int md1_pa_pwr_c2k[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
+static int md1_pa_pwr_c2k[POWER_TYPE_NUM][SECTION_NUM+1] = {
 				{GUARDING_PATTERN,
 				 MAX_PW_MD1_PA_C2K_SECTION_1,
 				 MAX_PW_MD1_PA_C2K_SECTION_2,
@@ -191,7 +183,7 @@ static int md1_pa_pwr_c2k[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
 				 AVG_PW_MD1_PA_C2K_SECTION_6}
 				};
 
-static int md1_rf_pwr_2g[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
+static int md1_rf_pwr_2g[POWER_TYPE_NUM][SECTION_NUM+1] = {
 				{GUARDING_PATTERN,
 				 MAX_PW_MD1_RF_2G_SECTION_1,
 				 MAX_PW_MD1_RF_2G_SECTION_2,
@@ -208,7 +200,7 @@ static int md1_rf_pwr_2g[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
 				 AVG_PW_MD1_RF_2G_SECTION_6}
 				};
 
-static int md1_rf_pwr_3g[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
+static int md1_rf_pwr_3g[POWER_TYPE_NUM][SECTION_NUM+1] = {
 				{GUARDING_PATTERN,
 				 MAX_PW_MD1_RF_3G_SECTION_1,
 				 MAX_PW_MD1_RF_3G_SECTION_2,
@@ -225,7 +217,7 @@ static int md1_rf_pwr_3g[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
 				 AVG_PW_MD1_RF_3G_SECTION_6}
 				};
 
-static int md1_rf_pwr_4g_upL1[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
+static int md1_rf_pwr_4g_upL1[POWER_TYPE_NUM][SECTION_NUM+1] = {
 				{GUARDING_PATTERN,
 				 MAX_PW_MD1_RF_4G_upL1_SECTION_1,
 				 MAX_PW_MD1_RF_4G_upL1_SECTION_2,
@@ -242,7 +234,7 @@ static int md1_rf_pwr_4g_upL1[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
 				 AVG_PW_MD1_RF_4G_upL1_SECTION_6}
 				};
 
-static int md1_rf_pwr_4g_upL2[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
+static int md1_rf_pwr_4g_upL2[POWER_TYPE_NUM][SECTION_NUM+1] = {
 				{GUARDING_PATTERN,
 				 MAX_PW_MD1_RF_4G_upL2_SECTION_1,
 				 MAX_PW_MD1_RF_4G_upL2_SECTION_2,
@@ -259,7 +251,7 @@ static int md1_rf_pwr_4g_upL2[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
 				 AVG_PW_MD1_RF_4G_upL2_SECTION_6}
 				};
 
-static int md1_rf_pwr_c2k[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
+static int md1_rf_pwr_c2k[POWER_TYPE_NUM][SECTION_NUM+1] = {
 				{GUARDING_PATTERN,
 				 MAX_PW_MD1_RF_C2K_SECTION_1,
 				 MAX_PW_MD1_RF_C2K_SECTION_2,
@@ -276,10 +268,14 @@ static int md1_rf_pwr_c2k[POWER_CATEGORY_NUM][SECTION_NUM+1] = {
 				 AVG_PW_MD1_RF_C2K_SECTION_6}
 				};
 
-static int get_md1_2g_dbm_power(u32 *share_mem, unsigned int power_category);
-static int get_md1_3g_dbm_power(u32 *share_mem, unsigned int power_category);
-static int get_md1_4g_dbm_power(u32 *share_mem, unsigned int power_category);
-static int get_md1_c2k_dbm_power(u32 *share_mem, unsigned int power_category);
+static int get_md1_2g_dbm_power(u32 *share_mem,
+	enum mdpm_power_type power_type);
+static int get_md1_3g_dbm_power(u32 *share_mem,
+	enum mdpm_power_type power_type);
+static int get_md1_4g_dbm_power(u32 *share_mem,
+	enum mdpm_power_type power_type);
+static int get_md1_c2k_dbm_power(u32 *share_mem,
+	enum mdpm_power_type power_type);
 
 struct mdpm mdpm_info[SCENARIO_NUM] = {
 	[S_STANDBY] = {
@@ -365,7 +361,7 @@ void md_power_meter_ut(void)
 	int i = 0, j = 0, k = 0, l = 0;
 	int md_power = 0;
 
-	for (i = 0; i < POWER_CATEGORY_NUM; i++) {
+	for (i = 0; i < POWER_TYPE_NUM; i++) {
 		if (mt_mdpm_debug)
 			pr_info("[UT] ====== POWERCATEGORY:%d ======\n", i);
 
@@ -545,18 +541,19 @@ void init_md1_section_level(u32 *share_mem)
 			share_mem);
 }
 
-unsigned int get_md1_scenario(u32 share_reg, unsigned int power_category)
+unsigned int get_md1_scenario(u32 share_reg, enum mdpm_power_type power_type)
 {
 	int pw_scenario = 0, scenario = -1;
 	int i;
 
+	power_type = (power_type < 0) ? 0 : power_type;
 	/* get scenario index when working & max power (bit4 and bit5 no use) */
 	for (i = 0; i < SCENARIO_NUM; i++) {
 		if (is_scenario_hit(share_reg, i)) {
-			if (md1_scenario_pwr[power_category][i] >=
+			if (md1_scenario_pwr[power_type][i] >=
 				pw_scenario) {
 				pw_scenario =
-					md1_scenario_pwr[power_category][i];
+					md1_scenario_pwr[power_type][i];
 				scenario = i;
 			}
 		}
@@ -567,30 +564,23 @@ unsigned int get_md1_scenario(u32 share_reg, unsigned int power_category)
 	if (mt_mdpm_debug)
 		pr_info("MD1 scenario: 0x%x, reg: 0x%x, pw: %d\n",
 			scenario, share_reg,
-			md1_scenario_pwr[power_category][scenario]);
+			md1_scenario_pwr[power_type][scenario]);
 
 	return scenario;
 }
 
-int get_md1_scenario_power(unsigned int scenario, unsigned int power_category)
+int get_md1_scenario_power(unsigned int scenario,
+	enum mdpm_power_type power_type)
 {
-	return mdpm_info[scenario].scenario_power[power_category];
+	return mdpm_info[scenario].scenario_power[power_type];
 }
 
 int get_md1_dBm_power(unsigned int scenario, u32 *share_mem,
-	unsigned int power_category)
+	enum mdpm_power_type power_type)
 {
 	int i;
 	int dbm_power = 0, dbm_power_max = 0;
 
-#if 0
-	if (scenario == S_STANDBY) {
-		if (mt_mdpm_debug)
-			pr_info("MD1 is standby, dBm pw: 0\n");
-
-		return 0;
-	}
-#endif
 
 	if (share_mem == NULL) {
 		if (mt_mdpm_debug)
@@ -617,7 +607,7 @@ int get_md1_dBm_power(unsigned int scenario, u32 *share_mem,
 			break;
 
 		dbm_power = mdpm_info[scenario].dbm_power_func[i](share_mem,
-			power_category);
+			power_type);
 		dbm_power_max = (dbm_power > dbm_power_max) ?
 			dbm_power : dbm_power_max;
 	}
@@ -625,7 +615,8 @@ int get_md1_dBm_power(unsigned int scenario, u32 *share_mem,
 	return dbm_power_max;
 }
 
-static int get_md1_2g_dbm_power(u32 *share_mem, unsigned int power_category)
+static int get_md1_2g_dbm_power(u32 *share_mem,
+	enum mdpm_power_type power_type)
 {
 	static u32 bef_share_mem;
 	static int pa_power, rf_power;
@@ -644,11 +635,12 @@ static int get_md1_2g_dbm_power(u32 *share_mem, unsigned int power_category)
 			SECTION_VALUE) !=
 			((bef_share_mem >> section_level[section]) &
 			SECTION_VALUE)) {
+			power_type = (power_type < 0) ? 0 : power_type;
 			/* get PA power */
-			pa_power = md1_pa_pwr_2g[power_category][section];
+			pa_power = md1_pa_pwr_2g[power_type][section];
 
 			/* get RF power */
-			rf_power = md1_rf_pwr_2g[power_category][section];
+			rf_power = md1_rf_pwr_2g[power_type][section];
 
 			if (mt_mdpm_debug)
 				pr_info("2G dBm: reg:0x%x(0x%x),pa:%d,rf:%d,s:%d\n",
@@ -663,7 +655,7 @@ static int get_md1_2g_dbm_power(u32 *share_mem, unsigned int power_category)
 	return pa_power + rf_power;
 }
 
-static int get_md1_3g_dbm_power(u32 *share_mem, unsigned int power_category)
+static int get_md1_3g_dbm_power(u32 *share_mem, enum mdpm_power_type power_type)
 {
 	static u32 bef_share_mem;
 	static int pa_power, rf_power;
@@ -682,11 +674,12 @@ static int get_md1_3g_dbm_power(u32 *share_mem, unsigned int power_category)
 			SECTION_VALUE) !=
 			((bef_share_mem >> section_level[section]) &
 			SECTION_VALUE)) {
+			power_type = (power_type < 0) ? 0 : power_type;
 			/* get PA power */
-			pa_power = md1_pa_pwr_3g[power_category][section];
+			pa_power = md1_pa_pwr_3g[power_type][section];
 
 			/* get RF power */
-			rf_power = md1_rf_pwr_3g[power_category][section];
+			rf_power = md1_rf_pwr_3g[power_type][section];
 
 			if (mt_mdpm_debug)
 				pr_info("3G dBm: reg:0x%x(0x%x),pa:%d,rf:%d,s:%d\n",
@@ -702,7 +695,7 @@ static int get_md1_3g_dbm_power(u32 *share_mem, unsigned int power_category)
 }
 
 static int get_md1_4g_upL1_dbm_power(u32 *share_mem,
-	unsigned int power_category)
+	enum mdpm_power_type power_type)
 {
 	static u32 bef_share_mem;
 	static int pa_power, rf_power;
@@ -710,9 +703,8 @@ static int get_md1_4g_upL1_dbm_power(u32 *share_mem,
 
 	if (share_mem[DBM_4G_TABLE] == bef_share_mem) {
 		if (mt_mdpm_debug)
-		pr_info("4G dBm no TX power, reg: 0x%x(0x%x) return 0\n",
-			share_mem[DBM_2G_TABLE], bef_share_mem);
-
+			pr_info("4G dBm no TX power, reg: 0x%x(0x%x) return 0\n",
+				share_mem[DBM_2G_TABLE], bef_share_mem);
 		return 0;
 	}
 
@@ -721,11 +713,12 @@ static int get_md1_4g_upL1_dbm_power(u32 *share_mem,
 			SECTION_VALUE) !=
 			((bef_share_mem >> section_level[section]) &
 			SECTION_VALUE)) {
+			power_type = (power_type < 0) ? 0 : power_type;
 			/* get PA power */
-			pa_power = md1_pa_pwr_4g_upL1[power_category][section];
+			pa_power = md1_pa_pwr_4g_upL1[power_type][section];
 
 			/* get RF power */
-			rf_power = md1_rf_pwr_4g_upL1[power_category][section];
+			rf_power = md1_rf_pwr_4g_upL1[power_type][section];
 
 			if (mt_mdpm_debug)
 				pr_info("4G dBm: reg:0x%x(0x%x),pa:%d,rf:%d,s:%d\n",
@@ -741,7 +734,7 @@ static int get_md1_4g_upL1_dbm_power(u32 *share_mem,
 }
 
 static int get_md1_4g_upL2_dbm_power(u32 *share_mem,
-	unsigned int power_category)
+	enum mdpm_power_type power_type)
 {
 	static u32 bef_share_mem;
 	static int pa_power, rf_power;
@@ -760,11 +753,12 @@ static int get_md1_4g_upL2_dbm_power(u32 *share_mem,
 			SECTION_VALUE) !=
 			((bef_share_mem >> section_level[section]) &
 			SECTION_VALUE)) {
+			power_type = (power_type < 0) ? 0 : power_type;
 			/* get PA power */
-			pa_power = md1_pa_pwr_4g_upL2[power_category][section];
+			pa_power = md1_pa_pwr_4g_upL2[power_type][section];
 
 			/* get RF power */
-			rf_power = md1_rf_pwr_4g_upL2[power_category][section];
+			rf_power = md1_rf_pwr_4g_upL2[power_type][section];
 
 			if (mt_mdpm_debug)
 				pr_info("4G1 dBm:reg:0x%x(0x%x),pa:%d,rf:%d,s:%d\n",
@@ -780,16 +774,17 @@ static int get_md1_4g_upL2_dbm_power(u32 *share_mem,
 	return pa_power + rf_power;
 }
 
-static int get_md1_4g_dbm_power(u32 *share_mem, unsigned int power_category)
+static int get_md1_4g_dbm_power(u32 *share_mem, enum mdpm_power_type power_type)
 {
 	int dbm_power = 0;
 
-	dbm_power = get_md1_4g_upL1_dbm_power(share_mem, power_category);
-	dbm_power += get_md1_4g_upL2_dbm_power(share_mem, power_category);
+	dbm_power = get_md1_4g_upL1_dbm_power(share_mem, power_type);
+	dbm_power += get_md1_4g_upL2_dbm_power(share_mem, power_type);
 	return dbm_power;
 }
 
-static int get_md1_c2k_dbm_power(u32 *share_mem, unsigned int power_category)
+static int get_md1_c2k_dbm_power(u32 *share_mem,
+	enum mdpm_power_type power_type)
 {
 	static u32 bef_share_mem;
 	static int pa_power, rf_power;
@@ -808,11 +803,12 @@ static int get_md1_c2k_dbm_power(u32 *share_mem, unsigned int power_category)
 			SECTION_VALUE) !=
 			((bef_share_mem >> section_level[section]) &
 			SECTION_VALUE)) {
+			power_type = (power_type < 0) ? 0 : power_type;
 			/* get PA power */
-			pa_power = md1_pa_pwr_c2k[power_category][section];
+			pa_power = md1_pa_pwr_c2k[power_type][section];
 
 			/* get RF power */
-			rf_power = md1_rf_pwr_c2k[power_category][section];
+			rf_power = md1_rf_pwr_c2k[power_type][section];
 
 			if (mt_mdpm_debug)
 				pr_info("C2K dBm update, reg:0x%x(0x%x),pa:%d,rf:%d,s:%d\n",

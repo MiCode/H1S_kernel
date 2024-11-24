@@ -1,27 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/slab.h>
 
-#include <ion.h>
-#include <mtk/ion_drv.h>
-#include <mtk/mtk_ion.h>
-#ifdef CONFIG_MTK_M4U
-#include <m4u.h>
-#else
-#include <mt_iommu.h>
+#include "ion_drv.h"
+#ifdef CONFIG_MTK_IOMMU_V2
+#include "mt_iommu.h"
+#include "pseudo_m4u.h"
 #endif
 
+#include <linux/dma-buf.h>
 #include <linux/dma-mapping.h>
 #include <asm/mman.h>
 
@@ -38,7 +28,7 @@ struct mdw_mem_ion_ma {
 
 static struct mdw_mem_ion_ma ion_ma;
 
-//#define APUSYS_IOMMU_PORT M4U_PORT_VPU
+#ifdef CONFIG_MTK_IOMMU_V2
 #define APUSYS_IOMMU_PORT M4U_PORT_L21_APU_FAKE_DATA
 
 /* check argument */
@@ -69,11 +59,33 @@ static int mdw_mem_ion_check(struct apusys_kmem *mem)
 
 	return ret;
 }
+#endif
+
+static uint32_t mdw_mem_ion_get_size(struct apusys_kmem *mem)
+{
+	uint32_t size = 0;
+	struct dma_buf *db = NULL;
+
+	db = dma_buf_get(mem->fd);
+	if (IS_ERR(db)) {
+		mdw_drv_err("get dmabuf from ion handle fail\n");
+		return 0;
+	}
+
+	size = db->size;
+	dma_buf_put(db);
+
+	return size;
+}
 
 static int mdw_mem_ion_map_kva(struct apusys_kmem *mem)
 {
+#if !defined(CONFIG_MTK_IOMMU_V2)
+	int ret = -ENODEV;
+#else
 	void *buffer = NULL;
 	struct ion_handle *ion_hnd = NULL;
+	uint32_t size = 0;
 	int ret = 0;
 
 	/* check argument */
@@ -86,6 +98,15 @@ static int mdw_mem_ion_map_kva(struct apusys_kmem *mem)
 	ion_hnd = ion_import_dma_buf_fd(ion_ma.client, mem->fd);
 	if (IS_ERR_OR_NULL(ion_hnd))
 		return -EINVAL;
+
+	/* check size */
+	size = mdw_mem_ion_get_size(mem);
+	if (size < mem->size || !size) {
+		mdw_drv_err("buffer size invalid(%u/%u)\n", size, mem->size);
+		ret = -ENOMEM;
+		goto fail_map_kernel;
+	}
+	mdw_mem_debug("mem check size(%u/%u)\n", size, mem->size);
 
 	/* map kernel va*/
 	buffer = ion_map_kernel(ion_ma.client, ion_hnd);
@@ -111,11 +132,15 @@ fail_map_kernel:
 			mem->fd, mem->uva, mem->iova, mem->size,
 			mem->iova_size, mem->khandle, mem->kva);
 	ion_free(ion_ma.client, ion_hnd);
+#endif
 	return ret;
 }
 
 static int mdw_mem_ion_map_iova(struct apusys_kmem *mem)
 {
+#if !defined(CONFIG_MTK_IOMMU_V2)
+	int ret = -ENODEV;
+#else
 	int ret = 0;
 	struct ion_handle *ion_hnd = NULL;
 	struct ion_mm_data mm_data;
@@ -163,11 +188,15 @@ free_import:
 			mem->fd, mem->uva, mem->iova, mem->size,
 			mem->iova_size, mem->khandle, mem->kva);
 	ion_free(ion_ma.client, ion_hnd);
+#endif
 	return ret;
 }
 
 static int mdw_mem_ion_unmap_iova(struct apusys_kmem *mem)
 {
+#if !defined(CONFIG_MTK_IOMMU_V2)
+		int ret = -ENODEV;
+#else
 	int ret = 0;
 	struct ion_handle *ion_hnd = NULL;
 
@@ -188,12 +217,15 @@ static int mdw_mem_ion_unmap_iova(struct apusys_kmem *mem)
 			mem->iova_size, mem->khandle, mem->kva);
 
 	ion_free(ion_ma.client, ion_hnd);
-
+#endif
 	return ret;
 }
 
 static int mdw_mem_ion_unmap_kva(struct apusys_kmem *mem)
 {
+#if !defined(CONFIG_MTK_IOMMU_V2)
+	int ret = -ENODEV;
+#else
 	struct ion_handle *ion_hnd = NULL;
 	int ret = 0;
 
@@ -216,7 +248,7 @@ static int mdw_mem_ion_unmap_kva(struct apusys_kmem *mem)
 	ion_unmap_kernel(ion_ma.client, ion_hnd);
 
 	ion_free(ion_ma.client, ion_hnd);
-
+#endif
 	return ret;
 }
 
@@ -232,6 +264,9 @@ static int mdw_mem_ion_free(struct apusys_kmem *mem)
 
 static int mdw_mem_ion_flush(struct apusys_kmem *mem)
 {
+#if !defined(CONFIG_MTK_IOMMU_V2)
+	int ret = -ENODEV;
+#else
 	int ret = 0;
 	struct ion_sys_data sys_data;
 	void *va = NULL;
@@ -259,12 +294,15 @@ static int mdw_mem_ion_flush(struct apusys_kmem *mem)
 		ret = -EINVAL;
 	}
 	ion_unmap_kernel(ion_ma.client, ion_hnd);
-
+#endif
 	return ret;
 }
 
 static int mdw_mem_ion_invalidate(struct apusys_kmem *mem)
 {
+#if !defined(CONFIG_MTK_IOMMU_V2)
+	int ret = -ENODEV;
+#else
 	int ret = 0;
 	struct ion_sys_data sys_data;
 	void *va = NULL;
@@ -291,22 +329,26 @@ static int mdw_mem_ion_invalidate(struct apusys_kmem *mem)
 		ret = -EINVAL;
 	}
 	ion_unmap_kernel(ion_ma.client, ion_hnd);
-
+#endif
 	return ret;
 }
 
 static void mdw_mem_ion_destroy(void)
 {
+#if defined(CONFIG_MTK_IOMMU_V2)
 	ion_client_destroy(ion_ma.client);
 	memset(&ion_ma, 0, sizeof(ion_ma));
+#endif
 }
 
 struct mdw_mem_ops *mdw_mem_ion_init(void)
 {
 	memset(&ion_ma, 0, sizeof(ion_ma));
 
+#if defined(CONFIG_MTK_IOMMU_V2)
 	/* create ion client */
 	ion_ma.client = ion_client_create(g_ion_device, "apusys midware");
+#endif
 	if (IS_ERR_OR_NULL(ion_ma.client))
 		return NULL;
 

@@ -1,16 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2016 MediaTek Inc.
- * Author: PC Chen <pc.chen@mediatek.com>
- *         Tiffany Lin <tiffany.lin@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/interrupt.h>
@@ -25,6 +15,7 @@
 #ifdef CONFIG_VIDEO_MEDIATEK_VCU
 #include "mtk_vcu.h"
 const struct vdec_common_if *get_dec_common_if(void);
+const struct vdec_common_if *get_dec_log_if(void);
 #endif
 
 #ifdef CONFIG_VIDEO_MEDIATEK_VPU
@@ -48,8 +39,6 @@ int vdec_if_init(struct mtk_vcodec_ctx *ctx, unsigned int fourcc)
 	case V4L2_PIX_FMT_MPEG2:
 	case V4L2_PIX_FMT_MPEG4:
 	case V4L2_PIX_FMT_H263:
-	case V4L2_PIX_FMT_S263:
-	case V4L2_PIX_FMT_XVID:
 	case V4L2_PIX_FMT_VP8:
 	case V4L2_PIX_FMT_VP9:
 	case V4L2_PIX_FMT_WMV1:
@@ -143,12 +132,14 @@ int vdec_if_get_param(struct mtk_vcodec_ctx *ctx, enum vdec_get_param_type type,
 		inst->ctx = ctx;
 		ctx->drv_handle = (unsigned long)(inst);
 		ctx->dec_if = get_dec_common_if();
+		mtk_vcodec_add_ctx_list(ctx);
 		drv_handle_exist = 0;
 	}
 
 	ret = ctx->dec_if->get_param(ctx->drv_handle, type, out);
 
 	if (!drv_handle_exist) {
+		mtk_vcodec_del_ctx_list(ctx);
 		kfree(inst);
 		ctx->drv_handle = 0;
 		ctx->dec_if = NULL;
@@ -160,12 +151,27 @@ int vdec_if_get_param(struct mtk_vcodec_ctx *ctx, enum vdec_get_param_type type,
 int vdec_if_set_param(struct mtk_vcodec_ctx *ctx, enum vdec_set_param_type type,
 					  void *in)
 {
+	struct vdec_inst *inst = NULL;
 	int ret = 0;
+	int drv_handle_exist = 1;
 
-	if (ctx->drv_handle == 0)
-		return -EIO;
+	if (!ctx->drv_handle) {
+		inst = kzalloc(sizeof(struct vdec_inst), GFP_KERNEL);
+		if (inst == NULL)
+			return -ENOMEM;
+		inst->ctx = ctx;
+		ctx->drv_handle = (unsigned long)(inst);
+		ctx->dec_if = get_dec_common_if();
+		drv_handle_exist = 0;
+	}
 
 	ret = ctx->dec_if->set_param(ctx->drv_handle, type, in);
+
+	if (!drv_handle_exist) {
+		kfree(inst);
+		ctx->drv_handle = 0;
+		ctx->dec_if = NULL;
+	}
 
 	return ret;
 }
@@ -194,15 +200,16 @@ void vdec_decode_prepare(void *ctx_prepare,
 	if (ctx == NULL || hw_id >= MTK_VDEC_HW_NUM)
 		return;
 
+	mutex_lock(&ctx->hw_status);
 	mtk_vdec_pmqos_prelock(ctx, hw_id);
 	ret = mtk_vdec_lock(ctx, hw_id);
-
 	mtk_vcodec_set_curr_ctx(ctx->dev, ctx, hw_id);
 	mtk_vcodec_dec_clock_on(&ctx->dev->pm, hw_id);
 	if (ret == 0)
 		enable_irq(ctx->dev->dec_irq[hw_id]);
-
 	mtk_vdec_pmqos_begin_frame(ctx, hw_id);
+	mutex_unlock(&ctx->hw_status);
+
 }
 EXPORT_SYMBOL_GPL(vdec_decode_prepare);
 
@@ -219,13 +226,30 @@ void vdec_decode_unprepare(void *ctx_unprepare,
 			hw_id, ctx->dev->dec_sem[hw_id].count);
 		return;
 	}
-	mtk_vdec_pmqos_end_frame(ctx, hw_id);
 
+	mutex_lock(&ctx->hw_status);
+	mtk_vdec_pmqos_end_frame(ctx, hw_id);
 	disable_irq(ctx->dev->dec_irq[hw_id]);
 	mtk_vcodec_dec_clock_off(&ctx->dev->pm, hw_id);
 	mtk_vcodec_set_curr_ctx(ctx->dev, NULL, hw_id);
-
 	mtk_vdec_unlock(ctx, hw_id);
+	mutex_unlock(&ctx->hw_status);
+
 }
 EXPORT_SYMBOL_GPL(vdec_decode_unprepare);
+
+void vdec_check_release_lock(void *ctx_check)
+{
+	struct mtk_vcodec_ctx *ctx = (struct mtk_vcodec_ctx *)ctx_check;
+	int i;
+
+	for (i = 0; i < MTK_VDEC_HW_NUM; i++) {
+		/* user killed when holding lock */
+		if (ctx->hw_locked[i] == 1) {
+			vdec_decode_unprepare(ctx, i);
+			mtk_v4l2_err("[%d] user killed when holding lock %d", ctx->id, i);
+		}
+	}
+}
+EXPORT_SYMBOL_GPL(vdec_check_release_lock);
 

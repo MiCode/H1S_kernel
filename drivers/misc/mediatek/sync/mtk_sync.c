@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
-
 
 #include <linux/debugfs.h>
 #include <linux/export.h>
@@ -161,10 +152,13 @@ static void timeline_fence_release(struct dma_fence *fence)
 {
 	struct sync_pt *pt = fence_to_sync_pt(fence);
 	struct sync_timeline *parent = dma_fence_parent(fence);
+	unsigned long flags;
 
-	if ((pt) && (!list_empty(&pt->link))) {
-		unsigned long flags;
-
+	if (!pt) {
+		pr_info("%s:pt is null\n", __func__);
+		return;
+	}
+	if (!list_empty(&pt->link)) {
 		spin_lock_irqsave(fence->lock, flags);
 		if (!list_empty(&pt->link)) {
 			list_del(&pt->link);
@@ -172,7 +166,6 @@ static void timeline_fence_release(struct dma_fence *fence)
 		}
 		spin_unlock_irqrestore(fence->lock, flags);
 	}
-
 	sync_timeline_put(parent);
 	dma_fence_free(fence);
 }
@@ -192,15 +185,22 @@ static bool timeline_fence_enable_signaling(struct dma_fence *fence)
 static void timeline_fence_value_str(struct dma_fence *fence,
 				    char *str, int size)
 {
-	snprintf(str, size, "%d", fence->seqno);
+	int n;
+
+	n = snprintf(str, size, "%d", fence->seqno);
+	if (n < 0 || n >= size)
+		pr_info("%s:overflow\n", __func__);
 }
 
 static void timeline_fence_timeline_value_str(struct dma_fence *fence,
 					     char *str, int size)
 {
 	struct sync_timeline *parent = dma_fence_parent(fence);
+	int n;
 
-	snprintf(str, size, "%d", parent->value);
+	n = snprintf(str, size, "%d", parent->value);
+	if (n < 0 || n >= size)
+		pr_info("%s:overflow\n", __func__);
 }
 
 static const struct dma_fence_ops timeline_fence_ops = {
@@ -255,7 +255,7 @@ static void sync_timeline_signal(struct sync_timeline *obj, unsigned int inc)
 
 /**
  * sync_timeline_create() - creates a sync object
- * @name:       sync_timeline name
+ * @name:	sync_timeline name
  *
  * Creates a new sync_timeline. Returns the sync_timeline object or NULL in
  * case of error.
@@ -296,7 +296,8 @@ void timeline_inc(struct sync_timeline *obj, u32 value)
 	sync_timeline_signal(obj, value);
 }
 
-int fence_create(struct sync_timeline *obj, struct fence_data *data)
+int fence_create(struct sync_timeline *obj,
+		 struct mtk_sync_create_fence_data *data)
 {
 	int fd = get_unused_fd_flags(O_CLOEXEC);
 	int err;

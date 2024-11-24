@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #undef	BLOCKMOVE
 #define	Z_WAKE
 #undef	Z_EXT_CHARS_IN_BUFFER
@@ -278,16 +279,15 @@ static unsigned detect_isa_irq(void __iomem *);
 #endif				/* CONFIG_ISA */
 
 #ifndef CONFIG_CYZ_INTR
-static void cyz_poll(unsigned long);
+static void cyz_poll(struct timer_list *);
 
 /* The Cyclades-Z polling cycle is defined by this variable */
 static long cyz_polling_cycle = CZ_DEF_POLL;
 
-static DEFINE_TIMER(cyz_timerlist, cyz_poll, 0, 0);
+static DEFINE_TIMER(cyz_timerlist, cyz_poll);
 
 #else				/* CONFIG_CYZ_INTR */
-static void cyz_rx_restart(unsigned long);
-static struct timer_list cyz_rx_full_timer[NR_PORTS];
+static void cyz_rx_restart(struct timer_list *);
 #endif				/* CONFIG_CYZ_INTR */
 
 static void cyy_writeb(struct cyclades_port *port, u32 reg, u8 val)
@@ -556,7 +556,7 @@ static void cyy_chip_rx(struct cyclades_card *cinfo, int chip,
 		}
 		info->idle_stats.recv_idle = jiffies;
 	}
-	tty_schedule_flip(port);
+	tty_flip_buffer_push(port);
 
 	/* end of service */
 	cyy_writeb(info, CyRIR, save_xir & 0x3f);
@@ -992,13 +992,11 @@ static void cyz_handle_rx(struct cyclades_port *info)
 	else
 		char_count = rx_put - rx_get + rx_bufsize;
 	if (char_count >= readl(&buf_ctrl->rx_threshold) &&
-			!timer_pending(&cyz_rx_full_timer[
-					info->line]))
-		mod_timer(&cyz_rx_full_timer[info->line],
-				jiffies + 1);
+			!timer_pending(&info->rx_full_timer))
+		mod_timer(&info->rx_full_timer, jiffies + 1);
 #endif
 	info->idle_stats.recv_idle = jiffies;
-	tty_schedule_flip(&info->port);
+	tty_flip_buffer_push(&info->port);
 
 	/* Update rx_get */
 	cy_writel(&buf_ctrl->rx_get, new_rx_get);
@@ -1174,7 +1172,7 @@ static void cyz_handle_cmd(struct cyclades_card *cinfo)
 		if (delta_count)
 			wake_up_interruptible(&info->port.delta_msr_wait);
 		if (special_count)
-			tty_schedule_flip(&info->port);
+			tty_flip_buffer_push(&info->port);
 	}
 }
 
@@ -1197,9 +1195,9 @@ static irqreturn_t cyz_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }				/* cyz_interrupt */
 
-static void cyz_rx_restart(unsigned long arg)
+static void cyz_rx_restart(struct timer_list *t)
 {
-	struct cyclades_port *info = (struct cyclades_port *)arg;
+	struct cyclades_port *info = from_timer(info, t, rx_full_timer);
 	struct cyclades_card *card = info->card;
 	int retval;
 	__u32 channel = info->line - card->first_line;
@@ -1216,7 +1214,7 @@ static void cyz_rx_restart(unsigned long arg)
 
 #else				/* CONFIG_CYZ_INTR */
 
-static void cyz_poll(unsigned long arg)
+static void cyz_poll(struct timer_list *unused)
 {
 	struct cyclades_card *cinfo;
 	struct cyclades_port *info;
@@ -3097,8 +3095,7 @@ static int cy_init_card(struct cyclades_card *cinfo)
 			else
 				info->xmit_fifo_size = 4 * CYZ_FIFO_SIZE;
 #ifdef CONFIG_CYZ_INTR
-			setup_timer(&cyz_rx_full_timer[port],
-				cyz_rx_restart, (unsigned long)info);
+			timer_setup(&info->rx_full_timer, cyz_rx_restart, 0);
 #endif
 		} else {
 			unsigned short chip_number;
@@ -3651,7 +3648,7 @@ static int cy_pci_probe(struct pci_dev *pdev,
 	struct cyclades_card *card;
 	void __iomem *addr0 = NULL, *addr2 = NULL;
 	char *card_name = NULL;
-	u32 uninitialized_var(mailbox);
+	u32 mailbox;
 	unsigned int device_id, nchan = 0, card_no, i, j;
 	unsigned char plx_ver;
 	int retval, irq;
@@ -3975,19 +3972,6 @@ static int cyclades_proc_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static int cyclades_proc_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, cyclades_proc_show, NULL);
-}
-
-static const struct file_operations cyclades_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= cyclades_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
 /* The serial driver boot-time initialization code!
     Hardware I/O ports are mapped to character special devices on a
     first found, first allocated manner.  That is, this code searches
@@ -4027,7 +4011,7 @@ static const struct tty_operations cy_ops = {
 	.tiocmget = cy_tiocmget,
 	.tiocmset = cy_tiocmset,
 	.get_icount = cy_get_icount,
-	.proc_fops = &cyclades_proc_fops,
+	.proc_show = cyclades_proc_show,
 };
 
 static int __init cy_init(void)

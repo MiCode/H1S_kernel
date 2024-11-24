@@ -71,9 +71,9 @@ static void rtc_uie_task(struct work_struct *work)
 	if (num)
 		rtc_handle_legacy_irq(rtc, num, RTC_UF);
 }
-static void rtc_uie_timer(unsigned long data)
+static void rtc_uie_timer(struct timer_list *t)
 {
-	struct rtc_device *rtc = (struct rtc_device *)data;
+	struct rtc_device *rtc = from_timer(rtc, t, uie_timer);
 	unsigned long flags;
 
 	spin_lock_irqsave(&rtc->irq_lock, flags);
@@ -194,7 +194,7 @@ rtc_dev_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 	return ret;
 }
 
-static unsigned int rtc_dev_poll(struct file *file, poll_table *wait)
+static __poll_t rtc_dev_poll(struct file *file, poll_table *wait)
 {
 	struct rtc_device *rtc = file->private_data;
 	unsigned long data;
@@ -203,7 +203,7 @@ static unsigned int rtc_dev_poll(struct file *file, poll_table *wait)
 
 	data = rtc->irq_data;
 
-	return (data != 0) ? (POLLIN | POLLRDNORM) : 0;
+	return (data != 0) ? (EPOLLIN | EPOLLRDNORM) : 0;
 }
 
 static long rtc_dev_ioctl(struct file *file,
@@ -341,11 +341,11 @@ static long rtc_dev_ioctl(struct file *file,
 		return rtc_set_time(rtc, &tm);
 
 	case RTC_PIE_ON:
-		err = rtc_irq_set_state(rtc, NULL, 1);
+		err = rtc_irq_set_state(rtc, 1);
 		break;
 
 	case RTC_PIE_OFF:
-		err = rtc_irq_set_state(rtc, NULL, 0);
+		err = rtc_irq_set_state(rtc, 0);
 		break;
 
 	case RTC_AIE_ON:
@@ -365,7 +365,7 @@ static long rtc_dev_ioctl(struct file *file,
 		return rtc_update_irq_enable(rtc, 0);
 
 	case RTC_IRQP_SET:
-		err = rtc_irq_set_freq(rtc, NULL, arg);
+		err = rtc_irq_set_freq(rtc, arg);
 		break;
 
 	case RTC_IRQP_READ:
@@ -405,6 +405,13 @@ done:
 	return err;
 }
 
+#ifdef CONFIG_COMPAT
+static long compat_rtc_dev_ioctl(struct file *file,unsigned int cmd, unsigned long arg)
+{
+	return rtc_dev_ioctl(file,cmd,arg);
+}
+#endif
+
 static int rtc_dev_fasync(int fd, struct file *file, int on)
 {
 	struct rtc_device *rtc = file->private_data;
@@ -427,7 +434,7 @@ static int rtc_dev_release(struct inode *inode, struct file *file)
 	/* Keep ioctl until all drivers are converted */
 	rtc_dev_ioctl(file, RTC_UIE_OFF, 0);
 	rtc_update_irq_enable(rtc, 0);
-	rtc_irq_set_state(rtc, NULL, 0);
+	rtc_irq_set_state(rtc, 0);
 
 	clear_bit_unlock(RTC_DEV_BUSY, &rtc->flags);
 	return 0;
@@ -439,6 +446,9 @@ static const struct file_operations rtc_dev_fops = {
 	.read		= rtc_dev_read,
 	.poll		= rtc_dev_poll,
 	.unlocked_ioctl	= rtc_dev_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl= compat_rtc_dev_ioctl,
+#endif
 	.open		= rtc_dev_open,
 	.release	= rtc_dev_release,
 	.fasync		= rtc_dev_fasync,
@@ -460,7 +470,7 @@ void rtc_dev_prepare(struct rtc_device *rtc)
 
 #ifdef CONFIG_RTC_INTF_DEV_UIE_EMUL
 	INIT_WORK(&rtc->uie_task, rtc_uie_task);
-	setup_timer(&rtc->uie_timer, rtc_uie_timer, (unsigned long)rtc);
+	timer_setup(&rtc->uie_timer, rtc_uie_timer, 0);
 #endif
 
 	cdev_init(&rtc->char_dev, &rtc_dev_fops);

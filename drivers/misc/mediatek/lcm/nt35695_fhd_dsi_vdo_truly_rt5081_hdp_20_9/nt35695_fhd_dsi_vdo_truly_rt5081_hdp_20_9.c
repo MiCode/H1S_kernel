@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "LCM"
@@ -75,15 +67,15 @@ static struct LCM_UTIL_FUNCS lcm_util;
 /* static unsigned char lcd_id_pins_value = 0xFF; */
 static const unsigned char LCD_MODULE_ID = 0x01;
 #define LCM_DSI_CMD_MODE 0
-#define VIRTUAL_WIDTH (1080)
-#define VIRTUAL_HEIGHT (1920)
-#define FRAME_WIDTH (720)
-#define FRAME_HEIGHT (1600)
+#define FRAME_WIDTH		(720)
+#define FRAME_HEIGHT	(1600)
+#define VIRTUAL_WIDTH	(1080)
+#define VIRTUAL_HEIGHT	(1920)
 
 /* physical size in um */
 #define LCM_PHYSICAL_WIDTH (74520)
 #define LCM_PHYSICAL_HEIGHT (132480)
-#define LCM_DENSITY (480)
+#define LCM_DENSITY	(320)
 
 #define REGFLAG_DELAY		0xFFFC
 #define REGFLAG_UDELAY	0xFFFB
@@ -110,9 +102,9 @@ struct LCM_setting_table {
 static struct LCM_setting_table lcm_suspend_setting[] = {
 	{0x28, 0, {} },
 	{0x10, 0, {} },
-	{REGFLAG_DELAY, 120, {} },
+	{REGFLAG_DELAY, 80, {} },
 	{0x4F, 1, {0x01} },
-	{REGFLAG_DELAY, 120, {} }
+	{REGFLAG_DELAY, 80, {} }
 };
 
 static struct LCM_setting_table init_setting[] = {
@@ -1257,36 +1249,7 @@ static struct LCM_setting_table init_setting2[] = {
 	{0xFB, 1, {0x01} },
 	{0xFF, 1, {0x10} }, /* Return  To CMD1 */
 };
-#if 0
-static struct LCM_setting_table lcm_set_window[] = {
-	{0x2A, 4, {0x00, 0x00, (FRAME_WIDTH >> 8), (FRAME_WIDTH & 0xFF)} },
-	{0x2B, 4, {0x00, 0x00, (FRAME_HEIGHT >> 8), (FRAME_HEIGHT & 0xFF)} },
-	{REGFLAG_END_OF_TABLE, 0x00, {} }
-};
-#endif
-#if 0
-static struct LCM_setting_table lcm_sleep_out_setting[] = {
-	/* Sleep Out */
-	{0x11, 1, {0x00} },
-	{REGFLAG_DELAY, 120, {} },
 
-	/* Display ON */
-	{0x29, 1, {0x00} },
-	{REGFLAG_DELAY, 20, {} },
-	{REGFLAG_END_OF_TABLE, 0x00, {} }
-};
-
-static struct LCM_setting_table lcm_deep_sleep_mode_in_setting[] = {
-	/* Display off sequence */
-	{0x28, 1, {0x00} },
-	{REGFLAG_DELAY, 20, {} },
-
-	/* Sleep Mode On */
-	{0x10, 1, {0x00} },
-	{REGFLAG_DELAY, 120, {} },
-	{REGFLAG_END_OF_TABLE, 0x00, {} }
-};
-#endif
 static struct LCM_setting_table bl_level[] = {
 	{0x51, 1, {0xFF} },
 	{REGFLAG_END_OF_TABLE, 0x00, {} }
@@ -1339,13 +1302,15 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 
 	params->width = FRAME_WIDTH;
 	params->height = FRAME_HEIGHT;
+
 	params->virtual_width = VIRTUAL_WIDTH;
 	params->virtual_height = VIRTUAL_HEIGHT;
+
 	params->physical_width = LCM_PHYSICAL_WIDTH/1000;
 	params->physical_height = LCM_PHYSICAL_HEIGHT/1000;
 	params->physical_width_um = LCM_PHYSICAL_WIDTH;
 	params->physical_height_um = LCM_PHYSICAL_HEIGHT;
-	params->density = LCM_DENSITY;
+	params->density		   = LCM_DENSITY;
 
 #if (LCM_DSI_CMD_MODE)
 	params->dsi.mode = CMD_MODE;
@@ -1545,10 +1510,10 @@ static unsigned int lcm_compare_id(void)
 	read_reg_v2(0xDB, buffer, 1);
 	version_id = buffer[0];
 
-	pr_info("[LCM]%s,nt35695_id=0x%08x,version_id=0x%x\n",
+	pr_debug("[LCM]%s,nt35695_id=0x%08x,version_id=0x%x\n",
 		__func__, id, version_id);
 
-	if (id == LCM_ID_NT35695 && version_id == 0x81)
+	if (id == LCM_ID_NT35695 && version_id == 0x80)
 		return 1;
 	else
 		return 0;

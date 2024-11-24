@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * u_ether.h -- interface to USB gadget "ethernet link" utilities
  *
  * Copyright (C) 2003-2005,2008 David Brownell
  * Copyright (C) 2003-2004 Robert Schwebel, Benedikt Spranger
  * Copyright (C) 2008 Nokia Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #ifndef __U_ETHER_H
@@ -20,7 +16,7 @@
 #include <linux/usb/cdc.h>
 #include <linux/netdevice.h>
 
-#define QMULT_DEFAULT 10
+#define QMULT_DEFAULT 50
 
 /*
  * dev_addr: initial value
@@ -41,46 +37,35 @@
 	MODULE_PARM_DESC(host_addr, "Host Ethernet Address")
 
 struct eth_dev {
-	/* lock is held while accessing port_usb
-	 */
 	spinlock_t		lock;
 	struct gether		*port_usb;
-
 	struct net_device	*net;
 	struct usb_gadget	*gadget;
-
 	spinlock_t		req_lock;	/* guard {tx}_reqs */
 	spinlock_t		reqrx_lock;	/* guard {rx}_reqs */
 	struct list_head	tx_reqs, rx_reqs;
 	atomic_t		tx_qlen;
-/* Minimum number of TX USB request queued to UDC */
-#define TX_REQ_THRESHOLD	5
+#define TX_REQ_THRESHOLD	1
 	int			no_tx_req_used;
 	int			tx_skb_hold_count;
 	u32			tx_req_bufsize;
-
 	struct sk_buff_head	rx_frames;
-
 	unsigned int		qmult;
-
 	unsigned int		header_len;
 	unsigned int		ul_max_pkts_per_xfer;
 	unsigned int		dl_max_pkts_per_xfer;
-
 	uint32_t		dl_max_xfer_size;
-
 	struct sk_buff		*(*wrap)(struct gether *link,
 			struct sk_buff *skb);
 	int			(*unwrap)(struct gether *link,
 						struct sk_buff *skb,
 						struct sk_buff_head *list);
-
 	struct work_struct	work;
 	struct work_struct	rx_work;
 	struct work_struct	rx_work1;
+	struct work_struct	rps_map_work;
 	unsigned long		todo;
 #define	WORK_RX_MEMORY		0
-
 	bool			zlp;
 	u8			host_mac[ETH_ALEN];
 	u8			dev_mac[ETH_ALEN];
@@ -319,21 +304,16 @@ static inline bool can_support_ecm(struct usb_gadget *gadget)
 
 extern unsigned int rndis_test_last_resp_id;
 extern unsigned int rndis_test_last_msg_id;
-
 extern unsigned long rndis_test_reset_msg_cnt;
-
 extern unsigned long rndis_test_rx_usb_in;
 extern unsigned long rndis_test_rx_net_out;
 extern unsigned long rndis_test_rx_nomem;
 extern unsigned long rndis_test_rx_error;
-
 extern unsigned long rndis_test_tx_net_in;
 extern unsigned long rndis_test_tx_busy;
 extern unsigned long rndis_test_tx_stop;
-
+extern unsigned long rndis_test_tx_nomem;
 extern unsigned long rndis_test_tx_usb_out;
 extern unsigned long rndis_test_tx_complete;
-
 extern void rx_fill(struct eth_dev *dev, gfp_t gfp_flags);
-
 #endif /* __U_ETHER_H */

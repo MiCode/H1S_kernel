@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (C) 2020 MediaTek Inc.
  */
+
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -31,12 +23,11 @@
 #include <linux/semaphore.h>
 #include <uapi/linux/sched/types.h>
 #include <linux/sched/rt.h>
-#include <linux/platform_data/nanohub.h>
 
 #include "main.h"
 #include "comms.h"
-#include "bl.h"
 #include "nanohub-mtk.h"
+#include "nanohub.h"
 
 #define WAKEUP_TIMEOUT_MS 1000
 
@@ -148,7 +139,7 @@ int nanohub_resume(struct nanohub_device *nano_dev)
 	return 0;
 }
 
-static int __init nanohub_init(void)
+int nanohub_init(void)
 {
 	int ret = 0;
 
@@ -165,8 +156,6 @@ static int __init nanohub_init(void)
 #endif
 	return ret;
 }
-
-subsys_initcall(nanohub_init);
 
 MODULE_AUTHOR("Ben Fennema");
 MODULE_LICENSE("GPL");

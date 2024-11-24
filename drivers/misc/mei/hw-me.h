@@ -31,10 +31,14 @@
  *
  * @fw_status: FW status
  * @quirk_probe: device exclusion quirk
+ * @dma_size: device DMA buffers size
+ * @fw_ver_supported: is fw version retrievable from FW
  */
 struct mei_cfg {
 	const struct mei_fw_status fw_status;
 	bool (*quirk_probe)(struct pci_dev *pdev);
+	size_t dma_size[DMA_DSCR_NUM];
+	u32 fw_ver_supported:1;
 };
 
 
@@ -52,12 +56,14 @@ struct mei_cfg {
  * @mem_addr: io memory address
  * @pg_state: power gating state
  * @d0i3_supported: di03 support
+ * @hbuf_depth: depth of hardware host/write buffer in slots
  */
 struct mei_me_hw {
 	const struct mei_cfg *cfg;
 	void __iomem *mem_addr;
 	enum mei_pg_state pg_state;
 	bool d0i3_supported;
+	u8 hbuf_depth;
 };
 
 #define to_me_hw(dev) (struct mei_me_hw *)((dev)->hw)
@@ -70,7 +76,8 @@ struct mei_me_hw {
  * @MEI_ME_UNDEF_CFG:      Lower sentinel.
  * @MEI_ME_ICH_CFG:        I/O Controller Hub legacy devices.
  * @MEI_ME_ICH10_CFG:      I/O Controller Hub platforms Gen10
- * @MEI_ME_PCH_CFG:        Platform Controller Hub platforms (Up to Gen8).
+ * @MEI_ME_PCH6_CFG:       Platform Controller Hub platforms (Gen6).
+ * @MEI_ME_PCH7_CFG:       Platform Controller Hub platforms (Gen7).
  * @MEI_ME_PCH_CPT_PBG_CFG:Platform Controller Hub workstations
  *                         with quirk for Node Manager exclusion.
  * @MEI_ME_PCH8_CFG:       Platform Controller Hub Gen8 and newer
@@ -78,16 +85,19 @@ struct mei_me_hw {
  * @MEI_ME_PCH8_SPS_CFG:   Platform Controller Hub Gen8 and newer
  *                         servers platforms with quirk for
  *                         SPS firmware exclusion.
+ * @MEI_ME_PCH12_CFG:      Platform Controller Hub Gen12 and newer
  * @MEI_ME_NUM_CFG:        Upper Sentinel.
  */
 enum mei_cfg_idx {
 	MEI_ME_UNDEF_CFG,
 	MEI_ME_ICH_CFG,
 	MEI_ME_ICH10_CFG,
-	MEI_ME_PCH_CFG,
+	MEI_ME_PCH6_CFG,
+	MEI_ME_PCH7_CFG,
 	MEI_ME_PCH_CPT_PBG_CFG,
 	MEI_ME_PCH8_CFG,
 	MEI_ME_PCH8_SPS_CFG,
+	MEI_ME_PCH12_CFG,
 	MEI_ME_NUM_CFG,
 };
 

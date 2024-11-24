@@ -409,7 +409,7 @@ int __init exynos_register_cpu_clock(struct samsung_clk_provider *ctx,
 		unsigned long num_cfgs, unsigned long flags)
 {
 	struct exynos_cpuclk *cpuclk;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 	struct clk *parent_clk;
 	int ret = 0;
 
@@ -457,8 +457,6 @@ int __init exynos_register_cpu_clock(struct samsung_clk_provider *ctx,
 
 	cpuclk->cfg = kmemdup(cfg, sizeof(*cfg) * num_cfgs, GFP_KERNEL);
 	if (!cpuclk->cfg) {
-		pr_err("%s: could not allocate memory for cpuclk data\n",
-				__func__);
 		ret = -ENOMEM;
 		goto unregister_clk_nb;
 	}

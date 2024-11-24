@@ -1,9 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) Maxime Coquelin 2015
  * Copyright (C) STMicroelectronics SA 2017
  * Authors:  Maxime Coquelin <mcoquelin.stm32@gmail.com>
  *	     Gerald Baeza <gerald.baeza@st.com>
- * License terms:  GNU General Public License (GPL), version 2
  *
  * Inspired by st-asc.c from STMicroelectronics (c)
  */
@@ -62,6 +62,112 @@ static void stm32_clr_bits(struct uart_port *port, u32 reg, u32 bits)
 	writel_relaxed(val, port->membase + reg);
 }
 
+static void stm32_config_reg_rs485(u32 *cr1, u32 *cr3, u32 delay_ADE,
+				   u32 delay_DDE, u32 baud)
+{
+	u32 rs485_deat_dedt;
+	u32 rs485_deat_dedt_max = (USART_CR1_DEAT_MASK >> USART_CR1_DEAT_SHIFT);
+	bool over8;
+
+	*cr3 |= USART_CR3_DEM;
+	over8 = *cr1 & USART_CR1_OVER8;
+
+	*cr1 &= ~(USART_CR1_DEDT_MASK | USART_CR1_DEAT_MASK);
+
+	if (over8)
+		rs485_deat_dedt = delay_ADE * baud * 8;
+	else
+		rs485_deat_dedt = delay_ADE * baud * 16;
+
+	rs485_deat_dedt = DIV_ROUND_CLOSEST(rs485_deat_dedt, 1000);
+	rs485_deat_dedt = rs485_deat_dedt > rs485_deat_dedt_max ?
+			  rs485_deat_dedt_max : rs485_deat_dedt;
+	rs485_deat_dedt = (rs485_deat_dedt << USART_CR1_DEAT_SHIFT) &
+			   USART_CR1_DEAT_MASK;
+	*cr1 |= rs485_deat_dedt;
+
+	if (over8)
+		rs485_deat_dedt = delay_DDE * baud * 8;
+	else
+		rs485_deat_dedt = delay_DDE * baud * 16;
+
+	rs485_deat_dedt = DIV_ROUND_CLOSEST(rs485_deat_dedt, 1000);
+	rs485_deat_dedt = rs485_deat_dedt > rs485_deat_dedt_max ?
+			  rs485_deat_dedt_max : rs485_deat_dedt;
+	rs485_deat_dedt = (rs485_deat_dedt << USART_CR1_DEDT_SHIFT) &
+			   USART_CR1_DEDT_MASK;
+	*cr1 |= rs485_deat_dedt;
+}
+
+static int stm32_config_rs485(struct uart_port *port,
+			      struct serial_rs485 *rs485conf)
+{
+	struct stm32_port *stm32_port = to_stm32_port(port);
+	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
+	struct stm32_usart_config *cfg = &stm32_port->info->cfg;
+	u32 usartdiv, baud, cr1, cr3;
+	bool over8;
+
+	stm32_clr_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
+
+	port->rs485 = *rs485conf;
+
+	rs485conf->flags |= SER_RS485_RX_DURING_TX;
+
+	if (rs485conf->flags & SER_RS485_ENABLED) {
+		cr1 = readl_relaxed(port->membase + ofs->cr1);
+		cr3 = readl_relaxed(port->membase + ofs->cr3);
+		usartdiv = readl_relaxed(port->membase + ofs->brr);
+		usartdiv = usartdiv & GENMASK(15, 0);
+		over8 = cr1 & USART_CR1_OVER8;
+
+		if (over8)
+			usartdiv = usartdiv | (usartdiv & GENMASK(4, 0))
+				   << USART_BRR_04_R_SHIFT;
+
+		baud = DIV_ROUND_CLOSEST(port->uartclk, usartdiv);
+		stm32_config_reg_rs485(&cr1, &cr3,
+				       rs485conf->delay_rts_before_send,
+				       rs485conf->delay_rts_after_send, baud);
+
+		if (rs485conf->flags & SER_RS485_RTS_ON_SEND) {
+			cr3 &= ~USART_CR3_DEP;
+			rs485conf->flags &= ~SER_RS485_RTS_AFTER_SEND;
+		} else {
+			cr3 |= USART_CR3_DEP;
+			rs485conf->flags |= SER_RS485_RTS_AFTER_SEND;
+		}
+
+		writel_relaxed(cr3, port->membase + ofs->cr3);
+		writel_relaxed(cr1, port->membase + ofs->cr1);
+	} else {
+		stm32_clr_bits(port, ofs->cr3, USART_CR3_DEM | USART_CR3_DEP);
+		stm32_clr_bits(port, ofs->cr1,
+			       USART_CR1_DEDT_MASK | USART_CR1_DEAT_MASK);
+	}
+
+	stm32_set_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
+
+	return 0;
+}
+
+static int stm32_init_rs485(struct uart_port *port,
+			    struct platform_device *pdev)
+{
+	struct serial_rs485 *rs485conf = &port->rs485;
+
+	rs485conf->flags = 0;
+	rs485conf->delay_rts_before_send = 0;
+	rs485conf->delay_rts_after_send = 0;
+
+	if (!pdev->dev.of_node)
+		return -ENODEV;
+
+	uart_get_rs485_mode(&pdev->dev, rs485conf);
+
+	return 0;
+}
+
 static int stm32_pending_rx(struct uart_port *port, u32 *sr, int *last_res,
 			    bool threaded)
 {
@@ -87,8 +193,8 @@ static int stm32_pending_rx(struct uart_port *port, u32 *sr, int *last_res,
 	return 0;
 }
 
-static unsigned long
-stm32_get_char(struct uart_port *port, u32 *sr, int *last_res)
+static unsigned long stm32_get_char(struct uart_port *port, u32 *sr,
+				    int *last_res)
 {
 	struct stm32_port *stm32_port = to_stm32_port(port);
 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
@@ -98,10 +204,13 @@ stm32_get_char(struct uart_port *port, u32 *sr, int *last_res)
 		c = stm32_port->rx_buf[RX_BUF_L - (*last_res)--];
 		if ((*last_res) == 0)
 			*last_res = RX_BUF_L;
-		return c;
 	} else {
-		return readl_relaxed(port->membase + ofs->rdr);
+		c = readl_relaxed(port->membase + ofs->rdr);
+		/* apply RDR data mask */
+		c &= stm32_port->rdr_mask;
 	}
+
+	return c;
 }
 
 static void stm32_receive_chars(struct uart_port *port, bool threaded)
@@ -365,7 +474,10 @@ static unsigned int stm32_tx_empty(struct uart_port *port)
 	struct stm32_port *stm32_port = to_stm32_port(port);
 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
 
-	return readl_relaxed(port->membase + ofs->isr) & USART_SR_TXE;
+	if (readl_relaxed(port->membase + ofs->isr) & USART_SR_TC)
+		return TIOCSER_TEMT;
+
+	return 0;
 }
 
 static void stm32_set_mctrl(struct uart_port *port, unsigned int mctrl)
@@ -399,7 +511,7 @@ static void stm32_start_tx(struct uart_port *port)
 {
 	struct circ_buf *xmit = &port->state->xmit;
 
-	if (uart_circ_empty(xmit))
+	if (uart_circ_empty(xmit) && !port->x_char)
 		return;
 
 	stm32_transmit_chars(port);
@@ -490,17 +602,49 @@ static void stm32_shutdown(struct uart_port *port)
 	free_irq(port->irq, port);
 }
 
+unsigned int stm32_get_databits(struct ktermios *termios)
+{
+	unsigned int bits;
+
+	tcflag_t cflag = termios->c_cflag;
+
+	switch (cflag & CSIZE) {
+	/*
+	 * CSIZE settings are not necessarily supported in hardware.
+	 * CSIZE unsupported configurations are handled here to set word length
+	 * to 8 bits word as default configuration and to print debug message.
+	 */
+	case CS5:
+		bits = 5;
+		break;
+	case CS6:
+		bits = 6;
+		break;
+	case CS7:
+		bits = 7;
+		break;
+	/* default including CS8 */
+	default:
+		bits = 8;
+		break;
+	}
+
+	return bits;
+}
+
 static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
 			    struct ktermios *old)
 {
 	struct stm32_port *stm32_port = to_stm32_port(port);
 	struct stm32_usart_offsets *ofs = &stm32_port->info->ofs;
 	struct stm32_usart_config *cfg = &stm32_port->info->cfg;
-	unsigned int baud;
+	struct serial_rs485 *rs485conf = &port->rs485;
+	unsigned int baud, bits;
 	u32 usartdiv, mantissa, fraction, oversampling;
 	tcflag_t cflag = termios->c_cflag;
-	u32 cr1, cr2, cr3;
+	u32 cr1, cr2, cr3, isr;
 	unsigned long flags;
+	int ret;
 
 	if (!stm32_port->hw_flow_control)
 		cflag &= ~CRTSCTS;
@@ -509,11 +653,20 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
 
 	spin_lock_irqsave(&port->lock, flags);
 
+	ret = readl_relaxed_poll_timeout_atomic(port->membase + ofs->isr,
+						isr,
+						(isr & USART_SR_TC),
+						10, 100000);
+
+	/* Send the TC error message only when ISR_TC is not set. */
+	if (ret)
+		dev_err(port->dev, "Transmission is not complete\n");
+
 	/* Stop serial port and reset value */
 	writel_relaxed(0, port->membase + ofs->cr1);
 
 	cr1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE;
-	cr1 |= BIT(cfg->uart_enable_bit);
+
 	if (stm32_port->fifoen)
 		cr1 |= USART_CR1_FIFOEN;
 	cr2 = 0;
@@ -522,13 +675,35 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
 	if (cflag & CSTOPB)
 		cr2 |= USART_CR2_STOP_2B;
 
+	bits = stm32_get_databits(termios);
+	stm32_port->rdr_mask = (BIT(bits) - 1);
+
 	if (cflag & PARENB) {
+		bits++;
 		cr1 |= USART_CR1_PCE;
-		if ((cflag & CSIZE) == CS8) {
-			if (cfg->has_7bits_data)
-				cr1 |= USART_CR1_M0;
-			else
-				cr1 |= USART_CR1_M;
+	}
+
+	/*
+	 * Word length configuration:
+	 * CS8 + parity, 9 bits word aka [M1:M0] = 0b01
+	 * CS7 or (CS6 + parity), 7 bits word aka [M1:M0] = 0b10
+	 * CS8 or (CS7 + parity), 8 bits word aka [M1:M0] = 0b00
+	 * M0 and M1 already cleared by cr1 initialization.
+	 */
+	if (bits == 9) {
+		cr1 |= USART_CR1_M0;
+	} else if ((bits == 7) && cfg->has_7bits_data) {
+		cr1 |= USART_CR1_M1;
+	} else if (bits != 8) {
+		dev_dbg(port->dev, "Unsupported data bits config: %u bits\n"
+			, bits);
+		cflag &= ~CSIZE;
+		cflag |= CS8;
+		termios->c_cflag = cflag;
+		bits = 8;
+		if (cflag & PARENB) {
+			bits++;
+			cr1 |= USART_CR1_M0;
 		}
 	}
 
@@ -551,9 +726,11 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
 	 */
 	if (usartdiv < 16) {
 		oversampling = 8;
+		cr1 |= USART_CR1_OVER8;
 		stm32_set_bits(port, ofs->cr1, USART_CR1_OVER8);
 	} else {
 		oversampling = 16;
+		cr1 &= ~USART_CR1_OVER8;
 		stm32_clr_bits(port, ofs->cr1, USART_CR1_OVER8);
 	}
 
@@ -590,10 +767,28 @@ static void stm32_set_termios(struct uart_port *port, struct ktermios *termios,
 	if (stm32_port->rx_ch)
 		cr3 |= USART_CR3_DMAR;
 
+	if (rs485conf->flags & SER_RS485_ENABLED) {
+		stm32_config_reg_rs485(&cr1, &cr3,
+				       rs485conf->delay_rts_before_send,
+				       rs485conf->delay_rts_after_send, baud);
+		if (rs485conf->flags & SER_RS485_RTS_ON_SEND) {
+			cr3 &= ~USART_CR3_DEP;
+			rs485conf->flags &= ~SER_RS485_RTS_AFTER_SEND;
+		} else {
+			cr3 |= USART_CR3_DEP;
+			rs485conf->flags |= SER_RS485_RTS_AFTER_SEND;
+		}
+
+	} else {
+		cr3 &= ~(USART_CR3_DEM | USART_CR3_DEP);
+		cr1 &= ~(USART_CR1_DEDT_MASK | USART_CR1_DEAT_MASK);
+	}
+
 	writel_relaxed(cr3, port->membase + ofs->cr3);
 	writel_relaxed(cr2, port->membase + ofs->cr2);
 	writel_relaxed(cr1, port->membase + ofs->cr1);
 
+	stm32_set_bits(port, ofs->cr1, BIT(cfg->uart_enable_bit));
 	spin_unlock_irqrestore(&port->lock, flags);
 }
 
@@ -679,6 +874,10 @@ static int stm32_init_port(struct stm32_port *stm32port,
 	port->ops	= &stm32_uart_ops;
 	port->dev	= &pdev->dev;
 	port->irq	= platform_get_irq(pdev, 0);
+	port->rs485_config = stm32_config_rs485;
+
+	stm32_init_rs485(port, pdev);
+
 	stm32port->wakeirq = platform_get_irq(pdev, 1);
 	stm32port->fifoen = stm32port->info->cfg.has_fifo;
 
@@ -734,11 +933,8 @@ static struct stm32_port *stm32_of_get_stm32_port(struct platform_device *pdev)
 
 #ifdef CONFIG_OF
 static const struct of_device_id stm32_match[] = {
-	{ .compatible = "st,stm32-usart", .data = &stm32f4_info},
 	{ .compatible = "st,stm32-uart", .data = &stm32f4_info},
-	{ .compatible = "st,stm32f7-usart", .data = &stm32f7_info},
 	{ .compatible = "st,stm32f7-uart", .data = &stm32f7_info},
-	{ .compatible = "st,stm32h7-usart", .data = &stm32h7_info},
 	{ .compatible = "st,stm32h7-uart", .data = &stm32h7_info},
 	{},
 };

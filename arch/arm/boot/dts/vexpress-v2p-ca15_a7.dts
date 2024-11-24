@@ -9,6 +9,7 @@
  */
 
 /dts-v1/;
+#include "vexpress-v2m-rs1.dtsi"
 
 / {
 	model = "V2P-CA15_CA7";
@@ -41,7 +42,7 @@
 			cci-control-port = <&cci_control1>;
 			cpu-idle-states = <&CLUSTER_SLEEP_BIG>;
 			capacity-dmips-mhz = <1024>;
-			sched-energy-costs = <&CPU_COST_A15 &CLUSTER_COST_A15>;
+			dynamic-power-coefficient = <990>;
 		};
 
 		cpu1: cpu@1 {
@@ -51,7 +52,7 @@
 			cci-control-port = <&cci_control1>;
 			cpu-idle-states = <&CLUSTER_SLEEP_BIG>;
 			capacity-dmips-mhz = <1024>;
-			sched-energy-costs = <&CPU_COST_A15 &CLUSTER_COST_A15>;
+			dynamic-power-coefficient = <990>;
 		};
 
 		cpu2: cpu@2 {
@@ -61,7 +62,7 @@
 			cci-control-port = <&cci_control2>;
 			cpu-idle-states = <&CLUSTER_SLEEP_LITTLE>;
 			capacity-dmips-mhz = <516>;
-			sched-energy-costs = <&CPU_COST_A7 &CLUSTER_COST_A7>;
+			dynamic-power-coefficient = <133>;
 		};
 
 		cpu3: cpu@3 {
@@ -71,7 +72,7 @@
 			cci-control-port = <&cci_control2>;
 			cpu-idle-states = <&CLUSTER_SLEEP_LITTLE>;
 			capacity-dmips-mhz = <516>;
-			sched-energy-costs = <&CPU_COST_A7 &CLUSTER_COST_A7>;
+			dynamic-power-coefficient = <133>;
 		};
 
 		cpu4: cpu@4 {
@@ -81,7 +82,7 @@
 			cci-control-port = <&cci_control2>;
 			cpu-idle-states = <&CLUSTER_SLEEP_LITTLE>;
 			capacity-dmips-mhz = <516>;
-			sched-energy-costs = <&CPU_COST_A7 &CLUSTER_COST_A7>;
+			dynamic-power-coefficient = <133>;
 		};
 
 		idle-states {
@@ -99,77 +100,6 @@
 				entry-latency-us = <1000>;
 				exit-latency-us = <500>;
 				min-residency-us = <2500>;
-			};
-		};
-
-		energy-costs {
-			CPU_COST_A15: core-cost0 {
-				busy-cost-data = <
-					426    2021
-					512    2312
-					597    2756
-					682    3125
-					768    3524
-					853    3846
-					938    5177
-					1024   6997
-				>;
-				idle-cost-data = <
-					0
-					0
-					0
-				>;
-			};
-			CPU_COST_A7: core-cost1 {
-				busy-cost-data = <
-					150    187
-					172    275
-					215    334
-					258    407
-					301    447
-					344    549
-					387    761
-					430    1024
-				>;
-				idle-cost-data = <
-					0
-					0
-					0
-				>;
-			};
-			CLUSTER_COST_A15: cluster-cost0 {
-				busy-cost-data = <
-					426    7920
-					512    8165
-					597    8172
-					682    8195
-					768    8265
-					853    8446
-					938    11426
-					1024   15200
-				>;
-				idle-cost-data = <
-					 70
-					 70
-					 25
-				>;
-			};
-			CLUSTER_COST_A7: cluster-cost1 {
-				busy-cost-data = <
-					150    2967
-					172    2792
-					215    2810
-					258    2815
-					301    2919
-					344    2847
-					387    3917
-					430    4905
-				>;
-				idle-cost-data = <
-					25
-					25
-					10
-				>;
 			};
 		};
 	};
@@ -279,7 +209,7 @@
 			     <1 10 0xf08>;
 	};
 
-	pmu_a15 {
+	pmu-a15 {
 		compatible = "arm,cortex-a15-pmu";
 		interrupts = <0 68 4>,
 			     <0 69 4>;
@@ -287,7 +217,7 @@
 				     <&cpu1>;
 	};
 
-	pmu_a7 {
+	pmu-a7 {
 		compatible = "arm,cortex-a7-pmu";
 		interrupts = <0 128 4>,
 			     <0 129 4>,
@@ -660,7 +590,7 @@
 		};
 	};
 
-	smb@8000000 {
+	smb: smb@8000000 {
 		compatible = "simple-bus";
 
 		#address-cells = <2>;
@@ -717,8 +647,6 @@
 				<0 0 40 &gic 0 40 4>,
 				<0 0 41 &gic 0 41 4>,
 				<0 0 42 &gic 0 42 4>;
-
-		/include/ "vexpress-v2m-rs1.dtsi"
 	};
 
 	site2: hsb@40000000 {

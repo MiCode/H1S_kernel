@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #ifndef __MTK_CPUFREQ_INTERNAL_H__
@@ -97,7 +89,6 @@ extern unsigned int func_lv_mask;
 #define tag_pr_info(fmt, args...)	pr_info(TAG fmt, ##args)
 #define tag_pr_debug(fmt, args...)	pr_debug(TAG fmt, ##args)
 #define tag_pr_deferred(fmt, args...)   printk_deferred(TAG fmt, ##args)
-
 #define cpufreq_ver(fmt, args...)		\
 do {						\
 	if (func_lv_mask)			\
@@ -105,10 +96,10 @@ do {						\
 } while (0)
 
 #define cpufreq_deferred(fmt, args...)		\
-do {						\
-	if (0)			\
-		tag_pr_deferred(fmt, ##args);	\
-} while (0)
+	do {						\
+			if (0)			\
+				tag_pr_deferred(fmt, ##args);	\
+	} while (0)
 
 #define GEN_DB_ON(condition, fmt, args...)			\
 ({								\
@@ -185,7 +176,8 @@ static const struct file_operations name ## _proc_fops = {		\
 /*
  * REG ACCESS
  */
-#define cpufreq_read(addr)                  __raw_readl(IOMEM(addr))
+//#define cpufreq_read(addr)                  __raw_readl(IOMEM(addr))
+#define cpufreq_read(addr) __raw_readl(((void __force __iomem *)((addr))))
 #define cpufreq_write(addr, val)            \
 mt_reg_sync_writel((val), ((void *)addr))
 #define cpufreq_write_mask(addr, mask, val) \
@@ -296,9 +288,7 @@ extern struct mt_cpu_dvfs *id_to_cpu_dvfs(enum mt_cpu_dvfs_id id);
 extern struct buck_ctrl_t *id_to_buck_ctrl(enum mt_cpu_dvfs_buck_id id);
 extern struct pll_ctrl_t *id_to_pll_ctrl(enum mt_cpu_dvfs_pll_id id);
 
-extern u32 get_devinfo_with_index(u32 index);
 extern int turbo_flag;
-extern unsigned int dvfs_init_flag;
 
 extern void _kick_PBM_by_cpu(void);
 extern unsigned int dvfs_power_mode;
@@ -308,6 +298,10 @@ extern int dvfs_disable_flag;
 extern ktime_t now[NR_SET_V_F];
 extern ktime_t delta[NR_SET_V_F];
 extern ktime_t max[NR_SET_V_F];
+
+extern u32 get_devinfo_with_index(u32 index);
+extern unsigned int dvfs_init_flag;
+
 
 extern cpuVoltsampler_func g_pCpuVoltSampler;
 extern int is_in_suspend(void);

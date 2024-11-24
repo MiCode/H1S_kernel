@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __MMDVFS_CONFIG_MT6765_H__
@@ -60,7 +52,7 @@ struct mmdvfs_clk_source_desc mt6765_clk_sources[MT6765_CLK_SOURCE_NUM] = {
  *     b. MMDVFS_CLK_CONFIG_PLL
  *     c. MMDVFS_CLK_CONFIG_NONE
  * 2. pll_id: PLL ID, please set -1 if PLL hopping is not used
- * 3. clk mux desc {hanlde, name}, plz set -1
+ * 3. clk mux desc {handle, name}, plz set -1
  *       and it will be initialized by driver automaticlly
  * 4. total step: the number of the steps supported by this sub sys
  * 5. hopping dss of each steps: please set -1 if it is not used
@@ -135,7 +127,6 @@ struct mmdvfs_clk_hw_map mt6765_clk_hw_map_setting[MMDVFS_CLK_MUX_NUM] = {
 
 struct mmdvfs_profile_mask qos_apply_profiles[] = {
 /* #ifdef MMDVFS_QOS_SUPPORT */
-#if 1
 	/* ISP for opp0 */
 	{"ISP",
 		MMDVFS_PMQOS_ISP,
@@ -160,12 +151,6 @@ struct mmdvfs_profile_mask qos_apply_profiles[] = {
 	{"DEBUG",
 		0,
 		MMDVFS_FINE_STEP_UNREQUEST },
-#else
-	/* debug entry */
-	{"DEBUG",
-		QOS_ALL_SCENARIO,
-		0 },
-#endif
 };
 
 /* Part II MMDVFS Scenario's Step Confuguration */

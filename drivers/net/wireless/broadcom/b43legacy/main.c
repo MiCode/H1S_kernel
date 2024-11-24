@@ -2612,7 +2612,7 @@ static void b43legacy_put_phy_into_reset(struct b43legacy_wldev *dev)
 static int b43legacy_switch_phymode(struct b43legacy_wl *wl,
 				      unsigned int new_mode)
 {
-	struct b43legacy_wldev *uninitialized_var(up_dev);
+	struct b43legacy_wldev *up_dev;
 	struct b43legacy_wldev *down_dev;
 	int err;
 	bool gmode = false;
@@ -3301,8 +3301,8 @@ static int b43legacy_wireless_core_init(struct b43legacy_wldev *dev)
 
 	if ((phy->type == B43legacy_PHYTYPE_B) ||
 	    (phy->type == B43legacy_PHYTYPE_G)) {
-		phy->_lo_pairs = kzalloc(sizeof(struct b43legacy_lopair)
-					 * B43legacy_LO_COUNT,
+		phy->_lo_pairs = kcalloc(B43legacy_LO_COUNT,
+					 sizeof(struct b43legacy_lopair),
 					 GFP_KERNEL);
 		if (!phy->_lo_pairs)
 			return -ENOMEM;

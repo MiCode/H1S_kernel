@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+*/
 
 #ifndef __MTK_DISP_COLOR_H__
 #define __MTK_DISP_COLOR_H__
@@ -169,6 +161,7 @@ enum LUT_REG {
 #define DISP_COLOR_START_MT6885		0x0c00
 #define DISP_COLOR_START_MT8173		0x0c00
 #define DISP_COLOR_START_MT6873		0x0c00
+#define DISP_COLOR_START_MT6781		0x0c00
 #define DISP_COLOR_START(module)		((module)->data->color_offset)
 #define DISP_COLOR_INTEN(reg)		(DISP_COLOR_START(reg) + 0x4UL)
 #define DISP_COLOR_OUT_SEL(reg)		(DISP_COLOR_START(reg) + 0xCUL)
@@ -193,6 +186,8 @@ void disp_color_set_window(struct mtk_ddp_comp *comp,
 	unsigned int hue_upper, unsigned int hue_lower);
 void mtk_color_setbypass(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle,
 		bool bypass);
+void ddp_color_bypass_color(struct mtk_ddp_comp *comp, int bypass,
+		struct cmdq_pkt *handle);
 
 int mtk_drm_ioctl_set_pqparam(struct drm_device *dev, void *data,
 		struct drm_file *file_priv);

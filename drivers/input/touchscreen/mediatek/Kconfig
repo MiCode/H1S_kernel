@@ -30,17 +30,6 @@ config TOUCHSCREEN_PHYSICAL_ROTATION_WITH_LCM
 	  the reported coordination to diagonal position.
 
 	  If unsure, say Y.
-config TOUCHSCREEN_MTK_SOLOMON
-	bool "SOLOMON for Mediatek package"
-	default n
-	help
-	  Say Y here if you have SOLOMON touch panel.
-
-	  If unsure, say N.
-
-	  To compile this dirver as a module, choose M here: the
-	  module will be called.
-
 
 config TOUCHSCREEN_MTK_FOCALTECH_TS
 	bool "FOCALTECH_TS for Mediatek package"
@@ -138,6 +127,19 @@ config TOUCHSCREEN_MTK_GT5688
 source "drivers/input/touchscreen/mediatek/GT5688/Kconfig"
 source "drivers/input/touchscreen/mediatek/hxchipset/Kconfig"
 
+config TOUCHSCREEN_HIMAX_CHIPSET_8789P1_8185P3
+	bool "hxchipset for Mediatek 8789p1 and 8185p3 package"
+	default n
+	help
+	  Say Y here if you have hxchipset touch panel.
+
+	  If unsure, say N.
+
+	  To compile this dirver as a module, choose M here: the
+	  module will be called.
+
+source "drivers/input/touchscreen/mediatek/hxchipset_8789p1_8185p3/Kconfig"
+
 config TOUCHSCREEN_MTK_GT911
 	bool "GT911 for Mediatek package"
 	help
@@ -167,6 +169,27 @@ config TOUCHSCREEN_MTK_GT9157
 	  module will be called
 
 source "drivers/input/touchscreen/mediatek/GT9157/Kconfig"
+
+config TOUCHSCREEN_HIMAX_CHIPSET
+	bool "Himax touchpanel CHIPSET"
+	depends on SPI
+	help
+	Say Y here if you have a Himax CHIPSET touchscreen.
+	HIMAX controllers are multi touch controllers which can
+	report 10 touches at a time.
+
+	If unsure, say N.
+source "drivers/input/touchscreen/mediatek/hxchipset_hx83102p/Kconfig"
+
+config TOUCHSCREEN_GOODIX_BRL
+	bool "Goodix berlin touchscreen"
+	help
+	  Say Y here if you have a Goodix berlin series touch controller
+	  to your system.
+
+	  If build module, say M.
+	  If unsure, say N.
+source "drivers/input/touchscreen/mediatek/goodix_berlin_driver/Kconfig"
 
 source "drivers/input/touchscreen/mediatek/ft3418_i2c/Kconfig"
 source "drivers/input/touchscreen/mediatek/xiaomi/Kconfig"

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "LCM"
@@ -98,6 +90,11 @@ static struct LCM_UTIL_FUNCS lcm_util;
 /* for ESD recovery */
 static int lastBacklightLevel = -1;
 
+#define CMD_HBM_ENABLE		0xe0
+#define CMD_HBM_DISABLE		0x20
+static bool hbm_en;
+static bool hbm_wait;
+
 struct LCM_setting_table {
 	unsigned int cmd;
 	unsigned char count;
@@ -141,6 +138,13 @@ static struct LCM_setting_table init_setting_cmd[] = {
 static struct LCM_setting_table bl_level[] = {
 	{0xf0, 2, {0x5a, 0x5a} },
 	{0x51, 2, {0xFF, 0xFF} },
+	{0xf0, 2, {0xa5, 0xa5} },
+	{REGFLAG_END_OF_TABLE, 0x00, {} }
+};
+
+static struct LCM_setting_table hbm[] = {
+	{0xf0, 2, {0x5a, 0x5a} },
+	{0x53, 1, {CMD_HBM_ENABLE} },
 	{0xf0, 2, {0xa5, 0xa5} },
 	{REGFLAG_END_OF_TABLE, 0x00, {} }
 };
@@ -259,6 +263,9 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 	params->corner_pattern_tp_size = sizeof(top_rc_pattern);
 	params->corner_pattern_lt_addr = (void *)top_rc_pattern;
 #endif
+
+	params->hbm_en_time = 2;
+	params->hbm_dis_time = 1;
 }
 
 static void lcm_setbacklight_cmdq(void *handle, unsigned int level)
@@ -282,6 +289,45 @@ static void lcm_setbacklight_cmdq(void *handle, unsigned int level)
 		   sizeof(struct LCM_setting_table), 1);
 }
 
+static bool lcm_get_hbm_state(void)
+{
+	return hbm_en;
+}
+
+static bool lcm_get_hbm_wait(void)
+{
+	return hbm_wait;
+}
+
+static bool lcm_set_hbm_wait(bool wait)
+{
+	bool old = hbm_wait;
+
+	hbm_wait = wait;
+	return old;
+}
+
+static bool lcm_set_hbm_cmdq(bool en, void *qhandle)
+{
+	bool old = hbm_en;
+
+	if (hbm_en == en)
+		goto done;
+
+	if (en)
+		hbm[1].para_list[0] = CMD_HBM_ENABLE;
+	else
+		hbm[1].para_list[0] = CMD_HBM_DISABLE;
+
+	push_table(qhandle, hbm, ARRAY_SIZE(hbm), 1);
+
+	hbm_en = en;
+	lcm_set_hbm_wait(true);
+
+done:
+	return old;
+}
+
 static void lcm_init(void)
 {
 	MDELAY(10);
@@ -298,12 +344,16 @@ static void lcm_init(void)
 	/* Set brightness for ESD recovery */
 	if (lastBacklightLevel >= 0)
 		lcm_setbacklight_cmdq(NULL, lastBacklightLevel);
+
+	hbm_en = false;
 }
 
 static void lcm_suspend(void)
 {
 	push_table(NULL, lcm_suspend_setting, sizeof(lcm_suspend_setting) /
 		   sizeof(struct LCM_setting_table), 1);
+
+	hbm_en = false;
 }
 
 static void lcm_resume(void)
@@ -452,10 +502,8 @@ static void lcm_validate_roi(int *x, int *y, int *width, int *height)
 		h = FRAME_HEIGHT;
 	}
 
-#if 0
 	LCM_LOGI("%s:(%d,%d,%d,%d) to (%d,%d,%d,%d)\n",
 		 __func__, *x, *y, *width, *height, x1, y1, w, h);
-#endif
 
 	*x = x1;
 	*width = w;
@@ -473,6 +521,10 @@ struct LCM_DRIVER sofeg01_fhdplus_dsi_cmd_samsung_lcm_drv = {
 	.resume = lcm_resume,
 	.esd_check = lcm_esd_check,
 	.set_backlight_cmdq = lcm_setbacklight_cmdq,
+	.get_hbm_state = lcm_get_hbm_state,
+	.set_hbm_cmdq = lcm_set_hbm_cmdq,
+	.get_hbm_wait = lcm_get_hbm_wait,
+	.set_hbm_wait = lcm_set_hbm_wait,
 	.ata_check = lcm_ata_check,
 	.update = lcm_update,
 #if (LCM_DSI_CMD_MODE)

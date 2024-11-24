@@ -2,8 +2,10 @@
 #ifndef _LINUX_RESET_H_
 #define _LINUX_RESET_H_
 
-#include <linux/device.h>
+#include <linux/types.h>
 
+struct device;
+struct device_node;
 struct reset_control;
 
 #ifdef CONFIG_RESET_CONTROLLER
@@ -342,18 +344,6 @@ devm_reset_control_get_shared_by_index(struct device *dev, int index)
  * These inline function calls will be removed once all consumers
  * have been moved over to the new explicit API.
  */
-static inline struct reset_control *reset_control_get(
-				struct device *dev, const char *id)
-{
-	return reset_control_get_exclusive(dev, id);
-}
-
-static inline struct reset_control *reset_control_get_optional(
-					struct device *dev, const char *id)
-{
-	return reset_control_get_optional_exclusive(dev, id);
-}
-
 static inline struct reset_control *of_reset_control_get(
 				struct device_node *node, const char *id)
 {

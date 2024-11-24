@@ -219,7 +219,7 @@ static void unpack_shadow(void *shadow, int *memcgidp, pg_data_t **pgdat,
  * @mapping: address space the page was backing
  * @page: the page being evicted
  *
- * Returns a shadow entry to be stored in @mapping->page_tree in place
+ * Returns a shadow entry to be stored in @mapping->i_pages in place
  * of the evicted @page so that a later refault can be detected.
  */
 void *workingset_eviction(struct address_space *mapping, struct page *page)
@@ -367,21 +367,15 @@ out:
 
 static struct list_lru shadow_nodes;
 
-void workingset_update_node(struct radix_tree_node *node, void *private)
+void workingset_update_node(struct radix_tree_node *node)
 {
-	struct address_space *mapping = private;
-
-	/* Only regular page cache has shadow entries */
-	if (dax_mapping(mapping) || shmem_mapping(mapping))
-		return;
-
 	/*
 	 * Track non-empty nodes that contain only shadow entries;
 	 * unlink those that contain pages or are being freed.
 	 *
 	 * Avoid acquiring the list_lru lock when the nodes are
 	 * already where they should be. The list_empty() test is safe
-	 * as node->private_list is protected by &mapping->tree_lock.
+	 * as node->private_list is protected by the i_pages lock.
 	 */
 	if (node->count && node->count == node->exceptional) {
 		if (list_empty(&node->private_list))
@@ -399,10 +393,7 @@ static unsigned long count_shadow_nodes(struct shrinker *shrinker,
 	unsigned long nodes;
 	unsigned long cache;
 
-	/* list_lru lock nests inside IRQ-safe mapping->tree_lock */
-	local_irq_disable();
 	nodes = list_lru_shrink_count(&shadow_nodes, sc);
-	local_irq_enable();
 
 	/*
 	 * Approximate a reasonable limit for the radix tree nodes
@@ -435,6 +426,9 @@ static unsigned long count_shadow_nodes(struct shrinker *shrinker,
 	}
 	max_nodes = cache >> (RADIX_TREE_MAP_SHIFT - 3);
 
+	if (!nodes)
+		return SHRINK_EMPTY;
+
 	if (nodes <= max_nodes)
 		return 0;
 	return nodes - max_nodes;
@@ -452,22 +446,22 @@ static enum lru_status shadow_lru_isolate(struct list_head *item,
 
 	/*
 	 * Page cache insertions and deletions synchroneously maintain
-	 * the shadow node LRU under the mapping->tree_lock and the
+	 * the shadow node LRU under the i_pages lock and the
 	 * lru_lock.  Because the page cache tree is emptied before
 	 * the inode can be destroyed, holding the lru_lock pins any
 	 * address_space that has radix tree nodes on the LRU.
 	 *
-	 * We can then safely transition to the mapping->tree_lock to
+	 * We can then safely transition to the i_pages lock to
 	 * pin only the address_space of the particular node we want
 	 * to reclaim, take the node off-LRU, and drop the lru_lock.
 	 */
 
 	node = container_of(item, struct radix_tree_node, private_list);
-	mapping = container_of(node->root, struct address_space, page_tree);
+	mapping = container_of(node->root, struct address_space, i_pages);
 
 	/* Coming from the list, invert the lock order */
-	if (!spin_trylock(&mapping->tree_lock)) {
-		spin_unlock(lru_lock);
+	if (!xa_trylock(&mapping->i_pages)) {
+		spin_unlock_irq(lru_lock);
 		ret = LRU_RETRY;
 		goto out;
 	}
@@ -501,42 +495,36 @@ static enum lru_status shadow_lru_isolate(struct list_head *item,
 	if (WARN_ON_ONCE(node->exceptional))
 		goto out_invalid;
 	inc_lruvec_page_state(virt_to_page(node), WORKINGSET_NODERECLAIM);
-	__radix_tree_delete_node(&mapping->page_tree, node,
-				 workingset_update_node, mapping);
+	__radix_tree_delete_node(&mapping->i_pages, node,
+				 workingset_lookup_update(mapping));
 
 out_invalid:
-	spin_unlock(&mapping->tree_lock);
+	xa_unlock_irq(&mapping->i_pages);
 	ret = LRU_REMOVED_RETRY;
 out:
-	local_irq_enable();
 	cond_resched();
-	local_irq_disable();
-	spin_lock(lru_lock);
+	spin_lock_irq(lru_lock);
 	return ret;
 }
 
 static unsigned long scan_shadow_nodes(struct shrinker *shrinker,
 				       struct shrink_control *sc)
 {
-	unsigned long ret;
-
-	/* list_lru lock nests inside IRQ-safe mapping->tree_lock */
-	local_irq_disable();
-	ret = list_lru_shrink_walk(&shadow_nodes, sc, shadow_lru_isolate, NULL);
-	local_irq_enable();
-	return ret;
+	/* list_lru lock nests inside the IRQ-safe i_pages lock */
+	return list_lru_shrink_walk_irq(&shadow_nodes, sc, shadow_lru_isolate,
+					NULL);
 }
 
 static struct shrinker workingset_shadow_shrinker = {
 	.count_objects = count_shadow_nodes,
 	.scan_objects = scan_shadow_nodes,
-	.seeks = DEFAULT_SEEKS,
+	.seeks = 0, /* ->count reports only fully expendable nodes */
 	.flags = SHRINKER_NUMA_AWARE | SHRINKER_MEMCG_AWARE,
 };
 
 /*
  * Our list_lru->lock is IRQ-safe as it nests inside the IRQ-safe
- * mapping->tree_lock.
+ * i_pages lock.
  */
 static struct lock_class_key shadow_nodes_key;
 
@@ -561,15 +549,17 @@ static int __init workingset_init(void)
 	pr_info("workingset: timestamp_bits=%d max_order=%d bucket_order=%u\n",
 	       timestamp_bits, max_order, bucket_order);
 
-	ret = __list_lru_init(&shadow_nodes, true, &shadow_nodes_key);
+	ret = prealloc_shrinker(&workingset_shadow_shrinker);
 	if (ret)
 		goto err;
-	ret = register_shrinker(&workingset_shadow_shrinker);
+	ret = __list_lru_init(&shadow_nodes, true, &shadow_nodes_key,
+			      &workingset_shadow_shrinker);
 	if (ret)
 		goto err_list_lru;
+	register_shrinker_prepared(&workingset_shadow_shrinker);
 	return 0;
 err_list_lru:
-	list_lru_destroy(&shadow_nodes);
+	free_prealloced_shrinker(&workingset_shadow_shrinker);
 err:
 	return ret;
 }

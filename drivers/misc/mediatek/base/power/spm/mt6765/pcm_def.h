@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2016 MediaTek Inc.
  */
 #ifndef __pcm_def_h__
 #define __pcm_def_h__
@@ -217,46 +209,8 @@ enum SPM_WAKE_SRC_LIST {
 	WAKE_SRC_R12_CPU_WFI_AND_B = (1U << 30),
 };
 
-#if 1
 extern const char *wakesrc_str[32];
 
 /* define WAKE_SRC_CONN2AP for conn use */
 #define WAKE_SRC_CONN2AP WAKE_SRC_R12_CONN2AP_SPM_WAKEUP_B
-#else
-static const char *wakesrc_str[32] = {
-	[0] = " R12_PCM_TIMER",
-	[1] = " R12_SSPM_WDT_EVENT_B",
-	[2] = " R12_KP_IRQ_B",
-	[3] = " R12_APWDT_EVENT_B",
-	[4] = " R12_APXGPT1_EVENT_B",
-	[5] = " R12_CONN2AP_SPM_WAKEUP_B",
-	[6] = " R12_EINT_EVENT_B",
-	[7] = " R12_CONN_WDT_IRQ_B",
-	[8] = " R12_CCIF0_EVENT_B",
-	[9] = " R12_LOWBATTERY_IRQ_B",
-	[10] = " R12_SSPM_SPM_IRQ_B",
-	[11] = " R12_SCP_SPM_IRQ_B",
-	[12] = " R12_SCP_WDT_EVENT_B",
-	[13] = " R12_PCM_WDT_WAKEUP_B",
-	[14] = " R12_USB_CDSC_B",
-	[15] = " R12_USB_POWERDWN_B",
-	[16] = " R12_SYS_TIMER_EVENT_B",
-	[17] = " R12_EINT_EVENT_SECURE_B",
-	[18] = " R12_CCIF1_EVENT_B",
-	[19] = " R12_UART0_IRQ_B",
-	[20] = " R12_AFE_IRQ_MCU_B",
-	[21] = " R12_THERM_CTRL_EVENT_B",
-	[22] = " R12_SYS_CIRQ_IRQ_B",
-	[23] = " R12_MD2AP_PEER_EVENT_B",
-	[24] = " R12_CSYSPWREQ_B",
-	[25] = " R12_MD1_WDT_B",
-	[26] = " R12_CLDMA_EVENT_B",
-	[27] = " R12_SEJ_WDT_GPT_B",
-	[28] = " R12_ALL_SSPM_WAKEUP_B",
-	[29] = " R12_CPU_IRQ_B",
-	[30] = " R12_CPU_WFI_AND_B",
-	[31] = " R12_MCUSYS_IDLE_TO_EMI_ALL_B",
-};
-#endif
-
 #endif /* __pcm_def_h__ */

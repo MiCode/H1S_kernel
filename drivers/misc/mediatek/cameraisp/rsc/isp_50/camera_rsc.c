@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2022 MediaTek Inc.
  */
 
 /******************************************************************************
@@ -73,28 +66,6 @@
 #ifdef __RSC_KERNEL_PERFORMANCE_MEASURE__
 #include <linux/met_drv.h>
 #include <linux/mtk_ftrace.h>
-#endif
-#if 0
-/* Another Performance Measure Usage */
-#include <linux/ftrace_event.h>
-#include <linux/kallsyms.h>
-static unsigned long __read_mostly tracing_mark_write_addr;
-#define _kernel_trace_begin(name)                                              \
-	{                                                                      \
-		tracing_mark_write_addr =                                      \
-			kallsyms_lookup_name("tracing_mark_write");            \
-		event_trace_printk(tracing_mark_write_addr, "B|%d|%s\n",       \
-				   current->tgid, name);                       \
-	}
-#define _kernel_trace_end()                                                    \
-	{                                                                      \
-		event_trace_printk(tracing_mark_write_addr, "E\n");            \
-	}
-/* How to Use */
-/* char strName[128]; */
-/* sprintf(strName, "TAG_K_WAKEUP (%d)",sof_count[_PASS1]); */
-/* _kernel_trace_begin(strName); */
-/* _kernel_trace_end(); */
 #endif
 
 #include <linux/init.h>
@@ -249,7 +220,7 @@ static struct Tasklet_table RSC_tasklet[RSC_IRQ_TYPE_AMOUNT] = {
 static struct work_struct logWork;
 static void logPrint(struct work_struct *data);
 
-struct wakeup_source RSC_wake_lock;
+struct wakeup_source *RSC_wake_lock;
 
 static DEFINE_MUTEX(gRscMutex);
 static DEFINE_MUTEX(gRscDequeMutex);
@@ -410,7 +381,6 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
  *   each log must shorter than 512 bytes
  *  total log length in each irq/logtype can't over 1024 bytes
  */
-#if 1
 #define IRQ_LOG_KEEPER(irq, ppb, logT, fmt, ...) do {\
 	char *ptr; \
 	char *pDes;\
@@ -455,7 +425,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 								- 1] = '\0';\
 						LOG_DBG("%s", &ptr[\
 							NORMAL_STR_LEN*logi]);\
-					} else{\
+					} else {\
 						LOG_DBG("%s",\
 						&ptr[NORMAL_STR_LEN*logi]);\
 						break;\
@@ -470,7 +440,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 								   - 1] = '\0';\
 						LOG_INF("%s",		       \
 						    &ptr[NORMAL_STR_LEN*logi]);\
-					} else{\
+					} else {\
 						LOG_INF("%s",\
 						&ptr[NORMAL_STR_LEN*logi]);\
 						break;\
@@ -485,7 +455,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 								   - 1] = '\0';\
 						LOG_INF("%s",\
 						&ptr[NORMAL_STR_LEN*logi]);\
-					} else{\
+					} else {\
 						LOG_INF("%s",\
 						&ptr[NORMAL_STR_LEN*logi]);\
 						break;\
@@ -511,13 +481,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 		} \
 	} \
 } while (0)
-#else
-#define IRQ_LOG_KEEPER(irq, ppb, logT, fmt, ...) \
-	xlog_printk(ANDROID_LOG_DEBUG,\
-"KEEPER", "[%s] " fmt, __func__, ##__VA_ARGS__)
-#endif
 
-#if 1
 #define IRQ_LOG_PRINTER(irq, ppb_in, logT_in) do {\
 	struct SV_LOG_STR *pSrc = &gSvLog[irq];\
 	char *ptr;\
@@ -526,12 +490,12 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 	unsigned int logT = 0;\
 	if (ppb_in > 1) {\
 		ppb = 1;\
-	} else{\
+	} else {\
 		ppb = ppb_in;\
 	} \
 	if (logT_in > _LOG_ERR) {\
 		logT = _LOG_ERR;\
-	} else{\
+	} else {\
 		logT = logT_in;\
 	} \
 	ptr = pSrc->_str[ppb][logT];\
@@ -541,7 +505,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 				if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 					ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 					LOG_DBG("%s", &ptr[NORMAL_STR_LEN*i]);\
-				} else{\
+				} else {\
 					LOG_DBG("%s", &ptr[NORMAL_STR_LEN*i]);\
 					break;\
 				} \
@@ -552,7 +516,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 			if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 				ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 				LOG_INF("%s", &ptr[NORMAL_STR_LEN*i]);\
-			} else{\
+			} else {\
 				LOG_INF("%s", &ptr[NORMAL_STR_LEN*i]);\
 				break;\
 			} \
@@ -563,7 +527,7 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 			if (ptr[NORMAL_STR_LEN*(i+1) - 1] != '\0') {\
 				ptr[NORMAL_STR_LEN*(i+1) - 1] = '\0';\
 				LOG_ERR("%s", &ptr[NORMAL_STR_LEN*i]);\
-			} else{\
+			} else {\
 				LOG_ERR("%s", &ptr[NORMAL_STR_LEN*i]);\
 				break;\
 			} \
@@ -577,10 +541,6 @@ static struct SV_LOG_STR gSvLog[RSC_IRQ_TYPE_AMOUNT];
 	} \
 } while (0)
 
-
-#else
-#define IRQ_LOG_PRINTER(irq, ppb, logT)
-#endif
 
 #define IMGSYS_REG_CG_CON               (ISP_IMGSYS_BASE + 0x0)
 #define IMGSYS_REG_CG_SET               (ISP_IMGSYS_BASE + 0x4)
@@ -882,37 +842,6 @@ signed int rsc_enque_cb(struct frame *frames, void *req)
 						sizeof(struct RSC_Config));
 
 		pRscConfig = &_req->m_pRscConfig[f];
-#if 0
-		LOG_ERR("[%s] request queued with  frame(%d)", __func__, f);
-		LOG_DBG("[%s] RSC_CTRL_REG:0x%x!\n", __func__,
-							pRscConfig->RSC_CTRL);
-		LOG_DBG("[%s] RSC_SIZE_REG:0x%x!\n", __func__,
-							pRscConfig->RSC_SIZE);
-		LOG_DBG("[%s] RSC_IMGI_C_BASE_ADDR_REG:0x%x!\n", __func__,
-					pRscConfig->RSC_IMGI_C_BASE_ADDR);
-		LOG_DBG("[%s] RSC_IMGI_C_STRIDE_REG:0x%x!\n", __func__,
-						pRscConfig->RSC_IMGI_C_STRIDE);
-		LOG_DBG("[%s] RSC_IMGI_P_BASE_ADDR_REG:0x%x!\n", __func__,
-					pRscConfig->RSC_IMGI_P_BASE_ADDR);
-		LOG_DBG("[%s] RSC_IMGI_P_STRIDE_REG:0x%x!\n", __func__,
-						pRscConfig->RSC_IMGI_P_STRIDE);
-		LOG_DBG("[%s] RSC_MVI_C_BASE_ADDR_REG:0x%x!\n", __func__,
-						pRscConfig->RSC_MVI_BASE_ADDR);
-		LOG_DBG("[%s] RSC_MVI_C_STRIDE_REG:0x%x!\n", __func__,
-						pRscConfig->RSC_MVI_STRIDE);
-		LOG_DBG("[%s] RSC_MVO_BASE_ADDR_REG:0x%x!\n", __func__,
-						pRscConfig->RSC_MVO_BASE_ADDR);
-		LOG_DBG("[%s] RSC_MVO_STRIDE_REG:0x%x!\n", __func__,
-						pRscConfig->RSC_MVO_STRIDE);
-		LOG_DBG("[%s] RSC_BVO_BASE_ADDR_REG:0x%x!\n", __func__,
-						pRscConfig->RSC_BVO_BASE_ADDR);
-		LOG_DBG("[%s] RSC_BVO_STRIDE_REG:0x%x!\n", __func__,
-						pRscConfig->RSC_BVO_STRIDE);
-		LOG_DBG("[%s] RSC_APLI_C_BASE_ADDR_REG:0x%x!\n", __func__,
-					pRscConfig->RSC_APLI_C_BASE_ADDR);
-		LOG_DBG("[%s] RSC_APLI_P_BASE_ADDR_REG:0x%x!\n", __func__,
-					pRscConfig->RSC_APLI_P_BASE_ADDR);
-#endif
 	}
 
 	return 0;
@@ -938,52 +867,6 @@ signed int rsc_deque_cb(struct frame *frames, void *req)
 									fcnt);
 
 		pRscConfig = &_req->m_pRscConfig[f];
-#if 0
-		LOG_ERR(
-		"[%s] request queued with  frame(%d)", __func__, f);
-		LOG_DBG(
-		"[%s] RSC_CTRL_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_CTRL);
-		LOG_DBG(
-		"[%s] RSC_SIZE_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_SIZE);
-		LOG_DBG(
-		"[%s] RSC_IMGI_C_BASE_ADDR_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_IMGI_C_BASE_ADDR);
-		LOG_DBG(
-		"[%s] RSC_IMGI_C_STRIDE_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_IMGI_C_STRIDE);
-		LOG_DBG(
-		"[%s] RSC_IMGI_P_BASE_ADDR_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_IMGI_P_BASE_ADDR);
-		LOG_DBG(
-		"[%s] RSC_IMGI_P_STRIDE_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_IMGI_P_STRIDE);
-		LOG_DBG(
-		"[%s] RSC_MVI_C_BASE_ADDR_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_MVI_BASE_ADDR);
-		LOG_DBG(
-		"[%s] RSC_MVI_C_STRIDE_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_MVI_STRIDE);
-		LOG_DBG(
-		"[%s] RSC_MVO_BASE_ADDR_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_MVO_BASE_ADDR);
-		LOG_DBG(
-		"[%s] RSC_MVO_STRIDE_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_MVO_STRIDE);
-		LOG_DBG(
-		"[%s] RSC_BVO_BASE_ADDR_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_BVO_BASE_ADDR);
-		LOG_DBG(
-		"[%s] RSC_BVO_STRIDE_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_BVO_STRIDE);
-		LOG_DBG(
-		"[%s] RSC_APLI_C_BASE_ADDR_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_APLI_C_BASE_ADDR);
-		LOG_DBG(
-		"[%s] RSC_APLI_P_BASE_ADDR_REG:0x%x!\n",
-			__func__, pRscConfig->RSC_APLI_P_BASE_ADDR);
-#endif
 	}
 
 	return 0;
@@ -992,13 +875,11 @@ signed int rsc_deque_cb(struct frame *frames, void *req)
 signed int CmdqRSCHW(struct frame *frame)
 {
 	struct RSC_Config *pRscConfig;
-#if 1
 	struct cmdqRecStruct *handle;
 	uint64_t engineFlag = (uint64_t)(1LL << CMDQ_ENG_RSC);
 #if defined(RSC_PMQOS_EN) && defined(CONFIG_MTK_QOS_SUPPORT)
 	unsigned int w_imgi, h_imgi, w_mvio, h_mvio, w_bvo, h_bvo;
 	unsigned int dma_bandwidth, trig_num;
-#endif
 #endif
 	if (frame == NULL || frame->data == NULL)
 		return -1;
@@ -1034,7 +915,6 @@ signed int CmdqRSCHW(struct frame *frame)
 					pRscConfig->RSC_APLI_P_BASE_ADDR);
 
 
-#if 1
 	cmdqRecCreate(CMDQ_SCENARIO_KERNEL_CONFIG_GENERAL, &handle);
 
 	cmdqRecSetEngine(handle, engineFlag);
@@ -1130,7 +1010,7 @@ signed int CmdqRSCHW(struct frame *frame)
 	cmdqRecFlushAsync(handle);
 	cmdqRecReset(handle);	/* reset the handle to reuse */
 	cmdqRecDestroy(handle);	/* recycle the memory */
-#endif
+
 	return 0;
 }
 
@@ -2655,42 +2535,43 @@ EXIT:
  *
  ******************************************************************************/
 /*
-static signed int RSC_mmap(struct file *pFile, struct vm_area_struct *pVma)
-{
-	unsigned long length = 0;
-	unsigned int pfn = 0x0;
-
-	length = pVma->vm_end - pVma->vm_start;
-	pVma->vm_page_prot = pgprot_noncached(pVma->vm_page_prot);
-	pfn = pVma->vm_pgoff << PAGE_SHIFT;
-
-	LOG_INF(
-		"mmap:vm_pgoff(0x%lx) pfn(0x%x) phy(0x%lx) vm_start(0x%lx) vm_end(0x%lx) length(0x%lx)",
-		pVma->vm_pgoff, pfn, pVma->vm_pgoff << PAGE_SHIFT,
-			pVma->vm_start, pVma->vm_end, length);
-
-	switch (pfn) {
-	case RSC_BASE_HW:
-		if (length > RSC_REG_RANGE) {
-			LOG_ERR("mmap err:mod:0x%x len(0x%lx),REG_RANGE(0x%x)!",
-				pfn, length, RSC_REG_RANGE);
-			return -EAGAIN;
-		}
-		break;
-	default:
-		LOG_ERR("Illegal starting HW addr for mmap!");
-		return -EAGAIN;
-	}
-	if (remap_pfn_range
-	    (pVma, pVma->vm_start, pVma->vm_pgoff,
-					pVma->vm_end - pVma->vm_start,
-							pVma->vm_page_prot)) {
-		return -EAGAIN;
-	}
-
-	return 0;
-}
-*/
+ *static signed int RSC_mmap(struct file *pFile, struct vm_area_struct *pVma)
+ *{
+ *	unsigned long length = 0;
+ *	unsigned int pfn = 0x0;
+ *
+ *	length = pVma->vm_end - pVma->vm_start;
+ *	pVma->vm_page_prot = pgprot_noncached(pVma->vm_page_prot);
+ *	pfn = pVma->vm_pgoff << PAGE_SHIFT;
+ *
+ *	LOG_INF(
+ *		"mmap:vm_pgoff(0x%lx) pfn(0x%x) phy(0x%lx)
+ *		vm_start(0x%lx) vm_end(0x%lx) length(0x%lx)",
+ *		pVma->vm_pgoff, pfn, pVma->vm_pgoff << PAGE_SHIFT,
+ *			pVma->vm_start, pVma->vm_end, length);
+ *
+ *	switch (pfn) {
+ *	case RSC_BASE_HW:
+ *		if (length > RSC_REG_RANGE) {
+ *			LOG_ERR("mmap err:mod:0x%x len(0x%lx),REG_RANGE(0x%x)!",
+ *				pfn, length, RSC_REG_RANGE);
+ *			return -EAGAIN;
+ *		}
+ *		break;
+ *	default:
+ *		LOG_ERR("Illegal starting HW addr for mmap!");
+ *		return -EAGAIN;
+ *	}
+ *	if (remap_pfn_range
+ *	    (pVma, pVma->vm_start, pVma->vm_pgoff,
+ *					pVma->vm_end - pVma->vm_start,
+ *							pVma->vm_page_prot)) {
+ *		return -EAGAIN;
+ *	}
+ *
+ *	return 0;
+ *}
+ */
 /*******************************************************************************
  *
  ******************************************************************************/
@@ -2930,7 +2811,7 @@ static signed int RSC_probe(struct platform_device *pDev)
 		if (!RSCInfo.wkqueue)
 			LOG_ERR("NULL RSC-CMDQ-WQ\n");
 
-		wakeup_source_init(&RSC_wake_lock, "rsc_lock_wakelock");
+		RSC_wake_lock = wakeup_source_register(&pDev->dev, "rsc_lock_wakelock");
 
 		INIT_WORK(&logWork, logPrint);
 		for (i = 0; i < RSC_IRQ_TYPE_AMOUNT; i++)
@@ -2992,37 +2873,6 @@ static signed int RSC_remove(struct platform_device *pDev)
 	/* kill tasklet */
 	for (i = 0; i < RSC_IRQ_TYPE_AMOUNT; i++)
 		tasklet_kill(RSC_tasklet[i].pRSC_tkt);
-#if 0
-	/* free all registered irq(child nodes) */
-	RSC_UnRegister_AllregIrq();
-	/* free father nodes of irq user list */
-	struct my_list_head *head;
-	struct my_list_head *father;
-
-	head = ((struct my_list_head *)(&SupIrqUserListHead.list));
-	while (1) {
-		father = head;
-		if (father->nextirq != father) {
-			father = father->nextirq;
-			REG_IRQ_NODE *accessNode;
-
-			typeof(((REG_IRQ_NODE *) 0)->list) * __mptr = (father);
-			accessNode =
-			    ((REG_IRQ_NODE *)
-			((char *)__mptr - offsetof(REG_IRQ_NODE, list)));
-			LOG_INF("free father,reg_T(%d)\n", accessNode->reg_T);
-			if (father->nextirq != father) {
-				head->nextirq = father->nextirq;
-				father->nextirq = father;
-			} else {	/* last father node */
-				head->nextirq = head;
-				LOG_INF("break\n");
-				break;
-			}
-			kfree(accessNode);
-		}
-	}
-#endif
 	/*  */
 	device_destroy(pRSCClass, RSCDevNo);
 	/*  */
@@ -3308,13 +3158,7 @@ static ssize_t rsc_reg_write(struct file *file, const char __user *buffer,
 		pszTmp = strstr(addrSzBuf, "0x");
 		if (pszTmp == NULL) {
 			/*if (1 != sscanf(addrSzBuf, "%d", &addr))*/
-#if 0
-			if (kstrtoint(addrSzBuf, 0, &addr) != 0)
-				LOG_ERR("scan decimal addr is wrong !!:%s",
-								addrSzBuf);
-#else
-				LOG_ERR("hex address only:%s", addrSzBuf);
-#endif
+			LOG_ERR("hex address only:%s", addrSzBuf);
 
 		} else {
 			if (strlen(addrSzBuf) > 2) {
@@ -3328,13 +3172,7 @@ static ssize_t rsc_reg_write(struct file *file, const char __user *buffer,
 		pszTmp = strstr(valSzBuf, "0x");
 		if (pszTmp == NULL) {
 			/*if (1 != sscanf(valSzBuf, "%d", &val))*/
-#if 0
-			if (kstrtoint(valSzBuf, 0, &val) != 0)
-				LOG_ERR("scan decimal value is wrong !!:%s",
-								valSzBuf);
-#else
-				LOG_ERR("HEX address only :%s", valSzBuf);
-#endif
+			LOG_ERR("HEX address only :%s", valSzBuf);
 		} else {
 			if (strlen(valSzBuf) > 2) {
 				if (sscanf(valSzBuf + 2, "%x", &val) != 1)
@@ -3360,13 +3198,7 @@ static ssize_t rsc_reg_write(struct file *file, const char __user *buffer,
 		pszTmp = strstr(addrSzBuf, "0x");
 		if (pszTmp == NULL) {
 			/*if (1 != sscanf(addrSzBuf, "%d", &addr))*/
-#if 0
-			if (kstrtoint(addrSzBuf, 0, &addr) != 0)
-				LOG_ERR("scan decimal addr is wrong !!:%s",
-								addrSzBuf);
-#else
-				LOG_ERR("HEX address only :%s", addrSzBuf);
-#endif
+			LOG_ERR("HEX address only :%s", addrSzBuf);
 		} else {
 			if (strlen(addrSzBuf) > 2) {
 				if (sscanf(addrSzBuf + 2, "%x", &addr) != 1)
@@ -3469,21 +3301,6 @@ static signed int __init RSC_Init(void)
 		return Ret;
 	}
 
-#if 0
-	struct device_node *node = NULL;
-
-	node = of_find_compatible_node(NULL, NULL, "mediatek,RSC");
-	if (!node) {
-		LOG_ERR("find mediatek,RSC node failed!!!\n");
-		return -ENODEV;
-	}
-	ISP_RSC_BASE = of_iomap(node, 0);
-	if (!ISP_RSC_BASE) {
-		LOG_ERR("unable to map ISP_RSC_BASE registers!!!\n");
-		return -ENODEV;
-	}
-	LOG_DBG("ISP_RSC_BASE: %lx\n", ISP_RSC_BASE);
-#endif
 
 #ifdef RSC_PROCFS
 	isp_rsc_dir = proc_mkdir("rsc", NULL);
@@ -3645,11 +3462,7 @@ static irqreturn_t ISP_Irq_RSC(signed int Irq, void *DeviceId)
 	#endif
 
 	if (RscStatus & RSC_INT_ST)
-#if 1
 		schedule_work(&logWork);
-#else
-		tasklet_schedule(RSC_tasklet[RSC_IRQ_TYPE_INT_RSC_ST].pRSC_tkt);
-#endif
 	return IRQ_HANDLED;
 }
 

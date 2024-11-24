@@ -1,6 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * SPDX-License-Identifier: GPL-2.0
- * Copyright (c) 2019 MediaTek Inc.
+ * Copyright (c) 2022 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -8,9 +8,9 @@
 #include <linux/platform_device.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
-#include <linux/pm_qos.h>
+#include <linux/soc/mediatek/mtk-pm-qos.h>
 
-static struct pm_qos_request boost_ddr_opp_req;
+static struct mtk_pm_qos_request boost_ddr_opp_req;
 
 struct mtk_dvfsrc_boost {
 	struct device *dev;
@@ -27,11 +27,11 @@ static ssize_t dramboost_store(struct device *dev,
 		return -EINVAL;
 
 	if (val == 1)
-		pm_qos_update_request(&boost_ddr_opp_req,
+		mtk_pm_qos_update_request(&boost_ddr_opp_req,
 						boost->perf_state);
 	else
-		pm_qos_update_request(&boost_ddr_opp_req,
-					PM_QOS_DDR_OPP_DEFAULT_VALUE);
+		mtk_pm_qos_update_request(&boost_ddr_opp_req,
+					MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE);
 
 	return count;
 }
@@ -69,8 +69,8 @@ static int mtk_dvfsrc_boost_probe(struct platform_device *pdev)
 
 	dramboost->dev = dev;
 	platform_set_drvdata(pdev, dramboost);
-	pm_qos_add_request(&boost_ddr_opp_req, PM_QOS_DDR_OPP,
-			PM_QOS_DDR_OPP_DEFAULT_VALUE);
+	mtk_pm_qos_add_request(&boost_ddr_opp_req, MTK_PM_QOS_DDR_OPP,
+			MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE);
 
 	result = sysfs_create_group(&dev->kobj, &dvfsrc_boost_attr_group);
 

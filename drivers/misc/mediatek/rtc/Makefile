@@ -14,16 +14,9 @@
 #set IP folder name
 
 ifeq ($(CONFIG_RTC_DRV_MT6358), y)
-obj-$(CONFIG_MTK_RTC) += mtk_rtc_debug.o
+obj-$(CONFIG_MTK_RTC) += mtk_rtc_debug_v1.o
 else
 #legacy
-ifneq (,$(filter y,$(CONFIG_MTK_PMIC_CHIP_MT6355)))
-  MDI_IP_FOLDER:=mt6355
-endif
-
-ifneq (,$(filter y,$(CONFIG_MTK_PMIC_CHIP_MT6356)))
-  MDI_IP_FOLDER:=mt6356
-endif
 
 ifneq (,$(filter y,$(CONFIG_MTK_PMIC_CHIP_MT6357)))
   MDI_IP_FOLDER:=mt6357

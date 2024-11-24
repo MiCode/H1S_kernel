@@ -2,13 +2,6 @@
 #
 # Makefile for the kernel mmc core.
 #
-MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
-ccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/ComboA
-ccflags-y += -I$(srctree)/drivers/mmc/host/mediatek/ComboA/$(MTK_PLATFORM)
-ccflags-y += -I$(srctree)/drivers/mmc/host
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/include
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/$(MTK_PLATFORM)/include
-ccflags-y += -I$(srctree)/drivers/devfreq/
 
 obj-$(CONFIG_MMC)		+= mmc_core.o
 mmc_core-y			:= core.o bus.o host.o \
@@ -25,7 +18,5 @@ obj-$(CONFIG_MMC_BLOCK)		+= mmc_block.o
 mmc_block-objs			:= block.o queue.o
 obj-$(CONFIG_MMC_TEST)		+= mmc_test.o
 obj-$(CONFIG_SDIO_UART)		+= sdio_uart.o
-obj-$(CONFIG_MMC_FFU)		+= ffu.o
-obj-$(CONFIG_MMC_BLOCK_IO_LOG)	+= mtk_mmc_block.o
-obj-$(CONFIG_MTK_MMC_PWR_WP) 	+= mtk_emmc_write_protect.o
 obj-$(CONFIG_MMC_CRYPTO)	+= mmc_crypto.o crypto.o
+obj-$(CONFIG_MMC_BLOCK_IO_LOG)	+= mtk_mmc_block.o

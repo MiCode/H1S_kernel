@@ -51,7 +51,7 @@
 		#size-cells = <2>;
 		ranges;
 
-		ramoops@0x21f00000 {
+		ramoops@21f00000 {
 			compatible = "ramoops";
 			reg = <0x0 0x21f00000 0x0 0x00100000>;
 			record-size	= <0x00020000>;
@@ -322,6 +322,7 @@
 		dwmmc_2: dwmmc2@f723f000 {
 			bus-width = <0x4>;
 			non-removable;
+			cap-power-off-card;
 			vmmc-supply = <&reg_vdd_3v3>;
 			mmc-pwrseq = <&wl1835_pwrseq>;
 
@@ -360,6 +361,7 @@
 		user_led1 {
 			label = "user_led1";
 			gpios = <&gpio4 3 0>; /* <&gpio_user_led_4>; */
+			panic-indicator;
 			linux,default-trigger = "cpu0";
 		};
 
@@ -513,7 +515,7 @@
 		reg = <0x39>;
 		interrupt-parent = <&gpio1>;
 		interrupts = <1 2>;
-		pd-gpio = <&gpio0 4 0>;
+		pd-gpios = <&gpio0 4 0>;
 		adi,dsi-lanes = <4>;
 		#sound-dai-cells = <0>;
 

@@ -47,8 +47,9 @@ EXPORT_SYMBOL_GPL(vpif_lock);
 void __iomem *vpif_base;
 EXPORT_SYMBOL_GPL(vpif_base);
 
-/**
+/*
  * vpif_ch_params: video standard configuration parameters for vpif
+ *
  * The table must include all presets from supported subdevices.
  */
 const struct vpif_channel_config_params vpif_ch_params[] = {
@@ -495,6 +496,7 @@ static int vpif_probe(struct platform_device *pdev)
 
 static int vpif_remove(struct platform_device *pdev)
 {
+	pm_runtime_put(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
 	return 0;
 }

@@ -15,6 +15,7 @@
 #include <linux/refcount.h>
 #include <net/neighbour.h>
 #include <net/sock.h>
+#include <linux/seq_file.h>
 
 #define	AX25_T1CLAMPLO  		1
 #define	AX25_T1CLAMPHI 			(30 * HZ)
@@ -235,6 +236,7 @@ typedef struct ax25_dev {
 #if defined(CONFIG_AX25_DAMA_SLAVE) || defined(CONFIG_AX25_DAMA_MASTER)
 	ax25_dama_info		dama;
 #endif
+	refcount_t		refcount;
 } ax25_dev;
 
 typedef struct ax25_cb {
@@ -289,6 +291,17 @@ static __inline__ void ax25_cb_put(ax25_cb *ax25)
 	}
 }
 
+static inline void ax25_dev_hold(ax25_dev *ax25_dev)
+{
+	refcount_inc(&ax25_dev->refcount);
+}
+
+static inline void ax25_dev_put(ax25_dev *ax25_dev)
+{
+	if (refcount_dec_and_test(&ax25_dev->refcount)) {
+		kfree(ax25_dev);
+	}
+}
 static inline __be16 ax25_type_trans(struct sk_buff *skb, struct net_device *dev)
 {
 	skb->dev      = dev;
@@ -330,10 +343,12 @@ void ax25_digi_invert(const ax25_digi *, ax25_digi *);
 extern ax25_dev *ax25_dev_list;
 extern spinlock_t ax25_dev_lock;
 
+#if IS_ENABLED(CONFIG_AX25)
 static inline ax25_dev *ax25_dev_ax25dev(struct net_device *dev)
 {
 	return dev->ax25_ptr;
 }
+#endif
 
 ax25_dev *ax25_addr_ax25dev(ax25_address *);
 void ax25_dev_device_up(struct net_device *);
@@ -409,7 +424,7 @@ int ax25_check_iframes_acked(ax25_cb *, unsigned short);
 /* ax25_route.c */
 void ax25_rt_device_down(struct net_device *);
 int ax25_rt_ioctl(unsigned int, void __user *);
-extern const struct file_operations ax25_route_fops;
+extern const struct seq_operations ax25_rt_seqops;
 ax25_route *ax25_get_route(ax25_address *addr, struct net_device *dev);
 int ax25_rt_autobind(ax25_cb *, ax25_address *);
 struct sk_buff *ax25_rt_build_path(struct sk_buff *, ax25_address *,
@@ -465,7 +480,7 @@ unsigned long ax25_display_timer(struct timer_list *);
 extern int  ax25_uid_policy;
 ax25_uid_assoc *ax25_findbyuid(kuid_t);
 int __must_check ax25_uid_ioctl(int, struct sockaddr_ax25 *);
-extern const struct file_operations ax25_uid_fops;
+extern const struct seq_operations ax25_uid_seqops;
 void ax25_uid_free(void);
 
 /* sysctl_net_ax25.c */

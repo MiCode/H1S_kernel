@@ -180,7 +180,7 @@ static int esre_create_sysfs_entry(void *esre, int entry_num)
 		rc = kobject_init_and_add(&entry->kobj, &esre1_ktype, NULL,
 					  "entry%d", entry_num);
 		if (rc) {
-			kfree(entry);
+			kobject_put(&entry->kobj);
 			return rc;
 		}
 	}
@@ -250,7 +250,10 @@ void __init efi_esrt_init(void)
 		return;
 
 	rc = efi_mem_desc_lookup(efi.esrt, &md);
-	if (rc < 0) {
+	if (rc < 0 ||
+	    (!(md.attribute & EFI_MEMORY_RUNTIME) &&
+	     md.type != EFI_BOOT_SERVICES_DATA &&
+	     md.type != EFI_RUNTIME_SERVICES_DATA)) {
 		pr_warn("ESRT header is not in the memory map.\n");
 		return;
 	}
@@ -279,6 +282,7 @@ void __init efi_esrt_init(void)
 	}
 
 	memcpy(&tmpesrt, va, sizeof(tmpesrt));
+	early_memunmap(va, size);
 
 	if (tmpesrt.fw_resource_version == 1) {
 		entry_size = sizeof (*v1_entries);
@@ -291,7 +295,7 @@ void __init efi_esrt_init(void)
 	if (tmpesrt.fw_resource_count > 0 && max - size < entry_size) {
 		pr_err("ESRT memory map entry can only hold the header. (max: %zu size: %zu)\n",
 		       max - size, entry_size);
-		goto err_memunmap;
+		return;
 	}
 
 	/*
@@ -304,7 +308,7 @@ void __init efi_esrt_init(void)
 	if (tmpesrt.fw_resource_count > 128) {
 		pr_err("ESRT says fw_resource_count has very large value %d.\n",
 		       tmpesrt.fw_resource_count);
-		goto err_memunmap;
+		return;
 	}
 
 	/*
@@ -315,18 +319,10 @@ void __init efi_esrt_init(void)
 	if (max < size + entries_size) {
 		pr_err("ESRT does not fit on single memory map entry (size: %zu max: %zu)\n",
 		       size, max);
-		goto err_memunmap;
-	}
-
-	/* remap it with our (plausible) new pages */
-	early_memunmap(va, size);
-	size += entries_size;
-	va = early_memremap(efi.esrt, size);
-	if (!va) {
-		pr_err("early_memremap(%p, %zu) failed.\n", (void *)efi.esrt,
-		       size);
 		return;
 	}
+
+	size += entries_size;
 
 	esrt_data = (phys_addr_t)efi.esrt;
 	esrt_data_size = size;
@@ -337,8 +333,6 @@ void __init efi_esrt_init(void)
 		efi_mem_reserve(esrt_data, esrt_data_size);
 
 	pr_debug("esrt-init: loaded.\n");
-err_memunmap:
-	early_memunmap(va, size);
 }
 
 static int __init register_entries(void)

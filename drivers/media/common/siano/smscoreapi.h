@@ -134,6 +134,7 @@ struct smscore_buffer_t {
 
 struct smsdevice_params_t {
 	struct device	*device;
+	struct usb_device	*usb_device;
 
 	int				buffer_size;
 	int				num_buffers;
@@ -176,6 +177,7 @@ struct smscore_device_t {
 
 	void *context;
 	struct device *device;
+	struct usb_device *usb_device;
 
 	char devpath[32];
 	unsigned long device_flags;
@@ -187,6 +189,8 @@ struct smscore_device_t {
 	postload_t postload_handler;
 
 	int mode, modes_supported;
+
+	gfp_t gfp_buf_flags;
 
 	/* host <--> device messages */
 	struct completion version_ex_done, data_download_done, trigger_done;
@@ -636,9 +640,9 @@ struct sms_msg_data2 {
 	u32 msg_data[2];
 };
 
-struct sms_msg_data4 {
+struct sms_msg_data5 {
 	struct sms_msg_hdr x_msg_header;
-	u32 msg_data[4];
+	u32 msg_data[5];
 };
 
 struct sms_data_download {
@@ -1123,6 +1127,7 @@ extern void smscore_unregister_hotplug(hotplug_t hotplug);
 
 extern int smscore_register_device(struct smsdevice_params_t *params,
 				   struct smscore_device_t **coredev,
+				   gfp_t gfp_buf_flags,
 				   void *mdev);
 extern void smscore_unregister_device(struct smscore_device_t *coredev);
 

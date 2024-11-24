@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/platform_device.h>
 #ifdef CONFIG_MTK_DRAMC
@@ -26,7 +18,9 @@
 #include <mt-plat/mtk_devinfo.h>
 #include <linux/regulator/consumer.h>
 #include "mmdvfs_pmqos.h"
+#ifdef CONFIG_MTK_WATCHDOG
 #include <ext_wd_drv.h>
+#endif
 
 #define DVFSRC_1600_FLOOR
 #define AUTOK_ENABLE
@@ -199,7 +193,11 @@ static u32 dvfsrc_calc_hrt_opp(int data)
 
 int dvfsrc_latch_register(int enable)
 {
+#ifdef CONFIG_MTK_WATCHDOG
 	return mtk_rgu_cfg_dvfsrc(enable);
+#else
+	return 0;
+#endif
 }
 
 void dvfsrc_set_isp_hrt_bw(int data)
@@ -253,7 +251,7 @@ void begin_autok_task(void)
 void finish_autok_task(void)
 {
 	/* check if dvfs force is released */
-	int force = pm_qos_request(PM_QOS_VCORE_DVFS_FORCE_OPP);
+	int force = mtk_pm_qos_request(MTK_PM_QOS_VCORE_DVFS_FORCE_OPP);
 
 	/* notify MM DVFS for msdc autok finish */
 	mmdvfs_prepare_action(MMDVFS_PREPARE_CALIBRATION_END);

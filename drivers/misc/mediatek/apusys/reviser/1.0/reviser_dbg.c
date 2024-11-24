@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/vmalloc.h>
@@ -294,6 +286,11 @@ static ssize_t reviser_dbg_read_mem_tcm(struct file *filp, char *buffer,
 	struct reviser_dev_info *reviser_device = filp->private_data;
 	int res = 0;
 	unsigned char *vbuffer;
+
+	if (VLM_TCM_BANK_MAX == 0) {
+		LOG_DEBUG("No TCM\n");
+		return res;
+	}
 
 	if (!reviser_device->tcm_base) {
 		LOG_ERR("No TCM\n");

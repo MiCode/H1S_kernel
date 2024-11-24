@@ -1,18 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- *  drivers/misc/mediatek/pmic/mt6360/mt6360_pmu_fled.c
- *  Driver for MT6360 PMU Fled part
- *
- *  Copyright (C) 2018 Mediatek Technology Inc.
- *  cy_huang <cy_huang@richtek.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- *  See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/init.h>
@@ -837,7 +825,9 @@ static int mt6360_pmu_fled_remove(struct platform_device *pdev)
 	struct mt6360_pmu_fled_info *mpfi = platform_get_drvdata(pdev);
 	int i;
 
-	dev_dbg(mpfi->dev, "%s\n", __func__);
+	dev_dbg(&pdev->dev, "%s\n", __func__);
+	if (!mpfi)
+		return 0;
 	if (mpfi) {
 		for (i = 0; i < MT6360_FLED_NUM; i++)
 			platform_device_unregister(mpfi->fled_dev[i]);

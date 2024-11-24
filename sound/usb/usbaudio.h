@@ -22,7 +22,7 @@
  */
 
 /* handling of USB vendor/product ID pairs as 32-bit numbers */
-#define USB_ID(vendor, product) (((vendor) << 16) | (product))
+#define USB_ID(vendor, product) (((unsigned int)(vendor) << 16) | (product))
 #define USB_ID_VENDOR(id) ((id) >> 16)
 #define USB_ID_PRODUCT(id) ((u16)(id))
 
@@ -44,10 +44,12 @@ struct snd_usb_audio {
 	wait_queue_head_t shutdown_wait;
 	unsigned int txfr_quirk:1; /* Subframe boundaries on transfers */
 	unsigned int tx_length_quirk:1; /* Put length specifier in transfers */
-
+	unsigned int setup_fmt_after_resume_quirk:1; /* setup the format to interface after resume */
 	int num_interfaces;
 	int num_suspended_intf;
 	int sample_rate_read_error;
+
+	int badd_profile;		/* UAC3 BADD profile */
 
 	struct list_head pcm_list;	/* list of pcm streams */
 	struct list_head ep_list;	/* list of audio-related endpoints */
@@ -59,9 +61,17 @@ struct snd_usb_audio {
 
 	int setup;			/* from the 'device_setup' module param */
 	bool autoclock;			/* from the 'autoclock' module param */
+	bool keep_iface;		/* keep interface/altset after closing
+					 * or parameter change
+					 */
 
 	struct usb_host_interface *ctrl_intf;	/* the audio control interface */
+	struct mutex dev_lock;  /* to protect any race with disconnect */
+	int card_num;	/* cache pcm card number to use upon disconnect */
+	void (*disconnect_cb)(struct snd_usb_audio *chip); /* callback to cleanup on disconnect */
 };
+
+#define USB_AUDIO_IFACE_UNUSED	((void *)-1L)
 
 #define usb_audio_err(chip, fmt, args...) \
 	dev_err(&(chip)->dev->dev, fmt, ##args)
@@ -72,6 +82,12 @@ struct snd_usb_audio {
 #define usb_audio_dbg(chip, fmt, args...) \
 	dev_dbg(&(chip)->dev->dev, fmt, ##args)
 
+#define usb_audio_err_ratelimited(chip, fmt, args...) \
+	dev_info_ratelimited(&(chip)->dev->dev, fmt, ##args)
+#define usb_audio_info_ratelimited(chip, fmt, args...) \
+	dev_info_ratelimited(&(chip)->dev->dev, fmt, ##args)
+#define usb_audio_dbg_ratelimited(chip, fmt, args...) \
+	dev_dbg_ratelimited(&(chip)->dev->dev, fmt, ##args)
 /*
  * Information about devices with broken descriptors
  */
@@ -102,6 +118,7 @@ enum quirk_type {
 	QUIRK_AUDIO_EDIROL_UAXX,
 	QUIRK_AUDIO_ALIGN_TRANSFER,
 	QUIRK_AUDIO_STANDARD_MIXER,
+	QUIRK_SETUP_FMT_AFTER_RESUME,
 
 	QUIRK_TYPE_COUNT
 };
@@ -109,6 +126,7 @@ enum quirk_type {
 struct snd_usb_audio_quirk {
 	const char *vendor_name;
 	const char *product_name;
+	const char *profile_name;	/* override the card->longname */
 	int16_t ifnum;
 	uint16_t type;
 	const void *data;
@@ -120,5 +138,7 @@ struct snd_usb_audio_quirk {
 
 int snd_usb_lock_shutdown(struct snd_usb_audio *chip);
 void snd_usb_unlock_shutdown(struct snd_usb_audio *chip);
+
+extern bool snd_usb_use_vmalloc;
 
 #endif /* __USBAUDIO_H */

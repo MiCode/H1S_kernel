@@ -1,15 +1,7 @@
- /*
-  * Copyright (C) 2018 MediaTek Inc.
-  *
-  * This program is free software: you can redistribute it and/or modify
-  * it under the terms of the GNU General Public License version 2 as
-  * published by the Free Software Foundation.
-  *
-  * This program is distributed in the hope that it will be useful,
-  * but WITHOUT ANY WARRANTY; without even the implied warranty of
-  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-  * GNU General Public License for more details.
-  */
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2020 MediaTek Inc.
+ */
 
 #include <linux/notifier.h>
 
@@ -22,11 +14,9 @@
 #include "tz_m4u.h"
 #include "m4u_sec_gp.h"
 
-unsigned int M4U_SEC_SESSION;
-
 static struct m4u_sec_gp_context m4u_gp_ta_ctx = {
 #if defined(CONFIG_MICROTRUST_TEE_SUPPORT) || \
-	defined(CONFIG_TRUSTONIC_TEE_SUPPORT)
+			defined(CONFIG_TRUSTONIC_TEE_SUPPORT)
 		.uuid = (struct TEEC_UUID)M4U_TA_UUID,
 #else
 		.uuid = (TEEC_UUID)M4U_TA_UUID,
@@ -56,10 +46,11 @@ static int m4u_exec_session(struct m4u_sec_context *ctx)
 	M4ULOG_HIGH("%s, Notify 0x%x\n", __func__, ctx->m4u_msg->cmd);
 
 	memset(&m4u_operation, 0, sizeof(struct TEEC_Operation));
+
 #if defined(CONFIG_MICROTRUST_TEE_SUPPORT) || \
 	defined(CONFIG_TRUSTONIC_TEE_SUPPORT)
-	m4u_operation.paramTypes = TEEC_PARAM_TYPES(
-		TEEC_MEMREF_PARTIAL_INPUT, TEEC_NONE, TEEC_NONE, TEEC_NONE);
+	m4u_operation.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_PARTIAL_INPUT,
+				TEEC_NONE, TEEC_NONE, TEEC_NONE);
 #endif
 
 	m4u_operation.params[0].memref.parent = &gp_ctx->shared_mem;
@@ -113,7 +104,7 @@ static int m4u_sec_gp_init(struct m4u_sec_context *ctx)
 		M4UMSG("m4u msg is invalid\n");
 		return -1;
 	}
-	if (!M4U_SEC_SESSION) {
+	if (!gp_ctx->init) {
 		ret = TEEC_OpenSession(&gp_ctx->ctx,
 			&gp_ctx->session, &gp_ctx->uuid,
 				       TEEC_LOGIN_PUBLIC, NULL, NULL, NULL);
@@ -122,10 +113,8 @@ static int m4u_sec_gp_init(struct m4u_sec_context *ctx)
 			goto exit_release;
 
 		}
-		M4U_SEC_SESSION = 1;
+		gp_ctx->init = 1;
 	}
-
-	gp_ctx->init = 1;
 
 	M4ULOG_HIGH("%s, open TCI session success\n", __func__);
 	return ret;

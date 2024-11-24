@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -75,7 +64,7 @@ static struct snd_dma_buffer *Dl1_Hp_Playback_dma_buf;
 
 static int mtk_soc_hp_impedance_probe(struct platform_device *pdev);
 static int mtk_soc_pcm_hp_impedance_close(struct snd_pcm_substream *substream);
-static int mtk_asoc_dhp_impedance_probe(struct snd_soc_platform *platform);
+static int mtk_asoc_dhp_impedance_component_probe(struct snd_soc_component *component);
 
 static struct snd_pcm_hardware mtk_pcm_hp_impedance_hardware = {
 	.info = (SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
@@ -123,6 +112,9 @@ static int mtk_pcm_hp_impedance_params(struct snd_pcm_substream *substream,
 
 static int mtk_pcm_hp_impedance_hw_free(struct snd_pcm_substream *substream)
 {
+#if defined(AUD_DEBUG_LOG)
+	pr_debug("%s()\n", __func__);
+#endif
 	return 0;
 }
 
@@ -136,7 +128,9 @@ static int mtk_pcm_hp_impedance_open(struct snd_pcm_substream *substream)
 {
 	int ret = 0;
 	struct snd_pcm_runtime *runtime = substream->runtime;
-
+#if defined(AUD_DEBUG_LOG)
+	pr_debug("%s()\n", __func__);
+#endif
 	AudDrv_Clk_On();
 	AudDrv_Emi_Clk_On();
 	pHp_impedance_MemControl =
@@ -150,7 +144,7 @@ static int mtk_pcm_hp_impedance_open(struct snd_pcm_substream *substream)
 		&constraints_hp_sample_rates);
 
 	if (ret < 0) {
-		pr_err("soc_pcm_hp_impedance_close\n");
+		pr_err("mtk_soc_pcm_hp_impedance_close\n");
 		mtk_soc_pcm_hp_impedance_close(substream);
 		return ret;
 	}
@@ -162,7 +156,9 @@ static int mtk_pcm_hp_impedance_prepare(struct snd_pcm_substream *substream)
 {
 	bool mI2SWLen;
 	struct snd_pcm_runtime *runtime = substream->runtime;
-
+#if defined(AUD_DEBUG_LOG)
+	pr_debug("%s(), mPrepareDone = %d\n", __func__, mPrepareDone);
+#endif
 	if (mPrepareDone == false) {
 		if (runtime->format == SNDRV_PCM_FORMAT_S32_LE ||
 		    runtime->format == SNDRV_PCM_FORMAT_U32_LE) {
@@ -232,7 +228,7 @@ static int mtk_pcm_hp_impedance_trigger(struct snd_pcm_substream *substream,
 					int cmd)
 {
 #if defined(AUD_DEBUG_LOG)
-	pr_debug("hp_impedance_trigger cmd = %d\n", cmd);
+	pr_debug("%s(), cmd = %d\n", __func__, cmd);
 #endif
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -242,6 +238,23 @@ static int mtk_pcm_hp_impedance_trigger(struct snd_pcm_substream *substream,
 		break;
 	}
 	return -EINVAL;
+}
+
+static int mtk_pcm_hp_impedance_copy(struct snd_pcm_substream *substream,
+				     int channel,
+				     unsigned long pos,
+				     void __user *buf,
+				     unsigned long bytes)
+{
+	return 0;
+}
+
+static int mtk_pcm_hp_impedance_silence(struct snd_pcm_substream *substream,
+					int channel,
+					unsigned long pos,
+					unsigned long bytes)
+{
+	return 0; /* do nothing */
 }
 
 static void *dummy_page[2];
@@ -262,11 +275,15 @@ static struct snd_pcm_ops mtk_hp_impedance_ops = {
 	.prepare = mtk_pcm_hp_impedance_prepare,
 	.trigger = mtk_pcm_hp_impedance_trigger,
 	.pointer = mtk_pcm_hp_impedance_pointer,
+	.copy_user = mtk_pcm_hp_impedance_copy,
+	.fill_silence = mtk_pcm_hp_impedance_silence,
 	.page = mtk_pcm_hp_impedance_page,
 };
 
-static struct snd_soc_platform_driver mtk_soc_platform = {
-	.ops = &mtk_hp_impedance_ops, .probe = mtk_asoc_dhp_impedance_probe,
+static const struct snd_soc_component_driver mtk_soc_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_hp_impedance_ops,
+	.probe = mtk_asoc_dhp_impedance_component_probe,
 };
 
 static int mtk_soc_hp_impedance_probe(struct platform_device *pdev)
@@ -274,27 +291,32 @@ static int mtk_soc_hp_impedance_probe(struct platform_device *pdev)
 #if defined(AUD_DEBUG_LOG)
 	pr_debug("%s\n", __func__);
 #endif
-	if (pdev->dev.of_node) {
-		dev_set_name(&pdev->dev, "%s", MT_SOC_HP_IMPEDANCE_PCM);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
 
+	if (pdev->dev.of_node)
+		dev_set_name(&pdev->dev, "%s", MT_SOC_HP_IMPEDANCE_PCM);
+	pdev->name = pdev->dev.kobj.name;
 #if defined(AUD_DEBUG_LOG)
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
 #endif
-	return snd_soc_register_platform(&pdev->dev, &mtk_soc_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_soc_component,
+					  NULL,
+					  0);
 }
 
-static int mtk_asoc_dhp_impedance_probe(struct snd_soc_platform *platform)
+static int mtk_asoc_dhp_impedance_component_probe(struct snd_soc_component *component)
 {
 #if defined(AUD_DEBUG_LOG)
-	pr_debug("hp_impedance_probe\n");
+	pr_debug("mtk_asoc_dhp_impedance_probe\n");
 #endif
 	/* allocate dram */
-	AudDrv_Allocate_mem_Buffer(platform->dev, Soc_Aud_Digital_Block_MEM_DL1,
+	AudDrv_Allocate_mem_Buffer(component->dev,
+				   Soc_Aud_Digital_Block_MEM_DL1,
 				   Dl1_MAX_BUFFER_SIZE);
+
 	Dl1_Hp_Playback_dma_buf = Get_Mem_Buffer(Soc_Aud_Digital_Block_MEM_DL1);
 
 	return 0;
@@ -302,7 +324,7 @@ static int mtk_asoc_dhp_impedance_probe(struct snd_soc_platform *platform)
 
 static int mtk_hp_impedance_remove(struct platform_device *pdev)
 {
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -86,7 +75,7 @@ struct mtk_voice_property {
 
 static int mtk_voice_probe(struct platform_device *pdev);
 static int mtk_voice_close(struct snd_pcm_substream *substream);
-static int mtk_voice_platform_probe(struct snd_soc_platform *platform);
+static int mtk_voice_component_probe(struct snd_soc_component *component);
 
 static bool Voice_Status;
 
@@ -352,6 +341,23 @@ static int mtk_voice_trigger(struct snd_pcm_substream *substream, int cmd)
 	return 0;
 }
 
+static int mtk_voice_pcm_copy(struct snd_pcm_substream *substream,
+			      int channel,
+			      unsigned long pos,
+			      void __user *buf,
+			      unsigned long bytes)
+{
+	return 0;
+}
+
+static int mtk_voice_pcm_silence(struct snd_pcm_substream *substream,
+				 int channel,
+				 unsigned long pos,
+				 unsigned long bytes)
+{
+	return 0; /* do nothing */
+}
+
 static void *dummy_page[2];
 static struct page *mtk_pcm_page(struct snd_pcm_substream *substream,
 				 unsigned long offset)
@@ -448,32 +454,40 @@ static struct snd_pcm_ops mtk_voice_ops = {
 	.hw_free = mtk_voice_hw_free,
 	.prepare = mtk_voice1_prepare,
 	.trigger = mtk_voice_trigger,
+	.copy_user = mtk_voice_pcm_copy,
+	.fill_silence = mtk_voice_pcm_silence,
 	.page = mtk_pcm_page,
 };
 
-static struct snd_soc_platform_driver mtk_soc_voice_platform = {
-	.ops = &mtk_voice_ops, .probe = mtk_voice_platform_probe,
+static struct snd_soc_component_driver mtk_soc_voice_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_voice_ops,
+	.probe = mtk_voice_component_probe,
 };
 
 static int mtk_voice_probe(struct platform_device *pdev)
 {
-	if (pdev->dev.of_node) {
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_VOICE_MD1);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_info("%s(), dev name %s\n", __func__, dev_name(&pdev->dev));
-	return snd_soc_register_platform(&pdev->dev,
-					 &mtk_soc_voice_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_soc_voice_component,
+					  NULL,
+					  0);
 }
 
-static int mtk_voice_platform_probe(struct snd_soc_platform *platform)
+static int mtk_voice_component_probe(struct snd_soc_component *component)
 {
 	pr_info("%s()\n", __func__);
 
-	snd_soc_add_platform_controls(platform, mtk_voice_speech_controls,
+	snd_soc_add_component_controls(component, mtk_voice_speech_controls,
 				      ARRAY_SIZE(mtk_voice_speech_controls));
 
 	return 0;
@@ -482,7 +496,7 @@ static int mtk_voice_platform_probe(struct snd_soc_platform *platform)
 static int mtk_voice_remove(struct platform_device *pdev)
 {
 	pr_info("%s()\n", __func__);
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 
@@ -513,8 +527,8 @@ static int mtk_voice_pm_ops_suspend(struct device *device)
 	    b_modem2_speech_on == true ||
 	    voice_property.speech_md_active == true ||
 	    GetOffloadEnableFlag() == true)  /* check dsp mp3 running status*/
-		AudDrv_AUDINTBUS_Sel(0); /* select clk26M power down sysplll
-					  * when suspend
+		AudDrv_AUDINTBUS_Sel(0); /* select clk26M
+					  * power down sysplll when suspend
 					  */
 
 	return 0;

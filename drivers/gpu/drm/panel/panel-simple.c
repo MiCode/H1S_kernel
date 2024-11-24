@@ -254,7 +254,7 @@ static int panel_simple_get_modes(struct drm_panel *panel)
 	/* probe EDID if a DDC bus is available */
 	if (p->ddc) {
 		struct edid *edid = drm_get_edid(panel->connector, p->ddc);
-		drm_mode_connector_update_edid_property(panel->connector, edid);
+		drm_connector_update_edid_property(panel->connector, edid);
 		if (edid) {
 			num += drm_add_edid_modes(panel->connector, edid);
 			kfree(edid);
@@ -407,8 +407,8 @@ static const struct panel_desc ampire_am_480272h3tmqw_t01h = {
 	.num_modes = 1,
 	.bpc = 8,
 	.size = {
-		.width = 105,
-		.height = 67,
+		.width = 99,
+		.height = 58,
 	},
 	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
 };
@@ -1059,16 +1059,46 @@ static const struct panel_desc innolux_at070tn92 = {
 	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
 };
 
+static const struct display_timing innolux_g070y2_l01_timing = {
+	.pixelclock = { 28000000, 29500000, 32000000 },
+	.hactive = { 800, 800, 800 },
+	.hfront_porch = { 61, 91, 141 },
+	.hback_porch = { 60, 90, 140 },
+	.hsync_len = { 12, 12, 12 },
+	.vactive = { 480, 480, 480 },
+	.vfront_porch = { 4, 9, 30 },
+	.vback_porch = { 4, 8, 28 },
+	.vsync_len = { 2, 2, 2 },
+	.flags = DISPLAY_FLAGS_DE_HIGH,
+};
+
+static const struct panel_desc innolux_g070y2_l01 = {
+	.timings = &innolux_g070y2_l01_timing,
+	.num_timings = 1,
+	.bpc = 8,
+	.size = {
+		.width = 152,
+		.height = 91,
+	},
+	.delay = {
+		.prepare = 10,
+		.enable = 100,
+		.disable = 100,
+		.unprepare = 800,
+	},
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X7X4_SPWG,
+};
+
 static const struct display_timing innolux_g101ice_l01_timing = {
 	.pixelclock = { 60400000, 71100000, 74700000 },
 	.hactive = { 1280, 1280, 1280 },
-	.hfront_porch = { 41, 80, 100 },
-	.hback_porch = { 40, 79, 99 },
-	.hsync_len = { 1, 1, 1 },
+	.hfront_porch = { 30, 60, 70 },
+	.hback_porch = { 30, 60, 70 },
+	.hsync_len = { 22, 40, 60 },
 	.vactive = { 800, 800, 800 },
-	.vfront_porch = { 5, 11, 14 },
-	.vback_porch = { 4, 11, 14 },
-	.vsync_len = { 1, 1, 1 },
+	.vfront_porch = { 3, 8, 14 },
+	.vback_porch = { 3, 8, 14 },
+	.vsync_len = { 4, 7, 12 },
 	.flags = DISPLAY_FLAGS_DE_HIGH,
 };
 

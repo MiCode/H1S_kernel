@@ -12,6 +12,9 @@
 #undef CONFIG_PARAVIRT_SPINLOCKS
 #undef CONFIG_KASAN
 
+/* cpu_feature_enabled() cannot be used this early */
+#define USE_EARLY_PGTABLE_L5
+
 #include <linux/linkage.h>
 #include <linux/screen_info.h>
 #include <linux/elf.h>
@@ -107,5 +110,7 @@ static const int early_serial_base;
 static inline void console_init(void)
 { }
 #endif
+
+void set_sev_encryption_mask(void);
 
 #endif

@@ -1,5 +1,5 @@
 config MTK_SYS_CIRQ
-	bool
+	bool "sys cirq"
 	help
 	  System interrupt controller(SYS_CIRQ) is a low-power interrupt
 	  controller which is designed to work outside MCUSYS as second level
@@ -8,7 +8,7 @@ config MTK_SYS_CIRQ
 	  interrupts.
 
 config FAST_CIRQ_CLONE_FLUSH
-	def_bool n
+	bool "fast cirq clone flush"
 	depends on MTK_SYS_CIRQ
 	help
 	  Legacy CIRQ driver clone and flush IRQ pol/sen/pending very slow,

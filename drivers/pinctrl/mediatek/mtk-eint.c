@@ -15,13 +15,11 @@
 #include <linux/io.h>
 #include <linux/irqchip/chained_irq.h>
 #include <linux/irqdomain.h>
+#include <linux/module.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
-#include <linux/syscore_ops.h>
-#include <linux/wakeup_reason.h>
 
 #include "mtk-eint.h"
-#include "pinctrl-mtk-common-v2.h"
 
 #define MTK_EINT_EDGE_SENSITIVE           0
 #define MTK_EINT_LEVEL_SENSITIVE          1
@@ -78,7 +76,7 @@ static unsigned int mtk_eint_can_en_debounce(struct mtk_eint *eint,
 	else
 		sens = MTK_EINT_EDGE_SENSITIVE;
 
-	if (sens != MTK_EINT_EDGE_SENSITIVE)
+	if (eint_num < eint->hw->db_cnt && sens != MTK_EINT_EDGE_SENSITIVE)
 		return 1;
 	else
 		return 0;
@@ -112,10 +110,6 @@ static int mtk_eint_flip_edge(struct mtk_eint *eint, int hwirq)
 static void mtk_eint_mask(struct irq_data *d)
 {
 	struct mtk_eint *eint = irq_data_get_irq_chip_data(d);
-
-	if (!eint)
-		return;
-
 	u32 mask = BIT(d->hwirq & 0x1f);
 	void __iomem *reg = mtk_eint_get_offset(eint, d->hwirq,
 						eint->regs->mask_set);
@@ -148,50 +142,6 @@ static unsigned int mtk_eint_get_mask(struct mtk_eint *eint,
 						eint->regs->mask);
 
 	return !!(readl(reg) & bit);
-}
-
-static void mtk_eint_set_sw_debounce(struct irq_data *d,
-		struct mtk_eint *eint, unsigned int debounce)
-{
-	unsigned int eint_num = d->hwirq;
-
-	eint->eint_sw_debounce_en[eint_num] = 1;
-	eint->eint_sw_debounce[eint_num] = debounce;
-}
-
-static void mtk_eint_sw_debounce_end(unsigned long data)
-{
-	unsigned long flags;
-	struct irq_data *d = (struct irq_data *)data;
-	struct mtk_eint *eint = irq_data_get_irq_chip_data(d);
-	void __iomem *reg = mtk_eint_get_offset(
-				eint, d->hwirq, eint->regs->stat);
-	unsigned int status;
-
-	local_irq_save(flags);
-
-	mtk_eint_unmask(d);
-	status = readl(reg) & (1 << (d->hwirq%32));
-	if (status)
-		generic_handle_irq(d->irq);
-
-	local_irq_restore(flags);
-}
-
-static void mtk_eint_sw_debounce_start(struct mtk_eint *eint,
-		struct irq_data *d, int index)
-{
-	struct timer_list *t = &eint->eint_timers[index];
-	u32 debounce = eint->eint_sw_debounce[index];
-
-	t->expires = jiffies + usecs_to_jiffies(debounce);
-	t->data = (unsigned long)d;
-	t->function = &mtk_eint_sw_debounce_end;
-
-	if (!timer_pending(t)) {
-		init_timer(t);
-		add_timer(t);
-	}
 }
 
 static void mtk_eint_ack(struct irq_data *d)
@@ -276,7 +226,7 @@ static int mtk_eint_irq_request_resources(struct irq_data *d)
 {
 	struct mtk_eint *eint = irq_data_get_irq_chip_data(d);
 	struct gpio_chip *gpio_c;
-	unsigned int gpio_n, real_gpio = 1;
+	unsigned int gpio_n;
 	int err;
 
 	err = eint->gpio_xlate->get_gpio_n(eint->pctl, d->hwirq,
@@ -286,9 +236,6 @@ static int mtk_eint_irq_request_resources(struct irq_data *d)
 		return err;
 	}
 
-	if (err == EINT_NO_GPIO)
-		real_gpio = 0;
-
 	err = gpiochip_lock_as_irq(gpio_c, gpio_n);
 	if (err < 0) {
 		dev_err(eint->dev, "unable to lock HW IRQ %lu for IRQ\n",
@@ -296,12 +243,10 @@ static int mtk_eint_irq_request_resources(struct irq_data *d)
 		return err;
 	}
 
-	if (real_gpio) {
-		err = eint->gpio_xlate->set_gpio_as_eint(eint->pctl, d->hwirq);
-		if (err < 0) {
-			dev_err(eint->dev, "Can not eint mode\n");
-			return err;
-		}
+	err = eint->gpio_xlate->set_gpio_as_eint(eint->pctl, d->hwirq);
+	if (err < 0) {
+		dev_err(eint->dev, "Can not eint mode\n");
+		return err;
 	}
 
 	return 0;
@@ -333,12 +278,15 @@ static struct irq_chip mtk_eint_irq_chip = {
 
 static unsigned int mtk_eint_hw_init(struct mtk_eint *eint)
 {
-	void __iomem *reg = eint->base + eint->regs->dom_en;
+	void __iomem *dom_en = eint->base + eint->regs->dom_en;
+	void __iomem *mask_set = eint->base + eint->regs->mask_set;
 	unsigned int i;
 
 	for (i = 0; i < eint->hw->ap_num; i += 32) {
-		writel(0xffffffff, reg);
-		reg += 4;
+		writel(0xffffffff, dom_en);
+		writel(0xffffffff, mask_set);
+		dom_en += 4;
+		mask_set += 4;
 	}
 
 	return 0;
@@ -407,12 +355,7 @@ static void mtk_eint_irq_handler(struct irq_desc *desc)
 								 index);
 			}
 
-			if (eint->eint_sw_debounce_en[index]) {
-				mtk_eint_mask(irq_get_irq_data(virq));
-				mtk_eint_sw_debounce_start(eint,
-						irq_get_irq_data(virq), index);
-			} else
-				generic_handle_irq(virq);
+			generic_handle_irq(virq);
 
 			if (dual_edge) {
 				curr_level = mtk_eint_flip_edge(eint, index);
@@ -440,6 +383,7 @@ int mtk_eint_do_suspend(struct mtk_eint *eint)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mtk_eint_do_suspend);
 
 int mtk_eint_do_resume(struct mtk_eint *eint)
 {
@@ -447,6 +391,7 @@ int mtk_eint_do_resume(struct mtk_eint *eint)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mtk_eint_do_resume);
 
 int mtk_eint_set_debounce(struct mtk_eint *eint, unsigned long eint_num,
 			  unsigned int debounce)
@@ -454,9 +399,8 @@ int mtk_eint_set_debounce(struct mtk_eint *eint, unsigned long eint_num,
 	int virq, eint_offset;
 	unsigned int set_offset, bit, clr_bit, clr_offset, rst, i, unmask,
 		     dbnc;
-	static const unsigned int debounce_time[] = {
-		156, 313, 625, 1250, 20000, 40000,
-		80000, 160000, 320000, 640000 };
+	static const unsigned int debounce_time[] = {500, 1000, 16000, 32000,
+						     64000, 128000, 256000};
 	struct irq_data *d;
 
 	virq = irq_find_mapping(eint->domain, eint_num);
@@ -484,30 +428,25 @@ int mtk_eint_set_debounce(struct mtk_eint *eint, unsigned long eint_num,
 		unmask = 0;
 	}
 
-	/*
-	 * Check eint number to avoid access out-of-range
-	 */
-	if (eint_num < eint->hw->db_cnt) {
-		clr_bit = 0xff << eint_offset;
-		writel(clr_bit, eint->base + clr_offset);
+	clr_bit = 0xff << eint_offset;
+	writel(clr_bit, eint->base + clr_offset);
 
-		bit = ((dbnc << MTK_EINT_DBNC_SET_DBNC_BITS) |
-			MTK_EINT_DBNC_SET_EN) << eint_offset;
-		rst = MTK_EINT_DBNC_RST_BIT << eint_offset;
-		writel(rst | bit, eint->base + set_offset);
+	bit = ((dbnc << MTK_EINT_DBNC_SET_DBNC_BITS) | MTK_EINT_DBNC_SET_EN) <<
+		eint_offset;
+	rst = MTK_EINT_DBNC_RST_BIT << eint_offset;
+	writel(rst | bit, eint->base + set_offset);
 
 	/*
-		 * Delay should be (8T @ 32k) + de-bounce count-down time
-		 * from dbc rst to work correctly.
+	 * Delay a while (more than 2T) to wait for hw debounce counter reset
+	 * work correctly.
 	 */
-		udelay(debounce_time[dbnc]+250);
-		if (unmask == 1)
-			mtk_eint_unmask(d);
-	} else
-		mtk_eint_set_sw_debounce(d, eint, debounce);
+	udelay(1);
+	if (unmask == 1)
+		mtk_eint_unmask(d);
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mtk_eint_set_debounce);
 
 int mtk_eint_find_irq(struct mtk_eint *eint, unsigned long eint_n)
 {
@@ -519,38 +458,7 @@ int mtk_eint_find_irq(struct mtk_eint *eint, unsigned long eint_n)
 
 	return irq;
 }
-
-static struct mtk_eint *g_eint;
-void mt_eint_show_resume_irq(void)
-{
-	unsigned int status, eint_num;
-	unsigned int offset;
-	const struct mtk_eint_regs *eint_offsets = g_eint->regs;
-	void __iomem *reg_base = mtk_eint_get_offset(g_eint, 0,
-		eint_offsets->stat);
-	unsigned int triggered_eint;
-
-	for (eint_num = 0; eint_num < g_eint->hw->ap_num;
-		reg_base += 4, eint_num += 32) {
-		/* read status register every 32 interrupts */
-		status = readl(reg_base);
-		if (!status)
-			continue;
-
-		while (status) {
-			offset = __ffs(status);
-			triggered_eint = eint_num + offset;
-			pr_info("EINT %d is pending\n", triggered_eint);
-			log_irq_wakeup_reason(irq_find_mapping(g_eint->domain,
-				triggered_eint));
-			status &= ~BIT(offset);
-		}
-	}
-}
-
-static struct syscore_ops mtk_eint_syscore_ops = {
-	.resume = mt_eint_show_resume_irq,
-};
+EXPORT_SYMBOL_GPL(mtk_eint_find_irq);
 
 int mtk_eint_do_init(struct mtk_eint *eint)
 {
@@ -568,21 +476,6 @@ int mtk_eint_do_init(struct mtk_eint *eint)
 	eint->cur_mask = devm_kcalloc(eint->dev, eint->hw->ports,
 				      sizeof(*eint->cur_mask), GFP_KERNEL);
 	if (!eint->cur_mask)
-		return -ENOMEM;
-
-	eint->eint_timers = devm_kcalloc(eint->dev, eint->hw->ap_num,
-					sizeof(struct timer_list), GFP_KERNEL);
-	if (!eint->eint_timers)
-		return -ENOMEM;
-
-	eint->eint_sw_debounce_en = devm_kcalloc(eint->dev, eint->hw->ap_num,
-					sizeof(int), GFP_KERNEL);
-	if (!eint->eint_sw_debounce_en)
-		return -ENOMEM;
-
-	eint->eint_sw_debounce = devm_kcalloc(eint->dev, eint->hw->ap_num,
-					sizeof(u32), GFP_KERNEL);
-	if (!eint->eint_sw_debounce)
 		return -ENOMEM;
 
 	eint->dual_edge = devm_kcalloc(eint->dev, eint->hw->ap_num,
@@ -608,9 +501,9 @@ int mtk_eint_do_init(struct mtk_eint *eint)
 	irq_set_chained_handler_and_data(eint->irq, mtk_eint_irq_handler,
 					 eint);
 
-	g_eint = eint;
-
-	register_syscore_ops(&mtk_eint_syscore_ops);
-
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mtk_eint_do_init);
+
+MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("MediaTek EINT Driver");

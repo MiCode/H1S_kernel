@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2021 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -37,7 +29,7 @@
 #endif
 
 #if (CONFIG_MTK_GAUGE_VERSION == 30)
-#include <mt-plat/mtk_battery.h>
+#include <mt-plat/v1/mtk_battery.h>
 #include <mtk_battery_internal.h>
 #endif
 
@@ -253,7 +245,7 @@ static void wk_auxadc_dbg_init(void)
  *********************************/
 /* global variable */
 static unsigned int mdrt_adc;
-static struct wakeup_source mdrt_wakelock;
+static struct wakeup_source *mdrt_wakelock;
 static struct mutex mdrt_mutex;
 static struct task_struct *mdrt_thread_handle;
 
@@ -262,7 +254,7 @@ void wake_up_mdrt_thread(void)
 {
 	HKLOG("[%s]\n", __func__);
 	if (mdrt_thread_handle != NULL) {
-		__pm_stay_awake(&mdrt_wakelock);
+		__pm_stay_awake(mdrt_wakelock);
 		wake_up_process(mdrt_thread_handle);
 	} else
 		pr_notice(PMICTAG "[%s] mdrt_thread_handle not ready\n",
@@ -405,7 +397,7 @@ static int mdrt_kthread(void *x)
 			polling_cnt++;
 		}
 		mutex_unlock(&mdrt_mutex);
-		__pm_relax(&mdrt_wakelock);
+		__pm_relax(mdrt_wakelock);
 
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule();
@@ -418,7 +410,9 @@ static int mdrt_kthread(void *x)
 
 static void mdrt_monitor_init(void)
 {
-	wakeup_source_init(&mdrt_wakelock, "MDRT Monitor wakelock");
+// workaround for mt6739
+	//wakeup_source_init(&mdrt_wakelock, "MDRT Monitor wakelock");
+	mdrt_wakelock = wakeup_source_register(NULL, "MDRT Monitor wakelock");
 	mutex_init(&mdrt_mutex);
 	mdrt_adc = pmic_get_register_value(PMIC_AUXADC_ADC_OUT_MDRT);
 	mdrt_thread_handle = kthread_create(mdrt_kthread, NULL, "mdrt_thread");

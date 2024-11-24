@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /*******************Modify Following Strings for Debug************************/
@@ -214,7 +206,7 @@ static struct imgsensor_struct imgsensor = {
 	/* test pattern mode or not. KAL_FALSE for in test pattern mode,
 	 * KAL_TRUE for normal output
 	 */
-	.test_pattern = KAL_FALSE,
+	.test_pattern = 0,
 
 	/* current scenario id */
 	.current_scenario_id = MSDK_SCENARIO_ID_CAMERA_PREVIEW,
@@ -702,7 +694,7 @@ static void set_shutter(kal_uint32 shutter)
 		 */
 
 		write_cmos_sensor(0x3028,
-		    read_cmos_sensor(0x3028) | (l_shift & 0x7));
+		    (read_cmos_sensor(0x3028) & 0xf8) | (l_shift & 0x7));
 
 		/* pr_debug("0x3028 0x%x\n", read_cmos_sensor(0x3028)); */
 
@@ -2963,17 +2955,35 @@ static void slim_video_setting(void)
 		sizeof(addr_data_pair_slim_video_imx230)/sizeof(kal_uint16));
 }
 
-static kal_uint32 set_test_pattern_mode(kal_bool enable)
+static kal_uint32 set_test_pattern_mode(kal_uint32 modes,
+	struct SET_SENSOR_PATTERN_SOLID_COLOR *pdata)
 {
-	pr_info("enable: %d\n", enable);
+	kal_uint16 Color_R, Color_Gr, Color_Gb, Color_B;
 
-	if (enable)
-		write_cmos_sensor(0x0601, 0x02);
-	else
-		write_cmos_sensor(0x0601, 0x00);
+	pr_info("modes: %d\n", modes);
+	if (modes) {
+		write_cmos_sensor(0x0601, modes);
+		if (modes == 1 && (pdata != NULL)) { //Solid Color
+			pr_info("R=0x%x,Gr=0x%x,B=0x%x,Gb=0x%x",
+				pdata->COLOR_R, pdata->COLOR_Gr, pdata->COLOR_B, pdata->COLOR_Gb);
+			Color_R = (pdata->COLOR_R >> 22) & 0x3FF; //10bits depth color
+			Color_Gr = (pdata->COLOR_Gr >> 22) & 0x3FF;
+			Color_B = (pdata->COLOR_B >> 22) & 0x3FF;
+			Color_Gb = (pdata->COLOR_Gb >> 22) & 0x3FF;
+			write_cmos_sensor(0x0602, (Color_R >> 8) & 0x3);
+			write_cmos_sensor(0x0603, Color_R & 0xFF);
+			write_cmos_sensor(0x0604, (Color_Gr >> 8) & 0x3);
+			write_cmos_sensor(0x0605, Color_Gr & 0xFF);
+			write_cmos_sensor(0x0606, (Color_B >> 8) & 0x3);
+			write_cmos_sensor(0x0607, Color_B & 0xFF);
+			write_cmos_sensor(0x0608, (Color_Gb >> 8) & 0x3);
+			write_cmos_sensor(0x0609, Color_Gb & 0xFF);
+		}
+	} else
+		write_cmos_sensor(0x0601, 0x00); /*No pattern*/
 
 	spin_lock(&imgsensor_drv_lock);
-	imgsensor.test_pattern = enable;
+	imgsensor.test_pattern = modes;
 	spin_unlock(&imgsensor_drv_lock);
 	return ERROR_NONE;
 }
@@ -3097,7 +3107,7 @@ static kal_uint32 open(void)
 	imgsensor.dummy_pixel = 0;
 	imgsensor.dummy_line = 0;
 	imgsensor.ihdr_mode = 0;
-	imgsensor.test_pattern = KAL_FALSE;
+	imgsensor.test_pattern = 0;
 	imgsensor.current_fps = imgsensor_info.pre.max_framerate;
 	spin_unlock(&imgsensor_drv_lock);
 
@@ -3863,7 +3873,8 @@ static kal_uint32 feature_control(MSDK_SENSOR_FEATURE_ENUM feature_id,
 				(kal_uint32) (*(feature_data + 2)));
 		break;
 	case SENSOR_FEATURE_SET_TEST_PATTERN:
-		set_test_pattern_mode((BOOL) (*feature_data));
+		set_test_pattern_mode((UINT32)*feature_data,
+		(struct SET_SENSOR_PATTERN_SOLID_COLOR *)(uintptr_t)(*(feature_data + 1)));
 		break;
 
 	/* for factory mode auto testing */

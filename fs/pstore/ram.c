@@ -38,12 +38,6 @@
 
 #define RAMOOPS_KERNMSG_HDR "===="
 #define MIN_MEM_SIZE 4096UL
-#ifdef __aarch64__
-#ifdef memcpy
-#undef memcpy
-#endif
-#define memcpy memcpy_toio
-#endif
 
 static ulong record_size = MIN_MEM_SIZE;
 module_param(record_size, ulong, 0400);
@@ -62,8 +56,8 @@ static ulong ramoops_pmsg_size = MIN_MEM_SIZE;
 module_param_named(pmsg_size, ramoops_pmsg_size, ulong, 0400);
 MODULE_PARM_DESC(pmsg_size, "size of user space message log");
 
-static ulong mem_address;
-module_param_hw(mem_address, ulong, other, 0400);
+static unsigned long long mem_address;
+module_param_hw(mem_address, ullong, other, 0400);
 MODULE_PARM_DESC(mem_address,
 		"start of reserved RAM used to store oops/panic logs");
 
@@ -71,15 +65,6 @@ static ulong mem_size;
 module_param(mem_size, ulong, 0400);
 MODULE_PARM_DESC(mem_size,
 		"size of reserved RAM used to store oops/panic logs");
-
-void pstore_set_addr_size(unsigned int addr, unsigned int size,
-		unsigned int console_size, unsigned int pmsg_size)
-{
-	mem_address = addr;
-	mem_size = size;
-	ramoops_console_size = console_size;
-	ramoops_pmsg_size = pmsg_size;
-}
 
 static unsigned int mem_type;
 module_param(mem_type, uint, 0600);
@@ -103,7 +88,6 @@ struct ramoops_context {
 	struct persistent_ram_zone *cprz;	/* Console zone */
 	struct persistent_ram_zone **fprzs;	/* Ftrace zones */
 	struct persistent_ram_zone *mprz;	/* PMSG zone */
-	struct persistent_ram_zone *bprz;	/* AEE lockless console zone */
 	phys_addr_t phys_addr;
 	unsigned long size;
 	unsigned int memtype;
@@ -122,7 +106,6 @@ struct ramoops_context {
 	unsigned int max_ftrace_cnt;
 	unsigned int ftrace_read_cnt;
 	unsigned int pmsg_read_cnt;
-	unsigned int bconsole_read_cnt;
 	struct pstore_info pstore;
 };
 
@@ -137,7 +120,6 @@ static int ramoops_pstore_open(struct pstore_info *psi)
 	cxt->console_read_cnt = 0;
 	cxt->ftrace_read_cnt = 0;
 	cxt->pmsg_read_cnt = 0;
-	cxt->bconsole_read_cnt = 0;
 	return 0;
 }
 
@@ -171,21 +153,25 @@ ramoops_get_next_prz(struct persistent_ram_zone *przs[], uint *c, uint max,
 	return prz;
 }
 
-static int ramoops_read_kmsg_hdr(char *buffer, struct timespec *time,
+static int ramoops_read_kmsg_hdr(char *buffer, struct timespec64 *time,
 				  bool *compressed)
 {
 	char data_type;
 	int header_length = 0;
 
-	if (sscanf(buffer, RAMOOPS_KERNMSG_HDR "%lu.%lu-%c\n%n", &time->tv_sec,
-			&time->tv_nsec, &data_type, &header_length) == 3) {
+	if (sscanf(buffer, RAMOOPS_KERNMSG_HDR "%lld.%lu-%c\n%n",
+		   (time64_t *)&time->tv_sec, &time->tv_nsec, &data_type,
+		   &header_length) == 3) {
+		time->tv_nsec *= 1000;
 		if (data_type == 'C')
 			*compressed = true;
 		else
 			*compressed = false;
-	} else if (sscanf(buffer, RAMOOPS_KERNMSG_HDR "%lu.%lu\n%n",
-			&time->tv_sec, &time->tv_nsec, &header_length) == 2) {
-			*compressed = false;
+	} else if (sscanf(buffer, RAMOOPS_KERNMSG_HDR "%lld.%lu\n%n",
+			  (time64_t *)&time->tv_sec, &time->tv_nsec,
+			  &header_length) == 2) {
+		time->tv_nsec *= 1000;
+		*compressed = false;
 	} else {
 		time->tv_sec = 0;
 		time->tv_nsec = 0;
@@ -293,12 +279,6 @@ static ssize_t ramoops_pstore_read(struct pstore_record *record)
 					   1, &record->id, &record->type,
 					   PSTORE_TYPE_CONSOLE, 0);
 
-	if (!prz_ok(prz)) {
-		prz = ramoops_get_next_prz(&cxt->bprz, &cxt->bconsole_read_cnt,
-					   1, &record->id, &record->type,
-					   PSTORE_TYPE_CONSOLE, 0);
-		record->id = 2;
-	}
 	if (!prz_ok(prz))
 		prz = ramoops_get_next_prz(&cxt->mprz, &cxt->pmsg_read_cnt,
 					   1, &record->id, &record->type,
@@ -384,8 +364,8 @@ static size_t ramoops_write_kmsg_hdr(struct persistent_ram_zone *prz,
 	char *hdr;
 	size_t len;
 
-	hdr = kasprintf(GFP_ATOMIC, RAMOOPS_KERNMSG_HDR "%lu.%lu-%c\n",
-		record->time.tv_sec,
+	hdr = kasprintf(GFP_ATOMIC, RAMOOPS_KERNMSG_HDR "%lld.%06lu-%c\n",
+		(time64_t)record->time.tv_sec,
 		record->time.tv_nsec / 1000,
 		record->compressed ? 'C' : 'D');
 	WARN_ON_ONCE(!hdr);
@@ -403,17 +383,9 @@ static int notrace ramoops_pstore_write(struct pstore_record *record)
 	size_t size, hlen;
 
 	if (record->type == PSTORE_TYPE_CONSOLE) {
-		if (record->reason == 0) {
-			if (!cxt->cprz)
-				return -ENOMEM;
-			persistent_ram_write(cxt->cprz, record->buf,
-					record->size);
-		} else {
-			if (!cxt->bprz)
-				return -ENOMEM;
-			persistent_ram_write(cxt->bprz, record->buf,
-					record->size);
-		}
+		if (!cxt->cprz)
+			return -ENOMEM;
+		persistent_ram_write(cxt->cprz, record->buf, record->size);
 		return 0;
 	} else if (record->type == PSTORE_TYPE_FTRACE) {
 		int zonenum;
@@ -618,6 +590,7 @@ static int ramoops_init_przs(const char *name,
 	}
 
 	zone_sz = mem_sz / *cnt;
+	zone_sz = ALIGN_DOWN(zone_sz, 2);
 	if (!zone_sz) {
 		dev_err(dev, "%s zone size == 0\n", name);
 		goto fail;
@@ -750,12 +723,6 @@ static int ramoops_parse_dt(struct platform_device *pdev,
 	return 0;
 }
 
-void notrace ramoops_console_write_buf(const char *buf, size_t size)
-{
-	struct ramoops_context *cxt = &oops_cxt;
-	persistent_ram_write(cxt->cprz, buf, size);
-}
-
 static int ramoops_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -787,6 +754,7 @@ static int ramoops_probe(struct platform_device *pdev)
 	/* Make sure we didn't get bogus platform data pointer. */
 	if (!pdata) {
 		pr_err("NULL platform data\n");
+		err = -EINVAL;
 		goto fail_out;
 	}
 
@@ -794,6 +762,7 @@ static int ramoops_probe(struct platform_device *pdev)
 			!pdata->ftrace_size && !pdata->pmsg_size)) {
 		pr_err("The memory size and the record/console size must be "
 			"non-zero\n");
+		err = -EINVAL;
 		goto fail_out;
 	}
 
@@ -817,12 +786,9 @@ static int ramoops_probe(struct platform_device *pdev)
 	cxt->flags = pdata->flags;
 	cxt->ecc_info = pdata->ecc_info;
 
-	pr_notice("pstore:address is 0x%lx, size is 0x%lx, console_size is 0x%zx, pmsg_size is 0x%zx\n",
-			(unsigned long)cxt->phys_addr, cxt->size,
-			cxt->console_size, cxt->pmsg_size);
 	paddr = cxt->phys_addr;
 
-	dump_mem_sz = cxt->size - cxt->console_size * 2 - cxt->ftrace_size
+	dump_mem_sz = cxt->size - cxt->console_size - cxt->ftrace_size
 			- cxt->pmsg_size;
 	err = ramoops_init_przs("dump", dev, cxt, &cxt->dprzs, &paddr,
 				dump_mem_sz, cxt->record_size,
@@ -834,11 +800,6 @@ static int ramoops_probe(struct platform_device *pdev)
 			       cxt->console_size, 0);
 	if (err)
 		goto fail_init_cprz;
-
-	err = ramoops_init_prz("bconsole", dev, cxt, &cxt->bprz, &paddr,
-				cxt->console_size, 0);
-	if (err)
-		goto fail_init_bprz;
 
 	cxt->max_ftrace_cnt = (cxt->flags & RAMOOPS_FLAG_FTRACE_PER_CPU)
 				? nr_cpu_ids
@@ -919,8 +880,6 @@ fail_clear:
 	persistent_ram_free(cxt->mprz);
 fail_init_mprz:
 fail_init_fprz:
-	persistent_ram_free(cxt->bprz);
-fail_init_bprz:
 	persistent_ram_free(cxt->cprz);
 fail_init_cprz:
 	ramoops_free_przs(cxt);
@@ -958,8 +917,22 @@ static struct platform_driver ramoops_driver = {
 	},
 };
 
-static void ramoops_register_dummy(void)
+static inline void ramoops_unregister_dummy(void)
 {
+	platform_device_unregister(dummy);
+	dummy = NULL;
+
+	kfree(dummy_data);
+	dummy_data = NULL;
+}
+
+static void __init ramoops_register_dummy(void)
+{
+	/*
+	 * Prepare a dummy platform data structure to carry the module
+	 * parameters. If mem_size isn't set, then there are no module
+	 * parameters, and we can skip this.
+	 */
 	if (!mem_size)
 		return;
 
@@ -992,21 +965,28 @@ static void ramoops_register_dummy(void)
 	if (IS_ERR(dummy)) {
 		pr_info("could not create platform device: %ld\n",
 			PTR_ERR(dummy));
+		dummy = NULL;
+		ramoops_unregister_dummy();
 	}
 }
 
 static int __init ramoops_init(void)
 {
+	int ret;
+
 	ramoops_register_dummy();
-	return platform_driver_register(&ramoops_driver);
+	ret = platform_driver_register(&ramoops_driver);
+	if (ret != 0)
+		ramoops_unregister_dummy();
+
+	return ret;
 }
 postcore_initcall(ramoops_init);
 
 static void __exit ramoops_exit(void)
 {
 	platform_driver_unregister(&ramoops_driver);
-	platform_device_unregister(dummy);
-	kfree(dummy_data);
+	ramoops_unregister_dummy();
 }
 module_exit(ramoops_exit);
 

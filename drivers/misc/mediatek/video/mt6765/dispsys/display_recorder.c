@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/delay.h>
@@ -20,7 +12,6 @@
 #include <linux/mutex.h>
 #include <linux/string.h>
 #include <linux/printk.h>
-#include <linux/sched/clock.h>
 #include <stdarg.h>
 #include <linux/slab.h>
 #include "ddp_mmp.h"
@@ -894,6 +885,7 @@ int dprec_logger_get_result_string_all(char *stringbuf, int strlen)
 
 	return n;
 }
+
 
 int dprec_logger_get_result_value(enum DPREC_LOGGER_ENUM source,
 	struct fpsEx *fps)

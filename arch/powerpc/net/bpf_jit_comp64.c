@@ -13,11 +13,13 @@
  */
 #include <linux/moduleloader.h>
 #include <asm/cacheflush.h>
+#include <asm/asm-compat.h>
 #include <linux/netdevice.h>
 #include <linux/filter.h>
 #include <linux/if_vlan.h>
 #include <asm/kprobes.h>
 #include <linux/bpf.h>
+#include <asm/security_features.h>
 
 #include "bpf_jit64.h"
 
@@ -59,47 +61,33 @@ static inline bool bpf_has_stack_frame(struct codegen_context *ctx)
  *		[	prev sp		] <-------------
  *		[	  ...       	] 		|
  * sp (r1) --->	[    stack pointer	] --------------
- *		[   nv gpr save area	] 8*8
+ *		[   nv gpr save area	] 5*8
  *		[    tail_call_cnt	] 8
- *		[    local_tmp_var	] 8
+ *		[    local_tmp_var	] 16
  *		[   unused red zone	] 208 bytes protected
  */
 static int bpf_jit_stack_local(struct codegen_context *ctx)
 {
 	if (bpf_has_stack_frame(ctx))
-		return STACK_FRAME_MIN_SIZE + MAX_BPF_STACK;
+		return STACK_FRAME_MIN_SIZE + ctx->stack_size;
 	else
-		return -(BPF_PPC_STACK_SAVE + 16);
+		return -(BPF_PPC_STACK_SAVE + 24);
 }
 
 static int bpf_jit_stack_tailcallcnt(struct codegen_context *ctx)
 {
-	return bpf_jit_stack_local(ctx) + 8;
+	return bpf_jit_stack_local(ctx) + 16;
 }
 
 static int bpf_jit_stack_offsetof(struct codegen_context *ctx, int reg)
 {
 	if (reg >= BPF_PPC_NVR_MIN && reg < 32)
-		return (bpf_has_stack_frame(ctx) ? BPF_PPC_STACKFRAME : 0)
-							- (8 * (32 - reg));
+		return (bpf_has_stack_frame(ctx) ?
+			(BPF_PPC_STACKFRAME + ctx->stack_size) : 0)
+				- (8 * (32 - reg));
 
 	pr_err("BPF JIT is asking about unknown registers");
 	BUG();
-}
-
-static void bpf_jit_emit_skb_loads(u32 *image, struct codegen_context *ctx)
-{
-	/*
-	 * Load skb->len and skb->data_len
-	 * r3 points to skb
-	 */
-	PPC_LWZ(b2p[SKB_HLEN_REG], 3, offsetof(struct sk_buff, len));
-	PPC_LWZ(b2p[TMP_REG_1], 3, offsetof(struct sk_buff, data_len));
-	/* header_len = len - data_len */
-	PPC_SUB(b2p[SKB_HLEN_REG], b2p[SKB_HLEN_REG], b2p[TMP_REG_1]);
-
-	/* skb->data pointer */
-	PPC_BPF_LL(b2p[SKB_DATA_REG], 3, offsetof(struct sk_buff, data));
 }
 
 static void bpf_jit_build_prologue(u32 *image, struct codegen_context *ctx)
@@ -132,7 +120,7 @@ static void bpf_jit_build_prologue(u32 *image, struct codegen_context *ctx)
 			PPC_BPF_STL(0, 1, PPC_LR_STKOFF);
 		}
 
-		PPC_BPF_STLU(1, 1, -BPF_PPC_STACKFRAME);
+		PPC_BPF_STLU(1, 1, -(BPF_PPC_STACKFRAME + ctx->stack_size));
 	}
 
 	/*
@@ -144,22 +132,10 @@ static void bpf_jit_build_prologue(u32 *image, struct codegen_context *ctx)
 		if (bpf_is_seen_register(ctx, i))
 			PPC_BPF_STL(b2p[i], 1, bpf_jit_stack_offsetof(ctx, b2p[i]));
 
-	/*
-	 * Save additional non-volatile regs if we cache skb
-	 * Also, setup skb data
-	 */
-	if (ctx->seen & SEEN_SKB) {
-		PPC_BPF_STL(b2p[SKB_HLEN_REG], 1,
-				bpf_jit_stack_offsetof(ctx, b2p[SKB_HLEN_REG]));
-		PPC_BPF_STL(b2p[SKB_DATA_REG], 1,
-				bpf_jit_stack_offsetof(ctx, b2p[SKB_DATA_REG]));
-		bpf_jit_emit_skb_loads(image, ctx);
-	}
-
 	/* Setup frame pointer to point to the bpf stack area */
 	if (bpf_is_seen_register(ctx, BPF_REG_FP))
 		PPC_ADDI(b2p[BPF_REG_FP], 1,
-				STACK_FRAME_MIN_SIZE + MAX_BPF_STACK);
+				STACK_FRAME_MIN_SIZE + ctx->stack_size);
 }
 
 static void bpf_jit_emit_common_epilogue(u32 *image, struct codegen_context *ctx)
@@ -171,17 +147,9 @@ static void bpf_jit_emit_common_epilogue(u32 *image, struct codegen_context *ctx
 		if (bpf_is_seen_register(ctx, i))
 			PPC_BPF_LL(b2p[i], 1, bpf_jit_stack_offsetof(ctx, b2p[i]));
 
-	/* Restore non-volatile registers used for skb cache */
-	if (ctx->seen & SEEN_SKB) {
-		PPC_BPF_LL(b2p[SKB_HLEN_REG], 1,
-				bpf_jit_stack_offsetof(ctx, b2p[SKB_HLEN_REG]));
-		PPC_BPF_LL(b2p[SKB_DATA_REG], 1,
-				bpf_jit_stack_offsetof(ctx, b2p[SKB_DATA_REG]));
-	}
-
 	/* Tear down our stack frame */
 	if (bpf_has_stack_frame(ctx)) {
-		PPC_ADDI(1, 1, BPF_PPC_STACKFRAME);
+		PPC_ADDI(1, 1, BPF_PPC_STACKFRAME + ctx->stack_size);
 		if (ctx->seen & SEEN_FUNC) {
 			PPC_BPF_LL(0, 1, PPC_LR_STKOFF);
 			PPC_MTLR(0);
@@ -235,7 +203,7 @@ static void bpf_jit_emit_func_call(u32 *image, struct codegen_context *ctx, u64 
 	PPC_BLRL();
 }
 
-static void bpf_jit_emit_tail_call(u32 *image, struct codegen_context *ctx, u32 out)
+static int bpf_jit_emit_tail_call(u32 *image, struct codegen_context *ctx, u32 out)
 {
 	/*
 	 * By now, the eBPF program has already setup parameters in r3, r4 and r5
@@ -296,17 +264,42 @@ static void bpf_jit_emit_tail_call(u32 *image, struct codegen_context *ctx, u32 
 	bpf_jit_emit_common_epilogue(image, ctx);
 
 	PPC_BCTR();
+
 	/* out: */
+	return 0;
 }
+
+/*
+ * We spill into the redzone always, even if the bpf program has its own stackframe.
+ * Offsets hardcoded based on BPF_PPC_STACK_SAVE -- see bpf_jit_stack_local()
+ */
+void bpf_stf_barrier(void);
+
+asm (
+"		.global bpf_stf_barrier		;"
+"	bpf_stf_barrier:			;"
+"		std	21,-64(1)		;"
+"		std	22,-56(1)		;"
+"		sync				;"
+"		ld	21,-64(1)		;"
+"		ld	22,-56(1)		;"
+"		ori	31,31,0			;"
+"		.rept 14			;"
+"		b	1f			;"
+"	1:					;"
+"		.endr				;"
+"		blr				;"
+);
 
 /* Assemble the body code between the prologue & epilogue */
 static int bpf_jit_build_body(struct bpf_prog *fp, u32 *image,
 			      struct codegen_context *ctx,
-			      u32 *addrs)
+			      u32 *addrs, bool extra_pass)
 {
+	enum stf_barrier_type stf_barrier = stf_barrier_type_get();
 	const struct bpf_insn *insn = fp->insnsi;
 	int flen = fp->len;
-	int i;
+	int i, ret;
 
 	/* Start of epilogue code - will only be valid 2nd pass onwards */
 	u32 exit_addr = addrs[flen];
@@ -357,18 +350,25 @@ static int bpf_jit_build_body(struct bpf_prog *fp, u32 *image,
 			PPC_SUB(dst_reg, dst_reg, src_reg);
 			goto bpf_alu32_trunc;
 		case BPF_ALU | BPF_ADD | BPF_K: /* (u32) dst += (u32) imm */
-		case BPF_ALU | BPF_SUB | BPF_K: /* (u32) dst -= (u32) imm */
 		case BPF_ALU64 | BPF_ADD | BPF_K: /* dst += imm */
+			if (!imm) {
+				goto bpf_alu32_trunc;
+			} else if (imm >= -32768 && imm < 32768) {
+				PPC_ADDI(dst_reg, dst_reg, IMM_L(imm));
+			} else {
+				PPC_LI32(b2p[TMP_REG_1], imm);
+				PPC_ADD(dst_reg, dst_reg, b2p[TMP_REG_1]);
+			}
+			goto bpf_alu32_trunc;
+		case BPF_ALU | BPF_SUB | BPF_K: /* (u32) dst -= (u32) imm */
 		case BPF_ALU64 | BPF_SUB | BPF_K: /* dst -= imm */
-			if (BPF_OP(code) == BPF_SUB)
-				imm = -imm;
-			if (imm) {
-				if (imm >= -32768 && imm < 32768)
-					PPC_ADDI(dst_reg, dst_reg, IMM_L(imm));
-				else {
-					PPC_LI32(b2p[TMP_REG_1], imm);
-					PPC_ADD(dst_reg, dst_reg, b2p[TMP_REG_1]);
-				}
+			if (!imm) {
+				goto bpf_alu32_trunc;
+			} else if (imm > -32768 && imm <= 32768) {
+				PPC_ADDI(dst_reg, dst_reg, IMM_L(-imm));
+			} else {
+				PPC_LI32(b2p[TMP_REG_1], imm);
+				PPC_SUB(dst_reg, dst_reg, b2p[TMP_REG_1]);
 			}
 			goto bpf_alu32_trunc;
 		case BPF_ALU | BPF_MUL | BPF_X: /* (u32) dst *= (u32) src */
@@ -394,10 +394,6 @@ static int bpf_jit_build_body(struct bpf_prog *fp, u32 *image,
 			goto bpf_alu32_trunc;
 		case BPF_ALU | BPF_DIV | BPF_X: /* (u32) dst /= (u32) src */
 		case BPF_ALU | BPF_MOD | BPF_X: /* (u32) dst %= (u32) src */
-			PPC_CMPWI(src_reg, 0);
-			PPC_BCC_SHORT(COND_NE, (ctx->idx * 4) + 12);
-			PPC_LI(b2p[BPF_REG_0], 0);
-			PPC_JMP(exit_addr);
 			if (BPF_OP(code) == BPF_MOD) {
 				PPC_DIVWU(b2p[TMP_REG_1], dst_reg, src_reg);
 				PPC_MULW(b2p[TMP_REG_1], src_reg,
@@ -408,10 +404,6 @@ static int bpf_jit_build_body(struct bpf_prog *fp, u32 *image,
 			goto bpf_alu32_trunc;
 		case BPF_ALU64 | BPF_DIV | BPF_X: /* dst /= src */
 		case BPF_ALU64 | BPF_MOD | BPF_X: /* dst %= src */
-			PPC_CMPDI(src_reg, 0);
-			PPC_BCC_SHORT(COND_NE, (ctx->idx * 4) + 12);
-			PPC_LI(b2p[BPF_REG_0], 0);
-			PPC_JMP(exit_addr);
 			if (BPF_OP(code) == BPF_MOD) {
 				PPC_DIVDU(b2p[TMP_REG_1], dst_reg, src_reg);
 				PPC_MULD(b2p[TMP_REG_1], src_reg,
@@ -426,8 +418,14 @@ static int bpf_jit_build_body(struct bpf_prog *fp, u32 *image,
 		case BPF_ALU64 | BPF_DIV | BPF_K: /* dst /= imm */
 			if (imm == 0)
 				return -EINVAL;
-			else if (imm == 1)
-				goto bpf_alu32_trunc;
+			if (imm == 1) {
+				if (BPF_OP(code) == BPF_DIV) {
+					goto bpf_alu32_trunc;
+				} else {
+					PPC_LI(dst_reg, 0);
+					break;
+				}
+			}
 
 			PPC_LI32(b2p[TMP_REG_1], imm);
 			switch (BPF_CLASS(code)) {
@@ -638,6 +636,36 @@ emit_clear:
 			break;
 
 		/*
+		 * BPF_ST NOSPEC (speculation barrier)
+		 */
+		case BPF_ST | BPF_NOSPEC:
+			if (!security_ftr_enabled(SEC_FTR_FAVOUR_SECURITY) ||
+					(!security_ftr_enabled(SEC_FTR_L1D_FLUSH_PR) &&
+					(!security_ftr_enabled(SEC_FTR_L1D_FLUSH_HV) || !cpu_has_feature(CPU_FTR_HVMODE))))
+				break;
+
+			switch (stf_barrier) {
+			case STF_BARRIER_EIEIO:
+				EMIT(0x7c0006ac | 0x02000000);
+				break;
+			case STF_BARRIER_SYNC_ORI:
+				EMIT(PPC_INST_SYNC);
+				PPC_LD(b2p[TMP_REG_1], 13, 0);
+				PPC_ORI(31, 31, 0);
+				break;
+			case STF_BARRIER_FALLBACK:
+				EMIT(PPC_INST_MFLR | ___PPC_RT(b2p[TMP_REG_1]));
+				PPC_LI64(12, dereference_kernel_function_descriptor(bpf_stf_barrier));
+				PPC_MTCTR(12);
+				EMIT(PPC_INST_BCTR | 0x1);
+				PPC_MTLR(b2p[TMP_REG_1]);
+				break;
+			case STF_BARRIER_NONE:
+				break;
+			}
+			break;
+
+		/*
 		 * BPF_ST(X)
 		 */
 		case BPF_STX | BPF_MEM | BPF_B: /* *(u8 *)(dst + off) = src */
@@ -747,29 +775,30 @@ emit_clear:
 			break;
 
 		/*
-		 * Call kernel helper
+		 * Call kernel helper or bpf function
 		 */
 		case BPF_JMP | BPF_CALL:
 			ctx->seen |= SEEN_FUNC;
-			func = (u8 *) __bpf_call_base + imm;
 
-			/* Save skb pointer if we need to re-cache skb data */
-			if ((ctx->seen & SEEN_SKB) &&
-			    bpf_helper_changes_pkt_data(func))
-				PPC_BPF_STL(3, 1, bpf_jit_stack_local(ctx));
+			/* bpf function call */
+			if (insn[i].src_reg == BPF_PSEUDO_CALL)
+				if (!extra_pass)
+					func = NULL;
+				else if (fp->aux->func && off < fp->aux->func_cnt)
+					/* use the subprog id from the off
+					 * field to lookup the callee address
+					 */
+					func = (u8 *) fp->aux->func[off]->bpf_func;
+				else
+					return -EINVAL;
+			/* kernel helper call */
+			else
+				func = (u8 *) __bpf_call_base + imm;
 
 			bpf_jit_emit_func_call(image, ctx, (u64)func);
 
 			/* move return value from r3 to BPF_REG_0 */
 			PPC_MR(b2p[BPF_REG_0], 3);
-
-			/* refresh skb cache */
-			if ((ctx->seen & SEEN_SKB) &&
-			    bpf_helper_changes_pkt_data(func)) {
-				/* reload skb pointer to r3 */
-				PPC_BPF_LL(3, 1, bpf_jit_stack_local(ctx));
-				bpf_jit_emit_skb_loads(image, ctx);
-			}
 			break;
 
 		/*
@@ -887,70 +916,13 @@ cond_branch:
 			break;
 
 		/*
-		 * Loads from packet header/data
-		 * Assume 32-bit input value in imm and X (src_reg)
-		 */
-
-		/* Absolute loads */
-		case BPF_LD | BPF_W | BPF_ABS:
-			func = (u8 *)CHOOSE_LOAD_FUNC(imm, sk_load_word);
-			goto common_load_abs;
-		case BPF_LD | BPF_H | BPF_ABS:
-			func = (u8 *)CHOOSE_LOAD_FUNC(imm, sk_load_half);
-			goto common_load_abs;
-		case BPF_LD | BPF_B | BPF_ABS:
-			func = (u8 *)CHOOSE_LOAD_FUNC(imm, sk_load_byte);
-common_load_abs:
-			/*
-			 * Load from [imm]
-			 * Load into r4, which can just be passed onto
-			 *  skb load helpers as the second parameter
-			 */
-			PPC_LI32(4, imm);
-			goto common_load;
-
-		/* Indirect loads */
-		case BPF_LD | BPF_W | BPF_IND:
-			func = (u8 *)sk_load_word;
-			goto common_load_ind;
-		case BPF_LD | BPF_H | BPF_IND:
-			func = (u8 *)sk_load_half;
-			goto common_load_ind;
-		case BPF_LD | BPF_B | BPF_IND:
-			func = (u8 *)sk_load_byte;
-common_load_ind:
-			/*
-			 * Load from [src_reg + imm]
-			 * Treat src_reg as a 32-bit value
-			 */
-			PPC_EXTSW(4, src_reg);
-			if (imm) {
-				if (imm >= -32768 && imm < 32768)
-					PPC_ADDI(4, 4, IMM_L(imm));
-				else {
-					PPC_LI32(b2p[TMP_REG_1], imm);
-					PPC_ADD(4, 4, b2p[TMP_REG_1]);
-				}
-			}
-
-common_load:
-			ctx->seen |= SEEN_SKB;
-			ctx->seen |= SEEN_FUNC;
-			bpf_jit_emit_func_call(image, ctx, (u64)func);
-
-			/*
-			 * Helper returns 'lt' condition on error, and an
-			 * appropriate return value in BPF_REG_0
-			 */
-			PPC_BCC(COND_LT, exit_addr);
-			break;
-
-		/*
 		 * Tail call
 		 */
 		case BPF_JMP | BPF_TAIL_CALL:
 			ctx->seen |= SEEN_TAILCALL;
-			bpf_jit_emit_tail_call(image, ctx, addrs[i + 1]);
+			ret = bpf_jit_emit_tail_call(image, ctx, addrs[i + 1]);
+			if (ret < 0)
+				return ret;
 			break;
 
 		default:
@@ -971,6 +943,14 @@ common_load:
 	return 0;
 }
 
+struct powerpc64_jit_data {
+	struct bpf_binary_header *header;
+	u32 *addrs;
+	u8 *image;
+	u32 proglen;
+	struct codegen_context ctx;
+};
+
 struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *fp)
 {
 	u32 proglen;
@@ -978,6 +958,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *fp)
 	u8 *image = NULL;
 	u32 *code_base;
 	u32 *addrs;
+	struct powerpc64_jit_data *jit_data;
 	struct codegen_context cgctx;
 	int pass;
 	int flen;
@@ -985,8 +966,9 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *fp)
 	struct bpf_prog *org_fp = fp;
 	struct bpf_prog *tmp_fp;
 	bool bpf_blinded = false;
+	bool extra_pass = false;
 
-	if (!bpf_jit_enable)
+	if (!fp->jit_requested)
 		return org_fp;
 
 	tmp_fp = bpf_jit_blind_constants(org_fp);
@@ -998,20 +980,57 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *fp)
 		fp = tmp_fp;
 	}
 
+	jit_data = fp->aux->jit_data;
+	if (!jit_data) {
+		jit_data = kzalloc(sizeof(*jit_data), GFP_KERNEL);
+		if (!jit_data) {
+			fp = org_fp;
+			goto out;
+		}
+		fp->aux->jit_data = jit_data;
+	}
+
 	flen = fp->len;
-	addrs = kzalloc((flen+1) * sizeof(*addrs), GFP_KERNEL);
+	addrs = jit_data->addrs;
+	if (addrs) {
+		cgctx = jit_data->ctx;
+		image = jit_data->image;
+		bpf_hdr = jit_data->header;
+		proglen = jit_data->proglen;
+		alloclen = proglen + FUNCTION_DESCR_SIZE;
+		extra_pass = true;
+		goto skip_init_ctx;
+	}
+
+	addrs = kcalloc(flen + 1, sizeof(*addrs), GFP_KERNEL);
 	if (addrs == NULL) {
 		fp = org_fp;
-		goto out;
+		goto out_addrs;
 	}
 
 	memset(&cgctx, 0, sizeof(struct codegen_context));
 
+	/* Make sure that the stack is quadword aligned. */
+	cgctx.stack_size = round_up(fp->aux->stack_depth, 16);
+
 	/* Scouting faux-generate pass 0 */
-	if (bpf_jit_build_body(fp, 0, &cgctx, addrs)) {
+	if (bpf_jit_build_body(fp, 0, &cgctx, addrs, false)) {
 		/* We hit something illegal or unsupported. */
 		fp = org_fp;
-		goto out;
+		goto out_addrs;
+	}
+
+	/*
+	 * If we have seen a tail call, we need a second pass.
+	 * This is because bpf_jit_emit_common_epilogue() is called
+	 * from bpf_jit_emit_tail_call() with a not yet stable ctx->seen.
+	 */
+	if (cgctx.seen & SEEN_TAILCALL) {
+		cgctx.idx = 0;
+		if (bpf_jit_build_body(fp, 0, &cgctx, addrs, false)) {
+			fp = org_fp;
+			goto out_addrs;
+		}
 	}
 
 	/*
@@ -1029,9 +1048,10 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *fp)
 			bpf_jit_fill_ill_insns);
 	if (!bpf_hdr) {
 		fp = org_fp;
-		goto out;
+		goto out_addrs;
 	}
 
+skip_init_ctx:
 	code_base = (u32 *)(image + FUNCTION_DESCR_SIZE);
 
 	/* Code generation passes 1-2 */
@@ -1039,7 +1059,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *fp)
 		/* Now build the prologue, body code & epilogue for real. */
 		cgctx.idx = 0;
 		bpf_jit_build_prologue(code_base, &cgctx);
-		bpf_jit_build_body(fp, code_base, &cgctx, addrs);
+		bpf_jit_build_body(fp, code_base, &cgctx, addrs, extra_pass);
 		bpf_jit_build_epilogue(code_base, &cgctx);
 
 		if (bpf_jit_enable > 1)
@@ -1065,10 +1085,20 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *fp)
 	fp->jited_len = alloclen;
 
 	bpf_flush_icache(bpf_hdr, (u8 *)bpf_hdr + (bpf_hdr->pages * PAGE_SIZE));
+	if (!fp->is_func || extra_pass) {
+out_addrs:
+		kfree(addrs);
+		kfree(jit_data);
+		fp->aux->jit_data = NULL;
+	} else {
+		jit_data->addrs = addrs;
+		jit_data->ctx = cgctx;
+		jit_data->proglen = proglen;
+		jit_data->image = image;
+		jit_data->header = bpf_hdr;
+	}
 
 out:
-	kfree(addrs);
-
 	if (bpf_blinded)
 		bpf_jit_prog_release_other(fp, fp == org_fp ? tmp_fp : org_fp);
 

@@ -107,7 +107,7 @@ static unsigned long clk_pllv1_recalc_rate(struct clk_hw *hw,
 	return ull;
 }
 
-static struct clk_ops clk_pllv1_ops = {
+static const struct clk_ops clk_pllv1_ops = {
 	.recalc_rate = clk_pllv1_recalc_rate,
 };
 
@@ -116,7 +116,7 @@ struct clk *imx_clk_pllv1(enum imx_pllv1_type type, const char *name,
 {
 	struct clk_pllv1 *pll;
 	struct clk *clk;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 
 	pll = kmalloc(sizeof(*pll), GFP_KERNEL);
 	if (!pll)

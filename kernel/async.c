@@ -115,7 +115,7 @@ static void async_run_entry_fn(struct work_struct *work)
 	struct async_entry *entry =
 		container_of(work, struct async_entry, work);
 	unsigned long flags;
-	ktime_t uninitialized_var(calltime), delta, rettime;
+	ktime_t calltime, delta, rettime;
 
 	/* 1) run (and print duration) */
 	if (initcall_debug && system_state < SYSTEM_RUNNING) {
@@ -190,9 +190,6 @@ static async_cookie_t __async_schedule(async_func_t func, void *data, struct asy
 
 	atomic_inc(&entry_count);
 	spin_unlock_irqrestore(&async_lock, flags);
-
-	/* mark that this task has queued an async job, used by module init */
-	current->flags |= PF_USED_ASYNC;
 
 	/* schedule for execution */
 	queue_work(system_unbound_wq, &entry->work);
@@ -286,7 +283,7 @@ EXPORT_SYMBOL_GPL(async_synchronize_full_domain);
  */
 void async_synchronize_cookie_domain(async_cookie_t cookie, struct async_domain *domain)
 {
-	ktime_t uninitialized_var(starttime), delta, endtime;
+	ktime_t starttime, delta, endtime;
 
 	if (initcall_debug && system_state < SYSTEM_RUNNING) {
 		pr_debug("async_waiting @ %i\n", task_pid_nr(current));

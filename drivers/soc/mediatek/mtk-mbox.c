@@ -1,23 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
-
 
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
+#include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/sched/clock.h>
-#include <mt-plat/mtk-mbox.h>
+#include <linux/soc/mediatek/mtk-mbox.h>
 
 /*
  * memory copy to tiny
@@ -25,7 +17,7 @@
  * @param src: src address
  * @param size: memory size
  */
-void mtk_memcpy_to_tinysys(void __iomem *dest, const void *src, int size)
+void mtk_memcpy_to_tinysys(void __iomem *dest, const void *src, uint32_t size)
 {
 	int i;
 	u32 __iomem *t = dest;
@@ -41,7 +33,7 @@ void mtk_memcpy_to_tinysys(void __iomem *dest, const void *src, int size)
  * @param src: src address
  * @param size: memory size
  */
-void mtk_memcpy_from_tinysys(void *dest, const void __iomem *src, int size)
+void mtk_memcpy_from_tinysys(void *dest, const void __iomem *src, uint32_t size)
 {
 	int i;
 	u32 *t = dest;
@@ -62,7 +54,7 @@ int mtk_mbox_write_hd(struct mtk_mbox_device *mbdev, unsigned int mbox,
 	struct mtk_mbox_info *minfo;
 	struct mtk_ipi_msg *ipimsg;
 	void __iomem *base;
-	int len;
+	uint32_t len;
 	unsigned long flags;
 
 	if (!mbdev) {
@@ -82,7 +74,8 @@ int mtk_mbox_write_hd(struct mtk_mbox_device *mbdev, unsigned int mbox,
 	ipimsg = (struct mtk_ipi_msg *)msg;
 	len = ipimsg->ipihd.len;
 
-	if (len > size * MBOX_SLOT_SIZE)
+	if ((slot_ofs + sizeof(struct mtk_ipi_msg_hd) + len)
+		> size * MBOX_SLOT_SIZE)
 		return MBOX_WRITE_SZ_ERR;
 
 	spin_lock_irqsave(&mbdev->info_table[mbox].mbox_lock, flags);
@@ -106,6 +99,7 @@ int mtk_mbox_write_hd(struct mtk_mbox_device *mbdev, unsigned int mbox,
 
 	return MBOX_DONE;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_write_hd);
 
 /*
  * read data from mbox with ipi msg header
@@ -136,7 +130,8 @@ int mtk_mbox_read_hd(struct mtk_mbox_device *mbdev, unsigned int mbox,
 	size = minfo->slot;
 	ipihd = (struct mtk_ipi_msg_hd *)(base + slot_ofs);
 
-	if (ipihd->len > size * MBOX_SLOT_SIZE)
+	if ((slot_ofs + sizeof(struct mtk_ipi_msg_hd) + ipihd->len)
+		> size * MBOX_SLOT_SIZE)
 		return MBOX_READ_SZ_ERR;
 
 	spin_lock_irqsave(&mbdev->info_table[mbox].mbox_lock, flags);
@@ -153,6 +148,7 @@ int mtk_mbox_read_hd(struct mtk_mbox_device *mbdev, unsigned int mbox,
 
 	return MBOX_DONE;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_read_hd);
 
 /*
  * write data to mbox, function must in critical context
@@ -194,6 +190,7 @@ int mtk_mbox_write(struct mtk_mbox_device *mbdev, unsigned int mbox,
 
 	return MBOX_DONE;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_write);
 
 /*
  * read data to user buffer, function must in critical context
@@ -233,6 +230,7 @@ int mtk_mbox_read(struct mtk_mbox_device *mbdev, unsigned int mbox,
 
 	return MBOX_DONE;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_read);
 
 /*
  * clear mbox irq,
@@ -254,6 +252,7 @@ int mtk_mbox_clr_irq(struct mtk_mbox_device *mbdev, unsigned int mbox,
 
 	return MBOX_DONE;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_clr_irq);
 
 /*
  * trigger mbox irq,
@@ -279,6 +278,7 @@ int mtk_mbox_trigger_irq(struct mtk_mbox_device *mbdev, unsigned int mbox,
 
 	return MBOX_DONE;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_trigger_irq);
 
 /*
  * check mbox 32bits set irq reg status
@@ -315,6 +315,7 @@ unsigned int mtk_mbox_check_send_irq(struct mtk_mbox_device *mbdev,
 
 	return irq_state;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_check_send_irq);
 
 /*
  * check mbox 32bits clr irq reg status
@@ -342,6 +343,7 @@ unsigned int mtk_mbox_read_recv_irq(struct mtk_mbox_device *mbdev,
 
 	return reg;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_read_recv_irq);
 
 /*
  * set mbox base address to init register
@@ -364,6 +366,7 @@ int mtk_mbox_set_base_reg(struct mtk_mbox_device *mbdev, unsigned int mbox,
 
 	return MBOX_DONE;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_set_base_reg);
 
 /*
  * set mbox base address, task context
@@ -397,6 +400,7 @@ int mtk_mbox_set_base_addr(struct mtk_mbox_device *mbdev, unsigned int mbox,
 
 	return MBOX_DONE;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_set_base_addr);
 
 /*
  * mtk_mbox_cb_register, register callback function
@@ -416,6 +420,7 @@ int mtk_mbox_cb_register(struct mtk_mbox_device *mbdev, unsigned int pin_offset,
 
 	return MBOX_DONE;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_cb_register);
 
 /*
  * mbox polling, context is protected by mbox_lock
@@ -476,7 +481,7 @@ int mtk_mbox_polling(struct mtk_mbox_device *mbdev, unsigned int mbox,
 
 	return MBOX_DONE;
 }
-
+EXPORT_SYMBOL_GPL(mtk_mbox_polling);
 
 /*
  * set lock status
@@ -495,7 +500,6 @@ static void mtk_mbox_set_lock(struct mtk_mbox_device *mbdev, unsigned int mbox,
 	}
 }
 
-
 /*
  * mbox driver isr, in isr context
  */
@@ -507,10 +511,14 @@ static irqreturn_t mtk_mbox_isr(int irq, void *dev_id)
 	struct mtk_mbox_device *mbdev = minfo->mbdev;
 	struct mtk_ipi_msg_hd *ipihead;
 	unsigned long flags;
+	const uint64_t timeout_time = 50 * 1000 * 1000; /* 50ms */
+	uint64_t start_time, end_time, cbtimediff;
+	uint32_t execute_count = 0;
 	//void *user_data;
 	int ret;
 	int i;
 
+	start_time = cpu_clock(0);
 	mbox = minfo->id;
 	ret = MBOX_DONE;
 
@@ -522,8 +530,10 @@ static irqreturn_t mtk_mbox_isr(int irq, void *dev_id)
 	irq_temp = 0;
 	spin_unlock_irqrestore(&minfo->mbox_lock, flags);
 
-	if (mbdev->pre_cb)
-		mbdev->pre_cb(mbdev->prdata);
+	if (mbdev->pre_cb && mbdev->pre_cb(mbdev->prdata)) {
+		ret = MBOX_PRE_CB_ERR;
+		goto skip;
+	}
 
 	/*execute all receive pin handler*/
 	for (i = 0; i < mbdev->recv_count; i++) {
@@ -561,6 +571,14 @@ static irqreturn_t mtk_mbox_isr(int irq, void *dev_id)
 					pin_recv->recv_record.post_timestamp
 						= cpu_clock(0);
 					pin_recv->recv_record.cb_count++;
+					execute_count++;
+					cbtimediff = pin_recv->recv_record.post_timestamp
+						- pin_recv->recv_record.pre_timestamp;
+					if (cbtimediff > timeout_time) {
+						pr_notice("[MBOX Error]dev=%s ipi_id=%d, timeout=%llu\n",
+							mbdev->name, pin_recv->chan_id, cbtimediff);
+					}
+
 				}
 			} else {
 				/*direct mode*/
@@ -581,6 +599,13 @@ static irqreturn_t mtk_mbox_isr(int irq, void *dev_id)
 					pin_recv->recv_record.post_timestamp
 						= cpu_clock(0);
 					pin_recv->recv_record.cb_count++;
+					execute_count++;
+					cbtimediff = pin_recv->recv_record.post_timestamp
+						- pin_recv->recv_record.pre_timestamp;
+					if (cbtimediff > timeout_time) {
+						pr_notice("[MBOX Error]dev=%s ipi_id=%d, timeout=%llu\n",
+							mbdev->name, pin_recv->chan_id, cbtimediff);
+					}
 				}
 			}
 
@@ -594,8 +619,15 @@ static irqreturn_t mtk_mbox_isr(int irq, void *dev_id)
 		}
 	}
 
-	if (mbdev->post_cb)
-		mbdev->post_cb(mbdev->prdata);
+	if (mbdev->post_cb && mbdev->post_cb(mbdev->prdata))
+		ret = MBOX_POST_CB_ERR;
+skip:
+	if (ret == MBOX_PRE_CB_ERR)
+		pr_notice("[MBOX ISR] pre_cb error, skip cb handle, dev=%s ret=%d",
+			mbdev->name, ret);
+	if (ret == MBOX_POST_CB_ERR)
+		pr_notice("[MBOX ISR] post_cb error, dev=%s ret=%d",
+			mbdev->name, ret);
 
 	/*clear irq status*/
 	spin_lock_irqsave(&minfo->mbox_lock, flags);
@@ -626,6 +658,11 @@ static irqreturn_t mtk_mbox_isr(int irq, void *dev_id)
 				pin_recv->recv_record.notify_count++;
 			}
 		}
+	}
+	end_time = cpu_clock(0);
+	if (end_time - start_time > timeout_time) {
+		pr_notice("[MBOX Error]start=%llu, end=%llu diff=%llu, count=%u\n",
+			start_time, end_time, end_time - start_time, execute_count);
 	}
 
 	return IRQ_HANDLED;
@@ -676,6 +713,7 @@ int mtk_smem_init(struct platform_device *pdev, struct mtk_mbox_device *mbdev,
 smem_fail:
 	return MBOX_CONFIG_ERR;
 }
+EXPORT_SYMBOL_GPL(mtk_smem_init);
 
 /*
  * mtk_mbox_probe , porbe and initial mbox
@@ -695,50 +733,79 @@ int mtk_mbox_probe(struct platform_device *pdev, struct mtk_mbox_device *mbdev,
 	if (pdev) {
 		snprintf(name, sizeof(name), "mbox%d_base", mbox);
 		res = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
-		minfo->base = devm_ioremap_resource(dev, res);
+		if (IS_ERR_OR_NULL(res)) {
+			pr_info("MBOX %s:get resource %s failed!\n",
+				__func__, name);
+		} else {
+			minfo->base = devm_ioremap_resource(dev, res);
 
-		if (IS_ERR((void const *) minfo->base))
-			pr_err("MBOX %d can't remap base\n", mbox);
+			if (IS_ERR((void const *) minfo->base))
+				pr_info("MBOX %d can't remap base\n", mbox);
 
-		minfo->slot = (unsigned int)resource_size(res)/MBOX_SLOT_SIZE;
-
+			minfo->slot = (unsigned int)resource_size(res)/MBOX_SLOT_SIZE;
+		}
 		/*init reg*/
 		snprintf(name, sizeof(name), "mbox%d_init", mbox);
 		res = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
-		minfo->init_base_reg = devm_ioremap_resource(dev, res);
-		if (IS_ERR((void const *) minfo->init_base_reg))
-			pr_err("MBOX %d can't find init reg\n", mbox);
+		if (IS_ERR_OR_NULL(res)) {
+			pr_info("MBOX %s:get resource %s failed!\n",
+				__func__, name);
+		} else {
+			minfo->init_base_reg = devm_ioremap_resource(dev, res);
+			if (IS_ERR((void const *) minfo->init_base_reg))
+				pr_info("MBOX %d can't find init reg\n", mbox);
+		}
 		/*set irq reg*/
 		snprintf(name, sizeof(name), "mbox%d_set", mbox);
 		res = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
-		minfo->set_irq_reg = devm_ioremap_resource(dev, res);
-		if (IS_ERR((void const *) minfo->set_irq_reg)) {
-			pr_err("MBOX %d can't find set reg\n", mbox);
-			goto mtk_mbox_probe_fail;
+		if (IS_ERR_OR_NULL(res)) {
+			pr_info("MBOX %s:get resource %s failed!\n",
+				__func__, name);
+		} else {
+			minfo->set_irq_reg = devm_ioremap_resource(dev, res);
+			if (IS_ERR((void const *) minfo->set_irq_reg)) {
+				pr_info("MBOX %d can't find set reg\n", mbox);
+				goto mtk_mbox_probe_fail;
+			}
 		}
 		/*clear reg*/
 		snprintf(name, sizeof(name), "mbox%d_clr", mbox);
 		res = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
-		minfo->clr_irq_reg = devm_ioremap_resource(dev, res);
-		if (IS_ERR((void const *) minfo->clr_irq_reg)) {
-			pr_err("MBOX %d can't find clr reg\n", mbox);
-			goto mtk_mbox_probe_fail;
+		if (IS_ERR_OR_NULL(res)) {
+			pr_info("MBOX %s:get resource %s failed!\n",
+				__func__, name);
+		} else {
+			minfo->clr_irq_reg = devm_ioremap_resource(dev, res);
+			if (IS_ERR((void const *) minfo->clr_irq_reg)) {
+				pr_info("MBOX %d can't find clr reg\n", mbox);
+				goto mtk_mbox_probe_fail;
+			}
 		}
 		/*send status reg*/
 		snprintf(name, sizeof(name), "mbox%d_send", mbox);
 		res = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
-		minfo->send_status_reg = devm_ioremap_resource(dev, res);
-		if (IS_ERR((void const *) minfo->send_status_reg)) {
-			pr_notice("MBOX %d can't find send status reg\n", mbox);
-			minfo->send_status_reg = NULL;
+		if (IS_ERR_OR_NULL(res)) {
+			pr_info("MBOX %s:get resource %s failed!\n",
+				__func__, name);
+		} else {
+			minfo->send_status_reg = devm_ioremap_resource(dev, res);
+			if (IS_ERR((void const *) minfo->send_status_reg)) {
+				pr_notice("MBOX %d can't find send status reg\n", mbox);
+				minfo->send_status_reg = NULL;
+			}
 		}
 		/*recv status reg*/
 		snprintf(name, sizeof(name), "mbox%d_recv", mbox);
 		res = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
-		minfo->recv_status_reg = devm_ioremap_resource(dev, res);
-		if (IS_ERR((void const *) minfo->recv_status_reg)) {
-			pr_notice("MBOX %d can't find recv status reg\n", mbox);
-			minfo->recv_status_reg = NULL;
+		if (IS_ERR_OR_NULL(res)) {
+			pr_info("MBOX %s:get resource %s failed!\n",
+				__func__, name);
+		} else {
+			minfo->recv_status_reg = devm_ioremap_resource(dev, res);
+			if (IS_ERR((void const *) minfo->recv_status_reg)) {
+				pr_notice("MBOX %d can't find recv status reg\n", mbox);
+				minfo->recv_status_reg = NULL;
+			}
 		}
 
 		snprintf(name, sizeof(name), "mbox%d", mbox);
@@ -766,6 +833,7 @@ int mtk_mbox_probe(struct platform_device *pdev, struct mtk_mbox_device *mbdev,
 mtk_mbox_probe_fail:
 	return MBOX_CONFIG_ERR;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_probe);
 
 /*
  *mbox print receive pin function
@@ -793,6 +861,7 @@ void mtk_mbox_print_recv(struct mtk_mbox_device *mbdev,
 		, pin_recv->recv_record.pre_timestamp
 		, pin_recv->recv_record.post_timestamp);
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_print_recv);
 
 /*
  *mbox print send pin function
@@ -809,6 +878,7 @@ void mtk_mbox_print_send(struct mtk_mbox_device *mbdev,
 		, pin_send->pin_index
 		, pin_send->chan_id);
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_print_send);
 
 /*
  *mbox print mbox function
@@ -834,7 +904,7 @@ void mtk_mbox_print_minfo(struct mtk_mbox_device *mbdev,
 		, minfo->record.busy_count
 		, minfo->record.trig_irq_count);
 }
-
+EXPORT_SYMBOL_GPL(mtk_mbox_print_minfo);
 
 /*
  *mbox information dump
@@ -867,7 +937,7 @@ void mtk_mbox_dump_all(struct mtk_mbox_device *mbdev)
 		mtk_mbox_print_minfo(mbdev, minfo);
 	}
 }
-
+EXPORT_SYMBOL_GPL(mtk_mbox_dump_all);
 
 /*
  *mbox single receive pin information dump
@@ -883,6 +953,7 @@ void mtk_mbox_dump_recv(struct mtk_mbox_device *mbdev, unsigned int pin)
 		}
 	}
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_dump_recv);
 
 /*
  *mbox single receive pin information dump
@@ -899,6 +970,7 @@ void mtk_mbox_dump_recv_pin(struct mtk_mbox_device *mbdev,
 		mtk_mbox_print_recv(mbdev, pin_recv);
 	}
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_dump_recv_pin);
 
 /*
  *mbox single send pin information dump
@@ -914,6 +986,7 @@ void mtk_mbox_dump_send(struct mtk_mbox_device *mbdev, unsigned int pin)
 		}
 	}
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_dump_send);
 
 /*
  *mbox single mbox information dump
@@ -929,6 +1002,7 @@ void mtk_mbox_dump(struct mtk_mbox_device *mbdev, unsigned int mbox)
 		}
 	}
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_dump);
 
 /*
  *mbox log enable function
@@ -941,6 +1015,7 @@ int mtk_mbox_log_enable(struct mtk_mbox_device *mbdev, bool enable)
 	mbdev->log_enable = enable;
 	return MBOX_DONE;
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_log_enable);
 
 /*
  *mbox reset record
@@ -972,4 +1047,7 @@ void mtk_mbox_reset_record(struct mtk_mbox_device *mbdev)
 	}
 
 }
+EXPORT_SYMBOL_GPL(mtk_mbox_reset_record);
 
+MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("MediaTek Tinysys Mbox driver");

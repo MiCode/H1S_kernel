@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2018 MediaTek Inc.
  */
 
 #include <linux/of.h>
@@ -22,6 +14,10 @@
 #include <mtk_dcm_internal.h>
 
 static short dcm_cpu_cluster_stat;
+
+#ifdef CONFIG_HOTPLUG_CPU
+static struct notifier_block dcm_hotplug_nb;
+#endif
 
 unsigned int all_dcm_type =
 		(ARMCORE_DCM_TYPE | MCUSYS_DCM_TYPE | MCSI_DCM_TYPE
@@ -161,7 +157,7 @@ int __init mt_dcm_dts_map(void)
 
 static int dcm_convert_stall_wr_del_sel(unsigned int val)
 {
-	if (val < 0 || val > MCUCFG_STALL_DCM_MPX_WR_SEL_MAX_VAL)
+	if (val > MCUCFG_STALL_DCM_MPX_WR_SEL_MAX_VAL)
 		return 0;
 	else
 		return val;
@@ -459,7 +455,7 @@ int dcm_big_core(int on)
 
 int dcm_stall_preset(int on)
 {
-	/* Not gen'ed as mt6763. Check if necessary.
+	/* Not gen'ed as MT6763. Check if necessary.
 	 * dcm_mcu_misccfg_mp_stall_dcm(on);
 	 */
 	reg_write(SYNC_DCM_CLUSTER_CONFIG, 0x063f0000);
@@ -708,61 +704,96 @@ void dcm_dump_regs(void)
 	REG_DUMP(CHN1_EMI_CHN_EMI_CONB);
 
 	/* Not gen'ed */
-#if 0
-	REG_DUMP(DRAMC_CH0_TOP1_DRAMC_PD_CTRL);
-	REG_DUMP(DRAMC_CH0_TOP1_CLKAR);
-	REG_DUMP(DRAMC_CH1_TOP1_DRAMC_PD_CTRL);
-	REG_DUMP(DRAMC_CH1_TOP1_CLKAR);
-
-	REG_DUMP(DRAMC_CH0_TOP0_MISC_CG_CTRL0);
-	REG_DUMP(DRAMC_CH0_TOP0_MISC_CG_CTRL2);
-	REG_DUMP(DRAMC_CH0_TOP0_MISC_CTRL3);
-	REG_DUMP(DRAMC_CH0_TOP0_SHU1_B0_DQ8);
-	REG_DUMP(DRAMC_CH0_TOP0_SHU1_B1_DQ8);
-	REG_DUMP(DRAMC_CH0_TOP0_SHU1_CA_CMD8);
-	REG_DUMP(DRAMC_CH0_TOP0_SHU2_B0_DQ8);
-	REG_DUMP(DRAMC_CH0_TOP0_SHU2_B1_DQ8);
-	REG_DUMP(DRAMC_CH0_TOP0_SHU2_CA_CMD8);
-	REG_DUMP(DRAMC_CH0_TOP0_SHU3_B0_DQ8);
-	REG_DUMP(DRAMC_CH0_TOP0_SHU3_B1_DQ8);
-	REG_DUMP(DRAMC_CH0_TOP0_SHU3_CA_CMD8);
-	REG_DUMP(DRAMC_CH0_TOP0_SHU4_B0_DQ8);
-	REG_DUMP(DRAMC_CH0_TOP0_SHU4_B1_DQ8);
-	REG_DUMP(DRAMC_CH0_TOP0_SHU4_CA_CMD8);
-	REG_DUMP(DRAMC_CH1_TOP0_MISC_CG_CTRL0);
-	REG_DUMP(DRAMC_CH1_TOP0_MISC_CG_CTRL2);
-	REG_DUMP(DRAMC_CH1_TOP0_MISC_CTRL3);
-	REG_DUMP(DRAMC_CH1_TOP0_SHU1_B0_DQ8);
-	REG_DUMP(DRAMC_CH1_TOP0_SHU1_B1_DQ8);
-	REG_DUMP(DRAMC_CH1_TOP0_SHU1_CA_CMD8);
-	REG_DUMP(DRAMC_CH1_TOP0_SHU2_B0_DQ8);
-	REG_DUMP(DRAMC_CH1_TOP0_SHU2_B1_DQ8);
-	REG_DUMP(DRAMC_CH1_TOP0_SHU2_CA_CMD8);
-	REG_DUMP(DRAMC_CH1_TOP0_SHU3_B0_DQ8);
-	REG_DUMP(DRAMC_CH1_TOP0_SHU3_B1_DQ8);
-	REG_DUMP(DRAMC_CH1_TOP0_SHU3_CA_CMD8);
-	REG_DUMP(DRAMC_CH1_TOP0_SHU4_B0_DQ8);
-	REG_DUMP(DRAMC_CH1_TOP0_SHU4_B1_DQ8);
-	REG_DUMP(DRAMC_CH1_TOP0_SHU4_CA_CMD8);
-#endif
 }
+
+#ifdef CONFIG_HOTPLUG_CPU
+static int dcm_hotplug_nc(struct notifier_block *self,
+					 unsigned long action, void *hcpu)
+{
+	unsigned int cpu = (long)hcpu;
+	struct cpumask cpuhp_cpumask;
+	struct cpumask cpu_online_cpumask;
+
+	switch (action) {
+	case CPU_ONLINE:
+		arch_get_cluster_cpus(&cpuhp_cpumask, arch_get_cluster_id(cpu));
+		cpumask_and(&cpu_online_cpumask,
+			&cpuhp_cpumask, cpu_online_mask);
+		if (cpumask_weight(&cpu_online_cpumask) == 1) {
+			switch (cpu / 4) {
+			case 0:
+				dcm_pr_dbg(
+				"%s: act=0x%lx, cpu=%u, LL CPU_ONLINE\n",
+				__func__, action, cpu);
+				dcm_cpu_cluster_stat |= DCM_CPU_CLUSTER_LL;
+				break;
+			case 1:
+				dcm_pr_dbg(
+				"%s: act=0x%lx, cpu=%u, L CPU_ONLINE\n",
+				__func__, action, cpu);
+				dcm_cpu_cluster_stat |= DCM_CPU_CLUSTER_L;
+				break;
+			case 2:
+				dcm_pr_dbg(
+				"%s: act=0x%lx, cpu=%u, B CPU_ONLINE\n",
+				__func__, action, cpu);
+				dcm_cpu_cluster_stat |= DCM_CPU_CLUSTER_B;
+				break;
+			default:
+				break;
+			}
+		}
+		break;
+	case CPU_DOWN_PREPARE:
+		arch_get_cluster_cpus(&cpuhp_cpumask, arch_get_cluster_id(cpu));
+		cpumask_and(&cpu_online_cpumask,
+			&cpuhp_cpumask, cpu_online_mask);
+		if (cpumask_weight(&cpu_online_cpumask) == 1) {
+			switch (cpu / 4) {
+			case 0:
+				dcm_pr_dbg(
+				"%s: act=0x%lx, cpu=%u, LL CPU_DOWN_PREPARE\n",
+				__func__, action, cpu);
+				dcm_cpu_cluster_stat &= ~DCM_CPU_CLUSTER_LL;
+				break;
+			case 1:
+				dcm_pr_dbg(
+				"%s: act=0x%lx, cpu=%u, L CPU_DOWN_PREPARE\n",
+				__func__, action, cpu);
+				dcm_cpu_cluster_stat &= ~DCM_CPU_CLUSTER_L;
+				break;
+			case 2:
+				dcm_pr_dbg(
+				"%s: act=0x%lx, cpu=%u, B CPU_DOWN_PREPARE\n",
+				__func__, action, cpu);
+				dcm_cpu_cluster_stat &= ~DCM_CPU_CLUSTER_B;
+				break;
+			default:
+				break;
+			}
+		}
+		break;
+	default:
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+#endif /* #ifdef CONFIG_HOTPLUG_CPU */
 
 void dcm_set_hotplug_nb(void)
 {
-	return;
-}
+#ifdef CONFIG_HOTPLUG_CPU
+	dcm_hotplug_nb = (struct notifier_block) {
+		.notifier_call	= dcm_hotplug_nc,
+		.priority	= INT_MIN + 2,
+			/* NOTE: make sure this is < CPU DVFS */
+	};
 
-#if 0 /* Add API to mtk_secure_api.h if necessary. */
-int dcm_smc_get_cnt(int type_id)
-{
-	return dcm_smc_read_cnt(type_id);
+	if (register_cpu_notifier(&dcm_hotplug_nb))
+		dcm_pr_info("[%s]: fail to register_cpu_notifier\n", __func__);
+#endif /* #ifdef CONFIG_HOTPLUG_CPU */
 }
-
-void dcm_smc_msg_send(unsigned int msg)
-{
-	dcm_smc_msg(msg);
-}
-#endif
 
 short dcm_get_cpu_cluster_stat(void)
 {

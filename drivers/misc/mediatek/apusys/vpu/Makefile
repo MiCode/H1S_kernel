@@ -11,10 +11,12 @@
 # GNU General Public License for more details.
 #
 
-ifneq (,$(filter $(strip $(MTK_PLATFORM)), mt6885 mt6873 mt6893 mt6853))
+ifneq (,$(filter $(strip $(MTK_PLATFORM)), mt6885 mt6873 mt6893 mt6853 mt6877))
 
 ifeq (y, $(filter y, $(CONFIG_MACH_MT6893)))
 PDIR = mt6885
+else ifeq ($(CONFIG_MACH_MT6877),y)
+PDIR = mt6877
 else
 PDIR = $(MTK_PLATFORM)
 endif
@@ -56,9 +58,9 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/smi/
 
 obj-y += vpu.o
 
-vpu-$(CONFIG_MTK_APUSYS_VPU_DEBUG) += $(VDIR)/vpu_debug.o $(VDIR)/vpu_tag.o $(IPDIR)/vpu_dump.o $(IPDIR)/vpu_met.o
-vpu-y += $(VDIR)/vpu_main.o $(VDIR)/vpu_algo.o $(VDIR)/vpu_cmd.o
-vpu-y += $(IPDIR)/vpu_hw.o $(IPDIR)/vpu_mem.o $(IPDIR)/vpu_power.o
+vpu-$(CONFIG_MTK_APUSYS_VPU_DEBUG) += $(VDIR)/vpu_tag.o $(IPDIR)/vpu_met.o
+vpu-y += $(VDIR)/vpu_main.o $(VDIR)/vpu_algo.o $(VDIR)/vpu_cmd.o $(VDIR)/vpu_debug.o
+vpu-y += $(IPDIR)/vpu_hw.o $(IPDIR)/vpu_mem.o $(IPDIR)/vpu_power.o $(IPDIR)/vpu_dump.o
 vpu-y += $(PDIR)/vpu_cfg.o
 
 endif

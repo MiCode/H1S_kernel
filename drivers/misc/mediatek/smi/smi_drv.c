@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/fs.h>
@@ -20,11 +12,14 @@
 #include <linux/uaccess.h>
 #include <linux/of_address.h>
 #include <linux/sched/clock.h>
-#include <linux/soc/mediatek/mtk-cmdq.h>
 
 #include <soc/mediatek/smi.h>
 #include <mtk_smi.h>
 #include <aee.h>
+
+#if IS_ENABLED(CONFIG_COMPAT)
+#include <linux/compat.h>
+#endif
 
 #include <smi_conf.h>
 #include <smi_public.h>
@@ -33,27 +28,34 @@
 #if IS_ENABLED(CONFIG_MEDIATEK_EMI)
 #include <memory/mediatek/emi.h>
 #elif IS_ENABLED(CONFIG_MTK_EMI)
-#include <plat_debug_api.h>
+//#include <plat_debug_api.h>
 #elif IS_ENABLED(CONFIG_MTK_EMI_BWL)
 #include <emi_mbw.h>
 #endif
 #if IS_ENABLED(CONFIG_MTK_IOMMU_V2)
-#include <mach/mt_iommu.h>
+//#include <mach/mt_iommu.h>
 #elif IS_ENABLED(CONFIG_MTK_M4U)
-#include <m4u.h>
+//#include <m4u.h>
 #endif
 #ifdef MMDVFS_HOOK
 #include <mmdvfs_mgr.h>
 #endif
 
-#if IS_ENABLED(CONFIG_MTK_TINYSYS_SSPM_SUPPORT) && IS_ENABLED(SMI_SSPM)
+#if IS_ENABLED(CONFIG_MTK_TINYSYS_SSPM_SUPPORT)
 #include <sspm_define.h>
-#include <sspm_reservedmem_define.h>
 #if IS_ENABLED(SMI_SSPM)
+#include <sspm_reservedmem_define.h>
 #include <sspm_ipi_id.h>
 static bool smi_sspm_ipi_register;
 #else
-#include <v1/sspm_ipi.h>
+#include <sspm_ipi.h>
+//#include <sspm_reservedmem_define.h>
+#if IS_ENABLED(CONFIG_MACH_MT6761)
+#include <clk-mt6761-pg.h>
+#include <sspm_reservedmem_define_mt6761.h>
+#elif IS_ENABLED(CONFIG_MACH_MT6779)
+#include <sspm_reservedmem_define_mt6779.h>
+#endif
 #endif
 #endif
 
@@ -119,21 +121,8 @@ struct smi_dram_t {
 	s32		ackdata;
 };
 
-#if IS_ENABLED(CONFIG_MACH_MT6873) && IS_ENABLED(SMI_ASSERT)
-struct smi_cmdq_t {
-	struct device		*dev;
-	void __iomem		*base;
-	dma_addr_t		addr;
-	struct cmdq_client	*clt;
-	struct cmdq_pkt		*pkt;
-	u16			event;
-	u64			tick;
-};
-static struct smi_cmdq_t	smi_cmdq;
-#endif
-
 static struct smi_driver_t	smi_drv;
-static struct smi_record_t	smi_record[SMI_DEV_NUM][2];
+static struct smi_record_t	smi_record[SMI_LARB_NUM][2];
 static struct smi_dram_t	smi_dram;
 
 static struct mtk_smi_dev	*smi_dev[SMI_DEV_NUM];
@@ -153,10 +142,11 @@ static void smi_clk_record(const u32 id, const bool en, const char *user)
 	u64 sec;
 	u32 nsec;
 
+	if (id >= SMI_LARB_NUM)
+		return;
 	record = &smi_record[id][en ? 1 : 0];
 	sec = sched_clock();
 	nsec = do_div(sec, 1000000000) / 1000;
-
 	if (user) {
 		record->clk_sec = sec;
 		record->clk_nsec = nsec;
@@ -190,8 +180,14 @@ s32 smi_bus_prepare_enable(const u32 id, const char *user)
 		SMIDBG("Invalid id:%u, SMI_DEV_NUM=%u, user=%s\n",
 			id, SMI_DEV_NUM, user);
 		return -EINVAL;
+	} else if (id < SMI_LARB_NUM) {
+		smi_clk_record(id, true, user);
 	}
-	smi_clk_record(id, true, user);
+
+	if (!smi_dev[id]) {
+		SMIERR("SMI %s: %d is not ready.\n", __func__, id);
+		return -EPROBE_DEFER;
+	}
 
 #if IS_ENABLED(CONFIG_MACH_MT6885) || IS_ENABLED(CONFIG_MACH_MT6893)
 	if (id == 6 || id == 10 || id == 12) {
@@ -306,69 +302,11 @@ s32 smi_bus_prepare_enable(const u32 id, const char *user)
 			return ret;
 		break;
 	}
-#elif IS_ENABLED(CONFIG_MACH_MT6873)
-	if (id == 3 || id == 6 || id == 8 || id == 10 || id == 12 || id == 15) {
-		SMIDBG("Invalid id:%u user:%s\n", id, user);
-		return -EINVAL;
-	}
-
-	if (id < SMI_LARB_NUM) {
-		ret = smi_unit_prepare_enable(21); // disp
-		if (ret)
-			return ret;
-
-		ret = smi_unit_prepare_enable(22); // disp-subcom
-		if (ret)
-			return ret;
-
-		ret = smi_unit_prepare_enable(23); // disp-subcom1
-		if (ret)
-			return ret;
-	}
-
-	switch (id) {
-	case 9:
-	case 11:
-		ret = smi_unit_prepare_enable(25); // img-subcom1
-		if (ret)
-			return ret;
-		ret = smi_unit_prepare_enable(24); // img-subcom
-		if (ret)
-			return ret;
-		break;
-	case 4:
-	case 5:
-		ret = smi_unit_prepare_enable(26); // vde-subcom
-		if (ret)
-			return ret;
-		break;
-	case 14:
-	case 16:
-		ret = smi_unit_prepare_enable(27); // cam-subcom1
-		if (ret)
-			return ret;
-		break;
-	case 13:
-	case 17:
-	case 18:
-		ret = smi_unit_prepare_enable(28); // cam-subcom
-		if (ret)
-			return ret;
-		break;
-	case 19:
-	case 20:
-		ret = smi_unit_prepare_enable(25); // img-subcom1
-		if (ret)
-			return ret;
-		ret = smi_unit_prepare_enable(29); // ipe-subcom
-		if (ret)
-			return ret;
-		break;
-	}
-#else
+#else // !CONFIG_MACH_MT6885
 	ret = smi_unit_prepare_enable(SMI_LARB_NUM);
-	if (ret)
+	if (ret || id == SMI_LARB_NUM)
 		return ret;
+
 #endif
 
 #if IS_ENABLED(SMI_5G)
@@ -390,30 +328,28 @@ static inline void smi_unit_disable_unprepare(const u32 id)
 
 s32 smi_bus_disable_unprepare(const u32 id, const char *user)
 {
+	if (!smi_dev[id]) {
+		SMIERR("SMI %s: %d is not ready.\n", __func__, id);
+		return -EPROBE_DEFER;
+	}
+
 	if (id >= SMI_DEV_NUM) {
 		SMIDBG("Invalid id:%u, SMI_DEV_NUM=%u, user=%s\n",
 			id, SMI_DEV_NUM, user);
 		return -EINVAL;
+	} else if (id == SMI_LARB_NUM) {
+		smi_unit_disable_unprepare(id);
+		return 0;
+	} else if (id < SMI_LARB_NUM) {
+		smi_clk_record(id, false, user);
 	}
-	smi_clk_record(id, false, user);
 
+	if (ATOMR_CLK(id) == 1 && readl(smi_dev[id]->base + SMI_LARB_STAT))
+		SMIWRN(1, "LARB%u OFF by %s but busy\n", id, user);
 #if IS_ENABLED(CONFIG_MACH_MT6885) || IS_ENABLED(CONFIG_MACH_MT6893)
 	if (id == 6 || id == 10 || id == 12) {
 		SMIDBG("Invalid id:%u user:%s\n", id, user);
 		return -EINVAL;
-	}
-#elif IS_ENABLED(CONFIG_MACH_MT6873)
-	if (id == 3 || id == 6 || id == 8 || id == 10 || id == 12 || id == 15) {
-		SMIDBG("Invalid id:%u user:%s\n", id, user);
-		return -EINVAL;
-	}
-#endif
-#if !IS_ENABLED(CONFIG_MACH_MT6739)
-	if (ATOMR_CLK(id) == 1 &&
-		readl(smi_dev[id]->base + SMI_LARB_STAT) == 1) {
-		smi_debug_bus_hang_detect(false, user);
-		aee_kernel_exception(user,
-			"larb%u disable by %s but still busy\n", id, user);
 	}
 #endif
 	smi_unit_disable_unprepare(id);
@@ -487,39 +423,7 @@ s32 smi_bus_disable_unprepare(const u32 id, const char *user)
 		smi_unit_disable_unprepare(21); // disp
 		break;
 	}
-#elif IS_ENABLED(CONFIG_MACH_MT6873)
-	switch (id) {
-	case 9:
-	case 11:
-		smi_unit_disable_unprepare(24); // img-subcom
-		smi_unit_disable_unprepare(25); // img-subcom1
-		break;
-	case 4:
-	case 5:
-		smi_unit_disable_unprepare(26); // vde-subcom
-		break;
-	case 14:
-	case 16:
-		smi_unit_disable_unprepare(27); // cam-subcom1
-		break;
-	case 13:
-	case 17:
-	case 18:
-		smi_unit_disable_unprepare(28); // cam-subcom
-		break;
-	case 19:
-	case 20:
-		smi_unit_disable_unprepare(29); // ipe-subcom
-		smi_unit_disable_unprepare(25); // img-subcom1
-		break;
-	}
-
-	if (id < SMI_LARB_NUM) {
-		smi_unit_disable_unprepare(23); // disp-subcom1
-		smi_unit_disable_unprepare(22); // disp-subcom
-		smi_unit_disable_unprepare(21); // disp
-	}
-#else
+#else // !CONFIG_MACH_MT6885
 	smi_unit_disable_unprepare(SMI_LARB_NUM);
 #endif
 	return 0;
@@ -536,7 +440,6 @@ smi_bwl_update(const u32 id, const u32 bwl, const bool soft, const char *user)
 			id, SMI_COMM_MASTER_NUM);
 		return;
 	}
-
 #if IS_ENABLED(CONFIG_MACH_MT6885) || IS_ENABLED(CONFIG_MACH_MT6893)
 	comm = id >> 16;
 #endif
@@ -555,10 +458,17 @@ EXPORT_SYMBOL_GPL(smi_bwl_update);
 void smi_ostd_update(const struct plist_head *head, const char *user)
 {
 	struct mm_qos_request *req;
-	u32 larb, port, ostd, prev = SMI_LARB_NUM;
+	u32 larb = 0, port, ostd;
 
 	if (plist_head_empty(head))
 		return;
+#if defined (CONFIG_MACH_MT6833)
+// TODO Migration
+	if (smi_dev[larb] == NULL){
+                 pr_notice("[SMI 6833] ERROR smi_ostd_update larb not ready \n");
+		return;
+	}
+#endif
 
 	plist_for_each_entry(req, head, owner_node) {
 		larb = SMI_PMQOS_LARB_DEC(req->master_id);
@@ -575,19 +485,13 @@ void smi_ostd_update(const struct plist_head *head, const char *user)
 		smi_scen_pair[larb][SMI_ESL_INIT][port].val = ostd;
 
 		if (ATOMR_CLK(larb)) {
-			if (larb != prev) {
-				if (prev != SMI_LARB_NUM)
-					smi_bus_disable_unprepare(prev, user);
-				smi_bus_prepare_enable(larb, user);
-				prev = larb;
-			}
+			smi_bus_prepare_enable(larb, user);
 			writel(ostd, smi_dev[larb]->base +
 				smi_scen_pair[larb][SMI_ESL_INIT][port].off);
+			smi_bus_disable_unprepare(larb, user);
 		}
 		req->updated = false;
 	}
-	if (prev != SMI_LARB_NUM)
-		smi_bus_disable_unprepare(prev, user);
 }
 EXPORT_SYMBOL_GPL(smi_ostd_update);
 
@@ -612,6 +516,8 @@ s32 smi_sysram_enable(const u32 master_id, const bool enable, const char *user)
 	val = readl(smi_dev[larb]->base + SMI_LARB_NON_SEC_CON(port));
 	writel(val | ((enable ? 0xf : 0) << 16),
 		smi_dev[larb]->base + SMI_LARB_NON_SEC_CON(port));
+	SMIDBG("%s set larb%u port%u sysram %d succeeded\n",
+		user, larb, port, enable);
 	smi_bus_disable_unprepare(larb, user);
 #endif
 	return 0;
@@ -621,7 +527,7 @@ EXPORT_SYMBOL_GPL(smi_sysram_enable);
 static inline void
 smi_debug_print(const bool gce, const u32 num, const u32 *pos, const u32 *val)
 {
-	char buf[LINK_MAX + 1];
+	char buf[LINK_MAX + 1] = {0};
 	s32 len, i, j, ret;
 
 	for (i = 0; i < num; i += j) {
@@ -656,6 +562,9 @@ static s32 smi_debug_dumper(const bool gce, const bool off, const u32 id)
 	void __iomem *base;
 	u32 nr_debugs, *debugs, temp[MAX_INPUT];
 	s32 i, j;
+#if IS_ENABLED(CONFIG_MACH_MT6761)
+	unsigned long flags = 0;
+#endif
 
 	if (id > SMI_DEV_NUM) {
 		SMIDBG("Invalid id:%u, SMI_DEV_NUM=%u\n", id, SMI_DEV_NUM);
@@ -681,8 +590,14 @@ static s32 smi_debug_dumper(const bool gce, const bool off, const u32 id)
 		return 0;
 	}
 
+#if IS_ENABLED(CONFIG_MACH_MT6761)
+	mtk_mtcmos_lock(flags);
+#endif
 	for (i = 0; i < nr_debugs && ATOMR_CLK(j) > 0; i++)
 		temp[i] = readl(base + debugs[i]);
+#if IS_ENABLED(CONFIG_MACH_MT6761)
+	mtk_mtcmos_unlock(flags);
+#endif
 	if (i < nr_debugs) {
 		SMIWRN(gce, "======== %s%u OFF ========\n", name, id);
 		return 0;
@@ -691,25 +606,6 @@ static s32 smi_debug_dumper(const bool gce, const bool off, const u32 id)
 	SMIWRN(gce, "======== %s%u non-zero value, clk:%d ========\n",
 		name, id, ATOMR_CLK(j));
 	smi_debug_print(gce, nr_debugs, debugs, temp);
-
-#if IS_ENABLED(CONFIG_MACH_MT6885) || IS_ENABLED(CONFIG_MACH_MT6893)
-	if (id != SMI_LARB_NUM + 4 && id != SMI_LARB_NUM + 6)
-		return 0;
-
-	nr_debugs = SMI_RSI_DEBUG_NUM;
-	debugs = smi_rsi_debug_offset;
-
-	for (i = 0; i < nr_debugs && ATOMR_CLK(j) > 0; i++)
-		temp[i] = readl(base + debugs[i]);
-	if (i < nr_debugs) {
-		SMIWRN(gce, "======== %s%u RSI OFF ========\n", name, id);
-		return 0;
-	}
-
-	SMIWRN(gce, "======== %s%u RSI non-zero value, clk:%d ========\n",
-		name, id, ATOMR_CLK(j));
-	smi_debug_print(gce, nr_debugs, debugs, temp);
-#endif
 	return 0;
 }
 
@@ -739,25 +635,36 @@ s32 smi_debug_bus_hang_detect(const bool gce, const char *user)
 {
 	u32 time = 5, busy[SMI_DEV_NUM] = {0};
 	s32 i, j, ret = 0;
+#if IS_ENABLED(CONFIG_MACH_MT6761)
+	unsigned long flags = 0;
+#endif
 
 #if IS_ENABLED(CONFIG_MEDIATEK_EMI)
 	mtk_emidbg_dump();
-#elif IS_ENABLED(CONFIG_MTK_EMI) || IS_ENABLED(CONFIG_MTK_EMI_BWL)
-	dump_emi_outstanding();
 #endif
+
 #if IS_ENABLED(CONFIG_MTK_IOMMU_V2)
-	smi_bus_prepare_enable(SMI_LARB_NUM, user);
-	smi_bus_prepare_enable(SMI_LARB_NUM + 1, user);
-	mtk_dump_reg_for_hang_issue(0);
-	smi_bus_disable_unprepare(SMI_LARB_NUM + 1, user);
-	smi_bus_disable_unprepare(SMI_LARB_NUM, user);
+	//mtk_dump_reg_for_hang_issue();
 #elif IS_ENABLED(CONFIG_MTK_M4U)
-	m4u_dump_reg_for_smi_hang_issue();
+	//m4u_dump_reg_for_smi_hang_issue();
 #endif
+
+	if (!smi_dev[0]) {
+		SMIERR("SMI %s is not ready.\n", __func__);
+		return 0;
+	}
+
 	for (i = 0; i < time; i++) {
-		for (j = 0; j < SMI_LARB_NUM; j++)
+		for (j = 0; j < SMI_LARB_NUM; j++) {
+#if IS_ENABLED(CONFIG_MACH_MT6761)
+			mtk_mtcmos_lock(flags);
+#endif
 			busy[j] += ((ATOMR_CLK(j) > 0 &&
 			readl(smi_dev[j]->base + SMI_LARB_STAT)) ? 1 : 0);
+#if IS_ENABLED(CONFIG_MACH_MT6761)
+			mtk_mtcmos_unlock(flags);
+#endif
+		}
 		/* COMM */
 		for (j = SMI_LARB_NUM; j < SMI_DEV_NUM; j++)
 			busy[j] += ((ATOMR_CLK(j) > 0 &&
@@ -790,24 +697,6 @@ s32 smi_debug_bus_hang_detect(const bool gce, const char *user)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(smi_debug_bus_hang_detect);
-
-#if IS_ENABLED(CONFIG_MACH_MT6873) && IS_ENABLED(SMI_ASSERT)
-static void smi_common_assert_cb(struct cmdq_cb_data data)
-{
-	unsigned long nsec;
-
-	if (data.err >= 0)
-		return;
-
-	smi_cmdq.tick = sched_clock();
-	nsec = do_div(smi_cmdq.tick, 1000000000);
-
-	/* TODO workqueue */
-	smi_debug_bus_hang_detect(false, DEV_NAME);
-	SMIWRN(1, "[%5llu.%06lu] assert condition failed\n",
-		smi_cmdq.tick, nsec);
-}
-#endif
 
 static inline void smi_larb_port_set(const struct mtk_smi_dev *smi)
 {
@@ -997,36 +886,36 @@ static long smi_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 				break;
 			default:
 				SMIWRN(0, "invalid mmdvfs QOS cmd\n");
-				return -EINVAL;
+				ret = -EINVAL;
+				break;
 			}
 		}
 		break;
 	}
 #ifdef MMDVFS_HOOK
 	case MTK_IOC_SMI_BWC_INFO_SET:
-	{
 		ret = set_mm_info_ioctl_wrapper(file, cmd, arg);
 		break;
-	}
 	case MTK_IOC_SMI_BWC_INFO_GET:
-	{
 		ret = get_mm_info_ioctl_wrapper(file, cmd, arg);
 		break;
-	}
 	case MTK_IOC_MMDVFS_CMD:
 	{
 		struct MTK_MMDVFS_CMD mmdvfs_cmd;
 
 		if (copy_from_user(&mmdvfs_cmd,
-			(void *)arg, sizeof(struct MTK_MMDVFS_CMD)))
-			return -EFAULT;
-
+			(void *)arg, sizeof(struct MTK_MMDVFS_CMD))) {
+			ret = -EFAULT;
+			break;
+		}
 
 		mmdvfs_handle_cmd(&mmdvfs_cmd);
 
 		if (copy_to_user((void *)arg,
-			(void *)&mmdvfs_cmd, sizeof(struct MTK_MMDVFS_CMD)))
-			return -EFAULT;
+			(void *)&mmdvfs_cmd, sizeof(struct MTK_MMDVFS_CMD))) {
+			ret = -EFAULT;
+			break;
+		}
 		break;
 	}
 #endif
@@ -1037,11 +926,236 @@ static long smi_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	return ret;
 }
 
+#if IS_ENABLED(CONFIG_COMPAT)
+struct MTK_SMI_COMPAT_BWC_CONFIG {
+	compat_int_t scen;
+	compat_int_t b_on;
+};
+
+struct MTK_SMI_COMPAT_BWC_INFO_SET {
+	compat_int_t property;
+	compat_int_t value1;
+	compat_int_t value2;
+};
+
+struct MTK_SMI_COMPAT_BWC_MM_INFO {
+	compat_uint_t flag; /* reserved */
+	compat_int_t concurrent_profile;
+	compat_int_t sensor_size[2];
+	compat_int_t video_record_size[2];
+	compat_int_t display_size[2];
+	compat_int_t tv_out_size[2];
+	compat_int_t fps;
+	compat_int_t video_encode_codec;
+	compat_int_t video_decode_codec;
+	compat_int_t hw_ovl_limit;
+};
+
+#define COMPAT_MTK_IOC_SMI_BWC_CONFIG \
+	_IOW('O', 24, struct MTK_SMI_COMPAT_BWC_CONFIG)
+static int smi_bwc_config_compat_get(
+	struct MTK_SMI_BWC_CONF __user *data,
+	struct MTK_SMI_COMPAT_BWC_CONFIG __user *data32)
+{
+	compat_int_t i;
+	int ret;
+
+	ret = get_user(i, &(data32->scen));
+	ret |= put_user(i, &(data->scen));
+	ret |= get_user(i, &(data32->b_on));
+	ret |= put_user(i, &(data->b_on));
+	return ret;
+}
+
+#define COMPAT_MTK_IOC_SMI_BWC_INFO_SET \
+	_IOWR('O', 28, struct MTK_SMI_COMPAT_BWC_INFO_SET)
+static int smi_bwc_info_compat_set(
+	struct MTK_SMI_BWC_INFO_SET __user *data,
+	struct MTK_SMI_COMPAT_BWC_INFO_SET __user *data32)
+{
+	compat_int_t i;
+	int ret;
+
+	ret = get_user(i, &(data32->property));
+	ret |= put_user(i, &(data->property));
+	ret |= get_user(i, &(data32->value1));
+	ret |= put_user(i, &(data->value1));
+	ret |= get_user(i, &(data32->value2));
+	ret |= put_user(i, &(data->value2));
+	return ret;
+}
+
+#define COMPAT_MTK_IOC_SMI_BWC_INFO_GET \
+	_IOWR('O', 29, struct MTK_SMI_COMPAT_BWC_MM_INFO)
+static int smi_bwc_info_compat_get(
+	struct MTK_SMI_BWC_MM_INFO __user *data,
+	struct MTK_SMI_COMPAT_BWC_MM_INFO __user *data32)
+{
+	compat_uint_t u;
+	compat_int_t p[2] = {0};
+	compat_int_t i;
+	int ret;
+
+	ret = get_user(u, &(data32->flag));
+	ret |= put_user(u, &(data->flag));
+
+	ret |= copy_from_user(p, &(data32->sensor_size), sizeof(p));
+	ret |= copy_to_user(&(data->sensor_size), p, sizeof(p));
+	ret |= copy_from_user(p, &(data32->video_record_size), sizeof(p));
+	ret |= copy_to_user(&(data->video_record_size), p, sizeof(p));
+	ret |= copy_from_user(p, &(data32->display_size), sizeof(p));
+	ret |= copy_to_user(&(data->display_size), p, sizeof(p));
+	ret |= copy_from_user(p, &(data32->tv_out_size), sizeof(p));
+	ret |= copy_to_user(&(data->tv_out_size), p, sizeof(p));
+
+	ret |= get_user(i, &(data32->concurrent_profile));
+	ret |= put_user(i, &(data->concurrent_profile));
+	ret |= get_user(i, &(data32->fps));
+	ret |= put_user(i, &(data->fps));
+	ret |= get_user(i, &(data32->video_encode_codec));
+	ret |= put_user(i, &(data->video_encode_codec));
+	ret |= get_user(i, &(data32->video_decode_codec));
+	ret |= put_user(i, &(data->video_decode_codec));
+	ret |= get_user(i, &(data32->hw_ovl_limit));
+	ret |= put_user(i, &(data->hw_ovl_limit));
+	return ret;
+}
+
+static int smi_bwc_info_compat_put(
+	struct MTK_SMI_BWC_MM_INFO __user *data,
+	struct MTK_SMI_COMPAT_BWC_MM_INFO __user *data32)
+{
+	compat_uint_t u;
+	compat_int_t p[2] = {0};
+	compat_int_t i;
+	int ret;
+
+	ret = get_user(u, &(data->flag));
+	ret |= put_user(u, &(data32->flag));
+
+	ret |= copy_from_user(p, &(data->sensor_size), sizeof(p));
+	ret |= copy_to_user(&(data32->sensor_size), p, sizeof(p));
+	ret |= copy_from_user(p, &(data->video_record_size), sizeof(p));
+	ret |= copy_to_user(&(data32->video_record_size), p, sizeof(p));
+	ret |= copy_from_user(p, &(data->display_size), sizeof(p));
+	ret |= copy_to_user(&(data32->display_size), p, sizeof(p));
+	ret |= copy_from_user(p, &(data->tv_out_size), sizeof(p));
+	ret |= copy_to_user(&(data32->tv_out_size), p, sizeof(p));
+
+	ret |= get_user(i, &(data->concurrent_profile));
+	ret |= put_user(i, &(data32->concurrent_profile));
+	ret |= get_user(i, &(data->fps));
+	ret |= put_user(i, &(data32->fps));
+	ret |= get_user(i, &(data->video_encode_codec));
+	ret |= put_user(i, &(data32->video_encode_codec));
+	ret |= get_user(i, &(data->video_decode_codec));
+	ret |= put_user(i, &(data32->video_decode_codec));
+	ret |= get_user(i, &(data->hw_ovl_limit));
+	ret |= put_user(i, &(data32->hw_ovl_limit));
+	return ret;
+}
+
+static long smi_compat_ioctl(struct file *file, unsigned int cmd,
+	unsigned long arg)
+{
+	int ret = 0;
+
+	if (!file->f_op || !file->f_op->unlocked_ioctl)
+		return -ENOTTY;
+
+	switch (cmd) {
+	case COMPAT_MTK_IOC_SMI_BWC_CONFIG:
+	{
+		struct MTK_SMI_BWC_CONF __user *data;
+		struct MTK_SMI_COMPAT_BWC_CONFIG __user *data32;
+
+		data32 = compat_ptr(arg);
+
+		if (cmd == MTK_IOC_SMI_BWC_CONF)
+			return file->f_op->unlocked_ioctl(file, cmd,
+				(unsigned long)data32);
+
+		data = compat_alloc_user_space(
+			sizeof(struct MTK_SMI_BWC_CONF));
+		if (!data)
+			return -EFAULT;
+
+		ret = smi_bwc_config_compat_get(data, data32);
+		if (ret)
+			return ret;
+
+		return file->f_op->unlocked_ioctl(file,
+			MTK_IOC_SMI_BWC_CONF, (unsigned long)data);
+	}
+
+	case COMPAT_MTK_IOC_SMI_BWC_INFO_SET:
+	{
+		struct MTK_SMI_BWC_INFO_SET __user *data;
+		struct MTK_SMI_COMPAT_BWC_INFO_SET __user *data32;
+
+		data32 = compat_ptr(arg);
+
+		if (cmd == MTK_IOC_SMI_BWC_INFO_SET)
+			return file->f_op->unlocked_ioctl(file, cmd,
+				(unsigned long)data32);
+
+		data = compat_alloc_user_space(
+			sizeof(struct MTK_SMI_BWC_INFO_SET));
+		if (!data)
+			return -EFAULT;
+
+		ret = smi_bwc_info_compat_set(data, data32);
+		if (ret)
+			return ret;
+
+		return file->f_op->unlocked_ioctl(file,
+			MTK_IOC_SMI_BWC_INFO_SET, (unsigned long)data);
+	}
+
+	case COMPAT_MTK_IOC_SMI_BWC_INFO_GET:
+	{
+		struct MTK_SMI_BWC_MM_INFO __user *data;
+		struct MTK_SMI_COMPAT_BWC_MM_INFO __user *data32;
+
+		data32 = compat_ptr(arg);
+
+		if (cmd == MTK_IOC_SMI_BWC_INFO_GET)
+			return file->f_op->unlocked_ioctl(file, cmd,
+				(unsigned long)data32);
+
+		data = compat_alloc_user_space(
+			sizeof(struct MTK_SMI_BWC_MM_INFO));
+		if (!data)
+			return -EFAULT;
+
+		ret = smi_bwc_info_compat_get(data, data32);
+		if (ret)
+			return ret;
+
+		ret = file->f_op->unlocked_ioctl(file,
+			MTK_IOC_SMI_BWC_INFO_GET, (unsigned long)data);
+
+		return smi_bwc_info_compat_put(data, data32);
+	}
+	case MTK_IOC_MMDVFS_CMD:
+	case MTK_IOC_MMDVFS_QOS_CMD:
+		return file->f_op->unlocked_ioctl(file, cmd, (unsigned long)
+			compat_ptr(arg));
+	default:
+		return -ENOIOCTLCMD;
+	}
+}
+#else /* #if !IS_ENABLED(CONFIG_COMPAT) */
+#define smi_compat_ioctl NULL
+#endif
+
+
 static const struct file_operations smi_file_opers = {
 	.owner = THIS_MODULE,
 	.open = smi_open,
 	.release = smi_release,
 	.unlocked_ioctl = smi_ioctl,
+	.compat_ioctl = smi_compat_ioctl,
 };
 
 static inline void smi_subsys_sspm_ipi(const bool ena, const u32 subsys)
@@ -1066,10 +1180,10 @@ static inline void smi_subsys_sspm_ipi(const bool ena, const u32 subsys)
 			IPI_SEND_POLLING, &ipi_data,
 			sizeof(ipi_data) / SSPM_MBOX_SLOT_SIZE, 2000);
 	} while (smi_dram.ackdata);
-#if 0
-	SMIDBG("ena:%d subsys:%#x smi_subsys_on:%#x ackdata:%d\n",
-		ena, subsys, smi_subsys_on, smi_dram.ackdata);
-#endif
+/*
+ *	SMIDBG("ena:%d subsys:%#x smi_subsys_on:%#x ackdata:%d\n",
+ *		ena, subsys, smi_subsys_on, smi_dram.ackdata);
+ */
 #else
 	do {
 		ret = sspm_ipi_send_sync(IPI_ID_SMI, IPI_OPT_POLLING, &ipi_data,
@@ -1084,23 +1198,57 @@ static void smi_subsys_after_on(enum subsys_id sys)
 	u32 subsys = smi_subsys_to_larbs[sys];
 	u32 smi_scen = smi_scen_map[smi_drv.scen];
 	s32 i;
+#if IS_ENABLED(CONFIG_MACH_MT6781)
+	s32 j;
+#endif
 
 	if (!subsys)
 		return;
-#if IS_ENABLED(CONFIG_MMPROFILE)
-	mmprofile_log(smi_mmp_event[sys], MMPROFILE_FLAG_START);
-#endif
-	for (i = SMI_DEV_NUM - 1; i >= 0; i--)
+
+#if IS_ENABLED(CONFIG_MACH_MT6781)
+	for (i = SMI_DEV_NUM - 1; i >= 0; i--) {
 		if (subsys & (1 << i)) {
 			smi_clk_record(i, true, NULL);
 			mtk_smi_clk_enable(smi_dev[i]);
+
+			//larb enable
+			if (smi_dev[i]->comm_reset) {
+				//power reset
+				for (j = 0; (j < MAX_LARB_FOR_CLAMP)
+					&& smi_dev[i]->power_reset_reg[j]; j++) {
+					writel(smi_dev[i]->power_reset_value[j],
+						smi_dev[i]->power_reset_reg[j]);
+					writel(0, smi_dev[i]->power_reset_reg[j]);
+				}
+				//common reset
+				for (j = 0; (j < MAX_LARB_FOR_CLAMP)
+					&& smi_dev[i]->comm_reset_reg[j]; j++) {
+					writel(smi_dev[i]->comm_reset_value[j],
+						smi_dev[i]->comm_reset_reg[j]
+						+ SMI_COMMON_CLAMP_EN_CLR);
+				}
+			}
+			//common enable
+			for (j = 0; (j < MAX_LARB_FOR_CLAMP)
+						&& smi_dev[i]->comm_clamp_value[j]; j++) {
+				writel(smi_dev[i]->comm_clamp_value[j],
+					smi_dev[i]->base + SMI_COMMON_CLAMP_EN_SET);
+			}
+		}
+	}
+#endif
+
+#if IS_ENABLED(CONFIG_MMPROFILE)
+	//mmprofile_log(smi_mmp_event[sys], MMPROFILE_FLAG_START);
+#endif
+	for (i = SMI_DEV_NUM - 1; i >= 0; i--)
+		if (subsys & (1 << i)) {
+#if !IS_ENABLED(CONFIG_MACH_MT6781)
+			smi_clk_record(i, true, NULL);
+			mtk_smi_clk_enable(smi_dev[i]);
+#endif
 			mtk_smi_conf_set(smi_dev[i], smi_scen);
 			smi_larb_port_set(smi_dev[i]);
-#if IS_ENABLED(CONFIG_MACH_MT6873) && IS_ENABLED(SMI_ASSERT)
-			if (i == SMI_LARB_NUM)
-				cmdq_pkt_flush_async(smi_cmdq.pkt,
-					smi_common_assert_cb, NULL);
-#endif
 		}
 	smi_subsys_sspm_ipi(true, subsys);
 }
@@ -1109,6 +1257,9 @@ static void smi_subsys_before_off(enum subsys_id sys)
 {
 	u32 subsys = smi_subsys_to_larbs[sys];
 	s32 i;
+#if IS_ENABLED(CONFIG_MACH_MT6781)
+	s32 j;
+#endif
 
 	if (!subsys)
 		return;
@@ -1122,19 +1273,34 @@ static void smi_subsys_before_off(enum subsys_id sys)
 #if IS_ENABLED(CONFIG_MACH_MT6885) || IS_ENABLED(CONFIG_MACH_MT6893)
 			if ((smi_mm_first & subsys) && sys == SYS_MDP)
 				continue;
-#elif IS_ENABLED(CONFIG_MACH_MT6873) && IS_ENABLED(SMI_ASSERT)
-			if (i == SMI_LARB_NUM && !(smi_mm_first & subsys))
-				cmdq_mbox_stop(smi_cmdq.clt);
 #endif
+#if !IS_ENABLED(CONFIG_MACH_MT6781)
 			mtk_smi_clk_disable(smi_dev[i]);
+#endif
 		}
 	smi_mm_first &= ~subsys;
 #if IS_ENABLED(CONFIG_MMPROFILE)
-	mmprofile_log(smi_mmp_event[sys], MMPROFILE_FLAG_END);
+	//mmprofile_log(smi_mmp_event[sys], MMPROFILE_FLAG_END);
+#endif
+#if IS_ENABLED(CONFIG_MACH_MT6781)
+	for (i = SMI_DEV_NUM - 1; i >= 0; i--) {
+		if (subsys & (1 << i)) {
+			if (smi_dev[i]->comm_reset) {
+				for (j = 0; (j < MAX_LARB_FOR_CLAMP)
+						&& smi_dev[i]->comm_reset_reg[j]; j++) {
+					//larb disable
+					writel(smi_dev[i]->comm_reset_value[j],
+						smi_dev[i]->comm_reset_reg[j] +
+						SMI_COMMON_CLAMP_EN_SET);
+				}
+			}
+			mtk_smi_clk_disable(smi_dev[i]);
+		}
+	}
 #endif
 }
 
-#if !IS_ENABLED(SMI_CCF_NO_DUMP)
+#if IS_ENABLED(CONFIG_MACH_MT6785) || IS_ENABLED(CONFIG_MACH_MT6885)
 static void smi_subsys_debug_dump(enum subsys_id sys)
 {
 	if (!smi_subsys_to_larbs[sys])
@@ -1146,7 +1312,7 @@ static void smi_subsys_debug_dump(enum subsys_id sys)
 static struct pg_callbacks smi_clk_subsys_handle = {
 	.after_on = smi_subsys_after_on,
 	.before_off = smi_subsys_before_off,
-#if !IS_ENABLED(SMI_CCF_NO_DUMP)
+#if IS_ENABLED(CONFIG_MACH_MT6785) || IS_ENABLED(CONFIG_MACH_MT6885)
 	.debug_dump = smi_subsys_debug_dump,
 #endif
 };
@@ -1157,7 +1323,6 @@ static s32 smi_conf_get(const u32 id)
 		SMIDBG("Invalid id:%u, SMI_DEV_NUM=%u\n", id, SMI_DEV_NUM);
 		return -EINVAL;
 	}
-
 	smi_dev[id] = mtk_smi_dev_get(id);
 	if (!smi_dev[id]) {
 		SMIDBG("SMI%u no such device or address\n", id);
@@ -1187,7 +1352,6 @@ s32 smi_register(void)
 	dev_no = MKDEV(MTK_SMI_MAJOR_NUMBER, 0);
 	if (alloc_chrdev_region(&dev_no, 0, 1, DEV_NAME))
 		SMIERR("Allocate chrdev region failed\n");
-
 	cdev = cdev_alloc();
 	if (!cdev)
 		SMIERR("Allocate cdev failed\n");
@@ -1198,7 +1362,6 @@ s32 smi_register(void)
 		if (cdev_add(cdev, dev_no, 1))
 			SMIERR("Add cdev failed\n");
 	}
-
 	class = class_create(THIS_MODULE, DEV_NAME);
 	if (IS_ERR(class))
 		SMIERR("Create class failed: %ld\n", PTR_ERR(class));
@@ -1215,6 +1378,7 @@ s32 smi_register(void)
 
 	/* mmsys */
 	smi_conf_get(SMI_LARB_NUM);
+
 	of_node = of_parse_phandle(
 		smi_dev[SMI_LARB_NUM]->dev->of_node, "mmsys_config", 0);
 	smi_mmsys_base = (void *)of_iomap(of_node, 0);
@@ -1226,47 +1390,6 @@ s32 smi_register(void)
 		return -EINVAL;
 	SMIWRN(0, "MMSYS base: VA=%p, PA=%pa\n", smi_mmsys_base, &res.start);
 	of_node_put(of_node);
-
-#if IS_ENABLED(CONFIG_MACH_MT6873) && IS_ENABLED(SMI_ASSERT)
-	smi_cmdq.dev = smi_dev[SMI_LARB_NUM]->dev;
-	smi_cmdq.base = smi_dev[SMI_LARB_NUM]->base;
-	if (of_address_to_resource(smi_cmdq.dev->of_node, 0, &res))
-		return -EINVAL;
-	smi_cmdq.addr = res.start;
-	SMIWRN(0, "COMMON dev:%p base:%p addr:%pa\n",
-		smi_cmdq.dev, smi_cmdq.base, &smi_cmdq.addr);
-
-	smi_cmdq.clt = cmdq_mbox_create(smi_cmdq.dev, 0);
-	if (IS_ERR(smi_cmdq.clt)) {
-		SMIERR("cmdq_mbox_create failed:%ld\n", PTR_ERR(smi_cmdq.clt));
-		return PTR_ERR(smi_cmdq.clt);
-	}
-
-	smi_cmdq.pkt = cmdq_pkt_create(smi_cmdq.clt);
-	if (IS_ERR(smi_cmdq.pkt)) {
-		SMIERR("cmdq_pkt_create failed:%ld\n", PTR_ERR(smi_cmdq.pkt));
-		return PTR_ERR(smi_cmdq.pkt);
-	}
-
-	i = of_property_read_u16(smi_cmdq.dev->of_node,
-		"gce-event", &smi_cmdq.event);
-	if (i < 0) {
-		SMIERR("gce-event read failed:%d\n", i);
-		return i;
-	}
-	SMIWRN(0, "clt:%p pkt:%p event:%hu\n",
-		smi_cmdq.clt, smi_cmdq.pkt, smi_cmdq.event);
-
-	cmdq_pkt_write(smi_cmdq.pkt, NULL,
-		smi_cmdq.addr + SMI_AST_EN, 0, UINT_MAX);
-	cmdq_pkt_write(smi_cmdq.pkt, NULL,
-		smi_cmdq.addr + SMI_AST_COND, (26 << 1) | 1, UINT_MAX);
-	cmdq_pkt_write(smi_cmdq.pkt, NULL,
-		smi_cmdq.addr + SMI_AST_EN, 1, UINT_MAX);
-	cmdq_pkt_wfe(smi_cmdq.pkt, smi_cmdq.event);
-	cmdq_pkt_finalize_loop(smi_cmdq.pkt);
-	cmdq_dump_pkt(smi_cmdq.pkt, 0, true);
-#endif
 
 	/* init */
 	spin_lock(&(smi_drv.lock));
@@ -1284,18 +1407,21 @@ s32 smi_register(void)
 		}
 	}
 	smi_mm_first = ~0;
-
 #ifdef MMDVFS_HOOK
 	mmdvfs_init();
 	mmdvfs_clks_init(smi_dev[SMI_LARB_NUM]->dev->of_node);
 #endif
-
 	smi_debug_dump_status(false);
 	register_pg_callback(&smi_clk_subsys_handle);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(smi_register);
 
+s32 smi_get_dev_num(void)
+{
+	return SMI_DEV_NUM;
+}
+EXPORT_SYMBOL_GPL(smi_get_dev_num);
 static int smi_dram_open(struct inode *node, struct file *filp)
 {
 	return nonseekable_open(node, filp);
@@ -1317,20 +1443,23 @@ static const struct file_operations smi_dram_file_opers = {
 static inline void smi_mmp_init(void)
 {
 #if IS_ENABLED(CONFIG_MMPROFILE)
-	s32 i;
 
-	mmp_event smi_mmp;
+	//s32 i;
 
-	mmprofile_enable(1);
-	smi_mmp = mmprofile_register_event(MMP_ROOT_EVENT, DEV_NAME);
-	for (i = 0; i < NR_SYSS; i++)
-		if (smi_mmp_name[i])
-			smi_mmp_event[i] =
-			mmprofile_register_event(smi_mmp, smi_mmp_name[i]);
-	mmprofile_enable_event_recursive(smi_mmp, 1);
-	mmprofile_start(1);
+	//mmp_event smi_mmp;
+
+	//mmprofile_enable(1);
+	//smi_mmp = mmprofile_register_event(MMP_ROOT_EVENT, DEV_NAME);
+	//for (i = 0; i < NR_SYSS; i++)
+	//	if (smi_mmp_name[i])
+	//		smi_mmp_event[i] =
+	//		mmprofile_register_event(smi_mmp, smi_mmp_name[i]);
+	//mmprofile_enable_event_recursive(smi_mmp, 1);
+	//mmprofile_start(1);
 #endif
 }
+
+
 
 static inline void smi_dram_init(void)
 {
@@ -1381,7 +1510,7 @@ static inline void smi_dram_init(void)
 	smi_dram.node = debugfs_create_file(
 		"smi_mon", 0444, NULL, (void *)0, &smi_dram_file_opers);
 	if (IS_ERR(smi_dram.node))
-		SMIERR("debugfs_create_file failed: %ld\n",
+		pr_info("debugfs_create_file failed: %ld\n",
 			PTR_ERR(smi_dram.node));
 }
 

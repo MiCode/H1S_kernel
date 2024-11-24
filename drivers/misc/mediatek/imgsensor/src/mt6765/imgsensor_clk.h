@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 
 #ifndef __IMGSENSOR_CLK_H__
 #define __IMGSENSOR_CLK_H__
@@ -19,11 +12,6 @@
 #include <linux/platform_device.h>
 #include <kd_imgsensor_define.h>
 #define IMGSENSOR_DFS_CTRL_ENABLE
-
-#ifdef IMGSENSOR_DFS_CTRL_ENABLE
-#include <linux/pm_qos.h>
-#include <mmdvfs_pmqos.h>
-#endif
 
 enum IMGSENSOR_CCF {
 	IMGSENSOR_CCF_MCLK_TG_MIN_NUM,
@@ -47,11 +35,6 @@ enum IMGSENSOR_CCF {
 	IMGSENSOR_CCF_CG_MIPIC0_26M,
 	IMGSENSOR_CCF_CG_MIPIC1_26M,
 	IMGSENSOR_CCF_CG_MIPI_ANA_0A,
-	IMGSENSOR_CCF_CG_MIPI_ANA_0B,
-	IMGSENSOR_CCF_CG_MIPI_ANA_1A,
-	IMGSENSOR_CCF_CG_MIPI_ANA_1B,
-	IMGSENSOR_CCF_CG_MIPI_ANA_2A,
-	IMGSENSOR_CCF_CG_MIPI_ANA_2B,
 	IMGSENSOR_CCF_CG_CAMTM_SEL,
 	IMGSENSOR_CCF_CG_CAMTM_SRC_208,
 	IMGSENSOR_CCF_CG_MAX_NUM,
@@ -66,7 +49,6 @@ struct IMGSENSOR_CLK {
 	atomic_t    enable_cnt[IMGSENSOR_CCF_MAX_NUM];
 };
 
-#ifdef IMGSENSOR_DFS_CTRL_ENABLE
 enum DFS_OPTION {
 	DFS_CTRL_ENABLE,
 	DFS_CTRL_DISABLE,
@@ -75,8 +57,12 @@ enum DFS_OPTION {
 	DFS_SUPPORTED_ISP_CLOCKS,
 	DFS_CUR_ISP_CLOCK,
 };
+#ifdef IMGSENSOR_DFS_CTRL_ENABLE
+#include <linux/soc/mediatek/mtk-pm-qos.h>
+#include <mmdvfs_pmqos.h>
 extern int imgsensor_dfs_ctrl(enum DFS_OPTION option, void *pbuff);
 #endif
+
 extern unsigned int mt_get_ckgen_freq(int ID);
 enum IMGSENSOR_RETURN imgsensor_clk_init(struct IMGSENSOR_CLK *pclk);
 int  imgsensor_clk_set(

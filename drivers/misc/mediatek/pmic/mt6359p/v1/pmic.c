@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <generated/autoconf.h>
 #include <linux/delay.h>
@@ -23,8 +15,9 @@
 #include "include/pmic.h"
 #include "include/pmic_api_buck.h"
 #include "include/regulator_codegen.h"
+#if defined(CONFIG_MFD_MT6362)
 #include <mt6362_buck_manager.h>
-
+#endif
 /* VRFDIG use VPU of MT6359+ in MT6885 */
 static unsigned int g_vrfdig_vosel;
 

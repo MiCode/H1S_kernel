@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -56,20 +48,12 @@ static struct thermal_governor thermal_gov_backward_compatible = {
 	.throttle = backward_compatible_throttle,
 };
 
-static int __init thermal_gov_backward_compatible_init(void)
+int thermal_gov_backward_compatible_register(void)
 {
 	return thermal_register_governor(&thermal_gov_backward_compatible);
 }
 
-static void __exit thermal_gov_backward_compatible_exit(void)
+void thermal_gov_backward_compatible_unregister(void)
 {
 	thermal_unregister_governor(&thermal_gov_backward_compatible);
 }
-
-/* This should load after thermal framework */
-fs_initcall(thermal_gov_backward_compatible_init);
-module_exit(thermal_gov_backward_compatible_exit);
-
-MODULE_AUTHOR("Weiyi Lu");
-MODULE_DESCRIPTION("A backward compatible Thermal governor");
-MODULE_LICENSE("GPL");

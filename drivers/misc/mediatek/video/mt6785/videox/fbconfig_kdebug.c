@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/string.h>
 #include <linux/time.h>
@@ -227,6 +219,12 @@ static int fbconfig_open(struct inode *inode, struct file *file)
 	PanelMaster_set_PM_enable(1);
 	pm_params->pLcm_drv = DISP_GetLcmDrv();
 	pm_params->pLcm_params = DISP_GetLcmPara();
+
+	if (unlikely(pm_params->pLcm_params == NULL)) {
+		pr_info("%s #%d pLcm_params is null\n",
+			__func__, __LINE__);
+		return -EFAULT;
+	}
 
 	if (pm_params->pLcm_params->lcm_if == LCM_INTERFACE_DSI_DUAL)
 		pm_params->dsi_id = PM_DSI_DUAL;

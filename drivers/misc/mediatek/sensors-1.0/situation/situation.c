@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #define pr_fmt(fmt) "<SITUATION> " fmt
@@ -116,7 +107,7 @@ int situation_data_report_t(int handle, uint32_t one_sample_data,
 	err = sensor_input_event(situation_context_obj->mdev.minor, &event);
 	if (cxt->ctl_context[index].situation_ctl.open_report_data != NULL &&
 		cxt->ctl_context[index].situation_ctl.is_support_wake_lock)
-		__pm_wakeup_event(&cxt->ws[index], 250);
+		__pm_wakeup_event(cxt->ws[index], 250);
 	return err;
 }
 int situation_data_report(int handle, uint32_t one_sample_data)
@@ -145,7 +136,7 @@ int sar_data_report_t(int32_t value[3], int64_t time_stamp)
 	err = sensor_input_event(situation_context_obj->mdev.minor, &event);
 	if (cxt->ctl_context[index].situation_ctl.open_report_data != NULL &&
 		cxt->ctl_context[index].situation_ctl.is_support_wake_lock)
-		__pm_wakeup_event(&cxt->ws[index], 250);
+		__pm_wakeup_event(cxt->ws[index], 250);
 	return err;
 }
 int sar_data_report(int32_t value[3])
@@ -174,7 +165,7 @@ int lightsecondary_data_report_t(int32_t value[3], int64_t time_stamp)
 	err = sensor_input_event(situation_context_obj->mdev.minor, &event);
 	if (cxt->ctl_context[index].situation_ctl.open_report_data != NULL &&
 		cxt->ctl_context[index].situation_ctl.is_support_wake_lock)
-		__pm_wakeup_event(&cxt->ws[index], 250);
+		__pm_wakeup_event(cxt->ws[index], 250);
 	return err;
 }
 
@@ -300,7 +291,7 @@ static int situation_enable_and_batch(int index)
 }
 #endif
 
-static ssize_t situation_store_active(struct device *dev,
+static ssize_t situactive_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct situation_context *cxt = situation_context_obj;
@@ -365,7 +356,7 @@ err_out:
 }
 
 /*----------------------------------------------------------------------------*/
-static ssize_t situation_show_active(struct device *dev,
+static ssize_t situactive_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	struct situation_context *cxt = NULL;
@@ -382,7 +373,7 @@ static ssize_t situation_show_active(struct device *dev,
 	return s_len;
 }
 
-static ssize_t situation_store_batch(struct device *dev,
+static ssize_t situbatch_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct situation_context *cxt = situation_context_obj;
@@ -439,7 +430,7 @@ err_out:
 		return count;
 }
 
-static ssize_t situation_show_batch(struct device *dev,
+static ssize_t situbatch_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	int len = 0;
@@ -448,7 +439,7 @@ static ssize_t situation_show_batch(struct device *dev,
 	return len;
 }
 
-static ssize_t situation_store_flush(struct device *dev,
+static ssize_t situflush_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct situation_context *cxt = NULL;
@@ -481,7 +472,7 @@ static ssize_t situation_store_flush(struct device *dev,
 		return count;
 }
 
-static ssize_t situation_show_flush(struct device *dev,
+static ssize_t situflush_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	int len = 0;
@@ -490,7 +481,7 @@ static ssize_t situation_show_flush(struct device *dev,
 	return len;
 }
 
-static ssize_t situation_show_devnum(struct device *dev,
+static ssize_t situdevnum_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);	/* TODO: why +5? */
@@ -586,13 +577,11 @@ static int situation_misc_init(struct situation_context *cxt)
 	return err;
 }
 
-DEVICE_ATTR(situactive, 0644,
-	situation_show_active, situation_store_active);
-DEVICE_ATTR(situbatch, 0644, situation_show_batch, situation_store_batch);
-DEVICE_ATTR(situflush, 0644, situation_show_flush, situation_store_flush);
-DEVICE_ATTR(situdevnum, 0644, situation_show_devnum, NULL);
+DEVICE_ATTR_RW(situactive);
+DEVICE_ATTR_RW(situbatch);
+DEVICE_ATTR_RW(situflush);
+DEVICE_ATTR_RO(situdevnum);
 DEVICE_ATTR(lightsecondaryCali, 0644, NULL, lightsecondary_store_cali);
-
 
 static struct attribute *situation_attributes[] = {
 	&dev_attr_situactive.attr,
@@ -660,7 +649,12 @@ int situation_register_control_path(struct situation_control_path *ctl,
 	if (!cxt->wake_lock_name[index])
 		return -1;
 	sprintf(cxt->wake_lock_name[index], "situation_wakelock-%d", index);
-	wakeup_source_init(&cxt->ws[index], cxt->wake_lock_name[index]);
+	cxt->ws[index] = wakeup_source_register(NULL,
+						cxt->wake_lock_name[index]);
+	if (!cxt->ws[index]) {
+		pr_err("%s: wakeup source init fail\n", __func__);
+		return -ENOMEM;
+	}
 
 	return 0;
 }

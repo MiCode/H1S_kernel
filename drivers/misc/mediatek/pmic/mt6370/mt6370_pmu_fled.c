@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- *  Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -186,23 +179,6 @@ static inline int mt6370_fled_parse_dt(struct device *dev,
 		return -ENODEV;
 	}
 
-#if 0
-	ret = of_property_read_u32(np, "fled_enable", &val);
-	if (ret < 0) {
-		pr_err("%s default enable fled%d\n", __func__, fi->id+1);
-	} else {
-		if (val) {
-			pr_info("%s enable fled%d\n", __func__, fi->id+1);
-			mt6370_pmu_reg_set_bit(fi->chip,
-				MT6370_PMU_REG_FLEDEN, fi->fled_cs_mask);
-		} else {
-			pr_info("%s disable fled%d\n", __func__, fi->id+1);
-			mt6370_pmu_reg_clr_bit(fi->chip,
-				MT6370_PMU_REG_FLEDEN, fi->fled_cs_mask);
-		}
-	}
-#endif
-
 	ret = of_property_read_u32(np, "torch_cur", &val);
 	if (ret < 0)
 		pr_err("%s use default torch cur\n", __func__);
@@ -282,6 +258,24 @@ static int mt6370_fled_resume(struct rt_fled_dev *info)
 	struct mt6370_pmu_fled_data *fi = (struct mt6370_pmu_fled_data *)info;
 
 	fi->suspend = 0;
+	return 0;
+}
+
+static inline int mt6370_pmu_reg_test_bit(
+	struct mt6370_pmu_chip *chip, u8 cmd, u8 shift, bool *is_one)
+{
+	int ret = 0;
+	u8 data = 0;
+
+	ret = mt6370_pmu_reg_read(chip, cmd);
+	if (ret < 0) {
+		*is_one = false;
+		return ret;
+	}
+
+	data = ret & (1 << shift);
+	*is_one = (data == 0 ? false : true);
+
 	return 0;
 }
 
@@ -796,15 +790,6 @@ static const struct of_device_id mt_ofid_table[] = {
 	{ },
 };
 MODULE_DEVICE_TABLE(of, mt_ofid_table);
-
-#if 0
-static const struct platform_device_id mt_id_table[] = {
-	{ "mt6370_pmu_fled1", 0},
-	{ "mt6370_pmu_fled2", 0},
-	{ },
-};
-MODULE_DEVICE_TABLE(platform, mt_id_table);
-#endif
 
 static struct platform_driver mt6370_pmu_fled = {
 	.driver = {

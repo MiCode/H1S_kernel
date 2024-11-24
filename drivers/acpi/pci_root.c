@@ -153,6 +153,7 @@ static struct pci_osc_bit_struct pci_osc_control_bit[] = {
 	{ OSC_PCI_EXPRESS_PME_CONTROL, "PME" },
 	{ OSC_PCI_EXPRESS_AER_CONTROL, "AER" },
 	{ OSC_PCI_EXPRESS_CAPABILITY_CONTROL, "PCIeCapability" },
+	{ OSC_PCI_EXPRESS_LTR_CONTROL, "LTR" },
 };
 
 static void decode_osc_bits(struct acpi_pci_root *root, char *msg, u32 word,
@@ -475,8 +476,14 @@ static void negotiate_os_control(struct acpi_pci_root *root, int *no_aspm)
 	control = OSC_PCI_EXPRESS_CAPABILITY_CONTROL
 		| OSC_PCI_EXPRESS_PME_CONTROL;
 
+	if (IS_ENABLED(CONFIG_PCIEASPM))
+		control |= OSC_PCI_EXPRESS_LTR_CONTROL;
+
 	if (IS_ENABLED(CONFIG_HOTPLUG_PCI_PCIE))
 		control |= OSC_PCI_EXPRESS_NATIVE_HP_CONTROL;
+
+	if (IS_ENABLED(CONFIG_HOTPLUG_PCI_SHPC))
+		control |= OSC_PCI_SHPC_NATIVE_HP_CONTROL;
 
 	if (pci_aer_available()) {
 		if (aer_acpi_firmware_first())
@@ -732,7 +739,8 @@ next:
 	}
 }
 
-static void acpi_pci_root_remap_iospace(struct resource_entry *entry)
+static void acpi_pci_root_remap_iospace(struct fwnode_handle *fwnode,
+			struct resource_entry *entry)
 {
 #ifdef PCI_IOBASE
 	struct resource *res = entry->res;
@@ -741,7 +749,7 @@ static void acpi_pci_root_remap_iospace(struct resource_entry *entry)
 	resource_size_t length = resource_size(res);
 	unsigned long port;
 
-	if (pci_register_io_range(cpu_addr, length))
+	if (pci_register_io_range(fwnode, cpu_addr, length))
 		goto err;
 
 	port = pci_address_to_pio(cpu_addr);
@@ -783,7 +791,8 @@ int acpi_pci_probe_root_resources(struct acpi_pci_root_info *info)
 	else {
 		resource_list_for_each_entry_safe(entry, tmp, list) {
 			if (entry->res->flags & IORESOURCE_IO)
-				acpi_pci_root_remap_iospace(entry);
+				acpi_pci_root_remap_iospace(&device->fwnode,
+						entry);
 
 			if (entry->res->flags & IORESOURCE_DISABLED)
 				resource_list_destroy_entry(entry);
@@ -874,6 +883,7 @@ struct pci_bus *acpi_pci_root_create(struct acpi_pci_root *root,
 	struct acpi_device *device = root->device;
 	int node = acpi_get_node(device->handle);
 	struct pci_bus *bus;
+	struct pci_host_bridge *host_bridge;
 
 	info->root = root;
 	info->bridge = device;
@@ -898,9 +908,21 @@ struct pci_bus *acpi_pci_root_create(struct acpi_pci_root *root,
 	if (!bus)
 		goto out_release_info;
 
+	host_bridge = to_pci_host_bridge(bus->bridge);
+	if (!(root->osc_control_set & OSC_PCI_EXPRESS_NATIVE_HP_CONTROL))
+		host_bridge->native_pcie_hotplug = 0;
+	if (!(root->osc_control_set & OSC_PCI_SHPC_NATIVE_HP_CONTROL))
+		host_bridge->native_shpc_hotplug = 0;
+	if (!(root->osc_control_set & OSC_PCI_EXPRESS_AER_CONTROL))
+		host_bridge->native_aer = 0;
+	if (!(root->osc_control_set & OSC_PCI_EXPRESS_PME_CONTROL))
+		host_bridge->native_pme = 0;
+	if (!(root->osc_control_set & OSC_PCI_EXPRESS_LTR_CONTROL))
+		host_bridge->native_ltr = 0;
+
 	pci_scan_child_bus(bus);
-	pci_set_host_bridge_release(to_pci_host_bridge(bus->bridge),
-				    acpi_pci_root_release_info, info);
+	pci_set_host_bridge_release(host_bridge, acpi_pci_root_release_info,
+				    info);
 	if (node != NUMA_NO_NODE)
 		dev_printk(KERN_DEBUG, &bus->dev, "on NUMA node %d\n", node);
 	return bus;

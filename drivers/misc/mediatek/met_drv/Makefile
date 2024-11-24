@@ -1,38 +1,18 @@
-ifeq ($(ARCH), arm)
-ccflags-y += -DCONFIG_MET_ARM_32BIT
-endif	# ifeq ($(ARCH), arm)
+#
+# Copyright (C) 2019 MediaTek Inc.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2 as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
 
-obj-y += met_api.o
-
-ifeq ($(PATCHLEVEL),)
-$(error VERSION is not defined)
-endif
-
-ifeq ($(PATCHLEVEL),)
-$(error PATCHLEVEL is not defined)
-endif
-
-CONFIG_KERVER_VERSION := $(VERSION).$(PATCHLEVEL)
-
-#CONFIG_MTK_MET_BUILT_IN := y
-ifeq ($(CONFIG_MTK_MET_BUILT_IN),y)
-ccflags-y += -DMTK_MET_BUILT_IN
+#$(call all-subdir-src-or-makefile)
 MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
-MET_ROOT_DIR := $(srctree)/../vendor/mediatek/kernel_modules/met_drv/$(CONFIG_KERVER_VERSION)
-MET_COMMON_DIR := $(wildcard $(MET_ROOT_DIR)/common)
-MET_PLF_DIR := $(wildcard $(MET_ROOT_DIR)/$(MTK_PLATFORM))
+subdir-ccflags-y += -Werror
 
-ifeq ($(CONFIG_FTRACE),y)
-    ifeq ($(CONFIG_TRACING),y)
-        FTRACE_READY := y
-    endif
-endif
-
-$(info ******** Start to built in met_drv for $(MTK_PLATFORM) ********)
-ifneq ($(MET_PLF_DIR),)
-    ifeq ($(FTRACE_READY),y)
-        include $(MET_COMMON_DIR)/Kbuild
-    endif
-endif
-
-endif
+obj-$(CONFIG_MTK_MET_CORE) += core/

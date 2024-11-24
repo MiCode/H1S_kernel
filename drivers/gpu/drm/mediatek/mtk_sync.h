@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _MTK_SYNC_H
 #define _MTK_SYNC_H
@@ -102,13 +94,14 @@ void mtk_sync_timeline_destroy(struct sync_timeline *obj);
  * mtk_sync_timeline_inc() - increases timeline
  * @obj:    sync_timeline obj
  * @value:  the increment to a sync object
+ * @time:   siganl at the time if not 0
  *
  * The mtk_sync_timeline_inc() function increase the counter of @obj by @value
  * Each sync point contains a value. A sync point on a parent timeline transits
  * from active to signaled status when the counter of a timeline reaches
  * to that of a sync point.
  */
-void mtk_sync_timeline_inc(struct sync_timeline *obj, u32 value);
+void mtk_sync_timeline_inc(struct sync_timeline *obj, u32 value, ktime_t time);
 
 /**
  * mtk_sync_fence_create() - create a fence

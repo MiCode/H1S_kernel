@@ -15,6 +15,7 @@
 
 #include <linux/bitmap.h>
 #include <linux/compat.h>
+#include <linux/android_kabi.h>
 #include <uapi/linux/ethtool.h>
 
 #ifdef CONFIG_COMPAT
@@ -164,6 +165,16 @@ extern int
 __ethtool_get_link_ksettings(struct net_device *dev,
 			     struct ethtool_link_ksettings *link_ksettings);
 
+/**
+ * ethtool_intersect_link_masks - Given two link masks, AND them together
+ * @dst: first mask and where result is stored
+ * @src: second mask to intersect with
+ *
+ * Given two link mode masks, AND them together and save the result in dst.
+ */
+void ethtool_intersect_link_masks(struct ethtool_link_ksettings *dst,
+				  struct ethtool_link_ksettings *src);
+
 void ethtool_convert_legacy_u32_to_link_mode(unsigned long *dst,
 					     u32 legacy_u32);
 
@@ -302,6 +313,9 @@ bool ethtool_convert_link_mode_to_legacy_u32(u32 *legacy_u32,
  *	by kernel. Returns a negative error code or zero.
  * @get_fecparam: Get the network device Forward Error Correction parameters.
  * @set_fecparam: Set the network device Forward Error Correction parameters.
+ * @get_ethtool_phy_stats: Return extended statistics about the PHY device.
+ *	This is only useful if the device maintains PHY statistics and
+ *	cannot use the standard PHY library helpers.
  *
  * All operations are optional (i.e. the function pointer may be set
  * to %NULL) and callers must take this into account.  Callers must
@@ -363,6 +377,11 @@ struct ethtool_ops {
 			    u8 *hfunc);
 	int	(*set_rxfh)(struct net_device *, const u32 *indir,
 			    const u8 *key, const u8 hfunc);
+	int	(*get_rxfh_context)(struct net_device *, u32 *indir, u8 *key,
+				    u8 *hfunc, u32 rss_context);
+	int	(*set_rxfh_context)(struct net_device *, const u32 *indir,
+				    const u8 *key, const u8 hfunc,
+				    u32 *rss_context, bool delete);
 	void	(*get_channels)(struct net_device *, struct ethtool_channels *);
 	int	(*set_channels)(struct net_device *, struct ethtool_channels *);
 	int	(*get_dump_flag)(struct net_device *, struct ethtool_dump *);
@@ -392,5 +411,12 @@ struct ethtool_ops {
 				      struct ethtool_fecparam *);
 	int	(*set_fecparam)(struct net_device *,
 				      struct ethtool_fecparam *);
+	void	(*get_ethtool_phy_stats)(struct net_device *,
+					 struct ethtool_stats *, u64 *);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 #endif /* _LINUX_ETHTOOL_H */

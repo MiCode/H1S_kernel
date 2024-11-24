@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) "<ALS/PS> " fmt
@@ -272,17 +263,17 @@ ps_loop:
 	}
 }
 
-static void als_poll(unsigned long data)
+static void als_poll(struct timer_list *t)
 {
-	struct alsps_context *obj = (struct alsps_context *)data;
+	struct alsps_context *obj = from_timer(obj, t, timer_als);
 
 	if ((obj != NULL) && (obj->is_als_polling_run))
 		schedule_work(&obj->report_als);
 }
 
-static void ps_poll(unsigned long data)
+static void ps_poll(struct timer_list *t)
 {
-	struct alsps_context *obj = (struct alsps_context *)data;
+	struct alsps_context *obj = from_timer(obj, t, timer_ps);
 
 	if (obj != NULL)
 		schedule_work(&obj->report_ps);
@@ -304,17 +295,13 @@ static struct alsps_context *alsps_context_alloc_object(void)
 	atomic_set(&obj->wake, 0);
 	INIT_WORK(&obj->report_als, als_work_func);
 	INIT_WORK(&obj->report_ps, ps_work_func);
-	init_timer(&obj->timer_als);
-	init_timer(&obj->timer_ps);
+	timer_setup(&obj->timer_als, als_poll, 0);
+	timer_setup(&obj->timer_ps, ps_poll, 0);
 	obj->timer_als.expires =
 		jiffies + atomic_read(&obj->delay_als) / (1000 / HZ);
-	obj->timer_als.function = als_poll;
-	obj->timer_als.data = (unsigned long)obj;
 
 	obj->timer_ps.expires =
 		jiffies + atomic_read(&obj->delay_ps) / (1000 / HZ);
-	obj->timer_ps.function = ps_poll;
-	obj->timer_ps.data = (unsigned long)obj;
 
 	obj->is_als_first_data_after_enable = false;
 	obj->is_als_polling_run = false;
@@ -423,7 +410,7 @@ static int als_enable_and_batch(void)
 }
 #endif
 
-static ssize_t als_store_active(struct device *dev,
+static ssize_t alsactive_store(struct device *dev,
 				struct device_attribute *attr, const char *buf,
 				size_t count)
 {
@@ -502,7 +489,7 @@ err_out:
 		return count;
 }
 /*----------------------------------------------------------------------------*/
-static ssize_t als_show_active(struct device *dev,
+static ssize_t alsactive_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
 	struct alsps_context *cxt = NULL;
@@ -514,7 +501,7 @@ static ssize_t als_show_active(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%d\n", div);
 }
 
-static ssize_t als_store_batch(struct device *dev,
+static ssize_t alsbatch_store(struct device *dev,
 				struct device_attribute *attr, const char *buf,
 				size_t count)
 {
@@ -561,13 +548,13 @@ static ssize_t als_store_batch(struct device *dev,
 		return count;
 }
 
-static ssize_t als_show_batch(struct device *dev,
+static ssize_t alsbatch_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-static ssize_t als_store_flush(struct device *dev,
+static ssize_t alsflush_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
 {
@@ -604,18 +591,18 @@ static ssize_t als_store_flush(struct device *dev,
 		return count;
 }
 
-static ssize_t als_show_flush(struct device *dev,
+static ssize_t alsflush_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 /* need work around again */
-static ssize_t als_show_devnum(struct device *dev,
+static ssize_t alsdevnum_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
-static ssize_t als_store_cali(struct device *dev,
+static ssize_t alscali_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct alsps_context *cxt = NULL;
@@ -648,18 +635,18 @@ static int ps_enable_and_batch(void)
 	if (cxt->ps_power == 1 && cxt->ps_enable == 0) {
 		pr_debug("PS disable\n");
 /* stop polling firstly, if needed */
-#if 0
-		if (cxt->ps_ctl.is_report_input_direct == false
-			&& cxt->is_ps_polling_run == true) {
-			smp_mb();/* for memory barrier */
-			del_timer_sync(&cxt->timer_ps);
-			smp_mb();/* for memory barrier */
-			cancel_work_sync(&cxt->report_ps);
-			cxt->drv_data.ps_data.values[0] = ALSPS_INVALID_VALUE;
-			cxt->is_ps_polling_run = false;
-			pr_debug("ps stop polling done\n");
-		}
-#endif
+/*
+ *		if (cxt->ps_ctl.is_report_input_direct == false
+ *			&& cxt->is_ps_polling_run == true) {
+ *			smp_mb();// for memory barrier
+ *			del_timer_sync(&cxt->timer_ps);
+ *			smp_mb();// for memory barrier
+ *			cancel_work_sync(&cxt->report_ps);
+ *			cxt->drv_data.ps_data.values[0] = ALSPS_INVALID_VALUE;
+ *			cxt->is_ps_polling_run = false;
+ *			pr_debug("ps stop polling done\n");
+ *		}
+ */
 		/* turn off the ps_power */
 		err = cxt->ps_ctl.enable_nodata(0);
 		if (err) {
@@ -701,31 +688,28 @@ static int ps_enable_and_batch(void)
 		}
 		pr_debug("ps set ODR, fifo latency done\n");
 /* start polling, if needed */
-#if 0
-		if (cxt->ps_ctl.is_report_input_direct == false) {
-			int mdelay = cxt->ps_delay_ns;
-
-			do_div(mdelay, 1000000);
-			atomic_set(&cxt->delay_ps, mdelay);
-			/* the first sensor start polling timer */
-			if (cxt->is_ps_polling_run == false) {
-				mod_timer(&cxt->timer_ps, jiffies +
-					atomic_read(&cxt->delay_ps)/(1000/HZ));
-				cxt->is_ps_polling_run = true;
-				cxt->is_ps_first_data_after_enable = true;
-			}
-		pr_debug("ps delay %d ms\n", atomic_read(&cxt->delay_ps));
-		} else {
-			/* report an default value firstly */
-			ps_data_report(1, 3);
-		}
-#endif
+/*		if (cxt->ps_ctl.is_report_input_direct == false) {
+ *			int mdelay = cxt->ps_delay_ns;
+ *
+ *			do_div(mdelay, 1000000);
+ *			atomic_set(&cxt->delay_ps, mdelay);
+ *			if (cxt->is_ps_polling_run == false) {
+ *				mod_timer(&cxt->timer_ps, jiffies +
+ *					atomic_read(&cxt->delay_ps)/(1000/HZ));
+ *				cxt->is_ps_polling_run = true;
+ *				cxt->is_ps_first_data_after_enable = true;
+ *			}
+ *		pr_debug("ps delay %d ms\n", atomic_read(&cxt->delay_ps));
+ *		} else {
+ *			ps_data_report(1, 3);
+ *		}
+ */
 		pr_debug("PS batch done\n");
 	}
 	return 0;
 }
 #endif
-static ssize_t ps_store_active(struct device *dev,
+static ssize_t psactive_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
 {
@@ -758,7 +742,7 @@ err_out:
 		return count;
 }
 /*----------------------------------------------------------------------------*/
-static ssize_t ps_show_active(struct device *dev, struct device_attribute *attr,
+static ssize_t psactive_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	struct alsps_context *cxt = NULL;
@@ -770,7 +754,7 @@ static ssize_t ps_show_active(struct device *dev, struct device_attribute *attr,
 	return snprintf(buf, PAGE_SIZE, "%d\n", div);
 }
 
-static ssize_t ps_store_batch(struct device *dev, struct device_attribute *attr,
+static ssize_t psbatch_store(struct device *dev, struct device_attribute *attr,
 			      const char *buf, size_t count)
 {
 	struct alsps_context *cxt = alsps_context_obj;
@@ -802,13 +786,13 @@ static ssize_t ps_store_batch(struct device *dev, struct device_attribute *attr,
 		return count;
 }
 
-static ssize_t ps_show_batch(struct device *dev, struct device_attribute *attr,
+static ssize_t psbatch_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-static ssize_t ps_store_flush(struct device *dev, struct device_attribute *attr,
+static ssize_t psflush_store(struct device *dev, struct device_attribute *attr,
 			      const char *buf, size_t count)
 {
 	struct alsps_context *cxt = NULL;
@@ -833,19 +817,19 @@ static ssize_t ps_store_flush(struct device *dev, struct device_attribute *attr,
 		return count;
 }
 
-static ssize_t ps_show_flush(struct device *dev, struct device_attribute *attr,
+static ssize_t psflush_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 /* need work around again */
-static ssize_t ps_show_devnum(struct device *dev, struct device_attribute *attr,
+static ssize_t psdevnum_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-static ssize_t ps_store_cali(struct device *dev, struct device_attribute *attr,
+static ssize_t pscali_store(struct device *dev, struct device_attribute *attr,
 				  const char *buf, size_t count)
 {
 	struct alsps_context *cxt = NULL;
@@ -993,16 +977,16 @@ int ps_report_interrupt_data(int value)
 }
 /*----------------------------------------------------------------------------*/
 EXPORT_SYMBOL_GPL(ps_report_interrupt_data);
-DEVICE_ATTR(alsactive, 0644, als_show_active, als_store_active);
-DEVICE_ATTR(alsbatch, 0644, als_show_batch, als_store_batch);
-DEVICE_ATTR(alsflush, 0644, als_show_flush, als_store_flush);
-DEVICE_ATTR(alsdevnum, 0644, als_show_devnum, NULL);
-DEVICE_ATTR(alscali, 0644, NULL, als_store_cali);
-DEVICE_ATTR(psactive, 0644, ps_show_active, ps_store_active);
-DEVICE_ATTR(psbatch, 0644, ps_show_batch, ps_store_batch);
-DEVICE_ATTR(psflush, 0644, ps_show_flush, ps_store_flush);
-DEVICE_ATTR(psdevnum, 0644, ps_show_devnum, NULL);
-DEVICE_ATTR(pscali, 0644, NULL, ps_store_cali);
+DEVICE_ATTR_RW(alsactive);
+DEVICE_ATTR_RW(alsbatch);
+DEVICE_ATTR_RW(alsflush);
+DEVICE_ATTR_RO(alsdevnum);
+DEVICE_ATTR_WO(alscali);
+DEVICE_ATTR_RW(psactive);
+DEVICE_ATTR_RW(psbatch);
+DEVICE_ATTR_RW(psflush);
+DEVICE_ATTR_RO(psdevnum);
+DEVICE_ATTR_WO(pscali);
 
 static struct attribute *als_attributes[] = {
 	&dev_attr_alsactive.attr,
@@ -1289,6 +1273,8 @@ static int alsps_remove(void)
 	if (err)
 		pr_err("misc_deregister fail: %d\n", err);
 	kfree(alsps_context_obj);
+
+	platform_driver_unregister(&als_ps_driver);
 
 	return 0;
 }

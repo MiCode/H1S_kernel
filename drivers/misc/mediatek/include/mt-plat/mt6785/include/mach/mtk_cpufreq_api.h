@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
+
 
 #ifndef __MTK_CPUFREQ_API_H__
 #define __MTK_CPUFREQ_API_H__
@@ -85,5 +78,6 @@ extern void mt_cpufreq_set_governor_freq_registerCB(cpuFreqsampler_func pCB);
 
 /* CPUFREQ */
 extern void aee_record_cpufreq_cb(unsigned int step);
+extern void mt_cpufreq_update_cci_mode(unsigned int mode, unsigned int use_id);
 
 #endif	/* __MTK_CPUFREQ_API_H__ */

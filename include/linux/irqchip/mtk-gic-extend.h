@@ -1,15 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2014 MediaTek Inc.
- * Author: Maoguang.Meng <maoguang.meng@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (C) 2019 MediaTek Inc.
  */
 
 #ifndef __MTK_GIC_EXTEND_H
@@ -70,7 +61,6 @@ extern unsigned int mt_irq_get_pending(unsigned int irq);
 extern unsigned int mt_irq_get_pending_hw(unsigned int hwirq);
 extern u32 mt_irq_get_pol(u32 irq);
 extern u32 mt_irq_get_pol_hw(u32 hwirq);
-extern int mt_irq_dump_cpu(int irq);
 extern void mt_irq_dump_status(int irq);
 void mt_gic_set_priority(unsigned int irq);
 void mt_set_irq_priority(unsigned int irq, unsigned int priority);

@@ -1,21 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2012-2019, FocalTech Systems, Ltd., all rights reserved.
+ * Copyright (C) 2016 MediaTek Inc.
  */
-
-/*****************************************************************************
- *
- * File Name: focaltech_core.h
- *
- * Author: Focaltech Driver Team
- *
- * Created: 2016-08-08
- *
- * Abstract:
- *
- * Reference:
- *
- *****************************************************************************/
 
 #ifndef __LINUX_FOCALTECH_CORE_H__
 #define __LINUX_FOCALTECH_CORE_H__

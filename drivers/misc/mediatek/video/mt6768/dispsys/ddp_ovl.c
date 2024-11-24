@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #define LOG_TAG "OVL"
 #include "ddp_log.h"
@@ -27,6 +19,8 @@
 #include "debug.h"
 #include "disp_drv_platform.h"
 #include "mtk_dramc.h"
+#include <ion.h>
+#include <ion_sec_heap.h>
 
 #define OVL_REG_BACK_MAX	(40)
 #define OVL_LAYER_OFFSET	(0x20)
@@ -655,17 +649,44 @@ static int ovl_layer_config(enum DISP_MODULE_ENUM module, unsigned int layer,
 
 		size = (dst_h - 1) * cfg->src_pitch + dst_w * Bpp;
 		m4u_port = module_to_m4u_port(module);
+
+#ifdef CONFIG_MTK_TRUSTED_MEMORY_SUBSYSTEM
+		enum TRUSTED_MEM_REQ_TYPE mem_type;
+		mem_type = -1;
+
+		if ((module == DISP_MODULE_OVL0_2L) && (cfg->hnd != NULL)) {
+			int sec = -1;
+			int sec_id = -1;
+			ion_phys_addr_t sec_hdl = -1;
+
+			mem_type = ion_hdl2sec_type(cfg->hnd, &sec, &sec_id, &sec_hdl);
+			DDPDBG("[SVP]before ovl0_2l setting sec id as: %d,type:%d, port:%d\n",
+				sec_id, mem_type, m4u_port);
+		}
+#else
+		int mem_type = -1; //avoid build error
+#endif
 		if (cfg->security != DISP_SECURE_BUFFER) {
 			/*
 			 * ovl is sec but this layer is non-sec
 			 * we need to tell cmdq to help map non-sec mva
 			 * to sec mva
 			 */
-			cmdqRecWriteSecure(handle,
-				disp_addr_convert(DISP_REG_OVL_L0_ADDR +
-					layer_offset_addr),
-				CMDQ_SAM_NMVA_2_MVA, cfg->addr + offset,
-				0, size, m4u_port);
+			DDPDBG("[SVP]ovl0_2l: 1 module: %d,setting type:%d, cmdq handel:%p\n",
+				module, mem_type, handle);
+			if (mem_type != -1) {
+				cmdqRecWriteSecureMetaData(handle,
+					disp_addr_convert(DISP_REG_OVL_L0_ADDR +
+						layer_offset_addr),
+					CMDQ_SAM_NMVA_2_MVA, cfg->addr + offset,
+					0, size, m4u_port, mem_type);
+			} else {
+				cmdqRecWriteSecure(handle,
+					disp_addr_convert(DISP_REG_OVL_L0_ADDR +
+						layer_offset_addr),
+					CMDQ_SAM_NMVA_2_MVA, cfg->addr + offset,
+					0, size, m4u_port);
+			}
 			if (is_ext_layer)
 				DISP_REG_SET_FIELD(handle,
 					REG_FLD_MSB_LSB(cfg->ext_layer + 4,
@@ -682,11 +703,22 @@ static int ovl_layer_config(enum DISP_MODULE_ENUM module, unsigned int layer,
 			 * cmdq sec driver will help to convert handle to
 			 * correct address
 			 */
-			cmdqRecWriteSecure(handle,
-				disp_addr_convert(DISP_REG_OVL_L0_ADDR +
-					layer_offset_addr),
-				CMDQ_SAM_H_2_MVA, cfg->addr,
-				offset, size, m4u_port);
+			DDPDBG("[SVP]ovl0_2l: 2 module: %d,setting type:%d, cmdq handel:%p\n",
+				module, mem_type, handle);
+
+			if (mem_type != -1) {
+				cmdqRecWriteSecureMetaData(handle,
+					disp_addr_convert(DISP_REG_OVL_L0_ADDR +
+						layer_offset_addr),
+					CMDQ_SAM_H_2_MVA, cfg->addr,
+					offset, size, m4u_port, mem_type);
+			} else {
+				cmdqRecWriteSecure(handle,
+					disp_addr_convert(DISP_REG_OVL_L0_ADDR +
+						layer_offset_addr),
+					CMDQ_SAM_H_2_MVA, cfg->addr,
+					offset, size, m4u_port);
+			}
 			if (is_ext_layer)
 				DISP_REG_SET_FIELD(handle,
 					REG_FLD_MSB_LSB(cfg->ext_layer + 4,
@@ -832,7 +864,7 @@ void ovl_get_address(enum DISP_MODULE_ENUM module, unsigned long *add)
 
 void ovl_get_info(enum DISP_MODULE_ENUM module, void *data)
 {
-	int i = 0;
+	unsigned int i = 0;
 	struct OVL_BASIC_STRUCT *pdata = data;
 	unsigned long ovl_base = ovl_base_addr(module);
 	unsigned long layer_off = 0;
@@ -962,6 +994,7 @@ static inline int ovl_switch_to_sec(enum DISP_MODULE_ENUM module, void *handle)
 int ovl_switch_to_nonsec(enum DISP_MODULE_ENUM module, void *handle)
 {
 	unsigned int ovl_idx = ovl_to_index(module);
+#if 0
 	enum CMDQ_ENG_ENUM cmdq_engine;
 	enum CMDQ_EVENT_ENUM cmdq_event_nonsec_end;
 
@@ -1024,6 +1057,7 @@ int ovl_switch_to_nonsec(enum DISP_MODULE_ENUM module, void *handle)
 		mmprofile_log_ex(ddp_mmp_get_events()->svp_module[module],
 				 MMPROFILE_FLAG_END, 0, 0);
 	}
+#endif
 	ovl_is_sec[ovl_idx] = 0;
 
 	return 0;
@@ -1054,8 +1088,8 @@ static int setup_ovl_sec(enum DISP_MODULE_ENUM module,
 
 	if (has_sec_layer == 1)
 		ret = ovl_switch_to_sec(module, handle);
-	//else
-		//ret = ovl_switch_to_nonsec(module, NULL);
+	else
+		ret = ovl_switch_to_nonsec(module, NULL);
 
 	if (ret)
 		DDPAEE("[SVP]fail to %s ret=%d\n",
@@ -1279,12 +1313,13 @@ static unsigned long long full_trans_bw_calc(struct sbch *data,
 		pConfig->read_dum_reg[module] = 1;
 	} else if (data->sbch_en_cnt == SBCH_EN_NUM + 1) {
 
-		if (primary_display_is_video_mode())
+		if (primary_display_is_video_mode() && (pgc != NULL))
 			cmdqBackupReadSlot(pgc->ovl_status_info,
 					0, &status);
 		if (!(0x01 & status)) {
-			cmdqBackupReadSlot(pgc->ovl_dummy_info,
-				module, &dum_val);
+			if (pgc != NULL)
+				cmdqBackupReadSlot(pgc->ovl_dummy_info,
+					module, &dum_val);
 			data->full_trans_en =
 				((0x01 << cfg->phy_layer) & dum_val);
 
@@ -1588,8 +1623,9 @@ static unsigned long long sbch_calc(enum DISP_MODULE_ENUM module,
 		phy_bit[UPDATE] | phy_bit[TRANS_EN] | phy_bit[CNST_EN]);
 	DISP_REG_SET(handle, ovl_base_addr(module) + DISP_REG_OVL_SBCH_EXT,
 		ext_bit[UPDATE] | ext_bit[TRANS_EN] | ext_bit[CNST_EN]);
-	/* clear slot */
-	cmdqBackupWriteSlot(pgc->ovl_dummy_info, module, 0);
+	if (pgc  != NULL)
+		/* clear slot */
+		cmdqBackupWriteSlot(pgc->ovl_dummy_info, module, 0);
 
 	return full_trans_bw;
 }

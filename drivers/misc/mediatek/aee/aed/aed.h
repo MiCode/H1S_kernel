@@ -1,29 +1,31 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #ifndef __aed_h
 #define __aed_h
 
 #include <generated/autoconf.h>
-#include <linux/types.h>
 #include <linux/bug.h>
-#include <mt-plat/aee.h>
 #include <linux/kallsyms.h>
+#include <linux/notifier.h>
 #include <linux/ptrace.h>
+#include <linux/types.h>
+
+#include <mt-plat/aee.h>
 
 #define AE_INVALID              0xAEEFF000
 #define AE_NOT_AVAILABLE        0xAEE00000
 #define AE_DEFAULT              0xAEE00001
+
+enum AE_DEFECT_ATTR {
+	AE_DEFECT_FATAL,
+	AE_DEFECT_EXCEPTION,
+	AE_DEFECT_WARNING,
+	AE_DEFECT_REMINDING,
+	AE_DEFECT_ATTR_END
+};
 
 enum AEE_MODE {
 	AEE_MODE_MTK_ENG = 1,
@@ -32,6 +34,29 @@ enum AEE_MODE {
 	AEE_MODE_CUSTOMER_USER,
 	AEE_MODE_NOT_INIT
 };
+
+enum AE_EXP_CLASS {
+	AE_KE = 0,		/* Fatal Exception */
+	AE_HWT,
+	AE_REBOOT,
+	AE_NE,
+	AE_JE,
+	AE_SWT,
+	AE_EE,
+	AE_EXP_ERR_END,
+	AE_ANR,			/* Error or Warning or Defect */
+	AE_RESMON,
+	AE_MODEM_WARNING,
+	AE_WTF,
+	AE_WRN_ERR_END,
+	AE_MANUAL,		/* Manual Raise */
+	AE_EXP_CLASS_END,
+
+	AE_KERNEL_PROBLEM_REPORT = 1000,
+	AE_SYSTEM_JAVA_DEFECT,
+	AE_SYSTEM_NATIVE_DEFECT,
+	AE_MANUAL_MRDUMP_KEY,
+}; /* General Program Exception Class */
 
 enum AEE_FORCE_RED_SCREEN_VALUE {
 	AEE_FORCE_DISABLE_RED_SCREEN = 0,
@@ -63,7 +88,7 @@ enum AE_CMD_ID {
 
 	AE_REQ_CLASS,
 	AE_REQ_TYPE,
-	AE_REQ_PROCESS,
+	AE_REQ_PROCESS, /* deprecated */
 	AE_REQ_MODULE,
 	AE_REQ_BACKTRACE,
 	/* Content of response message rule:
@@ -108,8 +133,46 @@ enum AE_CMD_ID {
 	AE_REQ_USERSPACEBACKTRACE = 40,
 	AE_REQ_USER_REG,
 	AE_REQ_USER_MAPS,
-	AE_REQ_TRIGGER_TIME,	/* get db trigger time */
 	AE_CMD_ID_END
+};
+
+struct aee_kernel_api {
+	void (*kernel_reportAPI)(const enum AE_DEFECT_ATTR attr,
+			const int db_opt, const char *module, const char *msg);
+	void (*md_exception)(const char *assert_type, const int *log,
+			int log_size, const int *phy, int phy_size,
+			const char *detail, const int db_opt);
+	void (*md32_exception)(const char *assert_type, const int *log,
+			int log_size, const int *phy, int phy_size,
+			const char *detail, const int db_opt);
+	void (*combo_exception)(const char *assert_type, const int *log,
+			int log_size, const int *phy, int phy_size,
+			const char *detail, const int db_opt);
+	void (*scp_exception)(const char *assert_type, const int *log,
+			int log_size, const int *phy, int phy_size,
+			const char *detail, const int db_opt);
+	void (*common_exception)(const char *assert_type, const int *log,
+			int log_size, const int *phy, int phy_size,
+			const char *detail, const int db_opt);
+};
+
+struct aee_oops {
+	struct list_head list;
+	enum AE_DEFECT_ATTR attr;
+	enum AE_EXP_CLASS clazz;
+
+	char module[AEE_MODULE_NAME_LENGTH];
+	/* consist with struct aee_process_info */
+	char backtrace[AEE_BACKTRACE_LENGTH];
+
+	char *detail;
+	int detail_len;
+
+	struct aee_user_thread_stack userthread_stack;
+	struct aee_thread_reg userthread_reg;
+	struct aee_user_thread_maps userthread_maps;
+
+	int dump_option;
 };
 
 struct AE_Msg {
@@ -221,19 +284,13 @@ int aed_proc_debug_done(struct proc_dir_entry *aed_proc_dir);
 void aee_rr_proc_init(struct proc_dir_entry *aed_proc_dir);
 void aee_rr_proc_done(struct proc_dir_entry *aed_proc_dir);
 
-void dram_console_init(struct proc_dir_entry *aed_proc_dir);
-void dram_console_done(struct proc_dir_entry *aed_proc_dir);
-
 extern struct atomic_notifier_head panic_notifier_list;
 extern int ksysfs_bootinfo_init(void);
 extern void ksysfs_bootinfo_exit(void);
 extern int aee_dump_ccci_debug_info(int md_id, void **addr, int *size);
-extern void show_stack(struct task_struct *tsk, unsigned long *sp);
-extern int aee_mode;
+extern int aee_get_mode(void);
 extern void aee_kernel_RT_Monitor_api(int lParam);
-extern void mlog_get_buffer(char **ptr, int *size)__attribute__((weak));
-extern void get_msdc_aee_buffer(unsigned long *buff,
-	unsigned long *size)__attribute__((weak));
-extern void show_task_mem(void)__attribute__((weak));
+extern void show_task_mem(void);
 void show_native_bt_by_pid(int task_pid);
+void aee_register_api(struct aee_kernel_api *aee_api);
 #endif

@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Joey Pan <joey.pan@mediatek.com>
  */
 
 #ifndef __MTKFB_FENCE_H__
@@ -53,7 +46,7 @@ struct mtkfb_fence_buf_info {
 	struct list_head list;
 	unsigned int idx;
 	int fence;
-	struct ion_handle *hnd;
+	void *hnd;
 	unsigned long mva;
 	unsigned long va;
 	unsigned int size;
@@ -61,6 +54,9 @@ struct mtkfb_fence_buf_info {
 	enum BUFFER_STATE buf_state;
 	unsigned int cache_sync;
 	unsigned int set_input_ticket;
+	/* DMA */
+	struct dma_buf_attachment *attach;
+	struct sg_table *sgt;
 	/* we can't update trigger_ticket_end,*/
 	/*because can't gurantee ticket being updated before cmdq callback*/
 	unsigned int trigger_ticket;
@@ -80,7 +76,7 @@ struct mtkfb_fence_sync_info {
 	unsigned int timeline_idx;
 	unsigned int inc;
 	unsigned int cur_idx;
-	struct sw_sync_timeline *timeline;
+	struct sync_timeline *timeline;
 	struct list_head buf_list;
 };
 
@@ -180,7 +176,7 @@ void mtkfb_release_layer_fence(unsigned int session_id, unsigned int layer_id);
 int mtkfb_fence_clean_thread(void *data);
 int mtkfb_fence_timeline_index(void);
 
-struct mtkfb_fence_buf_info *disp_sync_prepare_buf(
+struct mtkfb_fence_buf_info *disp_sync_prepare_buf(struct device *dev,
 	struct disp_buffer_info *buf);
 int disp_sync_init(void);
 int disp_sync_get_cached_layer_info(unsigned int session_id,

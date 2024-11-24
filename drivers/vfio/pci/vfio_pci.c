@@ -29,6 +29,7 @@
 #include <linux/vfio.h>
 #include <linux/vgaarb.h>
 #include <linux/nospec.h>
+#include <linux/sched/mm.h>
 
 #include "vfio_pci_private.h"
 
@@ -117,8 +118,6 @@ static void vfio_pci_probe_mmaps(struct vfio_pci_device *vdev)
 	int bar;
 	struct vfio_pci_dummy_resource *dummy_res;
 
-	INIT_LIST_HEAD(&vdev->dummy_resources_list);
-
 	for (bar = PCI_STD_RESOURCES; bar <= PCI_STD_RESOURCE_END; bar++) {
 		res = vdev->pdev->resource + bar;
 
@@ -181,6 +180,7 @@ no_mmap:
 
 static void vfio_pci_try_bus_reset(struct vfio_pci_device *vdev);
 static void vfio_pci_disable(struct vfio_pci_device *vdev);
+static int vfio_pci_try_zap_and_vma_lock_cb(struct pci_dev *pdev, void *data);
 
 /*
  * INTx masking requires the ability to disable INTx signaling via PCI_COMMAND
@@ -303,6 +303,7 @@ static void vfio_pci_disable(struct vfio_pci_device *vdev)
 {
 	struct pci_dev *pdev = vdev->pdev;
 	struct vfio_pci_dummy_resource *dummy_res, *tmp;
+	struct vfio_pci_ioeventfd *ioeventfd, *ioeventfd_tmp;
 	int i, bar;
 
 	/* Stop the device from further DMA */
@@ -311,6 +312,15 @@ static void vfio_pci_disable(struct vfio_pci_device *vdev)
 	vfio_pci_set_irqs_ioctl(vdev, VFIO_IRQ_SET_DATA_NONE |
 				VFIO_IRQ_SET_ACTION_TRIGGER,
 				vdev->irq_type, 0, 0, NULL);
+
+	/* Device closed, don't need mutex here */
+	list_for_each_entry_safe(ioeventfd, ioeventfd_tmp,
+				 &vdev->ioeventfds_list, next) {
+		vfio_virqfd_disable(&ioeventfd->virqfd);
+		list_del(&ioeventfd->next);
+		kfree(ioeventfd);
+	}
+	vdev->ioeventfds_nr = 0;
 
 	vdev->virq_disabled = false;
 
@@ -397,6 +407,19 @@ static void vfio_pci_release(void *device_data)
 	if (!(--vdev->refcnt)) {
 		vfio_spapr_pci_eeh_release(vdev->pdev);
 		vfio_pci_disable(vdev);
+		mutex_lock(&vdev->igate);
+		if (vdev->err_trigger) {
+			eventfd_ctx_put(vdev->err_trigger);
+			vdev->err_trigger = NULL;
+		}
+		mutex_unlock(&vdev->igate);
+
+		mutex_lock(&vdev->igate);
+		if (vdev->req_trigger) {
+			eventfd_ctx_put(vdev->req_trigger);
+			vdev->req_trigger = NULL;
+		}
+		mutex_unlock(&vdev->igate);
 	}
 
 	mutex_unlock(&driver_lock);
@@ -576,46 +599,15 @@ static int vfio_pci_for_each_slot_or_bus(struct pci_dev *pdev,
 	return walk.ret;
 }
 
-static int msix_sparse_mmap_cap(struct vfio_pci_device *vdev,
-				struct vfio_info_cap *caps)
+static int msix_mmappable_cap(struct vfio_pci_device *vdev,
+			      struct vfio_info_cap *caps)
 {
-	struct vfio_region_info_cap_sparse_mmap *sparse;
-	size_t end, size;
-	int nr_areas = 2, i = 0, ret;
+	struct vfio_info_cap_header header = {
+		.id = VFIO_REGION_INFO_CAP_MSIX_MAPPABLE,
+		.version = 1
+	};
 
-	end = pci_resource_len(vdev->pdev, vdev->msix_bar);
-
-	/* If MSI-X table is aligned to the start or end, only one area */
-	if (((vdev->msix_offset & PAGE_MASK) == 0) ||
-	    (PAGE_ALIGN(vdev->msix_offset + vdev->msix_size) >= end))
-		nr_areas = 1;
-
-	size = sizeof(*sparse) + (nr_areas * sizeof(*sparse->areas));
-
-	sparse = kzalloc(size, GFP_KERNEL);
-	if (!sparse)
-		return -ENOMEM;
-
-	sparse->nr_areas = nr_areas;
-
-	if (vdev->msix_offset & PAGE_MASK) {
-		sparse->areas[i].offset = 0;
-		sparse->areas[i].size = vdev->msix_offset & PAGE_MASK;
-		i++;
-	}
-
-	if (PAGE_ALIGN(vdev->msix_offset + vdev->msix_size) < end) {
-		sparse->areas[i].offset = PAGE_ALIGN(vdev->msix_offset +
-						     vdev->msix_size);
-		sparse->areas[i].size = end - sparse->areas[i].offset;
-		i++;
-	}
-
-	ret = vfio_info_add_capability(caps, VFIO_REGION_INFO_CAP_SPARSE_MMAP,
-				       sparse);
-	kfree(sparse);
-
-	return ret;
+	return vfio_info_add_capability(caps, &header, sizeof(header));
 }
 
 int vfio_pci_register_dev_region(struct vfio_pci_device *vdev,
@@ -643,6 +635,12 @@ int vfio_pci_register_dev_region(struct vfio_pci_device *vdev,
 
 	return 0;
 }
+
+struct vfio_devices {
+	struct vfio_device **devices;
+	int cur_index;
+	int max_index;
+};
 
 static long vfio_pci_ioctl(void *device_data,
 			   unsigned int cmd, unsigned long arg)
@@ -706,7 +704,7 @@ static long vfio_pci_ioctl(void *device_data,
 			if (vdev->bar_mmap_supported[info.index]) {
 				info.flags |= VFIO_REGION_INFO_FLAG_MMAP;
 				if (info.index == vdev->msix_bar) {
-					ret = msix_sparse_mmap_cap(vdev, &caps);
+					ret = msix_mmappable_cap(vdev, &caps);
 					if (ret)
 						return ret;
 				}
@@ -717,7 +715,7 @@ static long vfio_pci_ioctl(void *device_data,
 		{
 			void __iomem *io;
 			size_t size;
-			u16 orig_cmd;
+			u16 cmd;
 
 			info.offset = VFIO_PCI_INDEX_TO_OFFSET(info.index);
 			info.flags = 0;
@@ -737,10 +735,7 @@ static long vfio_pci_ioctl(void *device_data,
 			 * Is it really there?  Enable memory decode for
 			 * implicit access in pci_map_rom().
 			 */
-			pci_read_config_word(pdev, PCI_COMMAND, &orig_cmd);
-			pci_write_config_word(pdev, PCI_COMMAND,
-					      orig_cmd | PCI_COMMAND_MEMORY);
-
+			cmd = vfio_pci_memory_lock_and_enable(vdev);
 			io = pci_map_rom(pdev, &size);
 			if (io) {
 				info.flags = VFIO_REGION_INFO_FLAG_READ;
@@ -748,8 +743,8 @@ static long vfio_pci_ioctl(void *device_data,
 			} else {
 				info.size = 0;
 			}
+			vfio_pci_memory_unlock_and_restore(vdev, cmd);
 
-			pci_write_config_word(pdev, PCI_COMMAND, orig_cmd);
 			break;
 		}
 		case VFIO_PCI_VGA_REGION_INDEX:
@@ -764,7 +759,9 @@ static long vfio_pci_ioctl(void *device_data,
 			break;
 		default:
 		{
-			struct vfio_region_info_cap_type cap_type;
+			struct vfio_region_info_cap_type cap_type = {
+					.header.id = VFIO_REGION_INFO_CAP_TYPE,
+					.header.version = 1 };
 
 			if (info.index >=
 			    VFIO_PCI_NUM_REGIONS + vdev->num_regions)
@@ -782,9 +779,8 @@ static long vfio_pci_ioctl(void *device_data,
 			cap_type.type = vdev->region[i].type;
 			cap_type.subtype = vdev->region[i].subtype;
 
-			ret = vfio_info_add_capability(&caps,
-						      VFIO_REGION_INFO_CAP_TYPE,
-						      &cap_type);
+			ret = vfio_info_add_capability(&caps, &cap_type.header,
+						       sizeof(cap_type));
 			if (ret)
 				return ret;
 
@@ -831,7 +827,7 @@ static long vfio_pci_ioctl(void *device_data,
 		case VFIO_PCI_ERR_IRQ_INDEX:
 			if (pci_is_pcie(vdev->pdev))
 				break;
-		/* pass thru to return error */
+		/* fall through */
 		default:
 			return -EINVAL;
 		}
@@ -885,8 +881,16 @@ static long vfio_pci_ioctl(void *device_data,
 		return ret;
 
 	} else if (cmd == VFIO_DEVICE_RESET) {
-		return vdev->reset_works ?
-			pci_try_reset_function(vdev->pdev) : -EINVAL;
+		int ret;
+
+		if (!vdev->reset_works)
+			return -EINVAL;
+
+		vfio_pci_zap_and_down_write_memory_lock(vdev);
+		ret = pci_try_reset_function(vdev->pdev);
+		up_write(&vdev->memory_lock);
+
+		return ret;
 
 	} else if (cmd == VFIO_DEVICE_GET_PCI_HOT_RESET_INFO) {
 		struct vfio_pci_hot_reset_info hdr;
@@ -966,8 +970,9 @@ reset_info_exit:
 		int32_t *group_fds;
 		struct vfio_pci_group_entry *groups;
 		struct vfio_pci_group_info info;
+		struct vfio_devices devs = { .cur_index = 0 };
 		bool slot = false;
-		int i, count = 0, ret = 0;
+		int i, group_idx, mem_idx = 0, count = 0, ret = 0;
 
 		minsz = offsetofend(struct vfio_pci_hot_reset, count);
 
@@ -1019,9 +1024,9 @@ reset_info_exit:
 		 * user interface and store the group and iommu ID.  This
 		 * ensures the group is held across the reset.
 		 */
-		for (i = 0; i < hdr.count; i++) {
+		for (group_idx = 0; group_idx < hdr.count; group_idx++) {
 			struct vfio_group *group;
-			struct fd f = fdget(group_fds[i]);
+			struct fd f = fdget(group_fds[group_idx]);
 			if (!f.file) {
 				ret = -EBADF;
 				break;
@@ -1034,8 +1039,9 @@ reset_info_exit:
 				break;
 			}
 
-			groups[i].group = group;
-			groups[i].id = vfio_external_user_iommu_id(group);
+			groups[group_idx].group = group;
+			groups[group_idx].id =
+					vfio_external_user_iommu_id(group);
 		}
 
 		kfree(group_fds);
@@ -1054,17 +1060,88 @@ reset_info_exit:
 		ret = vfio_pci_for_each_slot_or_bus(vdev->pdev,
 						    vfio_pci_validate_devs,
 						    &info, slot);
-		if (!ret)
-			/* User has access, do the reset */
-			ret = slot ? pci_try_reset_slot(vdev->pdev->slot) :
-				     pci_try_reset_bus(vdev->pdev->bus);
+		if (ret)
+			goto hot_reset_release;
+
+		devs.max_index = count;
+		devs.devices = kcalloc(count, sizeof(struct vfio_device *),
+				       GFP_KERNEL);
+		if (!devs.devices) {
+			ret = -ENOMEM;
+			goto hot_reset_release;
+		}
+
+		/*
+		 * We need to get memory_lock for each device, but devices
+		 * can share mmap_sem, therefore we need to zap and hold
+		 * the vma_lock for each device, and only then get each
+		 * memory_lock.
+		 */
+		ret = vfio_pci_for_each_slot_or_bus(vdev->pdev,
+					    vfio_pci_try_zap_and_vma_lock_cb,
+					    &devs, slot);
+		if (ret)
+			goto hot_reset_release;
+
+		for (; mem_idx < devs.cur_index; mem_idx++) {
+			struct vfio_pci_device *tmp;
+
+			tmp = vfio_device_data(devs.devices[mem_idx]);
+
+			ret = down_write_trylock(&tmp->memory_lock);
+			if (!ret) {
+				ret = -EBUSY;
+				goto hot_reset_release;
+			}
+			mutex_unlock(&tmp->vma_lock);
+		}
+
+		/* User has access, do the reset */
+		ret = pci_reset_bus(vdev->pdev);
 
 hot_reset_release:
-		for (i--; i >= 0; i--)
-			vfio_group_put_external_user(groups[i].group);
+		for (i = 0; i < devs.cur_index; i++) {
+			struct vfio_device *device;
+			struct vfio_pci_device *tmp;
+
+			device = devs.devices[i];
+			tmp = vfio_device_data(device);
+
+			if (i < mem_idx)
+				up_write(&tmp->memory_lock);
+			else
+				mutex_unlock(&tmp->vma_lock);
+			vfio_device_put(device);
+		}
+		kfree(devs.devices);
+
+		for (group_idx--; group_idx >= 0; group_idx--)
+			vfio_group_put_external_user(groups[group_idx].group);
 
 		kfree(groups);
 		return ret;
+	} else if (cmd == VFIO_DEVICE_IOEVENTFD) {
+		struct vfio_device_ioeventfd ioeventfd;
+		int count;
+
+		minsz = offsetofend(struct vfio_device_ioeventfd, fd);
+
+		if (copy_from_user(&ioeventfd, (void __user *)arg, minsz))
+			return -EFAULT;
+
+		if (ioeventfd.argsz < minsz)
+			return -EINVAL;
+
+		if (ioeventfd.flags & ~VFIO_DEVICE_IOEVENTFD_SIZE_MASK)
+			return -EINVAL;
+
+		count = ioeventfd.flags & VFIO_DEVICE_IOEVENTFD_SIZE_MASK;
+
+		if (hweight8(count) != 1 || ioeventfd.fd < -1)
+			return -EINVAL;
+
+		return vfio_pci_ioeventfd(vdev, ioeventfd.offset,
+					  ioeventfd.data, count, ioeventfd.fd);
 	}
 
 	return -ENOTTY;
@@ -1120,6 +1197,215 @@ static ssize_t vfio_pci_write(void *device_data, const char __user *buf,
 	return vfio_pci_rw(device_data, (char __user *)buf, count, ppos, true);
 }
 
+/* Return 1 on zap and vma_lock acquired, 0 on contention (only with @try) */
+static int vfio_pci_zap_and_vma_lock(struct vfio_pci_device *vdev, bool try)
+{
+	struct vfio_pci_mmap_vma *mmap_vma, *tmp;
+
+	/*
+	 * Lock ordering:
+	 * vma_lock is nested under mmap_sem for vm_ops callback paths.
+	 * The memory_lock semaphore is used by both code paths calling
+	 * into this function to zap vmas and the vm_ops.fault callback
+	 * to protect the memory enable state of the device.
+	 *
+	 * When zapping vmas we need to maintain the mmap_sem => vma_lock
+	 * ordering, which requires using vma_lock to walk vma_list to
+	 * acquire an mm, then dropping vma_lock to get the mmap_sem and
+	 * reacquiring vma_lock.  This logic is derived from similar
+	 * requirements in uverbs_user_mmap_disassociate().
+	 *
+	 * mmap_sem must always be the top-level lock when it is taken.
+	 * Therefore we can only hold the memory_lock write lock when
+	 * vma_list is empty, as we'd need to take mmap_sem to clear
+	 * entries.  vma_list can only be guaranteed empty when holding
+	 * vma_lock, thus memory_lock is nested under vma_lock.
+	 *
+	 * This enables the vm_ops.fault callback to acquire vma_lock,
+	 * followed by memory_lock read lock, while already holding
+	 * mmap_sem without risk of deadlock.
+	 */
+	while (1) {
+		struct mm_struct *mm = NULL;
+
+		if (try) {
+			if (!mutex_trylock(&vdev->vma_lock))
+				return 0;
+		} else {
+			mutex_lock(&vdev->vma_lock);
+		}
+		while (!list_empty(&vdev->vma_list)) {
+			mmap_vma = list_first_entry(&vdev->vma_list,
+						    struct vfio_pci_mmap_vma,
+						    vma_next);
+			mm = mmap_vma->vma->vm_mm;
+			if (mmget_not_zero(mm))
+				break;
+
+			list_del(&mmap_vma->vma_next);
+			kfree(mmap_vma);
+			mm = NULL;
+		}
+		if (!mm)
+			return 1;
+		mutex_unlock(&vdev->vma_lock);
+
+		if (try) {
+			if (!down_read_trylock(&mm->mmap_sem)) {
+				mmput(mm);
+				return 0;
+			}
+		} else {
+			down_read(&mm->mmap_sem);
+		}
+		if (mmget_still_valid(mm)) {
+			if (try) {
+				if (!mutex_trylock(&vdev->vma_lock)) {
+					up_read(&mm->mmap_sem);
+					mmput(mm);
+					return 0;
+				}
+			} else {
+				mutex_lock(&vdev->vma_lock);
+			}
+			list_for_each_entry_safe(mmap_vma, tmp,
+						 &vdev->vma_list, vma_next) {
+				struct vm_area_struct *vma = mmap_vma->vma;
+
+				if (vma->vm_mm != mm)
+					continue;
+
+				list_del(&mmap_vma->vma_next);
+				kfree(mmap_vma);
+
+				zap_vma_ptes(vma, vma->vm_start,
+					     vma->vm_end - vma->vm_start);
+			}
+			mutex_unlock(&vdev->vma_lock);
+		}
+		up_read(&mm->mmap_sem);
+		mmput(mm);
+	}
+}
+
+void vfio_pci_zap_and_down_write_memory_lock(struct vfio_pci_device *vdev)
+{
+	vfio_pci_zap_and_vma_lock(vdev, false);
+	down_write(&vdev->memory_lock);
+	mutex_unlock(&vdev->vma_lock);
+}
+
+u16 vfio_pci_memory_lock_and_enable(struct vfio_pci_device *vdev)
+{
+	u16 cmd;
+
+	down_write(&vdev->memory_lock);
+	pci_read_config_word(vdev->pdev, PCI_COMMAND, &cmd);
+	if (!(cmd & PCI_COMMAND_MEMORY))
+		pci_write_config_word(vdev->pdev, PCI_COMMAND,
+				      cmd | PCI_COMMAND_MEMORY);
+
+	return cmd;
+}
+
+void vfio_pci_memory_unlock_and_restore(struct vfio_pci_device *vdev, u16 cmd)
+{
+	pci_write_config_word(vdev->pdev, PCI_COMMAND, cmd);
+	up_write(&vdev->memory_lock);
+}
+
+/* Caller holds vma_lock */
+static int __vfio_pci_add_vma(struct vfio_pci_device *vdev,
+			      struct vm_area_struct *vma)
+{
+	struct vfio_pci_mmap_vma *mmap_vma;
+
+	mmap_vma = kmalloc(sizeof(*mmap_vma), GFP_KERNEL);
+	if (!mmap_vma)
+		return -ENOMEM;
+
+	mmap_vma->vma = vma;
+	list_add(&mmap_vma->vma_next, &vdev->vma_list);
+
+	return 0;
+}
+
+/*
+ * Zap mmaps on open so that we can fault them in on access and therefore
+ * our vma_list only tracks mappings accessed since last zap.
+ */
+static void vfio_pci_mmap_open(struct vm_area_struct *vma)
+{
+	zap_vma_ptes(vma, vma->vm_start, vma->vm_end - vma->vm_start);
+}
+
+static void vfio_pci_mmap_close(struct vm_area_struct *vma)
+{
+	struct vfio_pci_device *vdev = vma->vm_private_data;
+	struct vfio_pci_mmap_vma *mmap_vma;
+
+	mutex_lock(&vdev->vma_lock);
+	list_for_each_entry(mmap_vma, &vdev->vma_list, vma_next) {
+		if (mmap_vma->vma == vma) {
+			list_del(&mmap_vma->vma_next);
+			kfree(mmap_vma);
+			break;
+		}
+	}
+	mutex_unlock(&vdev->vma_lock);
+}
+
+static vm_fault_t vfio_pci_mmap_fault(struct vm_fault *vmf)
+{
+	struct vm_area_struct *vma = vmf->vma;
+	struct vfio_pci_device *vdev = vma->vm_private_data;
+	struct vfio_pci_mmap_vma *mmap_vma;
+	vm_fault_t ret = VM_FAULT_NOPAGE;
+
+	mutex_lock(&vdev->vma_lock);
+	down_read(&vdev->memory_lock);
+
+	if (!__vfio_pci_memory_enabled(vdev)) {
+		ret = VM_FAULT_SIGBUS;
+		goto up_out;
+	}
+
+	/*
+	 * We populate the whole vma on fault, so we need to test whether
+	 * the vma has already been mapped, such as for concurrent faults
+	 * to the same vma.  io_remap_pfn_range() will trigger a BUG_ON if
+	 * we ask it to fill the same range again.
+	 */
+	list_for_each_entry(mmap_vma, &vdev->vma_list, vma_next) {
+		if (mmap_vma->vma == vma)
+			goto up_out;
+	}
+
+	if (io_remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
+			       vma->vm_end - vma->vm_start,
+			       vma->vm_page_prot)) {
+		ret = VM_FAULT_SIGBUS;
+		zap_vma_ptes(vma, vma->vm_start, vma->vm_end - vma->vm_start);
+		goto up_out;
+	}
+
+	if (__vfio_pci_add_vma(vdev, vma)) {
+		ret = VM_FAULT_OOM;
+		zap_vma_ptes(vma, vma->vm_start, vma->vm_end - vma->vm_start);
+	}
+
+up_out:
+	up_read(&vdev->memory_lock);
+	mutex_unlock(&vdev->vma_lock);
+	return ret;
+}
+
+static const struct vm_operations_struct vfio_pci_mmap_ops = {
+	.open = vfio_pci_mmap_open,
+	.close = vfio_pci_mmap_close,
+	.fault = vfio_pci_mmap_fault,
+};
+
 static int vfio_pci_mmap(void *device_data, struct vm_area_struct *vma)
 {
 	struct vfio_pci_device *vdev = device_data;
@@ -1148,22 +1434,6 @@ static int vfio_pci_mmap(void *device_data, struct vm_area_struct *vma)
 	if (req_start + req_len > phys_len)
 		return -EINVAL;
 
-	if (index == vdev->msix_bar) {
-		/*
-		 * Disallow mmaps overlapping the MSI-X table; users don't
-		 * get to touch this directly.  We could find somewhere
-		 * else to map the overlap, but page granularity is only
-		 * a recommendation, not a requirement, so the user needs
-		 * to know which bits are real.  Requiring them to mmap
-		 * around the table makes that clear.
-		 */
-
-		/* If neither entirely above nor below, then it overlaps */
-		if (!(req_start >= vdev->msix_offset + vdev->msix_size ||
-		      req_start + req_len <= vdev->msix_offset))
-			return -EINVAL;
-	}
-
 	/*
 	 * Even though we don't make use of the barmap for the mmap,
 	 * we need to request the region and the barmap tracks that.
@@ -1185,8 +1455,14 @@ static int vfio_pci_mmap(void *device_data, struct vm_area_struct *vma)
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	vma->vm_pgoff = (pci_resource_start(pdev, index) >> PAGE_SHIFT) + pgoff;
 
-	return remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
-			       req_len, vma->vm_page_prot);
+	/*
+	 * See remap_pfn_range(), called from vfio_pci_fault() but we can't
+	 * change vm_flags within the fault handler.  Set them now.
+	 */
+	vma->vm_flags |= VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
+	vma->vm_ops = &vfio_pci_mmap_ops;
+
+	return 0;
 }
 
 static void vfio_pci_request(void *device_data, unsigned int count)
@@ -1229,6 +1505,19 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (pdev->hdr_type != PCI_HEADER_TYPE_NORMAL)
 		return -EINVAL;
 
+	/*
+	 * Prevent binding to PFs with VFs enabled, this too easily allows
+	 * userspace instance with VFs and PFs from the same device, which
+	 * cannot work.  Disabling SR-IOV here would initiate removing the
+	 * VFs, which would unbind the driver, which is prone to blocking
+	 * if that VF is also in use by vfio-pci.  Just reject these PFs
+	 * and let the user sort it out.
+	 */
+	if (pci_num_vf(pdev)) {
+		pci_warn(pdev, "Cannot bind to PF with SR-IOV enabled\n");
+		return -EBUSY;
+	}
+
 	group = vfio_iommu_group_get(&pdev->dev);
 	if (!group)
 		return -EINVAL;
@@ -1243,6 +1532,12 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	vdev->irq_type = VFIO_PCI_NUM_IRQS;
 	mutex_init(&vdev->igate);
 	spin_lock_init(&vdev->irqlock);
+	mutex_init(&vdev->ioeventfds_lock);
+	INIT_LIST_HEAD(&vdev->dummy_resources_list);
+	INIT_LIST_HEAD(&vdev->ioeventfds_list);
+	mutex_init(&vdev->vma_lock);
+	INIT_LIST_HEAD(&vdev->vma_list);
+	init_rwsem(&vdev->memory_lock);
 
 	ret = vfio_add_group_dev(&pdev->dev, &vfio_pci_ops, vdev);
 	if (ret) {
@@ -1284,6 +1579,7 @@ static void vfio_pci_remove(struct pci_dev *pdev)
 
 	vfio_iommu_group_put(pdev->dev.iommu_group, &pdev->dev);
 	kfree(vdev->region);
+	mutex_destroy(&vdev->ioeventfds_lock);
 	kfree(vdev);
 
 	if (vfio_pci_is_vga(pdev)) {
@@ -1337,12 +1633,6 @@ static struct pci_driver vfio_pci_driver = {
 	.err_handler	= &vfio_err_handlers,
 };
 
-struct vfio_devices {
-	struct vfio_device **devices;
-	int cur_index;
-	int max_index;
-};
-
 static int vfio_pci_get_devs(struct pci_dev *pdev, void *data)
 {
 	struct vfio_devices *devs = data;
@@ -1356,6 +1646,39 @@ static int vfio_pci_get_devs(struct pci_dev *pdev, void *data)
 		return -EINVAL;
 
 	if (pci_dev_driver(pdev) != &vfio_pci_driver) {
+		vfio_device_put(device);
+		return -EBUSY;
+	}
+
+	devs->devices[devs->cur_index++] = device;
+	return 0;
+}
+
+static int vfio_pci_try_zap_and_vma_lock_cb(struct pci_dev *pdev, void *data)
+{
+	struct vfio_devices *devs = data;
+	struct vfio_device *device;
+	struct vfio_pci_device *vdev;
+
+	if (devs->cur_index == devs->max_index)
+		return -ENOSPC;
+
+	device = vfio_device_get_from_dev(&pdev->dev);
+	if (!device)
+		return -EINVAL;
+
+	if (pci_dev_driver(pdev) != &vfio_pci_driver) {
+		vfio_device_put(device);
+		return -EBUSY;
+	}
+
+	vdev = vfio_device_data(device);
+
+	/*
+	 * Locking multiple devices is prone to deadlock, runaway and
+	 * unwind if we hit contention.
+	 */
+	if (!vfio_pci_zap_and_vma_lock(vdev, true)) {
 		vfio_device_put(device);
 		return -EBUSY;
 	}
@@ -1410,8 +1733,7 @@ static void vfio_pci_try_bus_reset(struct vfio_pci_device *vdev)
 	}
 
 	if (needs_reset)
-		ret = slot ? pci_try_reset_slot(vdev->pdev->slot) :
-			     pci_try_reset_bus(vdev->pdev->bus);
+		ret = pci_reset_bus(vdev->pdev);
 
 put_devs:
 	for (i = 0; i < devs.cur_index; i++) {

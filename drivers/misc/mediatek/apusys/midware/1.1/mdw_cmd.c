@@ -1,20 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/list.h>
 #include <linux/slab.h>
+#include <linux/vmalloc.h>
 
 #include "apusys_device.h"
 #include "mdw_cmn.h"
@@ -152,19 +145,28 @@ static struct apu_sc_hdr_cmn *mdw_cmd_get_sc_hdr(struct mdw_apu_cmd *cmd,
 {
 	uint32_t ofs = 0;
 	struct apu_cmd_hdr *cmd_hdr = cmd->u_hdr;
+	struct apu_sc_hdr_cmn *sh = NULL;
 
 	if ((uint32_t)idx >= cmd_hdr->num_sc)
 		return NULL;
 
 	ofs = *(uint32_t *)((uint64_t)&cmd_hdr->scofs_list_entry +
 		SIZE_SUBGRAPH_SCOFS_ELEMENT * idx);
-	if (ofs > cmd->size) {
-		mdw_drv_err("sc(0x%llx-#%d) ofs(%u) over size(%d)\n",
-			cmd_hdr->uid, idx, ofs, cmd->size);
-		return NULL;
-	}
+	if (ofs + sizeof(struct apu_sc_hdr_cmn) > cmd->size)
+		goto fail_size;
+
+	sh = (struct apu_sc_hdr_cmn *)((uint64_t)cmd_hdr + ofs);
+	if (sh->type == APUSYS_DEVICE_MDLA &&
+		ofs + sizeof(struct apu_sc_hdr_cmn) +
+		sizeof(struct apu_mdla_hdr) > cmd->size)
+		goto fail_size;
 
 	return (struct apu_sc_hdr_cmn *)((uint64_t)cmd_hdr + ofs);
+
+fail_size:
+	mdw_drv_err("sc(0x%llx-#%d) ofs(%u) over size(%d)\n",
+		cmd_hdr->uid, idx, ofs, cmd->size);
+	return NULL;
 }
 
 static int mdw_cmd_parse_flags(struct mdw_apu_cmd *c)
@@ -236,6 +238,17 @@ static void mdw_cmd_hdr_set_status(struct mdw_apu_cmd *c, int status)
 {
 	c->u_hdr->flags = (c->u_hdr->flags & ~(HDR_FlAG_MASK_STATUS_BMP))
 		| status << HDR_FLAG_MASK_STATUS_OFS;
+}
+
+static void mdw_cmd_hdr_update_time(struct mdw_apu_cmd *c)
+{
+	uint64_t us = 0;
+
+	if (c->uf_hdr) {
+		us = (c->end_ts.tv_sec - c->start_ts.tv_sec) * 1000000;
+		us += ((c->end_ts.tv_nsec - c->start_ts.tv_nsec) / 1000);
+		c->uf_hdr->total_time = us;
+	}
 }
 
 static void mdw_cmd_set_sc_hdr(struct mdw_apu_sc *sc)
@@ -416,6 +429,8 @@ static struct mdw_apu_cmd *mdw_cmd_create_cmd(int fd,
 	mutex_init(&c->mtx);
 	getnstimeofday(&c->ts_create);
 
+	ktime_get_ts64(&c->start_ts);
+
 	/* init sc state bmp */
 	c->sc_status_bmp = (1ULL << c->hdr->num_sc) - 1;
 	mdw_drv_debug("cmd(0x%llx/0x%llx) create\n", c->hdr->uid, c->kid);
@@ -449,6 +464,9 @@ static int mdw_cmd_delete_cmd(struct mdw_apu_cmd *c)
 	mdw_drv_debug("cmd(0x%llx/0x%llx) destroy\n", c->hdr->uid, c->kid);
 
 	getnstimeofday(&c->ts_delete);
+
+	ktime_get_ts64(&c->end_ts);
+	mdw_cmd_hdr_update_time(c);
 	mdw_cmd_show_cmd_perf(c);
 
 	mdw_mem_unmap_kva(c->cmdbuf);
@@ -482,7 +500,7 @@ static int mdw_cmd_get_codebuf_info(struct mdw_apu_sc *sc)
 			c->kid, sc->idx, sc->hdr->ofs_cb_info);
 
 		/* check sc codebuf overflow */
-		if (sc->kva + sc->size >= ((uint64_t)c->u_hdr + c->size)) {
+		if (sc->kva + sc->size > ((uint64_t)c->u_hdr + c->size)) {
 			mdw_drv_err("sc(0x%llx-#%d) codebuf overflow(0x%llx/%u/0x%llx/%u)\n",
 				c->kid, sc->idx, sc->kva, sc->size,
 				(uint64_t)c->u_hdr, c->size);
@@ -699,7 +717,12 @@ static int mdw_cmd_end_sc(struct mdw_apu_sc *in, struct mdw_apu_sc **out)
 	if (c->sc_status_bmp & (1ULL << in->idx)) {
 		c->sc_status_bmp &= ~(1ULL << in->idx);
 		mdw_cmd_update_scr(in);
+
+		/* update subcmd return value */
+		if (in->status)
+			c->sc_rets |= (1ULL << in->idx);
 	}
+
 	mdw_flw_debug("cmd status = 0x%llx after #%d sc done\n",
 		c->sc_status_bmp, in->idx);
 
@@ -828,11 +851,25 @@ static int mdw_cmd_sc_exec_num(struct mdw_apu_sc *sc)
 	return exec_num;
 }
 
-static void mdw_cmd_sc_set_hnd(struct mdw_apu_sc *sc, int d_idx, void *hnd)
+static void mdw_cmd_sc_clr_hnd(struct mdw_apu_sc *sc, void *hnd)
+{
+	struct apusys_cmd_hnd *h = (struct apusys_cmd_hnd *)hnd;
+
+	if (!h->kva)
+		return;
+
+	memcpy((void *)h->m_kva, (void *)h->kva, sc->size);
+	kfree((void *)h->kva);
+	h->kva = 0;
+	h->m_kva = 0;
+}
+
+static int mdw_cmd_sc_set_hnd(struct mdw_apu_sc *sc, int d_idx, void *hnd)
 {
 	struct apusys_cmd_hnd *h = (struct apusys_cmd_hnd *)hnd;
 	struct apu_mdla_hdr *m_hdr = NULL;
 	struct mdw_apu_cmd *c = sc->parent;
+	int ret = 0;
 
 	/* contruct cmd hnd */
 	mutex_lock(&sc->mtx);
@@ -847,42 +884,66 @@ static void mdw_cmd_sc_set_hnd(struct mdw_apu_sc *sc, int d_idx, void *hnd)
 	h->multicore_total = sc->multi_total;
 	h->multicore_idx = 0;
 	h->cmd_entry = c->cmdbuf->kva;
+	h->cmd_size = c->size;
 	h->ctx_id = sc->ctx;
 	h->context_callback = reviser_set_context;
-	h->kva = sc->kva;
 	h->cluster_size = sc->cluster_size;
 
-	if (sc->type != APUSYS_DEVICE_MDLA &&
-		sc->type != APUSYS_DEVICE_MDLA_RT)
-		goto out;
+	switch (sc->type) {
+	case APUSYS_DEVICE_MDLA:
+	case APUSYS_DEVICE_MDLA_RT:
+		/* for mdla pmu */
+		m_hdr = (struct apu_mdla_hdr *)sc->d_hdr;
+		if (m_hdr->ofs_pmu_info > c->size)
+			h->pmu_kva = h->cmd_entry;
+		else
+			h->pmu_kva = c->cmdbuf->kva + m_hdr->ofs_pmu_info;
+		/* multicore */
+		if (sc->multi_total <= 1) {
+			h->m_kva = sc->kva;
+		} else {
+			m_hdr = mdw_cmd_get_dev_hdr(sc);
+			if (d_idx == 0) {
+				h->m_kva = c->cmdbuf->kva +
+					m_hdr->ofs_codebuf_info_dual0;
+			} else {
+				h->m_kva = c->cmdbuf->kva +
+					m_hdr->ofs_codebuf_info_dual1;
+			}
+			h->multicore_idx = d_idx;
 
-	/* for mdla pmu */
-	m_hdr = (struct apu_mdla_hdr *)sc->d_hdr;
-	h->pmu_kva = c->cmdbuf->kva + m_hdr->ofs_pmu_info;
-	if (sc->multi_total <= 1) {
-		h->kva = sc->kva;
-		goto out;
+			if (h->m_kva + sc->size > c->cmdbuf->kva + c->size) {
+				mdw_drv_err("sc over size(0x%llx/%u)(0x%llx/%u)\n",
+					h->m_kva, sc->size,
+					c->cmdbuf->kva, c->size);
+				ret = -EINVAL;
+				goto out;
+			}
+			mdw_flw_debug("multi(%d/%d) kva(0x%llx), offset(%u/%u)\n",
+				d_idx, sc->multi_total, h->kva,
+				m_hdr->ofs_codebuf_info_dual0,
+				m_hdr->ofs_codebuf_info_dual1);
+		}
+		break;
+	default:
+		h->m_kva = sc->kva;
+		break;
 	}
 
-	/* for mdla multicore */
-	if (sc->multi_total <= 1)
+	/* duplicate cmdbuf */
+	h->kva = (uint64_t)kzalloc(sc->size, GFP_KERNEL);
+	if (!h->kva) {
+		ret = -ENOMEM;
 		goto out;
-
-	m_hdr = mdw_cmd_get_dev_hdr(sc);
-	if (d_idx == 0)
-		h->kva = c->cmdbuf->kva + m_hdr->ofs_codebuf_info_dual0;
-	else
-		h->kva = c->cmdbuf->kva + m_hdr->ofs_codebuf_info_dual1;
-
-	h->multicore_idx = d_idx;
-	mdw_flw_debug("multi(%d/%d) kva(0x%llx), offset(%u/%u)\n",
-		d_idx, sc->multi_total, h->kva,
-		m_hdr->ofs_codebuf_info_dual0,
-		m_hdr->ofs_codebuf_info_dual1);
+	}
+	memcpy((void *)h->kva, (void *)h->m_kva, sc->size);
+	mdw_cmd_debug("cmd(0x%llx-#%d) duplicate (0x%llx/%u)\n",
+		c->kid, sc->idx, h->kva, sc->size);
 
 out:
 	mdw_cmd_show_hnd(h);
 	mutex_unlock(&sc->mtx);
+	return ret;
 }
 
 struct mdw_cmd_parser mdw_cmd_parser = {
@@ -895,6 +956,7 @@ struct mdw_cmd_parser mdw_cmd_parser = {
 	.put_ctx = mdw_cmd_put_ctx,
 	.exec_core_num = mdw_cmd_sc_exec_num,
 	.set_hnd = mdw_cmd_sc_set_hnd,
+	.clr_hnd = mdw_cmd_sc_clr_hnd,
 	.is_deadline = mdw_cmd_is_deadline,
 };
 

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _H_DDP_INFO
@@ -221,7 +213,7 @@ struct OVL_CONFIG_STRUCT {
 	int const_bld;
 	int ext_sel_layer;
 	int ext_layer;
-	unsigned int phy_layer;
+	int phy_layer;
 };
 
 struct OVL_BASIC_STRUCT {
@@ -359,7 +351,7 @@ struct disp_ddp_path_config {
 	/*each bit represent one layer */
 	int ovl_layer_dirty;
 	/*each bit reprsent one layer, used for ovl engines */
-	unsigned int ovl_layer_scanned;
+	int ovl_layer_scanned;
 	int overlap_layer_num;
 	struct OVL_CONFIG_STRUCT ovl_config[TOTAL_REAL_OVL_LAYER_NUM];
 	struct disp_rect ovl_partial_roi;
@@ -380,6 +372,10 @@ struct disp_ddp_path_config {
 	int hrt_scale;
 	int sbch_enable;
 	int read_dum_reg[OVL_NUM];
+
+	/*DynFPS*/
+	unsigned int last_dynfps;
+	unsigned int dynfps;
 };
 
 struct rx_data {
@@ -424,6 +420,8 @@ enum DDP_IOCTL_NAME {
 	DDP_DSI_MIPI_POWER_ON,
 	DDP_OVL_MVA_REPLACEMENT,
 	DDP_DSI_ENABLE_TE,
+	DDP_DSI_ENTER_IDLE,
+	DDP_DSI_EXIT_IDLE
 };
 
 struct ddp_io_golden_setting_arg {

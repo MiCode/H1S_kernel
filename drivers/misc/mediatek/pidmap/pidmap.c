@@ -1,22 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2019 MediaTek Inc.
  */
-
-#ifdef CONFIG_MTK_PID_MAP
-
 #include <linux/module.h>
 #include <linux/proc_fs.h>
 #include <linux/sched.h>
 #include <linux/seq_file.h>
+#include <linux/tracepoint.h>
 #include <linux/uaccess.h>
 #include <mt-plat/mtk_pidmap.h>
 
@@ -39,15 +29,15 @@ static int  mtk_pidmap_max_pid;
 static char mtk_pidmap_proc_cmd_buf[PIDMAP_PROC_CMD_BUF_SIZE];
 static struct proc_dir_entry *mtk_pidmap_proc_entry;
 
-static void mtk_pidmap_init_map(void)
-{
-	/*
-	 * now pidmap is designed for keeping
-	 * maximum 32768 pids in 512 KB buffer.
-	 */
-	mtk_pidmap_max_pid =
-		PIDMAP_AEE_BUF_SIZE / PIDMAP_ENTRY_SIZE;
-}
+/**
+ * Data structures to store tracepoints information
+ */
+struct tracepoints_table {
+	const char *name;
+	void *func;
+	struct tracepoint *tp;
+	bool init;
+};
 
 /*
  * mtk_pidmap_update
@@ -55,14 +45,11 @@ static void mtk_pidmap_init_map(void)
  *
  * task: current task
  */
-void mtk_pidmap_update(struct task_struct *task)
+static void mtk_pidmap_update(struct task_struct *task)
 {
 	char *name;
 	int len;
 	pid_t pid;
-
-	if (unlikely(!mtk_pidmap_max_pid))
-		mtk_pidmap_init_map();
 
 	pid = task->pid;
 
@@ -93,6 +80,81 @@ void mtk_pidmap_update(struct task_struct *task)
 	name += PIDMAP_TASKNAME_SIZE;
 	*(name + 0) = (char)(task->tgid & 0xFF);
 	*(name + 1) = (char)(task->tgid >> 8);
+}
+
+static void probe_task_rename(void *data, struct task_struct *task,
+			      const char *comm)
+{
+	mtk_pidmap_update(task);
+}
+
+static void probe_task_newtask(void *data, struct task_struct *task,
+			       unsigned long clone_flags)
+{
+	mtk_pidmap_update(task);
+}
+
+static struct tracepoints_table interests[] = {
+	{.name = "task_rename", .func = probe_task_rename},
+	{.name = "task_newtask", .func = probe_task_newtask}
+};
+
+#define FOR_EACH_INTEREST(i) \
+	for (i = 0; i < sizeof(interests) / \
+	     sizeof(struct tracepoints_table); i++)
+
+/**
+ * Find the struct tracepoint* associated with a given tracepoint
+ * name.
+ */
+static void lookup_tracepoints(struct tracepoint *tp, void *ignore)
+{
+	int i;
+
+	FOR_EACH_INTEREST(i) {
+		if (strcmp(interests[i].name, tp->name) == 0)
+			interests[i].tp = tp;
+	}
+}
+
+static void mtk_pidmap_deinit(void)
+{
+	int i;
+
+	FOR_EACH_INTEREST(i) {
+		if (interests[i].init) {
+			tracepoint_probe_unregister(interests[i].tp,
+						    interests[i].func, NULL);
+		}
+	}
+}
+
+static void mtk_pidmap_init_map(void)
+{
+	int i;
+
+	/* Install the tracepoints */
+	for_each_kernel_tracepoint(lookup_tracepoints, NULL);
+
+	FOR_EACH_INTEREST(i) {
+		if (interests[i].tp == NULL) {
+			pr_info("Error: %s not found\n", interests[i].name);
+			/* Unload previously loaded */
+			mtk_pidmap_deinit();
+			return;
+		}
+
+		tracepoint_probe_register(interests[i].tp, interests[i].func,
+					  NULL);
+		interests[i].init = true;
+	}
+
+	/*
+	 * now pidmap is designed for keeping
+	 * maximum 32768 pids in 512 KB buffer.
+	 */
+	mtk_pidmap_max_pid =
+		PIDMAP_AEE_BUF_SIZE / PIDMAP_ENTRY_SIZE;
 }
 
 static void mtk_pidmap_seq_dump_readable(char **buff, unsigned long *size,
@@ -275,20 +337,11 @@ static void __exit mtk_pidmap_exit(void)
 	proc_remove(mtk_pidmap_proc_entry);
 }
 
-module_init(mtk_pidmap_init);
-module_exit(mtk_pidmap_exit);
-
-#else /* CONFIG_MTK_PID_MAP */
-
-void get_pidmap_aee_buffer(unsigned long *vaddr, unsigned long *size)
-{
-	/* return valid buffer size */
-	if (size)
-		*size = 0;
-}
-EXPORT_SYMBOL(get_pidmap_aee_buffer);
-
-#endif /* CONFIG_MTK_PID_MAP */
+/*
+ * TODO: The timing of loadable module is too late to have full
+ * list of kernel threads. Need to find out solution.
+ */
+early_initcall(mtk_pidmap_init);
 
 MODULE_AUTHOR("Stanley Chu <stanley.chu@mediatek.com>");
 MODULE_LICENSE("GPL");

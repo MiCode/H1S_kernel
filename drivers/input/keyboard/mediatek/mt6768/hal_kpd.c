@@ -1,14 +1,7 @@
-/*
- * Copyright (C) 2016 MediaTek Inc.
+/* 
+ * SPDX-License-Identifier: GPL-2.0
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/of.h>
@@ -27,6 +20,11 @@ static int kpd_enable_lprst = 1;
 static u16 kpd_keymap_state[KPD_NUM_MEMS] = {
 	0xffff, 0xffff, 0xffff, 0xffff, 0x00ff
 };
+
+unsigned int get_boot_mode(void)
+{
+	return 0;
+}
 
 static void enable_kpd(int enable)
 {

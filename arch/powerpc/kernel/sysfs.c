@@ -20,6 +20,7 @@
 #include <asm/firmware.h>
 
 #include "cacheinfo.h"
+#include "setup.h"
 
 #ifdef CONFIG_PPC64
 #include <asm/paca.h>
@@ -28,29 +29,27 @@
 
 static DEFINE_PER_CPU(struct cpu, cpu_devices);
 
-/*
- * SMT snooze delay stuff, 64-bit only for now
- */
-
 #ifdef CONFIG_PPC64
 
-/* Time in microseconds we delay before sleeping in the idle loop */
-static DEFINE_PER_CPU(long, smt_snooze_delay) = { 100 };
+/*
+ * Snooze delay has not been hooked up since 3fa8cad82b94 ("powerpc/pseries/cpuidle:
+ * smt-snooze-delay cleanup.") and has been broken even longer. As was foretold in
+ * 2014:
+ *
+ *  "ppc64_util currently utilises it. Once we fix ppc64_util, propose to clean
+ *  up the kernel code."
+ *
+ * powerpc-utils stopped using it as of 1.3.8. At some point in the future this
+ * code should be removed.
+ */
 
 static ssize_t store_smt_snooze_delay(struct device *dev,
 				      struct device_attribute *attr,
 				      const char *buf,
 				      size_t count)
 {
-	struct cpu *cpu = container_of(dev, struct cpu, dev);
-	ssize_t ret;
-	long snooze;
-
-	ret = sscanf(buf, "%ld", &snooze);
-	if (ret != 1)
-		return -EINVAL;
-
-	per_cpu(smt_snooze_delay, cpu->dev.id) = snooze;
+	pr_warn_once("%s (%d) stored to unsupported smt_snooze_delay, which has no effect.\n",
+		     current->comm, current->pid);
 	return count;
 }
 
@@ -58,9 +57,9 @@ static ssize_t show_smt_snooze_delay(struct device *dev,
 				     struct device_attribute *attr,
 				     char *buf)
 {
-	struct cpu *cpu = container_of(dev, struct cpu, dev);
-
-	return sprintf(buf, "%ld\n", per_cpu(smt_snooze_delay, cpu->dev.id));
+	pr_warn_once("%s (%d) read from unsupported smt_snooze_delay\n",
+		     current->comm, current->pid);
+	return sprintf(buf, "100\n");
 }
 
 static DEVICE_ATTR(smt_snooze_delay, 0644, show_smt_snooze_delay,
@@ -68,16 +67,10 @@ static DEVICE_ATTR(smt_snooze_delay, 0644, show_smt_snooze_delay,
 
 static int __init setup_smt_snooze_delay(char *str)
 {
-	unsigned int cpu;
-	long snooze;
-
 	if (!cpu_has_feature(CPU_FTR_SMT))
 		return 1;
 
-	snooze = simple_strtol(str, NULL, 10);
-	for_each_possible_cpu(cpu)
-		per_cpu(smt_snooze_delay, cpu) = snooze;
-
+	pr_warn("smt-snooze-delay command line option has no effect\n");
 	return 1;
 }
 __setup("smt-snooze-delay=", setup_smt_snooze_delay);
@@ -485,6 +478,7 @@ SYSFS_PMCSETUP(mmcra, SPRN_MMCRA);
 SYSFS_SPRSETUP(purr, SPRN_PURR);
 SYSFS_SPRSETUP(spurr, SPRN_SPURR);
 SYSFS_SPRSETUP(pir, SPRN_PIR);
+SYSFS_SPRSETUP(tscr, SPRN_TSCR);
 
 /*
   Lets only enable read for phyp resources and
@@ -495,6 +489,7 @@ static DEVICE_ATTR(mmcra, 0600, show_mmcra, store_mmcra);
 static DEVICE_ATTR(spurr, 0400, show_spurr, NULL);
 static DEVICE_ATTR(purr, 0400, show_purr, store_purr);
 static DEVICE_ATTR(pir, 0400, show_pir, NULL);
+static DEVICE_ATTR(tscr, 0600, show_tscr, store_tscr);
 
 /*
  * This is the system wide DSCR register default value. Any
@@ -586,10 +581,18 @@ static DEVICE_ATTR(dscr_default, 0600,
 
 static void sysfs_create_dscr_default(void)
 {
-	int err = 0;
-	if (cpu_has_feature(CPU_FTR_DSCR))
+	if (cpu_has_feature(CPU_FTR_DSCR)) {
+		int err = 0;
+		int cpu;
+
+		dscr_default = spr_default_dscr;
+		for_each_possible_cpu(cpu)
+			paca_ptrs[cpu]->dscr_default = dscr_default;
+
 		err = device_create_file(cpu_subsys.dev_root, &dev_attr_dscr_default);
+	}
 }
+
 #endif /* CONFIG_PPC64 */
 
 #ifdef HAS_PPC_PMC_PA6T
@@ -774,6 +777,10 @@ static int register_cpu_online(unsigned int cpu)
 
 	if (cpu_has_feature(CPU_FTR_PPCAS_ARCH_V2))
 		device_create_file(s, &dev_attr_pir);
+
+	if (cpu_has_feature(CPU_FTR_ARCH_206) &&
+		!firmware_has_feature(FW_FEATURE_LPAR))
+		device_create_file(s, &dev_attr_tscr);
 #endif /* CONFIG_PPC64 */
 
 #ifdef CONFIG_PPC_FSL_BOOK3E
@@ -856,6 +863,10 @@ static int unregister_cpu_online(unsigned int cpu)
 
 	if (cpu_has_feature(CPU_FTR_PPCAS_ARCH_V2))
 		device_remove_file(s, &dev_attr_pir);
+
+	if (cpu_has_feature(CPU_FTR_ARCH_206) &&
+		!firmware_has_feature(FW_FEATURE_LPAR))
+		device_remove_file(s, &dev_attr_tscr);
 #endif /* CONFIG_PPC64 */
 
 #ifdef CONFIG_PPC_FSL_BOOK3E

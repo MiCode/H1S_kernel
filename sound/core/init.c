@@ -255,7 +255,9 @@ int snd_card_new(struct device *parent, int idx, const char *xid,
 #ifdef CONFIG_PM
 	init_waitqueue_head(&card->power_sleep);
 #endif
+	init_waitqueue_head(&card->remove_sleep);
 
+	init_waitqueue_head(&card->offline_poll_wait);
 	device_initialize(&card->card_dev);
 	card->card_dev.parent = parent;
 	card->card_dev.class = sound_class;
@@ -343,9 +345,9 @@ static int snd_disconnect_release(struct inode *inode, struct file *file)
 	panic("%s(%p, %p) failed!", __func__, inode, file);
 }
 
-static unsigned int snd_disconnect_poll(struct file * file, poll_table * wait)
+static __poll_t snd_disconnect_poll(struct file * file, poll_table * wait)
 {
-	return POLLERR | POLLNVAL;
+	return EPOLLERR | EPOLLNVAL;
 }
 
 static long snd_disconnect_ioctl(struct file *file,
@@ -404,10 +406,8 @@ int snd_card_disconnect(struct snd_card *card)
 		return 0;
 	}
 	card->shutdown = 1;
-	spin_unlock(&card->files_lock);
 
 	/* replace file->f_op with special dummy operations */
-	spin_lock(&card->files_lock);
 	list_for_each_entry(mfile, &card->files_list, list) {
 		/* it's critical part, use endless loop */
 		/* we have no room to fail */
@@ -451,6 +451,35 @@ int snd_card_disconnect(struct snd_card *card)
 	return 0;	
 }
 EXPORT_SYMBOL(snd_card_disconnect);
+
+/**
+ * snd_card_disconnect_sync - disconnect card and wait until files get closed
+ * @card: card object to disconnect
+ *
+ * This calls snd_card_disconnect() for disconnecting all belonging components
+ * and waits until all pending files get closed.
+ * It assures that all accesses from user-space finished so that the driver
+ * can release its resources gracefully.
+ */
+void snd_card_disconnect_sync(struct snd_card *card)
+{
+	int err;
+
+	err = snd_card_disconnect(card);
+	if (err < 0) {
+		dev_err(card->dev,
+			"snd_card_disconnect error (%d), skipping sync\n",
+			err);
+		return;
+	}
+
+	spin_lock_irq(&card->files_lock);
+	wait_event_lock_irq(card->remove_sleep,
+			    list_empty(&card->files_list),
+			    card->files_lock);
+	spin_unlock_irq(&card->files_lock);
+}
+EXPORT_SYMBOL_GPL(snd_card_disconnect_sync);
 
 static int snd_card_do_free(struct snd_card *card)
 {
@@ -520,13 +549,19 @@ int snd_card_free(struct snd_card *card)
 }
 EXPORT_SYMBOL(snd_card_free);
 
+/* check, if the character is in the valid ASCII range */
+static inline bool safe_ascii_char(char c)
+{
+	return isascii(c) && isalnum(c);
+}
+
 /* retrieve the last word of shortname or longname */
 static const char *retrieve_id_from_card_name(const char *name)
 {
 	const char *spos = name;
 
 	while (*name) {
-		if (isspace(*name) && isalnum(name[1]))
+		if (isspace(*name) && safe_ascii_char(name[1]))
 			spos = name + 1;
 		name++;
 	}
@@ -553,12 +588,12 @@ static void copy_valid_id_string(struct snd_card *card, const char *src,
 {
 	char *id = card->id;
 
-	while (*nid && !isalnum(*nid))
+	while (*nid && !safe_ascii_char(*nid))
 		nid++;
 	if (isdigit(*nid))
 		*id++ = isalpha(*src) ? *src : 'D';
 	while (*nid && (size_t)(id - card->id) < sizeof(card->id) - 1) {
-		if (isalnum(*nid))
+		if (safe_ascii_char(*nid))
 			*id++ = *nid;
 		nid++;
 	}
@@ -640,7 +675,7 @@ card_id_show_attr(struct device *dev,
 		  struct device_attribute *attr, char *buf)
 {
 	struct snd_card *card = container_of(dev, struct snd_card, card_dev);
-	return snprintf(buf, PAGE_SIZE, "%s\n", card->id);
+	return scnprintf(buf, PAGE_SIZE, "%s\n", card->id);
 }
 
 static ssize_t
@@ -656,7 +691,7 @@ card_id_store_attr(struct device *dev, struct device_attribute *attr,
 
 	for (idx = 0; idx < copy; idx++) {
 		c = buf[idx];
-		if (!isalnum(c) && c != '_' && c != '-')
+		if (!safe_ascii_char(c) && c != '_' && c != '-')
 			return -EINVAL;
 	}
 	memcpy(buf1, buf, copy);
@@ -673,17 +708,17 @@ card_id_store_attr(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static DEVICE_ATTR(id, S_IRUGO | S_IWUSR, card_id_show_attr, card_id_store_attr);
+static DEVICE_ATTR(id, 0644, card_id_show_attr, card_id_store_attr);
 
 static ssize_t
 card_number_show_attr(struct device *dev,
 		     struct device_attribute *attr, char *buf)
 {
 	struct snd_card *card = container_of(dev, struct snd_card, card_dev);
-	return snprintf(buf, PAGE_SIZE, "%i\n", card->number);
+	return scnprintf(buf, PAGE_SIZE, "%i\n", card->number);
 }
 
-static DEVICE_ATTR(number, S_IRUGO, card_number_show_attr, NULL);
+static DEVICE_ATTR(number, 0444, card_number_show_attr, NULL);
 
 static struct attribute *card_dev_attrs[] = {
 	&dev_attr_id.attr,
@@ -957,6 +992,8 @@ int snd_card_file_remove(struct snd_card *card, struct file *file)
 			break;
 		}
 	}
+	if (list_empty(&card->files_list))
+		wake_up_all(&card->remove_sleep);
 	spin_unlock(&card->files_lock);
 	if (!found) {
 		dev_err(card->dev, "card file remove problem (%p)\n", file);
@@ -967,6 +1004,25 @@ int snd_card_file_remove(struct snd_card *card, struct file *file)
 	return 0;
 }
 EXPORT_SYMBOL(snd_card_file_remove);
+
+/**
+ * snd_card_change_online_state - mark card's online/offline state
+ * @card: Card to mark
+ * @online: whether online of offline
+ *
+ * Mutes the DAI DAC.
+ */
+void snd_card_change_online_state(struct snd_card *card, int online)
+{
+	snd_printd("snd card %s state change %d -> %d\n",
+		   card->shortname, !card->offline, online);
+	card->offline = !online;
+	/* make sure offline is updated prior to wake up */
+	wmb();
+	xchg(&card->offline_change, 1);
+	wake_up_interruptible(&card->offline_poll_wait);
+}
+EXPORT_SYMBOL_GPL(snd_card_change_online_state);
 
 #ifdef CONFIG_PM
 /**

@@ -26,8 +26,9 @@
 #include <sound/dmaengine_pcm.h>
 #include <uapi/sound/asound.h>
 #include <sound/asoundef.h>
-#include <sound/omap-pcm.h>
 #include <sound/omap-hdmi-audio.h>
+
+#include "sdma-pcm.h"
 
 #define DRV_NAME "omap-hdmi-audio"
 
@@ -352,7 +353,7 @@ static int omap_hdmi_audio_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = omap_pcm_platform_register(ad->dssdev);
+	ret = sdma_pcm_platform_register(ad->dssdev, "audio_tx", NULL);
 	if (ret)
 		return ret;
 
@@ -362,6 +363,9 @@ static int omap_hdmi_audio_probe(struct platform_device *pdev)
 
 	card->name = devm_kasprintf(dev, GFP_KERNEL,
 				    "HDMI %s", dev_name(ad->dssdev));
+	if (!card->name)
+		return -ENOMEM;
+
 	card->owner = THIS_MODULE;
 	card->dai_link =
 		devm_kzalloc(dev, sizeof(*(card->dai_link)), GFP_KERNEL);

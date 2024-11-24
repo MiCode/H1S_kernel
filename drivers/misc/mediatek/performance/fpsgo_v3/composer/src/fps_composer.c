@@ -1,17 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/slab.h>
@@ -25,17 +14,16 @@
 #include <linux/mutex.h>
 #include <linux/sched/task.h>
 
-#include <fpsgo_common.h>
+#include <mt-plat/fpsgo_common.h>
 
 #include "fpsgo_base.h"
 #include "fpsgo_sysfs.h"
-#include "fpsgo_common.h"
 #include "fpsgo_usedext.h"
 #include "fps_composer.h"
 #include "fbt_cpu.h"
 #include "fstb.h"
 #include "xgf.h"
-#include "gbe2.h"
+#include "mini_top.h"
 
 /*#define FPSGO_COM_DEBUG*/
 
@@ -350,6 +338,7 @@ void fpsgo_ctrl2comp_enqueue_end(int pid,
 			"pid[%d] type[%d] enqueue_e:%llu enqueue_l:%llu",
 			pid, f_render->frame_type,
 			enqueue_end_time, f_render->enqueue_length);
+
 		xgf_ret =
 			fpsgo_comp2xgf_qudeq_notify(pid, f_render->buffer_id,
 					XGF_QUEUE_END, &running_time, &mid,
@@ -360,6 +349,7 @@ void fpsgo_ctrl2comp_enqueue_end(int pid,
 
 		fpsgo_comp2fbt_frame_start(f_render,
 				enqueue_end_time);
+
 		fpsgo_comp2fstb_queue_time_update(pid,
 			f_render->buffer_id,
 			f_render->frame_type,
@@ -368,7 +358,7 @@ void fpsgo_ctrl2comp_enqueue_end(int pid,
 		fpsgo_comp2fstb_enq_end(f_render->pid,
 			f_render->buffer_id,
 			f_render->enqueue_length);
-		fpsgo_comp2gbe_frame_update(f_render->pid, f_render->buffer_id);
+		fpsgo_comp2minitop_queue_update(enqueue_end_time);
 		fpsgo_systrace_c_fbt_gm(-300, 0, f_render->enqueue_length,
 			"%d_%d-enqueue_length", pid, f_render->frame_type);
 		break;

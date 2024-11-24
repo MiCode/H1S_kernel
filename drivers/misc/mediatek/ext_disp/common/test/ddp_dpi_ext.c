@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "dpi_dvt_test.h"
@@ -50,6 +42,7 @@
 
 #include <linux/of.h>
 #include <linux/of_irq.h>
+#include <linux/io.h>
 /*#include "mach/eint.h"*/
 
 /* #ifdef DPI_EXT_INREG32 */
@@ -59,7 +52,7 @@
 
 #define DPI_EXT_OUTREG32(cmdq, addr, val) \
 	{\
-		mt_reg_sync_writel(val, addr); \
+		writel(val, addr); \
 	}
 
 #define DPI_EXT_LOG_PRINT(fmt, arg...)  \
@@ -83,7 +76,7 @@ int configInterlaceMode(unsigned int resolution)
 	struct DPI_REG_TGEN_VPORCH_LEVEN vporch_leven =
 	    DPI_REG->TGEN_VPORCH_LEVEN;
 
-	DPI_EXT_LOG_PRINT("%s, resolution: %d\n", __func__, resolution);
+	DPI_EXT_LOG_PRINT("enableInterlaceMode, resolution: %d\n", resolution);
 
 	if (resolution == 0x0D || resolution == 0x0E) {
 
@@ -419,6 +412,55 @@ int enableAndGetChecksum(void)
 	return checkSumNum;
 }
 
+/*
+ * int enableAndGetChecksumCmdq(struct cmdqRecStruct *cmdq_handle)
+{
+	DPI_EXT_LOG_PRINT("enableAndGetChecksumCmdq\n");
+
+	//loop
+	{
+		//poll vsync status
+		cmdqRecPoll(cmdq_handle, DPI_PHY_ADDR+0xC, 0x1, 0x1);
+
+		//stop DPI
+		cmdqRecWrite(cmdq_handle, DPI_PHY_ADDR, 0x0, 0x1);
+
+		//wait a token,
+		//wait vsync isr to read checksum and then set token
+		cmdqRecWait(cmdq_handle, CMDQ_SYNC_TOKEN_STREAM_EOF);
+		cmdqRecClearEventToken(cmdq_handle, CMDQ_SYNC_TOKEN_STREAM_EOF);
+
+		//start DPI
+		cmdqRecWrite(cmdq_handle, DPI_PHY_ADDR, 0x1, 0x1);
+
+		//wait a token,
+		//wait vsync isr to read checksum and then set token
+		cmdqRecWait(cmdq_handle, CMDQ_SYNC_TOKEN_STREAM_EOF);
+		cmdqRecClearEventToken(cmdq_handle, CMDQ_SYNC_TOKEN_STREAM_EOF);
+
+		//enable checksum
+		cmdqRecWrite(cmdq_handle, DPI_PHY_ADDR+0x48,
+				0x80000000, 0x80000000);
+		DPI_EXT_LOG_PRINT("DISPSYS_DPI_BASE+0x48: 0x%x\n",
+				DISPSYS_DPI_BASE+0x48);
+
+		//poll checksum status
+		cmdqRecPoll(cmdq_handle, DPI_PHY_ADDR+0x48,
+			0x40000000, 0x40000000);
+
+		// dump trigger loop instructions
+	    cmdqRecDumpCommand(cmdq_handle);
+
+		cmdqRecStartLoop(cmdq_handle);
+
+		CMDQ_Handle = cmdq_handle;
+		s_isCmdqInited = true;
+	}
+
+	return 0;
+}
+*/
+
 unsigned int configDpiRepetition(void)
 {
 	struct DPI_REG_CNTL ctrl = DPI_REG->CNTL;
@@ -453,6 +495,5 @@ unsigned int configDpiEmbsync(void)
 	return 0;
 }
 
-
-/*****************************DPI DVT Case End*********************************/
-#endif	/*#if defined(RDMA_DPI_PATH_SUPPORT) || defined(DPI_DVT_TEST_SUPPORT) */
+/**************DPI DVT Case End****************/
+#endif

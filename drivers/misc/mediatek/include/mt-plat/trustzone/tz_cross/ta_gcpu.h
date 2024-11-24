@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2019 MediaTek Inc.
+ * Copyright (C) 2016 MediaTek Inc.
  */
-
 
 #ifndef __TRUSTZONE_TA_GCPU__
 #define __TRUSTZONE_TA_GCPU__

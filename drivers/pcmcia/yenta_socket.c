@@ -535,9 +535,9 @@ static irqreturn_t yenta_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static void yenta_interrupt_wrapper(unsigned long data)
+static void yenta_interrupt_wrapper(struct timer_list *t)
 {
-	struct yenta_socket *socket = (struct yenta_socket *) data;
+	struct yenta_socket *socket = from_timer(socket, t, poll_timer);
 
 	yenta_interrupt(0, (void *)socket);
 	socket->poll_timer.expires = jiffies + HZ;
@@ -636,11 +636,11 @@ static int yenta_search_one_res(struct resource *root, struct resource *res,
 		start = PCIBIOS_MIN_CARDBUS_IO;
 		end = ~0U;
 	} else {
-		unsigned long avail = root->end - root->start;
+		unsigned long avail = resource_size(root);
 		int i;
 		size = BRIDGE_MEM_MAX;
-		if (size > avail/8) {
-			size = (avail+1)/8;
+		if (size > (avail - 1) / 8) {
+			size = avail / 8;
 			/* round size down to next power of 2 */
 			i = 0;
 			while ((size /= 2) != 0)
@@ -1234,8 +1234,7 @@ static int yenta_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	if (!socket->cb_irq || request_irq(socket->cb_irq, yenta_interrupt, IRQF_SHARED, "yenta", socket)) {
 		/* No IRQ or request_irq failed. Poll */
 		socket->cb_irq = 0; /* But zero is a valid IRQ number. */
-		setup_timer(&socket->poll_timer, yenta_interrupt_wrapper,
-			    (unsigned long)socket);
+		timer_setup(&socket->poll_timer, yenta_interrupt_wrapper, 0);
 		mod_timer(&socket->poll_timer, jiffies + HZ);
 		dev_info(&dev->dev,
 			 "no PCI IRQ, CardBus support disabled for this socket.\n");

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
 
 #include <linux/delay.h>
@@ -20,17 +12,85 @@
 #include "imgsensor_sensor.h"
 #include "imgsensor_hw.h"
 
+/*the index is consistent with enum IMGSENSOR_HW_PIN*/
+char * const imgsensor_hw_pin_names[] = {
+	"none",
+	"pdn",
+	"rst",
+	"vcama",
+#ifdef CONFIG_REGULATOR_RT5133
+	"vcama1",
+#endif
+#if defined(IMGSENSOR_MT6781) || defined(IMGSENSOR_MT6877)
+	"vcamaf",
+#endif
+	"vcamd",
+	"vcamio",
+#ifdef MIPI_SWITCH
+	"mipi_switch_en",
+	"mipi_switch_sel",
+#endif
+	"mclk"
+};
+
+/*the index is consistent with enum IMGSENSOR_HW_ID*/
+char * const imgsensor_hw_id_names[] = {
+	"mclk",
+	"regulator",
+	"gpio"
+};
+
 enum IMGSENSOR_RETURN imgsensor_hw_init(struct IMGSENSOR_HW *phw)
 {
 	struct IMGSENSOR_HW_SENSOR_POWER      *psensor_pwr;
 	struct IMGSENSOR_HW_CFG               *pcust_pwr_cfg;
 	struct IMGSENSOR_HW_CUSTOM_POWER_INFO *ppwr_info;
-	int i, j;
+	unsigned int i, j, len;
 	char str_prop_name[LENGTH_FOR_SNPRINTF];
+	const char *pin_hw_id_name;
 	struct device_node *of_node
 		= of_find_compatible_node(NULL, NULL, "mediatek,imgsensor");
 
 	mutex_init(&phw->common.pinctrl_mutex);
+
+	/* update the imgsensor_custom_cfg by dts */
+	for (i = 0; i < IMGSENSOR_SENSOR_IDX_MAX_NUM; i++) {
+		PK_DBG("IMGSENSOR_SENSOR_IDX: %d\n", i);
+		pcust_pwr_cfg = imgsensor_custom_config;
+		while (pcust_pwr_cfg->sensor_idx != i &&
+		       pcust_pwr_cfg->sensor_idx != IMGSENSOR_SENSOR_IDX_NONE)
+			pcust_pwr_cfg++;
+
+		if (pcust_pwr_cfg->sensor_idx == IMGSENSOR_SENSOR_IDX_NONE)
+			continue;
+
+		ppwr_info = pcust_pwr_cfg->pwr_info;
+		while (ppwr_info->pin != IMGSENSOR_HW_PIN_NONE) {
+			memset(str_prop_name, 0, sizeof(str_prop_name));
+			snprintf(str_prop_name,
+				sizeof(str_prop_name),
+				"cam%d_pin_%s",
+				i,
+				imgsensor_hw_pin_names[ppwr_info->pin]);
+			if (of_property_read_string(
+				of_node, str_prop_name,
+				&pin_hw_id_name) == 0) {
+				for (j = 0; j < IMGSENSOR_HW_ID_MAX_NUM; j++) {
+					len = strlen(imgsensor_hw_id_names[j]);
+					if (strncmp(pin_hw_id_name, imgsensor_hw_id_names[j], len)
+						== 0) {
+						PK_DBG(
+							"imgsensor_hw_cfg hw_pin:%s, id name:%s, id:%d\n",
+							str_prop_name, pin_hw_id_name, j);
+						ppwr_info->id = j;
+						break;
+					}
+				}
+			}
+			ppwr_info++;
+		}
+	}
+	/* update the imgsensor_custom_cfg by dts END */
 
 	for (i = 0; i < IMGSENSOR_HW_ID_MAX_NUM; i++) {
 		if (hw_open[i] != NULL)
@@ -135,6 +195,7 @@ static enum IMGSENSOR_RETURN imgsensor_hw_power_sequence(
 	ppwr_info = ppwr_seq->pwr_info;
 
 	while (ppwr_info->pin != IMGSENSOR_HW_PIN_NONE &&
+	       ppwr_info->pin < IMGSENSOR_HW_PIN_MAX_NUM &&
 	       ppwr_info < ppwr_seq->pwr_info + IMGSENSOR_HW_POWER_INFO_MAX) {
 
 		if (pwr_status == IMGSENSOR_HW_POWER_STATUS_ON) {

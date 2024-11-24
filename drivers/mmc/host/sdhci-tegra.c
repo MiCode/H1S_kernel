@@ -210,9 +210,24 @@ static void tegra_sdhci_set_clock(struct sdhci_host *host, unsigned int clock)
 	if (!clock)
 		return sdhci_set_clock(host, clock);
 
+	/*
+	 * In DDR50/52 modes the Tegra SDHCI controllers require the SDHCI
+	 * divider to be configured to divided the host clock by two. The SDHCI
+	 * clock divider is calculated as part of sdhci_set_clock() by
+	 * sdhci_calc_clk(). The divider is calculated from host->max_clk and
+	 * the requested clock rate.
+	 *
+	 * By setting the host->max_clk to clock * 2 the divider calculation
+	 * will always result in the correct value for DDR50/52 modes,
+	 * regardless of clock rate rounding, which may happen if the value
+	 * from clk_get_rate() is used.
+	 */
 	host_clk = tegra_host->ddr_signaling ? clock * 2 : clock;
 	clk_set_rate(pltfm_host->clk, host_clk);
-	host->max_clk = clk_get_rate(pltfm_host->clk);
+	if (tegra_host->ddr_signaling)
+		host->max_clk = host_clk;
+	else
+		host->max_clk = clk_get_rate(pltfm_host->clk);
 
 	sdhci_set_clock(host, clock);
 
@@ -228,21 +243,18 @@ static void tegra_sdhci_set_uhs_signaling(struct sdhci_host *host,
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_tegra *tegra_host = sdhci_pltfm_priv(pltfm_host);
 
-	if (timing == MMC_TIMING_UHS_DDR50)
+	if (timing == MMC_TIMING_UHS_DDR50 ||
+	    timing == MMC_TIMING_MMC_DDR52)
 		tegra_host->ddr_signaling = true;
 
-	return sdhci_set_uhs_signaling(host, timing);
+	sdhci_set_uhs_signaling(host, timing);
 }
 
 static unsigned int tegra_sdhci_get_max_clock(struct sdhci_host *host)
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 
-	/*
-	 * DDR modes require the host to run at double the card frequency, so
-	 * the maximum rate we can support is half of the module input clock.
-	 */
-	return clk_round_rate(pltfm_host->clk, UINT_MAX) / 2;
+	return clk_round_rate(pltfm_host->clk, UINT_MAX);
 }
 
 static void tegra_sdhci_set_tap(struct sdhci_host *host, unsigned int tap)
@@ -335,7 +347,15 @@ static const struct sdhci_pltfm_data sdhci_tegra30_pdata = {
 		  SDHCI_QUIRK_BROKEN_ADMA_ZEROLEN_DESC |
 		  SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
 	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
-		   SDHCI_QUIRK2_BROKEN_HS200,
+		   SDHCI_QUIRK2_BROKEN_HS200 |
+		   /*
+		    * Auto-CMD23 leads to "Got command interrupt 0x00010000 even
+		    * though no command operation was in progress."
+		    *
+		    * The exact reason is unknown, as the same hardware seems
+		    * to support Auto CMD23 on a downstream 3.1 kernel.
+		    */
+		   SDHCI_QUIRK2_ACMD23_BROKEN,
 	.ops  = &tegra_sdhci_ops,
 };
 
@@ -423,7 +443,15 @@ static const struct sdhci_pltfm_data sdhci_tegra186_pdata = {
 		  SDHCI_QUIRK_NO_HISPD_BIT |
 		  SDHCI_QUIRK_BROKEN_ADMA_ZEROLEN_DESC |
 		  SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN,
-	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
+	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN |
+		   /* SDHCI controllers on Tegra186 support 40-bit addressing.
+		    * IOVA addresses are 48-bit wide on Tegra186.
+		    * With 64-bit dma mask used for SDHCI, accesses can
+		    * be broken. Disable 64-bit dma, which would fall back
+		    * to 32-bit dma mask. Ideally 40-bit dma mask would work,
+		    * But it is not supported as of now.
+		    */
+		   SDHCI_QUIRK2_BROKEN_64_BIT_DMA,
 	.ops  = &tegra114_sdhci_ops,
 };
 
@@ -473,6 +501,9 @@ static int sdhci_tegra_probe(struct platform_device *pdev)
 
 	if (tegra_host->soc_data->nvquirks & NVQUIRK_ENABLE_DDR50)
 		host->mmc->caps |= MMC_CAP_1_8V_DDR;
+
+	/* R1B responses is required to properly manage HW busy detection. */
+	host->mmc->caps |= MMC_CAP_NEED_RSP_BUSY;
 
 	tegra_host->power_gpio = devm_gpiod_get_optional(&pdev->dev, "power",
 							 GPIOD_OUT_HIGH);

@@ -17,8 +17,9 @@ struct nouveau_channel {
 
 	struct {
 		struct nouveau_bo *buffer;
-		struct nvkm_vma vma;
+		struct nouveau_vma *vma;
 		struct nvif_object ctxdma;
+		u64 addr;
 	} push;
 
 	/* TODO: this will be reworked in the near future */
@@ -44,6 +45,7 @@ struct nouveau_channel {
 	atomic_t killed;
 };
 
+int nouveau_channels_init(struct nouveau_drm *);
 
 int  nouveau_channel_new(struct nouveau_drm *, struct nvif_device *,
 			 u32 arg0, u32 arg1, struct nouveau_channel **);

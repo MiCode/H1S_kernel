@@ -421,7 +421,7 @@ void cmdq_dev_get_dts_setting(struct cmdq_dts_setting *dts_setting)
 void cmdq_dev_init_resource(CMDQ_DEV_INIT_RESOURCE_CB init_cb)
 {
 	int status, index;
-	u32 count;
+	u32 count = 0;
 
 	status = of_property_read_u32(gCmdqDev.pDev->of_node,
 		"sram_share_cnt", &count);
@@ -450,10 +450,10 @@ void cmdq_dev_init_device_tree(struct device_node *node)
 {
 	int status;
 	u32 mmsys_dummy_reg_offset_value = 0;
-	u32 thread_count = 16;
+	u32 thread_count = CMDQ_MAX_THREAD_COUNT;
 	struct cmdq_dts_setting *dts_setting = cmdq_core_get_dts_setting();
 
-	gThreadCount = 16;
+	gThreadCount = thread_count;
 	gMMSYSDummyRegOffset = 0;
 	cmdq_core_init_dts_data();
 	status = of_property_read_u32(node, "thread_count", &thread_count);

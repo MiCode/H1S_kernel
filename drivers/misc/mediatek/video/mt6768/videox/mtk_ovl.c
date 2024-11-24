@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 
 #include <linux/delay.h>
@@ -36,6 +28,7 @@
 #ifdef CONFIG_MTK_M4U
 #include "m4u.h"
 #include "m4u_port.h"
+#include "m4u_priv.h"
 #endif
 #include "cmdq_def.h"
 #include "cmdq_record.h"
@@ -56,6 +49,16 @@
 
 #include "extd_platform.h"
 
+// from drivers/misc/mediatek/m4u/mt6768/m4u_priv.h r0.tc10sp
+#if (defined(CONFIG_TRUSTONIC_TEE_SUPPORT) || \
+	defined(CONFIG_MICROTRUST_TEE_SUPPORT)) && \
+	defined(CONFIG_MTK_TEE_GP_SUPPORT)
+#if defined(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT)
+#define M4U_TEE_SERVICE_ENABLE
+#elif defined(CONFIG_MTK_CAM_SECURITY_SUPPORT)
+#define M4U_TEE_SERVICE_ENABLE
+#endif
+#endif
 
 static int is_context_inited;
 static int ovl2mem_layer_num;
@@ -64,7 +67,7 @@ static int ovl2mem_use_m4u = 1;
 #endif
 static int ovl2mem_use_cmdq = CMDQ_ENABLE;
 
-struct wakeup_source memout_wk_lock;
+struct wakeup_source *memout_wk_lock;
 
 struct ovl2mem_path_context {
 	int state;
@@ -97,7 +100,7 @@ static struct ovl2mem_path_context *_get_context_l(void)
 			sizeof(struct ovl2mem_path_context));
 		mutex_init(&(g_context.lock));
 		is_context_inited = 1;
-		wakeup_source_init(&memout_wk_lock, "memout_disp_wakelock");
+		memout_wk_lock = wakeup_source_register(NULL, "mem_disp_wakelock");
 	}
 
 	return &g_context;
@@ -356,7 +359,7 @@ int ovl2mem_init(unsigned int session)
 {
 	int ret = -1;
 #if defined(CONFIG_MTK_M4U)
-	struct M4U_PORT_STRUCT sPort;
+	struct m4u_port_config_struct sPort;
 #endif
 	DISPFUNC();
 
@@ -394,8 +397,13 @@ int ovl2mem_init(unsigned int session)
 		}
 	}
 	/* Set fake cmdq engineflag for judge path scenario */
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+	cmdqRecSetEngine(pgcl->cmdq_handle_config,
+		(1LL << CMDQ_ENG_DISP_2L_OVL0) | (1LL << CMDQ_ENG_DISP_WDMA0));
+#else
 	cmdqRecSetEngine(pgcl->cmdq_handle_config,
 		(1LL << CMDQ_ENG_DISP_2L_OVL1) | (1LL << CMDQ_ENG_DISP_WDMA0));
+#endif
 
 	cmdqRecReset(pgcl->cmdq_handle_config);
 	cmdqRecClearEventToken(pgcl->cmdq_handle_config,
@@ -417,7 +425,14 @@ int ovl2mem_init(unsigned int session)
 	dpmgr_path_reset(pgcl->dpmgr_handle, CMDQ_DISABLE);
 
 #if defined(CONFIG_MTK_M4U)
+#if defined(M4U_TEE_SERVICE_ENABLE)
+	m4u_sec_init();
+#endif
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+	sPort.ePortID = M4U_PORT_DISP_2L_OVL0_LARB0; /* modify to real module*/
+#else
 	sPort.ePortID = M4U_PORT_UNKNOWN; /* modify to real module*/
+#endif
 	sPort.Virtuality = ovl2mem_use_m4u;
 	sPort.Security = 0;
 	sPort.Distance = 1;
@@ -425,11 +440,19 @@ int ovl2mem_init(unsigned int session)
 	ret = m4u_config_port(&sPort);
 	if (ret == 0) {
 		DISPDBG("config M4U Port %s to %s SUCCESS\n",
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+			  ddp_get_module_name(DISP_MODULE_OVL0_2L),
+#else
 			  ddp_get_module_name(DISP_MODULE_OVL1_2L),
+#endif
 			  ovl2mem_use_m4u ? "virtual" : "physical");
 	} else {
 		DISPERR("config M4U Port %s to %s FAIL(ret=%d)\n",
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+			  ddp_get_module_name(DISP_MODULE_OVL0_2L),
+#else
 			  ddp_get_module_name(DISP_MODULE_OVL1_2L),
+#endif
 			  ovl2mem_use_m4u ? "virtual" : "physical", ret);
 		goto Exit;
 	}
@@ -452,13 +475,16 @@ int ovl2mem_init(unsigned int session)
 	}
 #endif
 	dpmgr_enable_event(pgcl->dpmgr_handle, DISP_PATH_EVENT_FRAME_COMPLETE);
-
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+	pgcl->max_layer = 2;
+#else
 	pgcl->max_layer = 4;
+#endif
 	pgcl->state = 1;
 	pgcl->session = session;
 	atomic_set(&g_trigger_ticket, 1);
 	atomic_set(&g_release_ticket, 0);
-	__pm_stay_awake(&memout_wk_lock);
+	__pm_stay_awake(memout_wk_lock);
 
 Exit:
 	_ovl2mem_path_unlock(__func__);
@@ -500,6 +526,8 @@ int ovl2mem_trigger(int blocking, void *callback, unsigned int userdata)
 	dpmgr_path_stop(pgcl->dpmgr_handle, ovl2mem_cmdq_enabled());
 
 	/* /cmdqRecDumpCommand(pgcl->cmdq_handle_config); */
+	DISPDBG("[SVP]ovl2mem cdmq flash cdmq handle:%p\n",
+		pgcl->cmdq_handle_config);
 
 	cmdqRecFlushAsyncCallback(pgcl->cmdq_handle_config,
 		(CmdqAsyncFlushCB)ovl2mem_callback,
@@ -566,6 +594,25 @@ static int ovl2mem_frame_cfg_input(struct disp_frame_cfg_t *cfg)
 		dprec_logger_done(DPREC_LOGGER_PRIMARY_CONFIG,
 			cfg->input_cfg[i].src_offset_x,
 			cfg->input_cfg[i].src_offset_y);
+
+		if (cfg->input_cfg[i].layer_enable) {
+			data_config->ovl_config[config_layer_id].hnd =
+				disp_snyc_get_ion_handle(cfg->session_id,
+				 cfg->input_cfg[i].layer_id,
+				(unsigned int)cfg->input_cfg[i].next_buff_idx);
+
+			DISPERR("[SVP]ovl2mem sec layer id: %d, cdmq handle:%p\n",
+				cfg->input_cfg[i].layer_id, pgcl->cmdq_handle_config);
+		}
+	}
+
+	if (cfg->output_cfg.security != DISP_NORMAL_BUFFER) {
+		data_config->wdma_config.hnd = disp_snyc_get_ion_handle(
+			cfg->session_id,
+			disp_sync_get_output_timeline_id(),
+			(unsigned int)cfg->output_cfg.buff_idx);
+		DISPERR("[SVP]ovl2mem out is sec addr, cdmq handle:%p:\n",
+			pgcl->cmdq_handle_config);
 	}
 
 	if (dpmgr_path_is_busy(pgcl->dpmgr_handle))
@@ -841,7 +888,7 @@ int ovl2mem_deinit(void)
 	pgcl->need_trigger_path = 0;
 	atomic_set(&g_trigger_ticket, 1);
 	atomic_set(&g_release_ticket, 0);
-	__pm_relax(&memout_wk_lock);
+	__pm_relax(memout_wk_lock);
 	ret = 0;
 
 Exit:

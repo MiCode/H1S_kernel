@@ -11,6 +11,7 @@
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 
+#include "../common/mtk-afe-platform-driver.h"
 #include "mt6785-afe-common.h"
 #include "mt6785-afe-clk.h"
 #include "mt6785-afe-gpio.h"
@@ -487,7 +488,11 @@ static int mt6785_mt6359_i2s_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	unsigned int rate = params_rate(params);
+#ifdef CONFIG_SND_SOC_CS35L41
+	unsigned int mclk_fs_ratio = 256;
+#else
 	unsigned int mclk_fs_ratio = 128;
+#endif
 	unsigned int mclk_fs = rate * mclk_fs_ratio;
 
 	return snd_soc_dai_set_sysclk(rtd->cpu_dai,
@@ -500,8 +505,12 @@ static const struct snd_soc_ops mt6785_mt6359_i2s_ops = {
 
 static int mt6785_mt6359_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 {
-	struct mtk_base_afe *afe = snd_soc_platform_get_drvdata(rtd->platform);
+	struct snd_soc_component *component =
+		snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
 	struct mt6785_afe_private *afe_priv = afe->platform_priv;
+	struct snd_soc_component *codec_component =
+		snd_soc_rtdcom_lookup(rtd, CODEC_MT6359_NAME);
 	int phase;
 	unsigned int monitor;
 	int test_done_1, test_done_2, test_done_3;
@@ -518,7 +527,7 @@ static int mt6785_mt6359_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 	mt6785_afe_gpio_request(afe, true, MT6785_DAI_ADDA_CH34, 1);
 	mt6785_afe_gpio_request(afe, true, MT6785_DAI_ADDA_CH34, 0);
 
-	mt6359_mtkaif_calibration_enable(&rtd->codec->component);
+	mt6359_mtkaif_calibration_enable(codec_component);
 
 	/* set clock protocol 2 */
 	regmap_update_bits(afe->regmap, AFE_AUD_PAD_TOP, 0xff, 0x38);
@@ -537,7 +546,7 @@ static int mt6785_mt6359_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 	     phase <= afe_priv->mtkaif_calibration_num_phase &&
 	     mtkaif_calib_ok;
 	     phase++) {
-		mt6359_set_mtkaif_calibration_phase(&rtd->codec->component,
+		mt6359_set_mtkaif_calibration_phase(codec_component,
 						    phase, phase, phase);
 
 		set_cksys_reg(CKSYS_AUD_TOP_CFG, 0x1, 0x1);
@@ -608,7 +617,7 @@ static int mt6785_mt6359_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 			break;
 	}
 
-	mt6359_set_mtkaif_calibration_phase(&rtd->codec->component,
+	mt6359_set_mtkaif_calibration_phase(codec_component,
 		(afe_priv->mtkaif_chosen_phase[0] < 0) ?
 		0 : afe_priv->mtkaif_chosen_phase[0],
 		(afe_priv->mtkaif_chosen_phase[1] < 0) ?
@@ -619,7 +628,7 @@ static int mt6785_mt6359_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 	/* disable rx fifo */
 	regmap_update_bits(afe->regmap, AFE_AUD_PAD_TOP, 0xff, 0x38);
 
-	mt6359_mtkaif_calibration_disable(&rtd->codec->component);
+	mt6359_mtkaif_calibration_disable(codec_component);
 
 	mt6785_afe_gpio_request(afe, false, MT6785_DAI_ADDA, 1);
 	mt6785_afe_gpio_request(afe, false, MT6785_DAI_ADDA, 0);
@@ -639,18 +648,22 @@ static int mt6785_mt6359_mtkaif_calibration(struct snd_soc_pcm_runtime *rtd)
 static int mt6785_mt6359_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct mt6359_codec_ops ops;
-	struct mtk_base_afe *afe = snd_soc_platform_get_drvdata(rtd->platform);
+	struct snd_soc_component *component =
+		snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
 	struct mt6785_afe_private *afe_priv = afe->platform_priv;
 	struct snd_soc_dapm_context *dapm = &rtd->card->dapm;
+	struct snd_soc_component *codec_component =
+		snd_soc_rtdcom_lookup(rtd, CODEC_MT6359_NAME);
 
 	ops.enable_dc_compensation = mt6785_enable_dc_compensation;
 	ops.set_lch_dc_compensation = mt6785_set_lch_dc_compensation;
 	ops.set_rch_dc_compensation = mt6785_set_rch_dc_compensation;
 	ops.adda_dl_gain_control = mt6785_adda_dl_gain_control;
-	mt6359_set_codec_ops(&rtd->codec->component, &ops);
+	mt6359_set_codec_ops(codec_component, &ops);
 
 	/* set mtkaif protocol */
-	mt6359_set_mtkaif_protocol(&rtd->codec->component,
+	mt6359_set_mtkaif_protocol(codec_component,
 				   MT6359_MTKAIF_PROTOCOL_2_CLK_P2);
 	afe_priv->mtkaif_protocol = MTKAIF_PROTOCOL_2_CLK_P2;
 
@@ -696,9 +709,11 @@ static const struct snd_pcm_hardware mt6785_mt6359_vow_hardware = {
 static int mt6785_mt6359_vow_startup(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct mtk_base_afe *afe = snd_soc_platform_get_drvdata(rtd->platform);
-	struct snd_soc_component *component;
-	struct snd_soc_rtdcom_list *rtdcom;
+	struct snd_soc_component *component =
+		snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
+	struct snd_soc_component *comp = NULL;
+	struct snd_soc_rtdcom_list *rtdcom = NULL;
 
 	dev_info(afe->dev, "%s(), start\n", __func__);
 	snd_soc_set_runtime_hwparams(substream, &mt6785_mt6359_vow_hardware);
@@ -707,8 +722,8 @@ static int mt6785_mt6359_vow_startup(struct snd_pcm_substream *substream)
 
 	/* ASoC will call pm_runtime_get, but vow don't need */
 	for_each_rtdcom(rtd, rtdcom) {
-		component = rtdcom->component;
-		pm_runtime_put_autosuspend(component->dev);
+		comp = rtdcom->component;
+		pm_runtime_put_autosuspend(comp->dev);
 	}
 
 	return 0;
@@ -717,17 +732,19 @@ static int mt6785_mt6359_vow_startup(struct snd_pcm_substream *substream)
 static void mt6785_mt6359_vow_shutdown(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct mtk_base_afe *afe = snd_soc_platform_get_drvdata(rtd->platform);
-	struct snd_soc_component *component;
-	struct snd_soc_rtdcom_list *rtdcom;
+	struct snd_soc_component *component =
+		snd_soc_rtdcom_lookup(rtd, AFE_PCM_NAME);
+	struct mtk_base_afe *afe = snd_soc_component_get_drvdata(component);
+	struct snd_soc_component *comp = NULL;
+	struct snd_soc_rtdcom_list *rtdcom = NULL;
 
 	dev_info(afe->dev, "%s(), end\n", __func__);
 	mt6785_afe_gpio_request(afe, false, MT6785_DAI_VOW, 0);
 
 	/* restore to fool ASoC */
 	for_each_rtdcom(rtd, rtdcom) {
-		component = rtdcom->component;
-		pm_runtime_get_sync(component->dev);
+		comp = rtdcom->component;
+		pm_runtime_get_sync(comp->dev);
 	}
 }
 
@@ -737,6 +754,195 @@ static const struct snd_soc_ops mt6785_mt6359_vow_ops = {
 };
 #endif  // #ifdef CONFIG_MTK_VOW_SUPPORT
 
+#ifdef CONFIG_SND_SOC_CS35L41
+static int cirrus_prince_devs = 4;
+static struct snd_soc_codec_conf *mt_prince_codec_conf;
+
+#define CS35L41_REG_ASP_EN        0x4800
+#define CS35L41_ASP_TX_MASK       0x03
+#define CS35L41_ASP_TX_EN         0x01
+#define CS35L41_ASP_TX_DISABLE    0x0
+
+#define CS35L41_ASP_CTL2          0x4808
+#define CS35L41_ASP_DATA_CTL1     0x4830
+
+#define CS35L41_ASP_WIDTH_MASK    0xff0000
+#define CS35L41_ASP_WIDTH_16BIT   0x100000
+#define CS35L41_ASP_TX_WL_MASK    0x3f
+#define CS35L41_ASP_TX_WL_16BIT   0x10
+
+static int cs35l41_enable_tx(struct snd_soc_codec *codec, int ch_num)
+{
+	unsigned int value = 0;
+
+//TODO:   By default, Amp TX is 24bit.
+//If need change to 16bit, use the same way to update ASP_WIDTH & ASP_TX_WL reg
+#ifdef PRINCE_TX_16BIT
+	/* Change to 16Bit data width */
+	dev_info(codec->dev, "%s: Set echo ref to 16bit data format\n",
+				__func__);
+	snd_soc_update_bits(codec, CS35L41_ASP_CTL2, CS35L41_ASP_WIDTH_MASK,
+				CS35L41_ASP_WIDTH_16BIT);
+	snd_soc_update_bits(codec, CS35L41_ASP_DATA_CTL1, CS35L41_ASP_TX_WL_MASK,
+				CS35L41_ASP_TX_WL_16BIT);
+#endif
+	value = snd_soc_read(codec, CS35L41_REG_ASP_EN);
+	dev_info(codec->dev, "%s: before enable_tx reg = 0x%x\n",
+				__func__, value);
+	snd_soc_update_bits(codec, CS35L41_REG_ASP_EN, CS35L41_ASP_TX_MASK,
+				CS35L41_ASP_TX_EN << ch_num);
+	value = snd_soc_read(codec, CS35L41_REG_ASP_EN);
+	dev_info(codec->dev, "%s: after enable_tx reg = 0x%x\n",
+				__func__, value);
+	return 0;
+}
+
+static int cs35l41_disable_tx(struct snd_soc_codec *codec)
+{
+	unsigned int value = 0;
+
+	value = snd_soc_read(codec, CS35L41_REG_ASP_EN);
+
+	dev_info(codec->dev, "%s: before disable_tx reg = 0x%x\n",
+				__func__, value);
+	snd_soc_update_bits(codec, CS35L41_REG_ASP_EN, CS35L41_ASP_TX_MASK, CS35L41_ASP_TX_DISABLE);
+	value = snd_soc_read(codec, CS35L41_REG_ASP_EN);
+	dev_info(codec->dev, "%s: after disable_tx reg = 0x%x\n",
+				__func__, value);
+	return 0;
+}
+
+static int cs35l41_snd_startup(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_card *card = rtd->card;
+	struct snd_soc_dai **codec_dais = rtd->codec_dais;
+	int ret, i;
+
+	for (i = 0; i < rtd->num_codecs; i++) {
+		// Set codec_dai as slave
+		ret = snd_soc_dai_set_fmt(codec_dais[i],
+						SND_SOC_DAIFMT_CBS_CFS | SND_SOC_DAIFMT_I2S);
+		if (ret < 0) {
+			dev_info(card->dev, "%s: Failed to set fmt codec dai: %d\n",
+				__func__, ret);
+			return ret;
+		}
+
+		ret = snd_soc_codec_set_sysclk(codec_dais[i]->codec, 0, 0,
+						1536000*2,
+						SND_SOC_CLOCK_IN);
+		if (ret < 0) {
+			dev_info(card->dev, "%s: Failed to set codec sysclk: %d\n",
+					__func__, ret);
+			return ret;
+		}
+
+		ret = snd_soc_dai_set_sysclk(codec_dais[i], 0,
+						1536000*2,
+						SND_SOC_CLOCK_IN);
+		if (ret < 0) {
+			dev_info(card->dev, "%s: Failed to set dai sysclk: %d\n",
+					__func__, ret);
+			return ret;
+		}
+		/* Enable Amp TX path */
+		if (i < 2) { /* Enable CH0 for SPK1 & SPK2 */
+			cs35l41_enable_tx(codec_dais[i]->codec, 0);
+		} else {  /* Enable CH1 for SPK1 & SPK2 */
+			cs35l41_enable_tx(codec_dais[i]->codec, 1);
+		}
+	}
+
+	dev_info(card->dev, "-%s\n", __func__);
+	return 0;
+}
+
+void cs35l41_snd_shutdown(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_card *card = rtd->card;
+	struct snd_soc_dai **codec_dais = rtd->codec_dais;
+	int i;
+
+	for (i = 0; i < rtd->num_codecs; i++) {
+		/* Disable Amp TX path */
+		cs35l41_disable_tx(codec_dais[i]->codec);
+	}
+
+	dev_info(card->dev, "-%s\n", __func__);
+}
+
+static struct snd_soc_ops cs35l41_be_ops = {
+	.startup = cs35l41_snd_startup,
+	.shutdown = cs35l41_snd_shutdown,
+};
+
+static int cs35l41_mi2s_snd_init(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_card *card = rtd->card;
+	struct snd_soc_codec *spk1_cdc = rtd->codec_dais[0]->codec;
+	struct snd_soc_dapm_context *spk1_dapm = snd_soc_codec_get_dapm(spk1_cdc);
+	struct snd_soc_codec *spk2_cdc = rtd->codec_dais[1]->codec;
+	struct snd_soc_dapm_context *spk2_dapm = snd_soc_codec_get_dapm(spk2_cdc);
+	struct snd_soc_codec *spk3_cdc = rtd->codec_dais[2]->codec;
+	struct snd_soc_dapm_context *spk3_dapm = snd_soc_codec_get_dapm(spk3_cdc);
+	struct snd_soc_codec *spk4_cdc = rtd->codec_dais[3]->codec;
+	struct snd_soc_dapm_context *spk4_dapm = snd_soc_codec_get_dapm(spk4_cdc);
+
+
+	dev_info(card->dev, "%s: found codec[%s]\n", __func__, dev_name(spk1_cdc->dev));
+	snd_soc_dapm_ignore_suspend(spk1_dapm, "SPK1 AMP Playback");
+	snd_soc_dapm_ignore_suspend(spk1_dapm, "SPK1 SPK");
+	snd_soc_dapm_ignore_suspend(spk1_dapm, "SPK1 VMON ADC");
+	snd_soc_dapm_ignore_suspend(spk1_dapm, "SPK1 AMP Capture");
+	snd_soc_dapm_sync(spk1_dapm);
+
+	dev_info(card->dev, "%s: found codec[%s]\n", __func__, dev_name(spk2_cdc->dev));
+	snd_soc_dapm_ignore_suspend(spk2_dapm, "SPK2 AMP Playback");
+	snd_soc_dapm_ignore_suspend(spk2_dapm, "SPK2 SPK");
+	snd_soc_dapm_ignore_suspend(spk2_dapm, "SPK2 VMON ADC");
+	snd_soc_dapm_ignore_suspend(spk2_dapm, "SPK2 AMP Capture");
+	snd_soc_dapm_sync(spk2_dapm);
+
+	dev_info(card->dev, "%s: found codec[%s]\n", __func__, dev_name(spk3_cdc->dev));
+	snd_soc_dapm_ignore_suspend(spk3_dapm, "SPK3 AMP Playback");
+	snd_soc_dapm_ignore_suspend(spk3_dapm, "SPK3 SPK");
+	snd_soc_dapm_ignore_suspend(spk3_dapm, "SPK3 VMON ADC");
+	snd_soc_dapm_ignore_suspend(spk3_dapm, "SPK3 AMP Capture");
+	snd_soc_dapm_sync(spk3_dapm);
+
+	dev_info(card->dev, "%s: found codec[%s]\n", __func__, dev_name(spk4_cdc->dev));
+	snd_soc_dapm_ignore_suspend(spk4_dapm, "SPK4 AMP Playback");
+	snd_soc_dapm_ignore_suspend(spk4_dapm, "SPK4 SPK");
+	snd_soc_dapm_ignore_suspend(spk4_dapm, "SPK4 VMON ADC");
+	snd_soc_dapm_ignore_suspend(spk4_dapm, "SPK4 AMP Capture");
+	snd_soc_dapm_sync(spk4_dapm);
+
+	return 0;
+}
+
+static struct snd_soc_dai_link_component cirrus_prince[] = {
+	{
+		.name = "cs35l41.6-0040",
+		.dai_name = "cs35l41-pcm",
+	},
+	{
+		.name = "cs35l41.6-0041",
+		.dai_name = "cs35l41-pcm",
+	},
+	{
+		.name = "cs35l41.6-0042",
+		.dai_name = "cs35l41-pcm",
+	},
+	{
+		.name = "cs35l41.6-0043",
+		.dai_name = "cs35l41-pcm",
+	},
+};
+
+
+#endif
 static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 	/* Front End DAI links */
 	{
@@ -1131,6 +1337,21 @@ static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 		.ignore_suspend = 1,
 		.be_hw_params_fixup = mt6785_i2s_hw_params_fixup,
 	},
+#if defined(CONFIG_SND_SOC_CS35L41)
+	{
+		.name = "I2S1",
+		.cpu_dai_name = "I2S1",
+		.codecs = cirrus_prince,
+		.num_codecs = ARRAY_SIZE(cirrus_prince),
+		.no_pcm = 1,
+		.dpcm_playback = 1,
+		.ops = &cs35l41_be_ops,
+		.init = cs35l41_mi2s_snd_init,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		.be_hw_params_fixup = mt6785_i2s_hw_params_fixup,
+	},
+#else
 	{
 		.name = "I2S1",
 		.cpu_dai_name = "I2S1",
@@ -1141,11 +1362,18 @@ static struct snd_soc_dai_link mt6785_mt6359_dai_links[] = {
 		.ignore_suspend = 1,
 		.be_hw_params_fixup = mt6785_i2s_hw_params_fixup,
 	},
+#endif
 	{
 		.name = "I2S2",
 		.cpu_dai_name = "I2S2",
+#ifdef CONFIG_SND_SOC_AS33970
+		.codec_dai_name = "cx33970-aif",
+		.codec_name = "cx33970.9-0041",
+		.ops = &mt6785_mt6359_i2s_ops,
+#else
 		.codec_dai_name = "snd-soc-dummy-dai",
 		.codec_name = "snd-soc-dummy",
+#endif
 		.no_pcm = 1,
 		.dpcm_capture = 1,
 		.ignore_suspend = 1,
@@ -1460,7 +1688,10 @@ static int mt6785_mt6359_dev_probe(struct platform_device *pdev)
 	int ret, i;
 	int spk_out_dai_link_idx, spk_iv_dai_link_idx;
 	const char *name;
-
+#ifdef CONFIG_SND_SOC_CS35L41
+	struct device_node *prince_codec_of_node;
+	const char *prince_name_prefix[1];
+#endif
 	ret = mtk_spk_update_info(card, pdev,
 				  &spk_out_dai_link_idx, &spk_iv_dai_link_idx,
 				  &mt6785_mt6359_i2s_ops);
@@ -1541,7 +1772,41 @@ static int mt6785_mt6359_dev_probe(struct platform_device *pdev)
 #endif
 
 	card->dev = &pdev->dev;
+#ifdef CONFIG_SND_SOC_CS35L41
+	/* Alloc prince array of codec conf struct */
+	dev_info(&pdev->dev,
+				"%s: Default card num_configs = %d\n", __func__, card->num_configs);
+	mt_prince_codec_conf = devm_kcalloc(&pdev->dev,
+		card->num_configs + cirrus_prince_devs,
+		sizeof(struct snd_soc_codec_conf), GFP_KERNEL);
+	if (!mt_prince_codec_conf) {
+		ret = -ENOMEM;
+		return ret;
+	}
 
+	for (i = 0; i < cirrus_prince_devs; i++) {
+		prince_codec_of_node = of_parse_phandle(pdev->dev.of_node,
+			"cirrus,prince-devs", i);
+		ret = of_property_read_string_index(pdev->dev.of_node,
+			"cirrus,prince-dev-prefix", i, prince_name_prefix);
+		if (ret) {
+			dev_info(&pdev->dev,
+				"%s: failed to read prince dev prefix, ret = %d\n", __func__, ret);
+				ret = -EINVAL;
+				return ret;
+		}
+		dev_info(&pdev->dev,
+			"%s: prince_dev prefix[%d] = %s\n", __func__, i, prince_name_prefix);
+
+		mt_prince_codec_conf[card->num_configs + i].dev_name = NULL;
+		mt_prince_codec_conf[card->num_configs + i].of_node = prince_codec_of_node;
+		mt_prince_codec_conf[card->num_configs + i].name_prefix = prince_name_prefix[0];
+	}
+
+	card->num_configs += cirrus_prince_devs;
+	card->codec_conf = mt_prince_codec_conf;
+
+#endif
 	ret = devm_snd_soc_register_card(&pdev->dev, card);
 	if (ret)
 		dev_err(&pdev->dev, "%s snd_soc_register_card fail %d\n",

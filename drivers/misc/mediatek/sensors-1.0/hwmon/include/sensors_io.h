@@ -1,21 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
-
-/*
- * Copyright(C)2014 MediaTek Inc.
- * Modification based on code covered by the below mentioned copyright
- * and/or permission notice(S).
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef SENSORS_IO_H
@@ -115,12 +100,8 @@ struct compat_biometric_threshold {
 
 #define ALSPS 0x84
 #define ALSPS_SET_PS_MODE _IOW(ALSPS, 0x01, int)
-#define ALSPS_GET_PS_MODE _IOR(ALSPS, 0x02, int)
-#define ALSPS_GET_PS_DATA _IOR(ALSPS, 0x03, int)
 #define ALSPS_GET_PS_RAW_DATA _IOR(ALSPS, 0x04, int)
 #define ALSPS_SET_ALS_MODE _IOW(ALSPS, 0x05, int)
-#define ALSPS_GET_ALS_MODE _IOR(ALSPS, 0x06, int)
-#define ALSPS_GET_ALS_DATA _IOR(ALSPS, 0x07, int)
 #define ALSPS_GET_ALS_RAW_DATA _IOR(ALSPS, 0x08, int)
 
 /*-------------------MTK add-------------------------------------------*/

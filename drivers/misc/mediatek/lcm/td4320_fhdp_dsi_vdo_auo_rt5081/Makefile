@@ -10,12 +10,8 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 #
-
 #
 # Makefile for misc devices that really don't fit anywhere else.
 #
-
 obj-y += td4320_fhdp_dsi_vdo_auo_rt5081.o
-
 ccflags-$(CONFIG_MTK_LCM) += -I$(srctree)/drivers/misc/mediatek/lcm/inc
-

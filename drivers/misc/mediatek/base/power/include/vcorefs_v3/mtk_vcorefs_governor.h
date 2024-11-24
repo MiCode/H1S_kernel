@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _MTK_VCOREFS_GOVERNOR_H
 #define _MTK_VCOREFS_GOVERNOR_H
@@ -116,6 +108,8 @@ struct opp_profile {
 #define LATE_INIT_OPP           (NUM_OPP - 1)
 #elif defined(CONFIG_MACH_MT6739)
 #define LATE_INIT_OPP           (NUM_OPP - 1)
+#elif defined(CONFIG_MACH_MT6771)
+#define LATE_INIT_OPP			(NUM_OPP - 1)
 #else
 #define LATE_INIT_OPP           (NUM_OPP - 1)
 #endif

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/clk.h>
 #include <linux/kernel.h>
@@ -216,6 +208,16 @@ void ssusb_dpidle_request(int mode)
 		spm_resource_req(SPM_RESOURCE_USER_SSUSB, SPM_RESOURCE_CK_26M);
 		mtu3_printk(K_NOTICE, "DPIDLE_TIMER\n");
 		issue_dpidle_timer();
+		break;
+	case USB_DPIDLE_SUSPEND:
+		spm_resource_req(SPM_RESOURCE_USER_SSUSB,
+				SPM_RESOURCE_MAINPLL | SPM_RESOURCE_CK_26M |
+				SPM_RESOURCE_AXI_BUS);
+		mtu3_printk(K_NOTICE, "DPIDLE_SUSPEND\n");
+		break;
+	case USB_DPIDLE_RESUME:
+		spm_resource_req(SPM_RESOURCE_USER_SSUSB, 0);
+		mtu3_printk(K_NOTICE, "DPIDLE_RESUME\n");
 		break;
 	default:
 		mtu3_printk(K_WARNIN, "[ERROR] Are you kidding!?!?\n");

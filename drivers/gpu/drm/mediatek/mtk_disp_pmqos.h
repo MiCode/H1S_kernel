@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _MTK_DRM_PMQOS_H_
 #define _MTK_DRM_PMQOS_H_
@@ -29,8 +21,15 @@
 #elif defined(CONFIG_MACH_MT6833)
 #include  "helio-dvfsrc-opp-mt6833.h"
 #include "dt-bindings/memory/mt6833-larb-port.h"
+#elif defined(CONFIG_MACH_MT6877)
+//#include  "helio-dvfsrc-opp-mt6877.h"
+#include "dt-bindings/memory/mt6877-larb-port.h"
+#elif defined(CONFIG_MACH_MT6781)
+//#include  "helio-dvfsrc-opp-mt6781.h"
+#include "dt-bindings/memory/mt6781-larb-port.h"
 #endif
 #include <linux/pm_qos.h>
+#include <linux/soc/mediatek/mtk-pm-qos.h>
 
 enum DISP_QOS_BW_MODE {
 	DISP_BW_NORMAL_MODE = 0,

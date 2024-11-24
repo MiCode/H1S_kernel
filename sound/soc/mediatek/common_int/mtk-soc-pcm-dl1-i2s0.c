@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -69,7 +58,7 @@ static struct device *mDev;
 
 static int mtk_i2s0_probe(struct platform_device *pdev);
 static int mtk_pcm_i2s0_close(struct snd_pcm_substream *substream);
-static int mtk_afe_i2s0_probe(struct snd_soc_platform *platform);
+static int mtk_afe_i2s0_component_probe(struct snd_soc_component *component);
 
 int mtk_soc_always_hd;
 int extcodec_echoref_control;
@@ -255,8 +244,9 @@ static int Audio_i2s0_SideGen_Set(struct snd_kcontrol *kcontrol,
 		/* Enable I2S3 */
 		Set2ndI2SOutEnable(true);
 
-		pr_debug("%s(), Turn on. AFE_I2S_CON3=0x%x\n", __func__,
-			 Afe_Get_Reg(AFE_I2S_CON3));
+		/* pr_debug("%s(), Turn on. AFE_I2S_CON3=0x%x\n", __func__,
+		 * Afe_Get_Reg(AFE_I2S_CON3));
+		 */
 
 		EnableAfe(true);
 	} else {
@@ -346,6 +336,7 @@ static int audio_always_hd_set(struct snd_kcontrol *kcontrol,
 static int Audio_i2s0_hdoutput_Get(struct snd_kcontrol *kcontrol,
 				   struct snd_ctl_elem_value *ucontrol)
 {
+	pr_debug("%s(), hdoutput_control = %d\n", __func__, hdoutput_control);
 	ucontrol->value.integer.value[0] = hdoutput_control;
 	return 0;
 }
@@ -360,27 +351,28 @@ static int Audio_i2s0_hdoutput_Set(struct snd_kcontrol *kcontrol,
 	}
 
 	hdoutput_control = ucontrol->value.integer.value[0];
-#if 0
+	/*
 	if (hdoutput_control) {
-		/* set APLL clock setting */
 		EnableApll1(true);
 		EnableApll2(true);
 		EnableI2SDivPower(AUDIO_APLL1_DIV0, true);
 		EnableI2SDivPower(AUDIO_APLL2_DIV0, true);
 	} else {
-		/* set APLL clock setting */
 		EnableApll1(false);
 		EnableApll2(false);
 		EnableI2SDivPower(AUDIO_APLL1_DIV0, false);
 		EnableI2SDivPower(AUDIO_APLL2_DIV0, false);
 	}
-#endif
+	*/
 	return 0;
 }
 
 static int Audio_i2s0_ExtCodec_EchoRef_Get(struct snd_kcontrol *kcontrol,
 					   struct snd_ctl_elem_value *ucontrol)
 {
+	pr_debug("%s(), extcodec_echoref_control = %d\n",
+		 __func__,
+		 extcodec_echoref_control);
 	ucontrol->value.integer.value[0] = extcodec_echoref_control;
 	return 0;
 }
@@ -430,6 +422,7 @@ static int mtk_pcm_i2s0_stop(struct snd_pcm_substream *substream)
 {
 	struct afe_block_t *Afe_Block = &(pI2s0MemControl->rBlock);
 
+	pr_debug("%s()\n", __func__);
 	irq_remove_user(substream,
 			irq_request_number(Soc_Aud_Digital_Block_MEM_DL1));
 
@@ -462,7 +455,9 @@ static int mtk_pcm_i2s0_hw_params(struct snd_pcm_substream *substream,
 				  struct snd_pcm_hw_params *hw_params)
 {
 	int ret = 0;
-
+#if defined(AUD_DEBUG_LOG)
+	pr_debug("mtk_pcm_hw_params\n");
+#endif
 	/* runtime->dma_bytes has to be set manually to allow mmap */
 	substream->runtime->dma_bytes = params_buffer_bytes(hw_params);
 
@@ -529,14 +524,15 @@ static int mtk_pcm_i2s0_open(struct snd_pcm_substream *substream)
 
 	/* print for hw pcm information */
 	pr_debug(
-		"runtime rate = %d channels = %d substream->pcm->device = %d\n",
-		runtime->rate, runtime->channels, substream->pcm->device);
+		"%s(), runtime rate = %d, channels = %d, substream->pcm->device = %d\n",
+		__func__, runtime->rate, runtime->channels, substream->pcm->device);
 
 	if (ret < 0) {
-		pr_err("pcm_i2s0_close\n");
+		pr_err("mtk_pcm_i2s0_close\n");
 		mtk_pcm_i2s0_close(substream);
 		return ret;
 	}
+	pr_debug("%s(), return\n", __func__);
 	return 0;
 }
 
@@ -608,6 +604,8 @@ static int mtk_pcm_i2s0_start(struct snd_pcm_substream *substream)
 
 static int mtk_pcm_i2s0_trigger(struct snd_pcm_substream *substream, int cmd)
 {
+	pr_debug("%s(), cmd = %d\n", __func__, cmd);
+
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
@@ -625,6 +623,14 @@ static int mtk_pcm_i2s0_copy(struct snd_pcm_substream *substream, int channel,
 {
 	return mtk_memblk_copy(substream, channel, pos, dst, count,
 			       pI2s0MemControl, Soc_Aud_Digital_Block_MEM_DL1);
+}
+
+static int mtk_pcm_i2s0_silence(struct snd_pcm_substream *substream,
+				int channel,
+				unsigned long pos,
+				unsigned long bytes)
+{
+	return 0; /* do nothing */
 }
 
 static void *dummy_page[2];
@@ -645,42 +651,49 @@ static struct snd_pcm_ops mtk_i2s0_ops = {
 	.trigger = mtk_pcm_i2s0_trigger,
 	.pointer = mtk_pcm_i2s0_pointer,
 	.copy_user = mtk_pcm_i2s0_copy,
+	.fill_silence = mtk_pcm_i2s0_silence,
 	.page = mtk_i2s0_pcm_page,
 };
 
-static struct snd_soc_platform_driver mtk_i2s0_soc_platform = {
-	.ops = &mtk_i2s0_ops, .probe = mtk_afe_i2s0_probe,
+static const struct snd_soc_component_driver mtk_i2s0_soc_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_i2s0_ops,
+	.probe = mtk_afe_i2s0_component_probe,
 };
 
 static int mtk_i2s0_probe(struct platform_device *pdev)
 {
 	pr_debug("%s\n", __func__);
 
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
 
-	if (pdev->dev.of_node) {
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_I2S0_PCM);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
 
 	mDev = &pdev->dev;
 
-	return snd_soc_register_platform(&pdev->dev, &mtk_i2s0_soc_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_i2s0_soc_component,
+					  NULL,
+					  0);
 }
 
-static int mtk_afe_i2s0_probe(struct snd_soc_platform *platform)
+static int mtk_afe_i2s0_component_probe(struct snd_soc_component *component)
 {
-	snd_soc_add_platform_controls(platform, Audio_snd_i2s0_controls,
+	pr_debug("%s\n", __func__);
+	snd_soc_add_component_controls(component, Audio_snd_i2s0_controls,
 				      ARRAY_SIZE(Audio_snd_i2s0_controls));
 	return 0;
 }
 
 static int mtk_i2s0_remove(struct platform_device *pdev)
 {
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

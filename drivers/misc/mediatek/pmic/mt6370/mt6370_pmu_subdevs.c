@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- *  Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -101,8 +94,12 @@ static inline int mt6370_pmu_init_of_subdevs(struct mt6370_pmu_chip *chip)
 		for (j = 0; j < irq_cnt; j++) {
 			const char *name = NULL;
 
-			of_property_read_string_index(np, "interrupt-names",
-						      j, &name);
+			ret = of_property_read_string_index(np,
+							"interrupt-names",
+							j, &name);
+			if (ret < 0)
+				continue;
+
 			res[j].name = name;
 			ret = mt6370_pmu_get_virq_number(chip, name);
 			res[j].start = res[j].end = ret;
@@ -158,13 +155,9 @@ int mt6370_pmu_subdevs_register(struct mt6370_pmu_chip *chip)
 	ret = mt6370_pmu_init_subdevs(chip);
 	if (ret < 0)
 		return ret;
-#if 1 /*(LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0)) */
+
 	return mfd_add_devices(chip->dev, -1, mt6370_pmu_subdev_cells,
 			MT6370_PMU_DEV_MAX, NULL, 0, NULL);
-#else
-	return mfd_add_devices(chip->dev, -1, mt6370_pmu_subdev_cells,
-			MT6370_PMU_DEV_MAX, NULL, 0);
-#endif /* #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 6, 0)) */
 }
 EXPORT_SYMBOL(mt6370_pmu_subdevs_register);
 

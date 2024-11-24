@@ -400,6 +400,13 @@ int kdb_set(int argc, const char **argv)
 		return KDB_ARGCOUNT;
 
 	/*
+	 * Censor sensitive variables
+	 */
+	if (strcmp(argv[1], "PROMPT") == 0 &&
+	    !kdb_check_flags(KDB_ENABLE_MEM_READ, kdb_cmd_enabled, false))
+		return KDB_NOPERM;
+
+	/*
 	 * Check for internal variables
 	 */
 	if (strcmp(argv[1], "KDBDEBUG") == 0) {
@@ -691,7 +698,7 @@ static int kdb_defcmd2(const char *cmdstr, const char *argv0)
 	}
 	if (!s->usable)
 		return KDB_NOTIMP;
-	s->command = kzalloc((s->count + 1) * sizeof(*(s->command)), GFP_KDB);
+	s->command = kcalloc(s->count + 1, sizeof(*(s->command)), GFP_KDB);
 	if (!s->command) {
 		kdb_printf("Could not allocate new kdb_defcmd table for %s\n",
 			   cmdstr);
@@ -729,8 +736,8 @@ static int kdb_defcmd(int argc, const char **argv)
 		kdb_printf("Command only available during kdb_init()\n");
 		return KDB_NOTIMP;
 	}
-	defcmd_set = kmalloc((defcmd_set_count + 1) * sizeof(*defcmd_set),
-			     GFP_KDB);
+	defcmd_set = kmalloc_array(defcmd_set_count + 1, sizeof(*defcmd_set),
+				   GFP_KDB);
 	if (!defcmd_set)
 		goto fail_defcmd;
 	memcpy(defcmd_set, save_defcmd_set,
@@ -1150,6 +1157,16 @@ void kdb_set_current_task(struct task_struct *p)
 	kdb_current_regs = NULL;
 }
 
+static void drop_newline(char *buf)
+{
+	size_t len = strlen(buf);
+
+	if (len == 0)
+		return;
+	if (*(buf + len - 1) == '\n')
+		*(buf + len - 1) = '\0';
+}
+
 /*
  * kdb_local - The main code for kdb.  This routine is invoked on a
  *	specific processor, it is not global.  The main kdb() routine
@@ -1289,14 +1306,9 @@ static int kdb_local(kdb_reason_t reason, int error, struct pt_regs *regs,
 		*(cmd_hist[cmd_head]) = '\0';
 
 do_full_getstr:
-#if defined(CONFIG_SMP)
+		/* PROMPT can only be set if we have MEM_READ permission. */
 		snprintf(kdb_prompt_str, CMD_BUFLEN, kdbgetenv("PROMPT"),
 			 raw_smp_processor_id());
-#else
-		snprintf(kdb_prompt_str, CMD_BUFLEN, kdbgetenv("PROMPT"));
-#endif
-		if (defcmd_in_progress)
-			strncat(kdb_prompt_str, "[defcmd]", CMD_BUFLEN);
 
 		/*
 		 * Fetch command from keyboard
@@ -1327,6 +1339,7 @@ do_full_getstr:
 		cmdptr = cmd_head;
 		diag = kdb_parse(cmdbuf);
 		if (diag == KDB_NOTFOUND) {
+			drop_newline(cmdbuf);
 			kdb_printf("Unknown kdb command: '%s'\n", cmdbuf);
 			diag = 0;
 		}
@@ -2456,7 +2469,6 @@ static int kdb_kill(int argc, const char **argv)
 	long sig, pid;
 	char *endp;
 	struct task_struct *p;
-	struct siginfo info;
 
 	if (argc != 2)
 		return KDB_ARGCOUNT;
@@ -2464,7 +2476,7 @@ static int kdb_kill(int argc, const char **argv)
 	sig = simple_strtol(argv[1], &endp, 0);
 	if (*endp)
 		return KDB_BADINT;
-	if (sig >= 0) {
+	if ((sig >= 0) || !valid_signal(-sig)) {
 		kdb_printf("Invalid signal parameter.<-signal>\n");
 		return 0;
 	}
@@ -2485,48 +2497,8 @@ static int kdb_kill(int argc, const char **argv)
 		return 0;
 	}
 	p = p->group_leader;
-	info.si_signo = sig;
-	info.si_errno = 0;
-	info.si_code = SI_USER;
-	info.si_pid = pid;  /* same capabilities as process being signalled */
-	info.si_uid = 0;    /* kdb has root authority */
-	kdb_send_sig_info(p, &info);
+	kdb_send_sig(p, sig);
 	return 0;
-}
-
-struct kdb_tm {
-	int tm_sec;	/* seconds */
-	int tm_min;	/* minutes */
-	int tm_hour;	/* hours */
-	int tm_mday;	/* day of the month */
-	int tm_mon;	/* month */
-	int tm_year;	/* year */
-};
-
-static void kdb_gmtime(struct timespec *tv, struct kdb_tm *tm)
-{
-	/* This will work from 1970-2099, 2100 is not a leap year */
-	static int mon_day[] = { 31, 29, 31, 30, 31, 30, 31,
-				 31, 30, 31, 30, 31 };
-	memset(tm, 0, sizeof(*tm));
-	tm->tm_sec  = tv->tv_sec % (24 * 60 * 60);
-	tm->tm_mday = tv->tv_sec / (24 * 60 * 60) +
-		(2 * 365 + 1); /* shift base from 1970 to 1968 */
-	tm->tm_min =  tm->tm_sec / 60 % 60;
-	tm->tm_hour = tm->tm_sec / 60 / 60;
-	tm->tm_sec =  tm->tm_sec % 60;
-	tm->tm_year = 68 + 4*(tm->tm_mday / (4*365+1));
-	tm->tm_mday %= (4*365+1);
-	mon_day[1] = 29;
-	while (tm->tm_mday >= mon_day[tm->tm_mon]) {
-		tm->tm_mday -= mon_day[tm->tm_mon];
-		if (++tm->tm_mon == 12) {
-			tm->tm_mon = 0;
-			++tm->tm_year;
-			mon_day[1] = 28;
-		}
-	}
-	++tm->tm_mday;
 }
 
 /*
@@ -2536,10 +2508,10 @@ static void kdb_gmtime(struct timespec *tv, struct kdb_tm *tm)
  */
 static void kdb_sysinfo(struct sysinfo *val)
 {
-	struct timespec uptime;
-	ktime_get_ts(&uptime);
+	u64 uptime = ktime_get_mono_fast_ns();
+
 	memset(val, 0, sizeof(*val));
-	val->uptime = uptime.tv_sec;
+	val->uptime = div_u64(uptime, NSEC_PER_SEC);
 	val->loads[0] = avenrun[0];
 	val->loads[1] = avenrun[1];
 	val->loads[2] = avenrun[2];
@@ -2554,8 +2526,8 @@ static void kdb_sysinfo(struct sysinfo *val)
  */
 static int kdb_summary(int argc, const char **argv)
 {
-	struct timespec now;
-	struct kdb_tm tm;
+	time64_t now;
+	struct tm tm;
 	struct sysinfo val;
 
 	if (argc)
@@ -2569,9 +2541,9 @@ static int kdb_summary(int argc, const char **argv)
 	kdb_printf("domainname %s\n", init_uts_ns.name.domainname);
 	kdb_printf("ccversion  %s\n", __stringify(CCVERSION));
 
-	now = __current_kernel_time();
-	kdb_gmtime(&now, &tm);
-	kdb_printf("date       %04d-%02d-%02d %02d:%02d:%02d "
+	now = __ktime_get_real_seconds();
+	time64_to_tm(now, 0, &tm);
+	kdb_printf("date       %04ld-%02d-%02d %02d:%02d:%02d "
 		   "tz_minuteswest %d\n",
 		1900+tm.tm_year, tm.tm_mon+1, tm.tm_mday,
 		tm.tm_hour, tm.tm_min, tm.tm_sec,
@@ -2731,8 +2703,11 @@ int kdb_register_flags(char *cmd,
 	}
 
 	if (i >= kdb_max_commands) {
-		kdbtab_t *new = kmalloc((kdb_max_commands - KDB_BASE_CMD_MAX +
-			 kdb_command_extend) * sizeof(*new), GFP_KDB);
+		kdbtab_t *new = kmalloc_array(kdb_max_commands -
+						KDB_BASE_CMD_MAX +
+						kdb_command_extend,
+					      sizeof(*new),
+					      GFP_KDB);
 		if (!new) {
 			kdb_printf("Could not allocate new kdb_command "
 				   "table\n");

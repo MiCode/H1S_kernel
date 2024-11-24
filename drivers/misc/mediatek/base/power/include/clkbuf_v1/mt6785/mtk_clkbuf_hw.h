@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 /**
  * @file    mtk_clk_buf_hw.h
@@ -18,6 +10,8 @@
  */
 #ifndef __MTK_CLK_BUF_HW_H__
 #define __MTK_CLK_BUF_HW_H__
+
+//#include <mtk-clkbuf-bridge.h>
 
 enum MTK_CLK_BUF_STATUS {
 	CLOCK_BUFFER_DISABLE,
@@ -47,6 +41,8 @@ enum MTK_CLK_BUF_CONTROLS_FOR_DESENSE {
 	CLK_BUF_CONTROLS_FOR_DESENSE_7,
 };
 
+#ifndef _clk_buf_id_
+#define _clk_buf_id_
 /* clk_buf_id: users of clock buffer */
 enum clk_buf_id {
 	CLK_BUF_BB_MD		= 0,
@@ -56,18 +52,22 @@ enum clk_buf_id {
 	CLK_BUF_UFS		= 6,
 	CLK_BUF_INVALID
 };
+#endif
 
+#ifndef _xo_id_
+#define _xo_id_
 /* xo_id: clock buffer list */
-enum xo_id {
+ enum xo_id {
 	XO_SOC	= 0,
 	XO_WCN,
 	XO_NFC,
 	XO_CEL,
-	XO_AUD,		/* Disabled */
-	XO_PD,		/* Disabled */
-	XO_EXT,		/* UFS */
+	XO_AUD,
+	XO_PD,
+	XO_EXT,
 	XO_NUMBER
 };
+#endif
 
 enum clk_buf_onff {
 	CLK_BUF_FORCE_OFF,
@@ -126,10 +126,11 @@ enum {
 #define CLKBUF_USE_BBLPM
 
 void clk_buf_post_init(void);
-void clk_buf_init_pmic_clkbuf(void);
+void clk_buf_init_pmic_clkbuf_legacy(void);
 void clk_buf_init_pmic_wrap(void);
 void clk_buf_init_pmic_swctrl(void);
 bool clk_buf_ctrl_combine(enum clk_buf_id id, bool onoff);
 void clk_buf_ctrl_bblpm_hw(short on);
+void clk_buf_disp_ctrl(bool onoff);
 #endif
 

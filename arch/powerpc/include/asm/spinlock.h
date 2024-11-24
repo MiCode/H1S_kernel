@@ -19,14 +19,15 @@
  *
  * (the type definitions are in asm/spinlock_types.h)
  */
+#include <linux/jump_label.h>
 #include <linux/irqflags.h>
 #ifdef CONFIG_PPC64
 #include <asm/paca.h>
 #include <asm/hvcall.h>
 #endif
-#include <asm/asm-compat.h>
 #include <asm/synch.h>
 #include <asm/ppc-opcode.h>
+#include <asm/asm-405.h>
 
 #ifdef CONFIG_PPC64
 /* use 0x800000yy when locked, where yy == CPU number */
@@ -53,9 +54,13 @@
 #endif
 
 #ifdef CONFIG_PPC_PSERIES
+DECLARE_STATIC_KEY_FALSE(shared_processor);
+
 #define vcpu_is_preempted vcpu_is_preempted
 static inline bool vcpu_is_preempted(int cpu)
 {
+	if (!static_branch_unlikely(&shared_processor))
+		return false;
 	return !!(be32_to_cpu(lppaca_of(cpu).yield_count) & 1);
 }
 #endif
@@ -161,6 +166,7 @@ void arch_spin_lock_flags(arch_spinlock_t *lock, unsigned long flags)
 		local_irq_restore(flags_dis);
 	}
 }
+#define arch_spin_lock_flags arch_spin_lock_flags
 
 static inline void arch_spin_unlock(arch_spinlock_t *lock)
 {
@@ -180,9 +186,6 @@ static inline void arch_spin_unlock(arch_spinlock_t *lock)
  * irq-safe write-lock, but readers can get non-irqsafe
  * read-locks.
  */
-
-#define arch_read_can_lock(rw)		((rw)->lock >= 0)
-#define arch_write_can_lock(rw)	(!(rw)->lock)
 
 #ifdef CONFIG_PPC64
 #define __DO_SIGN_EXTEND	"extsw	%0,%0\n"
@@ -301,9 +304,6 @@ static inline void arch_write_unlock(arch_rwlock_t *rw)
 				PPC_RELEASE_BARRIER: : :"memory");
 	rw->lock = 0;
 }
-
-#define arch_read_lock_flags(lock, flags) arch_read_lock(lock)
-#define arch_write_lock_flags(lock, flags) arch_write_lock(lock)
 
 #define arch_spin_relax(lock)	__spin_yield(lock)
 #define arch_read_relax(lock)	__rw_yield(lock)

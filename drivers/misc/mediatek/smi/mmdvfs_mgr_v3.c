@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/uaccess.h>
@@ -24,8 +16,10 @@
 
 #include "mtk_gpu_utility.h"
 #include "mtk_smi.h"
-#include "mtk_vcorefs_manager.h"
+/*#include "mtk_vcorefs_manager.h"*/
+#ifdef PLL_HOPPING_READY
 #include "mtk_freqhopping_drv.h"
+#endif
 #include "mmdvfs_mgr.h"
 #include "mmdvfs_config_util.h"
 #include "mmdvfs_internal.h"
@@ -292,8 +286,7 @@ int mmdvfs_internal_set_fine_step(const char *adaptor_name,
 		return -1;
 	}
 
-	if ((smi_scenario >= (enum MTK_SMI_BWC_SCEN)MMDVFS_SCEN_COUNT) ||
-		(smi_scenario < SMI_BWC_SCEN_NORMAL)) {
+	if (smi_scenario >= (enum MTK_SMI_BWC_SCEN)MMDVFS_SCEN_COUNT) {
 		MMDVFSERR("invalid scenario\n");
 		return -1;
 	}
@@ -306,7 +299,7 @@ int mmdvfs_internal_set_fine_step(const char *adaptor_name,
 	spin_unlock(&g_mmdvfs_mgr->scen_lock);
 
 	/* Change HW configuration */
-#ifdef CONFIG_MTK_QOS_SUPPORT
+#ifdef MMDVFS_QOS_SUPPORT
 	mmdvfs_qos_update(step_util, final_step);
 #else
 	adaptor->apply_hw_configurtion_by_step(
@@ -375,14 +368,14 @@ void mmdvfs_internal_notify_vcore_calibration(
 	}
 	if (event->event_type == MMDVFS_EVENT_PREPARE_CALIBRATION_START) {
 		g_mmdvfs_mgr->is_mmdvfs_start = 0;
-#ifdef CONFIG_MTK_QOS_SUPPORT
+#ifdef MMDVFS_QOS_SUPPORT
 		mmdvfs_qos_enable(false);
 #endif
 		MMDVFSMSG("mmdvfs service is disabled for calibration\n");
 	} else if (event->event_type ==
 		MMDVFS_EVENT_PREPARE_CALIBRATION_END) {
 		g_mmdvfs_mgr->is_mmdvfs_start = 1;
-#ifdef CONFIG_MTK_QOS_SUPPORT
+#ifdef MMDVFS_QOS_SUPPORT
 		mmdvfs_qos_enable(true);
 #endif
 		MMDVFSMSG("mmdvfs service has been enabled\n");
@@ -883,6 +876,8 @@ void mmdvfs_init(void)
 		g_mmdvfs_mgr->is_mmdvfs_start = 1;
 	if (mmdvfs_get_mmdvfs_profile() == MMDVFS_PROFILE_ZIO)
 		g_mmdvfs_mgr->is_mmdvfs_start = 1;
+	if (mmdvfs_get_mmdvfs_profile() == MMDVFS_PROFILE_MER)
+		g_mmdvfs_mgr->is_mmdvfs_start = 1;
 	if (mmdvfs_get_mmdvfs_profile() == MMDVFS_PROFILE_SYL)
 		g_mmdvfs_mgr->is_mmdvfs_start = 1;
 	if (mmdvfs_get_mmdvfs_profile() == MMDVFS_PROFILE_CAN)
@@ -950,7 +945,7 @@ int mmdvfs_register_mmclk_switch_cb(
 	if (mmdvfs_client_id >= 0
 		&& mmdvfs_client_id < MMDVFS_CLK_SWITCH_CB_MAX) {
 		quick_mmclk_cbs[mmdvfs_client_id] = notify_cb;
-	} else{
+	} else {
 		MMDVFSMSG("switch register failed: id=%d\n",
 			mmdvfs_client_id);
 		return 1;
@@ -1014,6 +1009,7 @@ static void notify_camsys_clk_change(
 				i, result);
 			continue;
 		}
+
 		if (quick_mmclk_cbs[i] != NULL)
 			mmsys_clk_change_notify_checked(
 			quick_mmclk_cbs[i], ori_cam_clk_mode,
@@ -1236,6 +1232,8 @@ int mmdvfs_get_mmdvfs_profile(void)
 	mmdvfs_profile_id = MMDVFS_PROFILE_VIN;
 #elif defined(SMI_ZIO)
 	mmdvfs_profile_id = MMDVFS_PROFILE_ZIO;
+#elif defined(SMI_MER)
+	mmdvfs_profile_id = MMDVFS_PROFILE_MER;
 #elif defined(SMI_SYL)
 	mmdvfs_profile_id = MMDVFS_PROFILE_SYL;
 #elif defined(SMI_CAN)

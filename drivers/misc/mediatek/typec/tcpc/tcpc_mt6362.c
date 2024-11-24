@@ -19,6 +19,10 @@
 #include "inc/tcpci_core.h"
 #include "inc/std_tcpci_v10.h"
 
+#if defined(CONFIG_WATER_DETECTION) || defined(CONFIG_CABLE_TYPE_DETECTION)
+#include <charger_class.h>
+#endif /* CONFIG_WATER_DETECTION || CONFIG_CABLE_TYPE_DETECTION */
+
 #define MT6362_INFO_EN	1
 #define MT6362_DBGINFO_EN	1
 #define MT6362_WD1_EN	1
@@ -245,6 +249,15 @@ enum mt6362_wd_ldo {
 	MT6362_WD_LDO_2_5V,
 	MT6362_WD_LDO_3_0V,
 };
+
+#ifdef CONFIG_WATER_DETECTION
+struct tag_bootmode {
+	u32 size;
+	u32 tag;
+	u32 bootmode;
+	u32 boottype;
+};
+#endif
 
 static const u8 mt6362_vend_alert_clearall[MT6362_VEND_INT_NUM] = {
 	0xFF, 0xFF, 0xF0, 0xE3, 0xFF, 0xF8, 0x3F,
@@ -1584,7 +1597,7 @@ static int mt6362_transmit(struct tcpc_device *tcpc,
 			   const u32 *data)
 {
 	int ret, data_cnt, packet_cnt;
-	u8 temp[MT6362_TRANSMIT_MAX_SIZE];
+	u8 temp[MT6362_TRANSMIT_MAX_SIZE + 1];
 	struct mt6362_tcpc_data *tdata = tcpc_get_dev_data(tcpc);
 
 	if (type < TCPC_TX_HARD_RESET) {
@@ -1751,7 +1764,8 @@ static struct irq_mapping_tbl mt6362_vend_irq_mapping_tbl[] = {
 
 static int mt6362_alert_vendor_defined_handler(struct tcpc_device *tcpc)
 {
-	int ret, i, irqnum, irqbit;
+	int ret, i;
+	u8 irqnum, irqbit;
 	u8 alert[MT6362_VEND_INT_NUM];
 	u8 mask[MT6362_VEND_INT_NUM];
 	struct mt6362_tcpc_data *tdata = tcpc_get_dev_data(tcpc);
@@ -1927,10 +1941,20 @@ static int mt6362_init_irq(struct mt6362_tcpc_data *tdata,
 
 static int mt6362_register_tcpcdev(struct mt6362_tcpc_data *tdata)
 {
+	struct device_node *np = tdata->dev->of_node;
+#ifdef CONFIG_WATER_DETECTION
+	struct device_node *boot_node = NULL;
+	struct tag_bootmode *tag = NULL;
+#endif
+
 	tdata->tcpc = tcpc_device_register(tdata->dev, tdata->desc,
 					  &mt6362_tcpc_ops, tdata);
-	if (IS_ERR(tdata->tcpc))
+	if (IS_ERR_OR_NULL(tdata->tcpc))
 		return -EINVAL;
+
+#ifdef CONFIG_USB_PD_DISABLE_PE
+	tdata->tcpc->disable_pe = of_property_read_bool(np, "tcpc,disable_pe");
+#endif	/* CONFIG_USB_PD_DISABLE_PE */
 
 	/* Init tcpc_flags */
 #ifdef CONFIG_CABLE_TYPE_DETECTION
@@ -1938,6 +1962,22 @@ static int mt6362_register_tcpcdev(struct mt6362_tcpc_data *tdata)
 #endif /* CONFIG_CABLE_TYPE_DETECTION */
 #ifdef CONFIG_WATER_DETECTION
 	tdata->tcpc->tcpc_flags |= TCPC_FLAGS_WATER_DETECTION;
+	boot_node = of_parse_phandle(np, "bootmode", 0);
+	if (!boot_node) {
+		dev_notice(tdata->dev,
+			"%s: failed to get boot mode phandle\n", __func__);
+	} else {
+		tag = (struct tag_bootmode *)of_get_property(
+			boot_node, "atag,boot", NULL);
+		if (!tag)
+			dev_notice(tdata->dev,
+				"%s: failed to get atag,boot\n", __func__);
+		else {
+			dev_info(tdata->dev,
+				"%s, bootmode:%d\n", __func__, tag->bootmode);
+			tdata->tcpc->bootmode = tag->bootmode;
+		}
+	}
 #endif /* CONFIG_WATER_DETECTION */
 #ifdef CONFIG_TYPEC_CAP_LPM_WAKEUP_WATCHDOG
 	tdata->tcpc->tcpc_flags |= TCPC_FLAGS_LPM_WAKEUP_WATCHDOG;
@@ -1970,7 +2010,7 @@ static int mt6362_parse_dt(struct mt6362_tcpc_data *tdata)
 	/* default setting */
 	desc->role_def = TYPEC_ROLE_DRP;
 	desc->notifier_supply_num = 0;
-	desc->rp_lvl = TYPEC_CC_RP_DFT;
+	desc->rp_lvl = TYPEC_RP_DFT;
 	desc->vconn_supply = TCPC_VCONN_SUPPLY_ALWAYS;
 
 	if (of_property_read_u32(np, "tcpc,role_def", &val) >= 0) {
@@ -1980,23 +2020,15 @@ static int mt6362_parse_dt(struct mt6362_tcpc_data *tdata)
 			desc->role_def = val;
 	}
 
-	if (of_property_read_u32(np, "tcpc,notifier_supply_num", &val) >= 0) {
-		if (val < 0)
-			desc->notifier_supply_num = 0;
-		else
-			desc->notifier_supply_num = val;
-	}
+	if (of_property_read_u32(np, "tcpc,notifier_supply_num", &val) >= 0)
+		desc->notifier_supply_num = val;
 
 	if (of_property_read_u32(np, "tcpc,rp_level", &val) >= 0) {
 		switch (val) {
-		case 0: /* RP Default */
-			desc->rp_lvl = TYPEC_CC_RP_DFT;
-			break;
-		case 1: /* RP 1.5V */
-			desc->rp_lvl = TYPEC_CC_RP_1_5;
-			break;
-		case 2: /* RP 3.0V */
-			desc->rp_lvl = TYPEC_CC_RP_3_0;
+		case TYPEC_RP_DFT:
+		case TYPEC_RP_1_5:
+		case TYPEC_RP_3_0:
+			desc->rp_lvl = val;
 			break;
 		default:
 			break;

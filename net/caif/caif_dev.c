@@ -303,7 +303,7 @@ static void dev_flowctrl(struct net_device *dev, int on)
 	caifd_put(caifd);
 }
 
-void caif_enroll_dev(struct net_device *dev, struct caif_dev_common *caifdev,
+int caif_enroll_dev(struct net_device *dev, struct caif_dev_common *caifdev,
 		     struct cflayer *link_support, int head_room,
 		     struct cflayer **layer,
 		     int (**rcv_func)(struct sk_buff *, struct net_device *,
@@ -314,11 +314,12 @@ void caif_enroll_dev(struct net_device *dev, struct caif_dev_common *caifdev,
 	enum cfcnfg_phy_preference pref;
 	struct cfcnfg *cfg = get_cfcnfg(dev_net(dev));
 	struct caif_device_entry_list *caifdevs;
+	int res;
 
 	caifdevs = caif_device_list(dev_net(dev));
 	caifd = caif_device_alloc(dev);
 	if (!caifd)
-		return;
+		return -ENOMEM;
 	*layer = &caifd->layer;
 	spin_lock_init(&caifd->flow_lock);
 
@@ -336,11 +337,10 @@ void caif_enroll_dev(struct net_device *dev, struct caif_dev_common *caifdev,
 	mutex_lock(&caifdevs->lock);
 	list_add_rcu(&caifd->list, &caifdevs->list);
 
-	strncpy(caifd->layer.name, dev->name,
-		sizeof(caifd->layer.name) - 1);
-	caifd->layer.name[sizeof(caifd->layer.name) - 1] = 0;
+	strlcpy(caifd->layer.name, dev->name,
+		sizeof(caifd->layer.name));
 	caifd->layer.transmit = transmit;
-	cfcnfg_add_phy_layer(cfg,
+	res = cfcnfg_add_phy_layer(cfg,
 				dev,
 				&caifd->layer,
 				pref,
@@ -350,6 +350,7 @@ void caif_enroll_dev(struct net_device *dev, struct caif_dev_common *caifdev,
 	mutex_unlock(&caifdevs->lock);
 	if (rcv_func)
 		*rcv_func = receive;
+	return res;
 }
 EXPORT_SYMBOL(caif_enroll_dev);
 
@@ -364,6 +365,7 @@ static int caif_device_notify(struct notifier_block *me, unsigned long what,
 	struct cflayer *layer, *link_support;
 	int head_room = 0;
 	struct caif_device_entry_list *caifdevs;
+	int res;
 
 	cfg = get_cfcnfg(dev_net(dev));
 	caifdevs = caif_device_list(dev_net(dev));
@@ -389,8 +391,10 @@ static int caif_device_notify(struct notifier_block *me, unsigned long what,
 				break;
 			}
 		}
-		caif_enroll_dev(dev, caifdev, link_support, head_room,
+		res = caif_enroll_dev(dev, caifdev, link_support, head_room,
 				&layer, NULL);
+		if (res)
+			cfserl_release(link_support);
 		caifdev->flowctrl = dev_flowctrl;
 		break;
 

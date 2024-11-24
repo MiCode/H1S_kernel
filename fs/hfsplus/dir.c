@@ -18,7 +18,6 @@
 #include "hfsplus_fs.h"
 #include "hfsplus_raw.h"
 #include "xattr.h"
-#include "acl.h"
 
 static inline void hfsplus_instantiate(struct dentry *dentry,
 				       struct inode *inode, u32 cnid)
@@ -122,8 +121,7 @@ again:
 	if (S_ISREG(inode->i_mode))
 		HFSPLUS_I(inode)->linkid = linkid;
 out:
-	d_add(dentry, inode);
-	return NULL;
+	return d_splice_alias(inode, dentry);
 fail:
 	hfs_find_exit(&fd);
 	return ERR_PTR(err);
@@ -444,7 +442,7 @@ static int hfsplus_symlink(struct inode *dir, struct dentry *dentry,
 	int res = -ENOMEM;
 
 	mutex_lock(&sbi->vh_mutex);
-	inode = hfsplus_new_inode(dir->i_sb, S_IFLNK | S_IRWXUGO);
+	inode = hfsplus_new_inode(dir->i_sb, dir, S_IFLNK | S_IRWXUGO);
 	if (!inode)
 		goto out;
 
@@ -456,7 +454,7 @@ static int hfsplus_symlink(struct inode *dir, struct dentry *dentry,
 	if (res)
 		goto out_err;
 
-	res = hfsplus_init_inode_security(inode, dir, &dentry->d_name);
+	res = hfsplus_init_security(inode, dir, &dentry->d_name);
 	if (res == -EOPNOTSUPP)
 		res = 0; /* Operation is not supported. */
 	else if (res) {
@@ -486,7 +484,7 @@ static int hfsplus_mknod(struct inode *dir, struct dentry *dentry,
 	int res = -ENOMEM;
 
 	mutex_lock(&sbi->vh_mutex);
-	inode = hfsplus_new_inode(dir->i_sb, mode);
+	inode = hfsplus_new_inode(dir->i_sb, dir, mode);
 	if (!inode)
 		goto out;
 
@@ -497,7 +495,7 @@ static int hfsplus_mknod(struct inode *dir, struct dentry *dentry,
 	if (res)
 		goto failed_mknod;
 
-	res = hfsplus_init_inode_security(inode, dir, &dentry->d_name);
+	res = hfsplus_init_security(inode, dir, &dentry->d_name);
 	if (res == -EOPNOTSUPP)
 		res = 0; /* Operation is not supported. */
 	else if (res) {
@@ -568,10 +566,6 @@ const struct inode_operations hfsplus_dir_inode_operations = {
 	.mknod			= hfsplus_mknod,
 	.rename			= hfsplus_rename,
 	.listxattr		= hfsplus_listxattr,
-#ifdef CONFIG_HFSPLUS_FS_POSIX_ACL
-	.get_acl		= hfsplus_get_posix_acl,
-	.set_acl		= hfsplus_set_posix_acl,
-#endif
 };
 
 const struct file_operations hfsplus_dir_operations = {

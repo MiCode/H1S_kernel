@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Sagy Shih <sagy.shih@mediatek.com>
  */
 
 #include <linux/kernel.h>
@@ -28,16 +21,12 @@
 #include <linux/of_address.h>
 #include <linux/of_fdt.h>
 #include <asm/setup.h>
-#include <mt-plat/upmu_common.h>
-#include <mach/upmu_sw.h>
-#include <mach/upmu_hw.h>
-#include <mt-plat/mtk_io.h>
 /* #include <mt-plat/dma.h> */
 #include <mt-plat/sync_write.h>
-#include <mt-plat/mtk_meminfo.h>
 #include <mt-plat/mtk_chip.h>
 #include <mt-plat/aee.h>
 
+#include <dramc_io.h>
 #include "mtk_dramc.h"
 #include "dramc.h"
 
@@ -124,7 +113,7 @@ static int __init set_single_channel_test_angent(int channel)
 		test_agent_base = (test_agent_base - rank_base) & 0xFFFFFFFF;
 
 		/* calculate DRAM base address (test_agent_base) */
-		/* pr_err("[LastDRAMC] reserved address before emi: */
+		/* pr_info("[LastDRAMC] reserved address before emi: */
 		/* %llx\n", test_agent_base); */
 		for (bit_scramble = 11; bit_scramble < 17; bit_scramble++) {
 			bit_xor = (emi_conf >> (4*(bit_scramble-11))) & 0xf;
@@ -134,7 +123,7 @@ static int __init set_single_channel_test_angent(int channel)
 					<< bit_scramble;
 		}
 
-		/* pr_err("[LastDRAMC] reserved address after emi: %llx\n", */
+		/* pr_info("[LastDRAMC] reserved address after emi: %llx\n", */
 		/* test_agent_base); */
 
 		if (channel_num > 1) {
@@ -153,7 +142,7 @@ static int __init set_single_channel_test_angent(int channel)
 			test_agent_base = temp |
 				(test_agent_base & ((0x1<<channel_position)-1));
 		}
-		/* pr_err("[LastDRAMC] reserved address after emi: %llx\n", */
+		/* pr_info("[LastDRAMC] reserved address after emi: %llx\n", */
 		/* test_agent_base); */
 
 		/* set base address for test agent */
@@ -258,7 +247,7 @@ static int dram_calib_perf_check_probe(struct platform_device *pdev)
 			"k time too long: api error (0x%08lx)\n", val);
 		pr_err("[DRAMC] k time too long: api error (0x%08lx)\n", val);
 	} else {
-		pr_err("[DRAMC] k time optimized\n");
+		pr_info("[DRAMC] k time optimized\n");
 	}
 
 	return 0;

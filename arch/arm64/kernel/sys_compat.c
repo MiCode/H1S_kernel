@@ -19,6 +19,7 @@
  */
 
 #include <linux/compat.h>
+#include <linux/cpufeature.h>
 #include <linux/personality.h>
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
@@ -27,6 +28,8 @@
 #include <linux/uaccess.h>
 
 #include <asm/cacheflush.h>
+#include <asm/system_misc.h>
+#include <asm/tlbflush.h>
 #include <asm/unistd.h>
 
 static long
@@ -39,6 +42,15 @@ __do_compat_cache_op(unsigned long start, unsigned long end)
 
 		if (fatal_signal_pending(current))
 			return 0;
+
+		if (cpus_have_const_cap(ARM64_WORKAROUND_1542419)) {
+			/*
+			 * The workaround requires an inner-shareable tlbi.
+			 * We pick the reserved-ASID to minimise the impact.
+			 */
+			__tlbi(aside1is, __TLBI_VADDR(0, 0));
+			dsb(ish);
+		}
 
 		ret = __flush_cache_user_range(start, start + chunk);
 		if (ret)
@@ -57,7 +69,7 @@ do_compat_cache_op(unsigned long start, unsigned long end, int flags)
 	if (end < start || flags)
 		return -EINVAL;
 
-	if (!access_ok(VERIFY_READ, start, end - start))
+	if (!access_ok(VERIFY_READ, (const void __user *)start, end - start))
 		return -EFAULT;
 
 	return __do_compat_cache_op(start, end);
@@ -65,11 +77,11 @@ do_compat_cache_op(unsigned long start, unsigned long end, int flags)
 /*
  * Handle all unrecognised system calls.
  */
-long compat_arm_syscall(struct pt_regs *regs)
+long compat_arm_syscall(struct pt_regs *regs, int scno)
 {
-	unsigned int no = regs->regs[7];
+	siginfo_t info;
 
-	switch (no) {
+	switch (scno) {
 	/*
 	 * Flush a region from virtual address 'r0' to virtual address 'r1'
 	 * _exclusive_.  There is no alignment requirement on either address;
@@ -88,7 +100,7 @@ long compat_arm_syscall(struct pt_regs *regs)
 		return do_compat_cache_op(regs->regs[0], regs->regs[1], regs->regs[2]);
 
 	case __ARM_NR_compat_set_tls:
-		current->thread.tp_value = regs->regs[0];
+		current->thread.uw.tp_value = regs->regs[0];
 
 		/*
 		 * Protect against register corruption from context switch.
@@ -99,6 +111,24 @@ long compat_arm_syscall(struct pt_regs *regs)
 		return 0;
 
 	default:
-		return -ENOSYS;
+		/*
+		 * Calls 0xf0xxx..0xf07ff are defined to return -ENOSYS
+		 * if not implemented, rather than raising SIGILL. This
+		 * way the calling program can gracefully determine whether
+		 * a feature is supported.
+		 */
+		if (scno < __ARM_NR_COMPAT_END)
+			return -ENOSYS;
+		break;
 	}
+
+	clear_siginfo(&info);
+	info.si_signo = SIGILL;
+	info.si_errno = 0;
+	info.si_code  = ILL_ILLTRP;
+	info.si_addr  = (void __user *)instruction_pointer(regs) -
+			 (compat_thumb_mode(regs) ? 2 : 4);
+
+	arm64_notify_die("Oops - bad compat syscall(2)", regs, &info, scno);
+	return 0;
 }

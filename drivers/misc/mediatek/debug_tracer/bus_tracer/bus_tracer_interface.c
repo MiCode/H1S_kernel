@@ -1,14 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+
+ * Copyright (c) 2019 MediaTek Inc.
+
  */
 
 #include <linux/kernel.h>
@@ -36,6 +31,9 @@ static int bus_tracer_suspend(struct platform_device *pdev, pm_message_t state);
 static int bus_tracer_resume(struct platform_device *pdev);
 
 static char *bus_tracer_dump_buf;
+
+#define DRIVER_ATTR(_name, _mode, _show, _store) \
+  	struct driver_attribute driver_attr_##_name = __ATTR(_name, _mode, _show, _store)
 
 static struct bus_tracer bus_tracer_drv = {
 	.plt_drv = {

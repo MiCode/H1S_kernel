@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": %s: " fmt, __func__
@@ -77,7 +69,7 @@ static int dummy_pinctrl_init(struct platform_device *pdev)
 	/* get pinctrl */
 	dummy_pinctrl = devm_pinctrl_get(&pdev->dev);
 	if (IS_ERR(dummy_pinctrl)) {
-		pr_err("Failed to get flashlight pinctrl.\n");
+		pr_info("Failed to get flashlight pinctrl.\n");
 		ret = PTR_ERR(dummy_pinctrl);
 		return ret;
 	}
@@ -86,13 +78,13 @@ static int dummy_pinctrl_init(struct platform_device *pdev)
 	dummy_xxx_high = pinctrl_lookup_state(
 			dummy_pinctrl, DUMMY_PINCTRL_STATE_XXX_HIGH);
 	if (IS_ERR(dummy_xxx_high)) {
-		pr_err("Failed to init (%s)\n", DUMMY_PINCTRL_STATE_XXX_HIGH);
+		pr_info("Failed to init (%s)\n", DUMMY_PINCTRL_STATE_XXX_HIGH);
 		ret = PTR_ERR(dummy_xxx_high);
 	}
 	dummy_xxx_low = pinctrl_lookup_state(
 			dummy_pinctrl, DUMMY_PINCTRL_STATE_XXX_LOW);
 	if (IS_ERR(dummy_xxx_low)) {
-		pr_err("Failed to init (%s)\n", DUMMY_PINCTRL_STATE_XXX_LOW);
+		pr_info("Failed to init (%s)\n", DUMMY_PINCTRL_STATE_XXX_LOW);
 		ret = PTR_ERR(dummy_xxx_low);
 	}
 
@@ -104,7 +96,7 @@ static int dummy_pinctrl_set(int pin, int state)
 	int ret = 0;
 
 	if (IS_ERR(dummy_pinctrl)) {
-		pr_err("pinctrl is not available\n");
+		pr_info("pinctrl is not available\n");
 		return -1;
 	}
 
@@ -117,10 +109,10 @@ static int dummy_pinctrl_set(int pin, int state)
 				!IS_ERR(dummy_xxx_high))
 			pinctrl_select_state(dummy_pinctrl, dummy_xxx_high);
 		else
-			pr_err("set err, pin(%d) state(%d)\n", pin, state);
+			pr_info("set err, pin(%d) state(%d)\n", pin, state);
 		break;
 	default:
-		pr_err("set err, pin(%d) state(%d)\n", pin, state);
+		pr_info("set err, pin(%d) state(%d)\n", pin, state);
 		break;
 	}
 	pr_debug("pin(%d) state(%d)\n", pin, state);
@@ -509,14 +501,14 @@ static int __init flashlight_dummy_init(void)
 #ifndef CONFIG_OF
 	ret = platform_device_register(&dummy_gpio_platform_device);
 	if (ret) {
-		pr_err("Failed to register platform device\n");
+		pr_info("Failed to register platform device\n");
 		return ret;
 	}
 #endif
 
 	ret = platform_driver_register(&dummy_platform_driver);
 	if (ret) {
-		pr_err("Failed to register platform driver\n");
+		pr_info("Failed to register platform driver\n");
 		return ret;
 	}
 

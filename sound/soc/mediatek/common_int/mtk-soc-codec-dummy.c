@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -57,6 +46,8 @@
 #include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/soc.h>
+
+#define CODEC_DUMMY_NAME "mtk-codec-dummy"
 
 static int dummy_codec_startup(struct snd_pcm_substream *substream,
 			       struct snd_soc_dai *Daiport)
@@ -454,33 +445,36 @@ static struct snd_soc_dai_driver dummy_6323_dai_codecs[] = {
 #endif
 };
 
-static int dummy_codec_probe(struct snd_soc_codec *codec)
+static int dummy_codec_probe(struct snd_soc_component *component)
 {
 
 	return 0;
 }
 
-static int dummy_codec_remove(struct snd_soc_codec *codec)
+static int dummy_codec_remove(struct snd_soc_component *component)
 {
 
 	return 0;
 }
 
-static struct snd_soc_codec_driver soc_mtk_codec = {
-	.probe = dummy_codec_probe, .remove = dummy_codec_remove,
+static const struct snd_soc_component_driver soc_mtk_codec = {
+	.name = CODEC_DUMMY_NAME,
+	.probe = dummy_codec_probe,
+	.remove = dummy_codec_remove,
 };
 
 static int mtk_dummy_codec_dev_probe(struct platform_device *pdev)
 {
-	if (pdev->dev.of_node) {
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	if (pdev->dev.dma_mask == NULL)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_CODEC_DUMMY_NAME);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
-	return snd_soc_register_codec(&pdev->dev, &soc_mtk_codec,
+	return snd_soc_register_component(&pdev->dev, &soc_mtk_codec,
 				      dummy_6323_dai_codecs,
 				      ARRAY_SIZE(dummy_6323_dai_codecs));
 }
@@ -488,7 +482,7 @@ static int mtk_dummy_codec_dev_probe(struct platform_device *pdev)
 static int mtk_dummy_codec_dev_remove(struct platform_device *pdev)
 {
 	pr_debug("%s:\n", __func__);
-	snd_soc_unregister_codec(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

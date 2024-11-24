@@ -17,4 +17,10 @@ else
   obj-$(CONFIG_MTK_GIC_EXT) += mtk-gic-extend.o
 endif
 
+ifeq ($(CONFIG_MACH_MT6761),y)
+obj-y += mt6765/
+else ifeq ($(CONFIG_MACH_MT6833),y)
+obj-y += mt6833/
+else
 obj-y += $(subst ",,$(CONFIG_MTK_PLATFORM))/
+endif

@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/slab.h>
 
@@ -1538,7 +1529,7 @@ int disp_lcm_resume(struct disp_lcm_handle *plcm)
 {
 	struct LCM_DRIVER *lcm_drv = NULL;
 
-	DISPFUNC();
+	DISPFUNCSTART();
 	if (_is_lcm_inited(plcm)) {
 		lcm_drv = plcm->drv;
 
@@ -1548,13 +1539,13 @@ int disp_lcm_resume(struct disp_lcm_handle *plcm)
 		if (lcm_drv->resume) {
 			lcm_drv->resume();
 		} else {
-			DISP_PR_ERR("FATAL ERROR, lcm_drv->resume is null\n");
+			DISPMSG("FATAL ERROR, lcm_drv->resume is null\n");
 			return -1;
 		}
 
 		return 0;
 	}
-	DISP_PR_ERR("lcm_drv is null\n");
+	DISPMSG("lcm_drv is null\n");
 	return -1;
 }
 

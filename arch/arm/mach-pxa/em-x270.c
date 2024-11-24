@@ -32,7 +32,7 @@
 #include <linux/apm-emulation.h>
 #include <linux/i2c.h>
 #include <linux/platform_data/pca953x.h>
-#include <linux/i2c/pxa-i2c.h>
+#include <linux/platform_data/i2c-pxa.h>
 #include <linux/regulator/userspace-consumer.h>
 
 #include <asm/mach-types.h>
@@ -346,7 +346,6 @@ struct platform_nand_data em_x270_nand_platdata = {
 		.chip_delay = 20,
 	},
 	.ctrl = {
-		.hwcontrol = 0,
 		.dev_ready = em_x270_nand_device_ready,
 		.select_chip = 0,
 		.cmd_ctrl = em_x270_nand_cmd_ctl,

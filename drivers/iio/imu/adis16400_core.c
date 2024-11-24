@@ -288,8 +288,7 @@ static int adis16400_initial_setup(struct iio_dev *indio_dev)
 		if (ret)
 			goto err_ret;
 
-		ret = sscanf(indio_dev->name, "adis%u\n", &device_id);
-		if (ret != 1) {
+		if (sscanf(indio_dev->name, "adis%u\n", &device_id) != 1) {
 			ret = -EINVAL;
 			goto err_ret;
 		}
@@ -833,7 +832,6 @@ static struct adis16400_chip_info adis16400_chips[] = {
 };
 
 static const struct iio_info adis16400_info = {
-	.driver_module = THIS_MODULE,
 	.read_raw = &adis16400_read_raw,
 	.write_raw = &adis16400_write_raw,
 	.update_scan_mode = adis16400_update_scan_mode,

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __DISP_DRV_LOG_H__
 #define __DISP_DRV_LOG_H__
@@ -55,6 +47,20 @@
 				__func__, __LINE__, ##args);		\
 	} while (0)
 
+#define DISPWARN(string, args...)					\
+	do {								\
+		dprec_logger_pr(DPREC_LOGGER_ERROR, string, ##args);	\
+		pr_info("[DISP][%s #%d]warn:"string,			\
+				__func__, __LINE__, ##args);		\
+	} while (0)
+
+#define DISPERR(string, args...)					\
+	do {								\
+		dprec_logger_pr(DPREC_LOGGER_ERROR, string, ##args);	\
+		pr_info("[DISP][%s #%d]ERROR:"string,			\
+				__func__, __LINE__, ##args);		\
+	} while (0)
+
 #define DISP_PR_ERR(string, args...)					\
 	do {								\
 		dprec_logger_pr(DPREC_LOGGER_ERROR, string, ##args);	\
@@ -80,6 +86,19 @@
 		dprec_logger_pr(DPREC_LOGGER_DEBUG, "func|%s\n", __func__); \
 		if (g_mobilelog)					\
 			pr_info("%s line:%d", __func__, __LINE__);\
+	} while (0)
+#define DISPFUNCSTART()							\
+	do {								\
+		dprec_logger_pr(DPREC_LOGGER_DEBUG, "func|%s START\n", __func__); \
+		if (g_mobilelog)					\
+			pr_info("[DISP]%s START, line:%d", __func__, __LINE__);\
+	} while (0)
+
+#define DISPFUNCEND()							\
+	do {								\
+		dprec_logger_pr(DPREC_LOGGER_DEBUG, "func|%s END\n", __func__); \
+		if (g_mobilelog)					\
+			pr_info("[DISP]%s END, line:%d", __func__, __LINE__);\
 	} while (0)
 
 #define DISPDBGFUNC() DISPFUNC()

@@ -224,8 +224,6 @@ module_param(ips, charp, 0);
 /*
  * Function prototypes
  */
-static int ips_detect(struct scsi_host_template *);
-static int ips_release(struct Scsi_Host *);
 static int ips_eh_abort(struct scsi_cmnd *);
 static int ips_eh_reset(struct scsi_cmnd *);
 static int ips_queue(struct Scsi_Host *, struct scsi_cmnd *);
@@ -293,7 +291,7 @@ static void ips_freescb(ips_ha_t *, ips_scb_t *);
 static void ips_setup_funclist(ips_ha_t *);
 static void ips_statinit(ips_ha_t *);
 static void ips_statinit_memio(ips_ha_t *);
-static void ips_fix_ffdc_time(ips_ha_t *, ips_scb_t *, time_t);
+static void ips_fix_ffdc_time(ips_ha_t *, ips_scb_t *, time64_t);
 static void ips_ffdc_reset(ips_ha_t *, int);
 static void ips_ffdc_time(ips_ha_t *);
 static uint32_t ips_statupd_copperhead(ips_ha_t *);
@@ -355,8 +353,6 @@ static dma_addr_t ips_flashbusaddr;
 static long ips_FlashDataInUse;		/* CD Boot - Flash Data In Use Flag */
 static uint32_t MaxLiteCmds = 32;	/* Max Active Cmds for a Lite Adapter */
 static struct scsi_host_template ips_driver_template = {
-	.detect			= ips_detect,
-	.release		= ips_release,
 	.info			= ips_info,
 	.queuecommand		= ips_queue,
 	.eh_abort_handler	= ips_eh_abort,
@@ -989,10 +985,7 @@ static int __ips_eh_reset(struct scsi_cmnd *SC)
 
 	/* FFDC */
 	if (le32_to_cpu(ha->subsys->param[3]) & 0x300000) {
-		struct timeval tv;
-
-		do_gettimeofday(&tv);
-		ha->last_ffdc = tv.tv_sec;
+		ha->last_ffdc = ktime_get_real_seconds();
 		ha->reset_count++;
 		ips_ffdc_reset(ha, IPS_INTR_IORL);
 	}
@@ -2396,7 +2389,6 @@ static int
 ips_hainit(ips_ha_t * ha)
 {
 	int i;
-	struct timeval tv;
 
 	METHOD_TRACE("ips_hainit", 1);
 
@@ -2411,8 +2403,7 @@ ips_hainit(ips_ha_t * ha)
 
 	/* Send FFDC */
 	ha->reset_count = 1;
-	do_gettimeofday(&tv);
-	ha->last_ffdc = tv.tv_sec;
+	ha->last_ffdc = ktime_get_real_seconds();
 	ips_ffdc_reset(ha, IPS_INTR_IORL);
 
 	if (!ips_read_config(ha, IPS_INTR_IORL)) {
@@ -2552,12 +2543,9 @@ ips_next(ips_ha_t * ha, int intr)
 
 	if ((ha->subsys->param[3] & 0x300000)
 	    && (ha->scb_activelist.count == 0)) {
-		struct timeval tv;
-
-		do_gettimeofday(&tv);
-
-		if (tv.tv_sec - ha->last_ffdc > IPS_SECS_8HOURS) {
-			ha->last_ffdc = tv.tv_sec;
+		time64_t now = ktime_get_real_seconds();
+		if (now - ha->last_ffdc > IPS_SECS_8HOURS) {
+			ha->last_ffdc = now;
 			ips_ffdc_time(ha);
 		}
 	}
@@ -5993,59 +5981,21 @@ ips_ffdc_time(ips_ha_t * ha)
 /*                                                                          */
 /****************************************************************************/
 static void
-ips_fix_ffdc_time(ips_ha_t * ha, ips_scb_t * scb, time_t current_time)
+ips_fix_ffdc_time(ips_ha_t * ha, ips_scb_t * scb, time64_t current_time)
 {
-	long days;
-	long rem;
-	int i;
-	int year;
-	int yleap;
-	int year_lengths[2] = { IPS_DAYS_NORMAL_YEAR, IPS_DAYS_LEAP_YEAR };
-	int month_lengths[12][2] = { {31, 31},
-	{28, 29},
-	{31, 31},
-	{30, 30},
-	{31, 31},
-	{30, 30},
-	{31, 31},
-	{31, 31},
-	{30, 30},
-	{31, 31},
-	{30, 30},
-	{31, 31}
-	};
+	struct tm tm;
 
 	METHOD_TRACE("ips_fix_ffdc_time", 1);
 
-	days = current_time / IPS_SECS_DAY;
-	rem = current_time % IPS_SECS_DAY;
+	time64_to_tm(current_time, 0, &tm);
 
-	scb->cmd.ffdc.hour = (rem / IPS_SECS_HOUR);
-	rem = rem % IPS_SECS_HOUR;
-	scb->cmd.ffdc.minute = (rem / IPS_SECS_MIN);
-	scb->cmd.ffdc.second = (rem % IPS_SECS_MIN);
-
-	year = IPS_EPOCH_YEAR;
-	while (days < 0 || days >= year_lengths[yleap = IPS_IS_LEAP_YEAR(year)]) {
-		int newy;
-
-		newy = year + (days / IPS_DAYS_NORMAL_YEAR);
-		if (days < 0)
-			--newy;
-		days -= (newy - year) * IPS_DAYS_NORMAL_YEAR +
-		    IPS_NUM_LEAP_YEARS_THROUGH(newy - 1) -
-		    IPS_NUM_LEAP_YEARS_THROUGH(year - 1);
-		year = newy;
-	}
-
-	scb->cmd.ffdc.yearH = year / 100;
-	scb->cmd.ffdc.yearL = year % 100;
-
-	for (i = 0; days >= month_lengths[i][yleap]; ++i)
-		days -= month_lengths[i][yleap];
-
-	scb->cmd.ffdc.month = i + 1;
-	scb->cmd.ffdc.day = days + 1;
+	scb->cmd.ffdc.hour   = tm.tm_hour;
+	scb->cmd.ffdc.minute = tm.tm_min;
+	scb->cmd.ffdc.second = tm.tm_sec;
+	scb->cmd.ffdc.yearH  = (tm.tm_year + 1900) / 100;
+	scb->cmd.ffdc.yearL  = tm.tm_year % 100;
+	scb->cmd.ffdc.month  = tm.tm_mon + 1;
+	scb->cmd.ffdc.day    = tm.tm_mday;
 }
 
 /****************************************************************************

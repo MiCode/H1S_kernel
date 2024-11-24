@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+* Copyright (C) 2021 MediaTek Inc.
+*/
 
 #if defined(CONFIG_MTK_RTC)
 
@@ -34,22 +26,27 @@
 #include <mtk_rtc_hal.h>
 #include <mtk_rtc_hw.h>
 #include <mtk_rtc_hal_common.h>
+#ifdef CONFIG_MTK_PMIC_WRAP_HAL
 #include <mach/mtk_pmic_wrap.h>
-
+#endif
 #define hal_rtc_xinfo(fmt, args...)		\
 		pr_notice(fmt, ##args)
 
 u16 rtc_read(u16 addr)
 {
 	u32 rdata = 0;
-
+#ifdef CONFIG_MTK_PMIC_WRAP_HAL
 	pwrap_read((u32) addr, &rdata);
+#endif
 	return (u16) rdata;
+
 }
 
 void rtc_write(u16 addr, u16 data)
 {
+#ifdef CONFIG_MTK_PMIC_WRAP_HAL
 	pwrap_write((u32) addr, (u32) data);
+#endif
 }
 
 void rtc_busy_wait(void)

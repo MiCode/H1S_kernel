@@ -1,5 +1,5 @@
 config MTK_CAMERA_ISP_RSC_SUPPORT
-	bool "[RSC]Rolling Shutter Cancellation Support"
+	tristate "[RSC]Rolling Shutter Cancellation Support"
 	default n
 	depends on MTK_CAMERA_ISP
 	help

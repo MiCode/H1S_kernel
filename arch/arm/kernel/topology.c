@@ -23,27 +23,12 @@
 #include <linux/of.h>
 #include <linux/sched.h>
 #include <linux/sched/topology.h>
-#include <linux/sched/energy.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 
 #include <asm/cpu.h>
 #include <asm/cputype.h>
 #include <asm/topology.h>
-
-#ifndef CONFIG_MTK_UNIFY_POWER
-inline
-const struct sched_group_energy * const cpu_core_energy(int cpu)
-{
-	return sge_array[cpu][SD_LEVEL0];
-}
-
-inline
-const struct sched_group_energy * const cpu_cluster_energy(int cpu)
-{
-	return sge_array[cpu][SD_LEVEL1];
-}
-#endif
 
 /*
  * cpu capacity scale management
@@ -80,17 +65,8 @@ struct cpu_efficiency {
 static const struct cpu_efficiency table_efficiency[] = {
 	{"arm,cortex-a15", 3891},
 	{"arm,cortex-a7",  2048},
-	{ "arm,cortex-a75", 3630 },
-	{ "arm,cortex-a73", 3630 },
-	{ "arm,cortex-a72", 4186 },
-	{ "arm,cortex-a57", 3891 },
-	{ "arm,cortex-a53", 2048 },
-	{ "arm,cortex-a55", 2048 },
-	{ "arm,cortex-a35", 1661 },
 	{NULL, },
 };
-
-#include "topology_dts.c"
 
 static unsigned long *__cpu_capacity;
 #define cpu_capacity(cpu)	__cpu_capacity[cpu]
@@ -122,7 +98,7 @@ static int __init get_cpu_for_node(struct device_node *node)
 }
 
 static int __init parse_core(struct device_node *core, int cluster_id,
-			     int core_id)
+				int core_id)
 {
 	char name[10];
 	bool leaf = true;
@@ -142,7 +118,7 @@ static int __init parse_core(struct device_node *core, int cluster_id,
 				cpu_topology[cpu].thread_id = i;
 			} else {
 				pr_err("%pOF: Can't get CPU for thread\n",
-				       t);
+					t);
 				of_node_put(t);
 				return -EINVAL;
 			}
@@ -155,7 +131,7 @@ static int __init parse_core(struct device_node *core, int cluster_id,
 	if (cpu >= 0) {
 		if (!leaf) {
 			pr_err("%pOF: Core has both threads and CPU\n",
-			       core);
+			core);
 			return -EINVAL;
 		}
 
@@ -175,10 +151,11 @@ static int __init parse_cluster(struct device_node *cluster, int depth)
 	bool leaf = true;
 	bool has_cores = false;
 	struct device_node *c;
-	int core_id = 0;
-	int i, ret;
 
 	static int cluster_id __initdata;
+
+	int core_id = 0;
+	int i, ret;
 
 	i = 0;
 	do {
@@ -203,7 +180,7 @@ static int __init parse_cluster(struct device_node *cluster, int depth)
 
 			if (depth == 0) {
 				pr_err("%pOF: cpu-map children should be clusters\n",
-				       c);
+					c);
 				of_node_put(c);
 				return -EINVAL;
 			}
@@ -212,7 +189,7 @@ static int __init parse_cluster(struct device_node *cluster, int depth)
 				ret = parse_core(c, cluster_id, core_id++);
 			} else {
 				pr_err("%pOF: Non-leaf cluster with core %s\n",
-				       cluster, name);
+					cluster, name);
 				ret = -EINVAL;
 			}
 
@@ -251,9 +228,9 @@ static void __init parse_dt_topology(void)
 	int ret;
 	int cpu = 0;
 
-	pr_err("parse_dt_topology\n");
-	__cpu_capacity = kcalloc(nr_cpu_ids, sizeof(*__cpu_capacity),
-				 GFP_NOWAIT);
+	pr_info("parse_dt_topology\n");
+	 __cpu_capacity = kcalloc(nr_cpu_ids, sizeof(*__cpu_capacity),
+				GFP_NOWAIT);
 
 	cn_cpus = of_find_node_by_path("/cpus");
 	if (!cn_cpus) {
@@ -331,6 +308,22 @@ out:
 		topology_normalize_cpu_scale();
 }
 
+/*
+ * Look for a customed capacity of a CPU in the cpu_capacity table during the
+ * boot. The update of all CPUs is in O(n^2) for heteregeneous system but the
+ * function returns directly for SMP system.
+ */
+static void update_cpu_capacity(unsigned int cpu)
+{
+	if (!cpu_capacity(cpu) || cap_from_dt)
+		return;
+
+	topology_set_cpu_scale(cpu, cpu_capacity(cpu) / middle_capacity);
+
+	pr_info("CPU%u: update cpu_capacity %lu\n",
+		cpu, topology_get_cpu_scale(NULL, cpu));
+}
+
 #else
 static inline void parse_dt_topology(void) {}
 static inline void update_cpu_capacity(unsigned int cpuid) {}
@@ -391,37 +384,23 @@ void store_cpu_topology(unsigned int cpuid)
 {
 	update_siblings_masks(cpuid);
 
-	topology_detect_flags();
-
 	pr_info("CPU%u: thread %d, cpu %d, socket %d\n",
 		cpuid, cpu_topology[cpuid].thread_id,
 		cpu_topology[cpuid].core_id,
 		cpu_topology[cpuid].socket_id);
 }
 
-#ifdef CONFIG_SCHED_MC
-static int core_flags(void)
-{
-	return cpu_core_flags() | topology_core_flags();
-}
-
 static inline int cpu_corepower_flags(void)
 {
-	return topology_core_flags()
-		| SD_SHARE_PKG_RESOURCES | SD_SHARE_POWERDOMAIN;
-}
-#endif
-
-static int cpu_flags(void)
-{
-	return topology_cpu_flags();
+	return SD_SHARE_PKG_RESOURCES  | SD_SHARE_POWERDOMAIN;
 }
 
 static struct sched_domain_topology_level arm_topology[] = {
 #ifdef CONFIG_SCHED_MC
-	{ cpu_coregroup_mask, core_flags, cpu_core_energy, SD_INIT_NAME(MC) },
+	{ cpu_corepower_mask, cpu_corepower_flags, SD_INIT_NAME(GMC) },
+	{ cpu_coregroup_mask, cpu_core_flags, SD_INIT_NAME(MC) },
 #endif
-	{ cpu_cpu_mask, cpu_flags, cpu_cluster_energy, SD_INIT_NAME(DIE) },
+	{ cpu_cpu_mask, SD_INIT_NAME(DIE) },
 	{ NULL, },
 };
 
@@ -451,16 +430,19 @@ void __init init_cpu_topology(void)
 	set_sched_topology(arm_topology);
 }
 
-#ifdef CONFIG_MTK_SCHED_RQAVG_KS
-/* To add this function for sched_avg.c */
-unsigned long get_cpu_orig_capacity(unsigned int cpu)
+int topology_nr_clusters(void)
 {
-	//TODO: Porting the function prototype at first
-	u64 capacity = cpu_capacity(cpu);
-	// if (!capacity || !max_cpu_perf)
-	//	return 1024;
-	// capacity *= SCHED_CAPACITY_SCALE;
-	// capacity = div64_u64(capacity, max_cpu_perf);
-	return capacity;
+	int cpu;
+	int nr_clusters = 0;
+	int cluster_id, prev_cluster_id = -1;
+
+	for_each_possible_cpu(cpu) {
+		cluster_id = topology_physical_package_id(cpu);
+		if (cluster_id != prev_cluster_id) {
+			nr_clusters++;
+			prev_cluster_id = cluster_id;
+		}
+	}
+	return nr_clusters;
 }
-#endif
+

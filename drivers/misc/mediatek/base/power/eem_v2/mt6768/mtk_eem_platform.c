@@ -1,16 +1,7 @@
-
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 /**
  * @file	mtk_eem_platform.c
@@ -310,8 +301,12 @@ int set_volt_gpu(struct eem_det *det)
 		det->ops->pmic_2_volt(det, det->volt_tbl_pmic[i]));
 #endif
 	}
-
+#ifdef CONFIG_MTK_GPU_SUPPORT
 	return mt_gpufreq_update_volt(output, det->num_freq_tbl);
+#else
+	return 0;
+#endif
+
 }
 
 void restore_default_volt_gpu(struct eem_det *det)

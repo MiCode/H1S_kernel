@@ -1,30 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * MUSB OTG driver defines
- *
- * Copyright 2005 Mentor Graphics Corporation
- * Copyright (C) 2005-2006 by Texas Instruments
- * Copyright (C) 2006-2007 Nokia Corporation
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
- * WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN
- * NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT,
- * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF
- * USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
- * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
- * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * Copyright (C) 2017 MediaTek Inc.
  */
 
 #ifndef __MUSB_CORE_H__
@@ -40,12 +16,12 @@
 #include <linux/usb/gadget.h>
 #include <linux/usb.h>
 #include <linux/usb/otg.h>
-#include "musb.h"
+#include <linux/usb/role.h>
+#include <musb.h>
+#include <musb_dr.h>
 #include <linux/pm_wakeup.h>
 #include <linux/version.h>
 #include <linux/clk.h>
-#include <mt-plat/charger_type.h>
-
 #if defined(CONFIG_MTK_CHARGER)
 extern enum charger_type mt_get_charger_type(void);
 #endif
@@ -65,7 +41,6 @@ struct musb;
 struct musb_hw_ep;
 struct musb_ep;
 extern int musb_fake_CDP;
-extern int kernel_init_done;
 extern int musb_force_on;
 extern int musb_host_dynamic_fifo;
 extern int musb_host_dynamic_fifo_usage_msk;
@@ -77,7 +52,6 @@ extern long musb_host_db_delay_ns;
 extern long musb_host_db_workaround_cnt;
 extern int mtk_host_audio_free_ep_udelay;
 
-extern struct musb *mtk_musb;
 extern bool mtk_usb_power;
 extern ktime_t ktime_ready;
 extern int ep_config_from_table_for_host(struct musb *musb);
@@ -124,10 +98,6 @@ extern void musb_bug(void);
 #include <linux/usb/hcd.h>
 #include "musb_host.h"
 
-#ifdef CONFIG_DUAL_ROLE_USB_INTF
-#include <linux/usb/class-dual-role.h>
-#endif
-
 /* NOTE:  otg and peripheral-only state machines start at B_IDLE.
  * OTG or host-only go to A_IDLE when ID is sensed.
  */
@@ -137,10 +107,6 @@ extern void musb_bug(void);
 #ifdef CONFIG_PROC_FS
 #include <linux/fs.h>
 #define MUSB_CONFIG_PROC_FS
-#endif
-
-#ifdef CONFIG_MTK_MUSB_PORT0_LOWPOWER_MODE
-extern bool musb_shutted;
 #endif
 
 /****************************** PERIPHERAL ROLE *****************************/
@@ -214,8 +180,6 @@ enum musb_g_ep0_state {
 #define OTG_TIME_B_ASE0_BRST	100	/* min 3.125 ms */
 #endif
 
-
-
 /*************************** REGISTER ACCESS ********************************/
 
 #define musb_ep_select(_mbase, _epnum) \
@@ -275,6 +239,7 @@ struct musb_platform_ops {
 	void (*disable_clk)(struct musb *musb);
 	void (*prepare_clk)(struct musb *musb);
 	void (*unprepare_clk)(struct musb *musb);
+	void (*enable_wakeup)(struct musb *musb, bool enable);
 };
 
 /*
@@ -359,12 +324,11 @@ struct musb {
 	const struct musb_platform_ops *ops;
 	struct musb_context_registers context;
 
-	irqreturn_t (*isr)(int irq, void *priv);
+	irqreturn_t (*isr)(int irq, void *private_data);
 	struct work_struct irq_work;
 	struct work_struct otg_notifier_work;
 	u16 hwvers;
 	struct delayed_work id_pin_work;
-	struct delayed_work host_work;
 #ifdef CONFIG_MTK_MUSB_CARPLAY_SUPPORT
 	struct delayed_work carplay_work;
 #endif
@@ -398,6 +362,7 @@ struct musb {
 	struct list_head out_bulk;	/* of musb_qh */
 
 	struct timer_list otg_timer;
+	struct timer_list idle_timer;
 #if defined(CONFIG_USBIF_COMPLIANCE)
 	struct timer_list otg_vbus_polling_timer;
 #endif
@@ -419,6 +384,8 @@ struct musb {
 #endif
 
 	struct usb_phy *xceiv;
+	struct phy *phy;
+
 	u8 xceiv_event;
 
 	int nIrq;
@@ -434,7 +401,6 @@ struct musb {
 	u8 nr_endpoints;
 
 	int (*board_set_power)(int state);
-	void (*usb_rev6_setting)(int value);
 
 	u8 min_power;		/* vbus for periph, in mA/2 */
 
@@ -485,7 +451,7 @@ struct musb {
 	enum musb_g_ep0_state ep0_state;
 	struct usb_gadget g;	/* the gadget */
 	struct usb_gadget_driver *gadget_driver;	/* its driver */
-	struct wakeup_source usb_lock;
+	struct wakeup_source *usb_lock;
 
 	/*
 	 * FIXME: Remove this flag.
@@ -510,7 +476,7 @@ struct musb {
 	struct dentry *debugfs_root;
 #endif
 	bool power;
-	bool is_ready:1;
+	unsigned is_ready:1;
 	bool usb_if;
 	u16 fifo_addr;
 #if defined(CONFIG_USBIF_COMPLIANCE)
@@ -518,9 +484,17 @@ struct musb {
 	enum usb_otg_event otg_event;
 #endif
 	struct workqueue_struct *st_wq;
-#ifdef CONFIG_DUAL_ROLE_USB_INTF
-	struct dual_role_phy_instance *dr_usb;
-#endif /* CONFIG_DUAL_ROLE_USB_INTF */
+	struct power_supply *usb_psy;
+	struct notifier_block psy_nb;
+
+#if defined(CONFIG_USB_ROLE_SWITCH)
+	struct otg_switch_mtk *otg_sx;
+#endif
+	struct mt_usb_glue *glue;
+
+	/* host suspend */
+	bool host_suspend;
+	bool usb_connected;
 };
 
 static inline struct musb *gadget_to_musb(struct usb_gadget *g)
@@ -665,21 +639,35 @@ static inline void musb_platform_unprepare_clk(struct musb *musb)
 		musb->ops->unprepare_clk(musb);
 }
 
+static inline void musb_platform_enable_wakeup(struct musb *musb)
+{
+	if (musb->ops->enable_wakeup)
+		musb->ops->enable_wakeup(musb, true);
+}
+
+static inline void musb_platform_disable_wakeup(struct musb *musb)
+{
+	if (musb->ops->enable_wakeup)
+		musb->ops->enable_wakeup(musb, false);
+}
+
 /* #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0) */
-#if 1
 static inline const char *otg_state_string(enum usb_otg_state state)
 {
 	return usb_otg_state_string(state);
 }
-#endif
+
 enum {
 	USB_DPIDLE_ALLOWED = 0,
 	USB_DPIDLE_FORBIDDEN,
 	USB_DPIDLE_SRAM,
-	USB_DPIDLE_TIMER
+	USB_DPIDLE_TIMER,
+	USB_DPIDLE_SUSPEND,
+	USB_DPIDLE_RESUME
 };
 extern void usb_hal_dpidle_request(int mode);
 extern void register_usb_hal_dpidle_request(void (*function)(int));
+extern void usb_hal_disconnect_check(void);
 extern void register_usb_hal_disconnect_check(void (*function)(void));
 extern void wake_up_bat(void);
 extern void wait_tx_done(u8 epnum, unsigned int timeout_ns);

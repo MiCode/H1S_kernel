@@ -119,6 +119,10 @@ static void clk_generated_best_diff(struct clk_rate_request *req,
 		tmp_rate = parent_rate;
 	else
 		tmp_rate = parent_rate / div;
+
+	if (tmp_rate < req->min_rate || tmp_rate > req->max_rate)
+		return;
+
 	tmp_diff = abs(req->rate - tmp_rate);
 
 	if (*best_diff < 0 || *best_diff > tmp_diff) {
@@ -288,7 +292,7 @@ at91_clk_register_generated(struct regmap *regmap, spinlock_t *lock,
 			    const struct clk_range *range)
 {
 	struct clk_generated *gck;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 	struct clk_hw *hw;
 	int ret;
 

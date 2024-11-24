@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -41,7 +33,7 @@
 #include <mtk_spm_vcore_dvfs.h>
 #endif
 #endif /* CONFIG_FPGA_EARLY_PORTING */
-#include <mtk_spm_internal.h>
+
 #ifdef CONFIG_MTK_DRAMC
 #include <mtk_dramc.h>
 #endif /* CONFIG_MTK_DRAMC */
@@ -49,7 +41,7 @@
 #include <linux/of_irq.h>
 #include <linux/of_address.h>
 #include <linux/of_reserved_mem.h>
-#include <linux/irqchip/mtk-eic.h>
+//#include <linux/irqchip/mtk-eic.h>
 #include <linux/suspend.h>
 #include <mt-plat/mtk_secure_api.h>
 #ifdef CONFIG_MTK_WD_KICKER
@@ -64,12 +56,13 @@
 #include <linux/seq_file.h>
 #include <mtk_spm_misc.h>
 #include <mtk_spm_resource_req_internal.h>
+#include <mtk_spm_internal.h>
 /* TODO: fix */
 #if !defined(SPM_K414_EARLY_PORTING) && defined(CONFIG_MTK_SYS_CIRQ)
 #include <mt-plat/mtk_cirq.h>
 #endif
 
-#include <trace/events/mtk_events.h>
+//#include <trace/events/mtk_events.h>
 
 #include <mtk_lp_sysfs.h>
 #include <mtk_lp_kernfs.h>
@@ -522,11 +515,11 @@ static struct platform_device *pspmdev;
 
 /* TODO: fix */
 #if !defined(SPM_K414_EARLY_PORTING)
-struct wakeup_source spm_wakelock;
+struct wakeup_source *spm_wakelock;
 
 void spm_pm_stay_awake(int sec)
 {
-	__pm_wakeup_event(&spm_wakelock, jiffies_to_msecs(HZ * sec));
+	__pm_wakeup_event(spm_wakelock, jiffies_to_msecs(HZ * sec));
 };
 #endif
 
@@ -602,6 +595,11 @@ int __init spm_module_init(void)
 	struct mtk_lp_sysfs_handle *pParent = NULL;
 	struct mtk_lp_sysfs_handle entry_spm;
 
+#if defined(CONFIG_MACH_MT6771)
+	struct device_node *sleep_node;
+	const char *pMethod = NULL;
+#endif
+
 #if defined(CONFIG_MACH_MT6739)
 #if defined(CONFIG_MTK_PMIC) || defined(CONFIG_MTK_PMIC_NEW_ARCH)
 	spm_crit2("pmic_ver %d\n", PMIC_LP_CHIP_VER());
@@ -609,10 +607,31 @@ int __init spm_module_init(void)
 #endif
 
 /* TODO: fix */
-#if !defined(SPM_K414_EARLY_PORTING)
+/* #if !defined(SPM_K414_EARLY_PORTING)
 	wakeup_source_init(&spm_wakelock, "spm");
-#endif
+#endif */
+	spm_wakelock = wakeup_source_register(NULL, "spm");
+	if (spm_wakelock == NULL) {
+		pr_debug("fail to request spm_wakelock\n");
+		return ret;
+	}
+#if defined(CONFIG_MACH_MT6771)
+	else {
+		sleep_node = of_find_compatible_node(NULL, NULL, "mediatek,sleep");
 
+		pr_info("success to request spm_wakelock\n");
+
+		if (sleep_node) {
+			of_property_read_string(sleep_node, "suspend-method", &pMethod);
+
+			if (pMethod) {
+				if (!strcmp(pMethod, "disable"))
+					__pm_stay_awake(spm_wakelock);
+			}
+		} else
+			__pm_stay_awake(spm_wakelock);
+	}
+#endif
 	spm_register_init();
 	if (spm_irq_register() != 0)
 		r = -EPERM;
@@ -707,6 +726,9 @@ int __init spm_module_init(void)
 		__func__, __LINE__, is_ext_buck);
 	SMC_CALL(MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_SPMFW_IDX,
 		 __spm_get_dram_type(), is_ext_buck);
+
+	SMC_CALL(MTK_SIP_KERNEL_SPM_VCOREFS_ARGS, 0x01,
+		 SPM_FLAG_RUN_COMMON_SCENARIO, 0);
 
 	spm_vcorefs_init();
 
@@ -1450,7 +1472,7 @@ void sspm_ipi_lock_spm_scenario(int start,
 		atomic_dec(&ipi_lock_cnt);
 
 	/* FTRACE tag */
-	trace_sspm_ipi(start, id, opt);
+	//trace_sspm_ipi(start, id, opt);
 }
 #endif /* CONFIG_MTK_TINYSYS_SSPM_SUPPORT */
 

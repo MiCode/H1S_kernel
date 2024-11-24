@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -252,7 +241,7 @@ static int send_ipi_enable(bool enable)
 
 		audio_send_ipi_msg(
 			&ipi_msg, TASK_SCENE_VOICE_ULTRASOUND,
-			AUDIO_IPI_LAYER_KERNEL_TO_SCP, AUDIO_IPI_PAYLOAD,
+			AUDIO_IPI_LAYER_TO_DSP, AUDIO_IPI_PAYLOAD,
 			AUDIO_IPI_MSG_BYPASS_ACK, VOICE_ULTRA_ENABLE_ID,
 			MAX_IPI_MSG_PAYLOAD_SIZE, 0, (char *)payload);
 
@@ -260,7 +249,7 @@ static int send_ipi_enable(bool enable)
 		udelay(5 * 1000);
 	} else {
 		audio_send_ipi_msg(&ipi_msg, TASK_SCENE_VOICE_ULTRASOUND,
-				   AUDIO_IPI_LAYER_KERNEL_TO_SCP,
+				   AUDIO_IPI_LAYER_TO_DSP,
 				   AUDIO_IPI_MSG_ONLY, AUDIO_IPI_MSG_BYPASS_ACK,
 				   VOICE_ULTRA_DISABLE_ID, 0, 0, NULL);
 
@@ -275,7 +264,7 @@ static int send_ipi_enable(bool enable)
 
 static int mtk_voice_ultra_close(struct snd_pcm_substream *substream)
 {
-	pr_debug("voice_ultra_close\n");
+	pr_debug("mtk_voice_ultra_close\n");
 
 	/* inform cm4 */
 	if (mDlPrepareDone && mUlPrepareDone)
@@ -355,7 +344,7 @@ static int mtk_voice_ultra_open(struct snd_pcm_substream *substream)
 		runtime->rate, runtime->channels);
 
 	if (ret < 0) {
-		pr_warn("voice_ultra_close\n");
+		pr_warn("mtk_voice_ultra_close\n");
 		mtk_voice_ultra_close(substream);
 		return ret;
 	}
@@ -606,36 +595,43 @@ static struct snd_pcm_ops mtk_voice_ultra_ops = {
 	.hw_params = mtk_voice_ultra_hw_params,
 	.hw_free = mtk_voice_ultra_hw_free,
 	.prepare = mtk_voice_ultra_prepare,
+	.copy_user = mtk_afe_pcm_copy,
 };
 
-static int mtk_voice_ultra_platform_probe(struct snd_soc_platform *platform)
+static int mtk_voice_ultra_component_probe(struct snd_soc_component *component)
 {
-	snd_soc_add_platform_controls(platform, speech_ultra_controls,
+	snd_soc_add_component_controls(component, speech_ultra_controls,
 				      ARRAY_SIZE(speech_ultra_controls));
 	return 0;
 }
 
-static struct snd_soc_platform_driver mtk_soc_voice_ultra_platform = {
-	.ops = &mtk_voice_ultra_ops, .probe = mtk_voice_ultra_platform_probe,
+static struct snd_soc_component_driver mtk_soc_voice_ultra_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_voice_ultra_ops,
+	.probe = mtk_voice_ultra_component_probe,
 };
 
 static int mtk_voice_ultra_probe(struct platform_device *pdev)
 {
-	if (pdev->dev.of_node) {
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_VOICE_ULTRA);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
-	return snd_soc_register_platform(&pdev->dev,
-					 &mtk_soc_voice_ultra_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_soc_voice_ultra_component,
+					  NULL,
+					  0);
 }
 
 static int mtk_voice_ultra_remove(struct platform_device *pdev)
 {
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

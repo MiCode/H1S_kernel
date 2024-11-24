@@ -198,7 +198,7 @@ static const struct ati_receiver_type type_firefly	= {
 	.default_keymap = RC_MAP_SNAPSTREAM_FIREFLY
 };
 
-static struct usb_device_id ati_remote_table[] = {
+static const struct usb_device_id ati_remote_table[] = {
 	{
 		USB_DEVICE(ATI_REMOTE_VENDOR_ID, LOLA_REMOTE_PRODUCT_ID),
 		.driver_info = (unsigned long)&type_ati
@@ -843,6 +843,10 @@ static int ati_remote_probe(struct usb_interface *interface,
 	}
 	if (le16_to_cpu(endpoint_in->wMaxPacketSize) == 0) {
 		err("%s: endpoint_in message size==0? \n", __func__);
+		return -ENODEV;
+	}
+	if (!usb_endpoint_is_int_out(endpoint_out)) {
+		err("%s: Unexpected endpoint_out\n", __func__);
 		return -ENODEV;
 	}
 

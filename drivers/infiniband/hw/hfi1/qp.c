@@ -1,5 +1,5 @@
 /*
- * Copyright(c) 2015 - 2017 Intel Corporation.
+ * Copyright(c) 2015 - 2018 Intel Corporation.
  *
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
@@ -273,7 +273,7 @@ void hfi1_modify_qp(struct rvt_qp *qp, struct ib_qp_attr *attr,
 	if (attr_mask & IB_QP_PATH_MIG_STATE &&
 	    attr->path_mig_state == IB_MIG_MIGRATED &&
 	    qp->s_mig_state == IB_MIG_ARMED) {
-		qp->s_flags |= RVT_S_AHG_CLEAR;
+		qp->s_flags |= HFI1_S_AHG_CLEAR;
 		priv->s_sc = ah_to_sc(ibqp->device, &qp->remote_ah_attr);
 		priv->s_sde = qp_to_sdma_engine(qp, priv->s_sc);
 		priv->s_sendcontext = qp_to_send_context(qp, priv->s_sc);
@@ -481,7 +481,6 @@ static void iowait_sdma_drained(struct iowait *wait)
 }
 
 /**
- *
  * qp_to_sdma_engine - map a qp to a send engine
  * @qp: the QP
  * @sc5: the 5 bit sc
@@ -556,6 +555,8 @@ void qp_iter_print(struct seq_file *s, struct rvt_qp_iter *iter)
 	struct sdma_engine *sde;
 	struct send_context *send_context;
 	struct rvt_ack_entry *e = NULL;
+	struct rvt_srq *srq = qp->ibqp.srq ?
+		ibsrq_to_rvtsrq(qp->ibqp.srq) : NULL;
 
 	sde = qp_to_sdma_engine(qp, priv->s_sc);
 	wqe = rvt_get_swqe_ptr(qp, qp->s_last);
@@ -563,7 +564,7 @@ void qp_iter_print(struct seq_file *s, struct rvt_qp_iter *iter)
 	if (qp->s_ack_queue)
 		e = &qp->s_ack_queue[qp->s_tail_ack_queue];
 	seq_printf(s,
-		   "N %d %s QP %x R %u %s %u %u %u f=%x %u %u %u %u %u %u SPSN %x %x %x %x %x RPSN %x S(%u %u %u %u %u %u %u) R(%u %u %u) RQP %x LID %x SL %u MTU %u %u %u %u %u SDE %p,%u SC %p,%u SCQ %u %u PID %d OS %x %x E %x %x %x\n",
+		   "N %d %s QP %x R %u %s %u %u f=%x %u %u %u %u %u %u SPSN %x %x %x %x %x RPSN %x S(%u %u %u %u %u %u %u) R(%u %u %u) RQP %x LID %x SL %u MTU %u %u %u %u %u SDE %p,%u SC %p,%u SCQ %u %u PID %d OS %x %x E %x %x %x RNR %d %s %d\n",
 		   iter->n,
 		   qp_idle(qp) ? "I" : "B",
 		   qp->ibqp.qp_num,
@@ -571,7 +572,6 @@ void qp_iter_print(struct seq_file *s, struct rvt_qp_iter *iter)
 		   qp_type_str[qp->ibqp.qp_type],
 		   qp->state,
 		   wqe ? wqe->wr.opcode : 0,
-		   qp->s_hdrwords,
 		   qp->s_flags,
 		   iowait_sdma_pending(&priv->s_iowait),
 		   iowait_pio_pending(&priv->s_iowait),
@@ -610,7 +610,11 @@ void qp_iter_print(struct seq_file *s, struct rvt_qp_iter *iter)
 		   /* ack queue information */
 		   e ? e->opcode : 0,
 		   e ? e->psn : 0,
-		   e ? e->lpsn : 0);
+		   e ? e->lpsn : 0,
+		   qp->r_min_rnr_timer,
+		   srq ? "SRQ" : "RQ",
+		   srq ? srq->rq.size : qp->r_rq.size
+		);
 }
 
 void *qp_priv_alloc(struct rvt_dev_info *rdi, struct rvt_qp *qp)
@@ -713,7 +717,7 @@ void hfi1_migrate_qp(struct rvt_qp *qp)
 	qp->remote_ah_attr = qp->alt_ah_attr;
 	qp->port_num = rdma_ah_get_port_num(&qp->alt_ah_attr);
 	qp->s_pkey_index = qp->s_alt_pkey_index;
-	qp->s_flags |= RVT_S_AHG_CLEAR;
+	qp->s_flags |= HFI1_S_AHG_CLEAR;
 	priv->s_sc = ah_to_sc(qp->ibqp.device, &qp->remote_ah_attr);
 	priv->s_sde = qp_to_sdma_engine(qp, priv->s_sc);
 	qp_set_16b(qp);
@@ -780,7 +784,7 @@ void notify_error_qp(struct rvt_qp *qp)
 		write_seqlock(lock);
 		if (!list_empty(&priv->s_iowait.list) &&
 		    !(qp->s_flags & RVT_S_BUSY)) {
-			qp->s_flags &= ~RVT_S_ANY_WAIT_IO;
+			qp->s_flags &= ~HFI1_S_ANY_WAIT_IO;
 			list_del_init(&priv->s_iowait.list);
 			priv->s_iowait.lock = NULL;
 			rvt_put_qp(qp);
@@ -789,7 +793,6 @@ void notify_error_qp(struct rvt_qp *qp)
 	}
 
 	if (!(qp->s_flags & RVT_S_BUSY)) {
-		qp->s_hdrwords = 0;
 		if (qp->s_rdma_mr) {
 			rvt_put_mr(qp->s_rdma_mr);
 			qp->s_rdma_mr = NULL;

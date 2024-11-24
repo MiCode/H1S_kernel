@@ -20,6 +20,7 @@
 #include <linux/mtd/map.h>
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/concat.h>
+#include <linux/mtd/cfi_endian.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
@@ -114,7 +115,7 @@ static const char * const *of_get_probes(struct device_node *dp)
 	if (count < 0)
 		return part_probe_types_def;
 
-	res = kzalloc((count + 1) * sizeof(*res), GFP_KERNEL);
+	res = kcalloc(count + 1, sizeof(*res), GFP_KERNEL);
 	if (!res)
 		return NULL;
 
@@ -187,7 +188,7 @@ static int of_flash_probe(struct platform_device *dev)
 
 	dev_set_drvdata(&dev->dev, info);
 
-	mtd_list = kzalloc(sizeof(*mtd_list) * count, GFP_KERNEL);
+	mtd_list = kcalloc(count, sizeof(*mtd_list), GFP_KERNEL);
 	if (!mtd_list)
 		goto err_flash_remove;
 
@@ -224,6 +225,11 @@ static int of_flash_probe(struct platform_device *dev)
 		info->list[i].map.size = res_size;
 		info->list[i].map.bankwidth = be32_to_cpup(width);
 		info->list[i].map.device_node = dp;
+
+		if (of_property_read_bool(dp, "big-endian"))
+			info->list[i].map.swap = CFI_BIG_ENDIAN;
+		else if (of_property_read_bool(dp, "little-endian"))
+			info->list[i].map.swap = CFI_LITTLE_ENDIAN;
 
 		err = of_flash_probe_gemini(dev, dp, &info->list[i].map);
 		if (err)

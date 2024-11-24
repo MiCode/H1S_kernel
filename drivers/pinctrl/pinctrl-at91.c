@@ -269,7 +269,8 @@ static int at91_dt_node_to_map(struct pinctrl_dev *pctldev,
 	}
 
 	map_num += grp->npins;
-	new_map = devm_kzalloc(pctldev->dev, sizeof(*new_map) * map_num, GFP_KERNEL);
+	new_map = devm_kcalloc(pctldev->dev, map_num, sizeof(*new_map),
+			       GFP_KERNEL);
 	if (!new_map)
 		return -ENOMEM;
 
@@ -1049,11 +1050,10 @@ static int at91_pinctrl_mux_mask(struct at91_pinctrl *info,
 	}
 	info->nmux = size / gpio_banks;
 
-	info->mux_mask = devm_kzalloc(info->dev, sizeof(u32) * size, GFP_KERNEL);
-	if (!info->mux_mask) {
-		dev_err(info->dev, "could not alloc mux_mask\n");
+	info->mux_mask = devm_kcalloc(info->dev, size, sizeof(u32),
+				      GFP_KERNEL);
+	if (!info->mux_mask)
 		return -ENOMEM;
-	}
 
 	ret = of_property_read_u32_array(np, "atmel,mux-mask",
 					  info->mux_mask, size);
@@ -1089,10 +1089,12 @@ static int at91_pinctrl_parse_groups(struct device_node *np,
 	}
 
 	grp->npins = size / 4;
-	pin = grp->pins_conf = devm_kzalloc(info->dev, grp->npins * sizeof(struct at91_pmx_pin),
-				GFP_KERNEL);
-	grp->pins = devm_kzalloc(info->dev, grp->npins * sizeof(unsigned int),
-				GFP_KERNEL);
+	pin = grp->pins_conf = devm_kcalloc(info->dev,
+					    grp->npins,
+					    sizeof(struct at91_pmx_pin),
+					    GFP_KERNEL);
+	grp->pins = devm_kcalloc(info->dev, grp->npins, sizeof(unsigned int),
+				 GFP_KERNEL);
 	if (!grp->pins_conf || !grp->pins)
 		return -ENOMEM;
 
@@ -1131,8 +1133,8 @@ static int at91_pinctrl_parse_functions(struct device_node *np,
 		dev_err(info->dev, "no groups defined\n");
 		return -EINVAL;
 	}
-	func->groups = devm_kzalloc(info->dev,
-			func->ngroups * sizeof(char *), GFP_KERNEL);
+	func->groups = devm_kcalloc(info->dev,
+			func->ngroups, sizeof(char *), GFP_KERNEL);
 	if (!func->groups)
 		return -ENOMEM;
 
@@ -1194,12 +1196,16 @@ static int at91_pinctrl_probe_dt(struct platform_device *pdev,
 
 	dev_dbg(&pdev->dev, "nfunctions = %d\n", info->nfunctions);
 	dev_dbg(&pdev->dev, "ngroups = %d\n", info->ngroups);
-	info->functions = devm_kzalloc(&pdev->dev, info->nfunctions * sizeof(struct at91_pmx_func),
+	info->functions = devm_kcalloc(&pdev->dev,
+					info->nfunctions,
+					sizeof(struct at91_pmx_func),
 					GFP_KERNEL);
 	if (!info->functions)
 		return -ENOMEM;
 
-	info->groups = devm_kzalloc(&pdev->dev, info->ngroups * sizeof(struct at91_pin_group),
+	info->groups = devm_kcalloc(&pdev->dev,
+					info->ngroups,
+					sizeof(struct at91_pin_group),
 					GFP_KERNEL);
 	if (!info->groups)
 		return -ENOMEM;
@@ -1258,7 +1264,9 @@ static int at91_pinctrl_probe(struct platform_device *pdev)
 	at91_pinctrl_desc.name = dev_name(&pdev->dev);
 	at91_pinctrl_desc.npins = gpio_banks * MAX_NB_GPIO_PER_BANK;
 	at91_pinctrl_desc.pins = pdesc =
-		devm_kzalloc(&pdev->dev, sizeof(*pdesc) * at91_pinctrl_desc.npins, GFP_KERNEL);
+		devm_kcalloc(&pdev->dev,
+			     at91_pinctrl_desc.npins, sizeof(*pdesc),
+			     GFP_KERNEL);
 
 	if (!at91_pinctrl_desc.pins)
 		return -ENOMEM;
@@ -1282,8 +1290,11 @@ static int at91_pinctrl_probe(struct platform_device *pdev)
 
 	/* We will handle a range of GPIO pins */
 	for (i = 0; i < gpio_banks; i++)
-		if (gpio_chips[i])
+		if (gpio_chips[i]) {
 			pinctrl_add_gpio_range(info->pctl, &gpio_chips[i]->range);
+			gpiochip_add_pin_range(&gpio_chips[i]->chip, dev_name(info->pctl->dev), 0,
+				gpio_chips[i]->range.pin_base, gpio_chips[i]->range.npins);
+		}
 
 	dev_info(&pdev->dev, "initialized AT91 pinctrl driver\n");
 
@@ -1593,7 +1604,7 @@ static void gpio_irq_handler(struct irq_desc *desc)
 
 		for_each_set_bit(n, &isr, BITS_PER_LONG) {
 			generic_handle_irq(irq_find_mapping(
-					   gpio_chip->irqdomain, n));
+					   gpio_chip->irq.domain, n));
 		}
 	}
 	chained_irq_exit(chip, desc);
@@ -1765,7 +1776,7 @@ static int at91_gpio_probe(struct platform_device *pdev)
 			chip->ngpio = ngpio;
 	}
 
-	names = devm_kzalloc(&pdev->dev, sizeof(char *) * chip->ngpio,
+	names = devm_kcalloc(&pdev->dev, chip->ngpio, sizeof(char *),
 			     GFP_KERNEL);
 
 	if (!names) {
@@ -1774,7 +1785,7 @@ static int at91_gpio_probe(struct platform_device *pdev)
 	}
 
 	for (i = 0; i < chip->ngpio; i++)
-		names[i] = kasprintf(GFP_KERNEL, "pio%c%d", alias_idx + 'A', i);
+		names[i] = devm_kasprintf(&pdev->dev, GFP_KERNEL, "pio%c%d", alias_idx + 'A', i);
 
 	chip->names = (const char *const *)names;
 

@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * Copyright (c) 2020 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Owen Chen <owen.chen@mediatek.com>
  */
 
 / {
@@ -32,11 +25,12 @@
 			int_deg = <0>;	/* interrupt deglitch */
 					/* 0: 1ms, 1: 2ms, 2: 5ms, 3: 10ms */
 		};
-		charger {
+		mt6370_chg: charger {
 			compatible = "mediatek,mt6370_pmu_charger";
 			interrupt-names = "chg_mivr", "chg_aiclmeasi",
 				"attachi", "ovpctrl_uvp_d_evt", "chg_wdtmri",
 				"chg_vbusov", "chg_tmri", "chg_treg", "dcdti";
+			bootmode = <&chosen>;
 			charger_name = "primary_chg";
 			load_switch_name = "primary_load_switch";
 			ichg = <2000000>;	/* uA */
@@ -50,6 +44,7 @@
 			ircmp_vclamp = <32000>;		/* uV */
 			enable_te;
 			enable_wdt;
+			enable_otg_wdt;
 			lbp_hys_sel = <1>;	/* 0: 100mV, 1: 200mV */
 			lbp_dt = <1>;		/* 0: 10ms, 1: 20ms */
 						/* 2: 40ms, 3: 500us */
@@ -60,6 +55,16 @@
 			/* enable_polling; */
 			/* with it: do post aicl measure */
 			/* post_aicl; */
+			charger = <&mt6370_chg>;
+			bc12_sel = <0>;
+			otg_vbus: usb-otg-vbus {
+				regulator-compatible = "usb-otg-vbus";
+				regulator-name = "usb-otg-vbus";
+				regulator-min-microvolt = <4350000>;
+				regulator-max-microvolt = <5800000>;
+				regulator-min-microamp = <500000>;
+				regulator-max-microamp = <3000000>;
+			};
 		};
 		mt6370_pmu_fled1 {
 			compatible = "mediatek,mt6370_pmu_fled1";

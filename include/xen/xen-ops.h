@@ -33,6 +33,7 @@ void xen_resume_notifier_unregister(struct notifier_block *nb);
 bool xen_vcpu_stolen(int vcpu);
 void xen_setup_runstate_info(int cpu);
 void xen_time_setup_guest(void);
+void xen_manage_runstate_time(int action);
 void xen_get_runstate_snapshot(struct vcpu_runstate_info *res);
 u64 xen_steal_clock(int cpu);
 
@@ -62,7 +63,7 @@ static inline void xen_destroy_contiguous_region(phys_addr_t pstart,
 struct vm_area_struct;
 
 /*
- * xen_remap_domain_gfn_array() - map an array of foreign frames
+ * xen_remap_domain_gfn_array() - map an array of foreign frames by gfn
  * @vma:     VMA to map the pages into
  * @addr:    Address at which to map the pages
  * @gfn:     Array of GFNs to map
@@ -85,6 +86,28 @@ int xen_remap_domain_gfn_array(struct vm_area_struct *vma,
 			       unsigned domid,
 			       struct page **pages);
 
+/*
+ * xen_remap_domain_mfn_array() - map an array of foreign frames by mfn
+ * @vma:     VMA to map the pages into
+ * @addr:    Address at which to map the pages
+ * @mfn:     Array of MFNs to map
+ * @nr:      Number entries in the MFN array
+ * @err_ptr: Returns per-MFN error status.
+ * @prot:    page protection mask
+ * @domid:   Domain owning the pages
+ * @pages:   Array of pages if this domain has an auto-translated physmap
+ *
+ * @mfn and @err_ptr may point to the same buffer, the MFNs will be
+ * overwritten by the error codes after they are mapped.
+ *
+ * Returns the number of successfully mapped frames, or a -ve error
+ * code.
+ */
+int xen_remap_domain_mfn_array(struct vm_area_struct *vma,
+			       unsigned long addr, xen_pfn_t *mfn, int nr,
+			       int *err_ptr, pgprot_t prot,
+			       unsigned int domid, struct page **pages);
+
 /* xen_remap_domain_gfn_range() - map a range of foreign frames
  * @vma:     VMA to map the pages into
  * @addr:    Address at which to map the pages
@@ -104,6 +127,8 @@ int xen_remap_domain_gfn_range(struct vm_area_struct *vma,
 			       struct page **pages);
 int xen_unmap_domain_gfn_range(struct vm_area_struct *vma,
 			       int numpgs, struct page **pages);
+
+#ifdef CONFIG_XEN_AUTO_XLATE
 int xen_xlate_remap_gfn_array(struct vm_area_struct *vma,
 			      unsigned long addr,
 			      xen_pfn_t *gfn, int nr,
@@ -112,6 +137,28 @@ int xen_xlate_remap_gfn_array(struct vm_area_struct *vma,
 			      struct page **pages);
 int xen_xlate_unmap_gfn_range(struct vm_area_struct *vma,
 			      int nr, struct page **pages);
+#else
+/*
+ * These two functions are called from arch/x86/xen/mmu.c and so stubs
+ * are needed for a configuration not specifying CONFIG_XEN_AUTO_XLATE.
+ */
+static inline int xen_xlate_remap_gfn_array(struct vm_area_struct *vma,
+					    unsigned long addr,
+					    xen_pfn_t *gfn, int nr,
+					    int *err_ptr, pgprot_t prot,
+					    unsigned int domid,
+					    struct page **pages)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int xen_xlate_unmap_gfn_range(struct vm_area_struct *vma,
+					    int nr, struct page **pages)
+{
+	return -EOPNOTSUPP;
+}
+#endif
+
 int xen_xlate_map_ballooned_pages(xen_pfn_t **pfns, void **vaddr,
 				  unsigned long nr_grant_frames);
 

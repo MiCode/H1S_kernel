@@ -1,30 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include <linux/bug.h>
 #include <linux/crc32.h>
 #include <linux/delay.h>
-#include <linux/memblock.h>
-#include <linux/module.h>
 #include <linux/io.h>
+#include <linux/memblock.h>
 #include <linux/mm.h>
+#include <linux/module.h>
 #include <asm/memory.h>
 #include <asm/sections.h>
+
 #include <mt-plat/mrdump.h>
 #include "mrdump_private.h"
 
 struct mrdump_control_block *mrdump_cblock;
-struct mrdump_rsvmem_block mrdump_sram_cb;
 
 #if defined(CONFIG_KALLSYMS) && !defined(CONFIG_KALLSYMS_BASE_RELATIVE)
 static void mrdump_cblock_kallsyms_init(struct mrdump_ksyms_param *kparam)
@@ -65,33 +57,32 @@ static void mrdump_cblock_kallsyms_init(struct mrdump_ksyms_param *unused)
 
 #endif
 
-__init void mrdump_cblock_init(void)
+__init void mrdump_cblock_init(phys_addr_t cb_addr, phys_addr_t cb_size)
 {
 	struct mrdump_machdesc *machdesc_p;
 
-	if (mrdump_sram_cb.start_addr == 0) {
+	if (cb_addr == 0) {
 		pr_notice("%s: mrdump control address cannot be 0\n",
 			  __func__);
-		goto end;
+		return;
 	}
-	if (mrdump_sram_cb.size < sizeof(struct mrdump_control_block)) {
+	if (cb_size < sizeof(struct mrdump_control_block)) {
 		pr_notice("%s: not enough space for mrdump control block\n",
 			  __func__);
-		goto end;
+		return;
 	}
 
-	mrdump_cblock = ioremap_wc(mrdump_sram_cb.start_addr,
-				   mrdump_sram_cb.size);
-	if (mrdump_cblock == NULL) {
+	mrdump_cblock = ioremap_wc(cb_addr, cb_size);
+	if (!mrdump_cblock) {
 		pr_notice("%s: mrdump_cb not mapped\n", __func__);
-		goto end;
+		return;
 	}
 	memset_io(mrdump_cblock, 0, sizeof(struct mrdump_control_block));
 	memcpy_toio(mrdump_cblock->sig, MRDUMP_GO_DUMP,
 			sizeof(mrdump_cblock->sig));
 
 	machdesc_p = &mrdump_cblock->machdesc;
-	machdesc_p->nr_cpus = AEE_MTK_CPU_NUMS;
+	machdesc_p->nr_cpus = nr_cpu_ids;
 	machdesc_p->page_offset = (uint64_t)PAGE_OFFSET;
 	machdesc_p->high_memory = (uintptr_t)high_memory;
 
@@ -101,17 +92,14 @@ __init void mrdump_cblock_init(void)
 #if defined(TEXT_OFFSET)
 	machdesc_p->kimage_vaddr += TEXT_OFFSET;
 #endif
-	machdesc_p->dram_start = (uintptr_t)memblock_start_of_DRAM();
-	machdesc_p->dram_end = (uintptr_t)memblock_end_of_DRAM();
-	machdesc_p->kimage_stext = (uintptr_t)_text;
-	machdesc_p->kimage_etext = (uintptr_t)_etext;
-	machdesc_p->kimage_stext_real = (uintptr_t)_stext;
+	machdesc_p->dram_start = (uint64_t)aee_memblock_start_of_DRAM();
+	machdesc_p->dram_end = (uint64_t)aee_memblock_end_of_DRAM();
+	machdesc_p->kimage_stext = (uint64_t)aee_get_text();
+	machdesc_p->kimage_etext = (uint64_t)aee_get_etext();
+	machdesc_p->kimage_stext_real = (uint64_t)aee_get_stext();
 #if defined(CONFIG_ARM64)
 	machdesc_p->kimage_voffset = kimage_voffset;
 #endif
-	machdesc_p->kimage_sdata = (uintptr_t)_sdata;
-	machdesc_p->kimage_edata = (uintptr_t)_edata;
-
 	machdesc_p->vmalloc_start = (uint64_t)VMALLOC_START;
 	machdesc_p->vmalloc_end = (uint64_t)VMALLOC_END;
 
@@ -119,12 +107,12 @@ __init void mrdump_cblock_init(void)
 	machdesc_p->modules_end = (uint64_t)MODULES_END;
 
 	machdesc_p->phys_offset = (uint64_t)(phys_addr_t)PHYS_OFFSET;
-	if (virt_addr_valid(&swapper_pg_dir)) {
+	if (virt_addr_valid(aee_get_swapper_pg_dir())) {
 		machdesc_p->master_page_table =
-			(uintptr_t)__pa(&swapper_pg_dir);
+			(uintptr_t)__pa(aee_get_swapper_pg_dir());
 	} else {
 		machdesc_p->master_page_table =
-			(uintptr_t)__pa_symbol(&swapper_pg_dir);
+			(uintptr_t)__pa_symbol(aee_get_swapper_pg_dir());
 	}
 
 #if defined(CONFIG_SPARSEMEM_VMEMMAP)
@@ -132,7 +120,7 @@ __init void mrdump_cblock_init(void)
 #endif
 
 	machdesc_p->pageflags = (1UL << PG_uptodate) + (1UL << PG_dirty) +
-				(1UL << PG_lru) + (1UL << PG_writeback) + (1UL << PG_iommu);
+				(1UL << PG_lru) + (1UL << PG_writeback);
 
 	machdesc_p->struct_page_size = (uint32_t)sizeof(struct page);
 
@@ -142,6 +130,7 @@ __init void mrdump_cblock_init(void)
 
 	pr_notice("%s: done.\n", __func__);
 
-end:
-	__inner_flush_dcache_all();
+	/* TODO: remove flush APIs after full ramdump support  HW_Reboot*/
+	aee__flush_dcache_area(mrdump_cblock,
+			sizeof(struct mrdump_control_block));
 }

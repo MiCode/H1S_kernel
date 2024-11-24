@@ -311,8 +311,6 @@ static int pl031_remove(struct amba_device *adev)
 	if (adev->irq[0])
 		free_irq(adev->irq[0], ldata);
 	rtc_device_unregister(ldata->rtc);
-	iounmap(ldata->base);
-	kfree(ldata);
 	amba_release_regions(adev);
 
 	return 0;
@@ -323,25 +321,28 @@ static int pl031_probe(struct amba_device *adev, const struct amba_id *id)
 	int ret;
 	struct pl031_local *ldata;
 	struct pl031_vendor_data *vendor = id->data;
-	struct rtc_class_ops *ops = &vendor->ops;
+	struct rtc_class_ops *ops;
 	unsigned long time, data;
 
 	ret = amba_request_regions(adev, NULL);
 	if (ret)
 		goto err_req;
 
-	ldata = kzalloc(sizeof(struct pl031_local), GFP_KERNEL);
-	if (!ldata) {
+	ldata = devm_kzalloc(&adev->dev, sizeof(struct pl031_local),
+			     GFP_KERNEL);
+	ops = devm_kmemdup(&adev->dev, &vendor->ops, sizeof(vendor->ops),
+			   GFP_KERNEL);
+	if (!ldata || !ops) {
 		ret = -ENOMEM;
 		goto out;
 	}
+
 	ldata->vendor = vendor;
-
-	ldata->base = ioremap(adev->res.start, resource_size(&adev->res));
-
+	ldata->base = devm_ioremap(&adev->dev, adev->res.start,
+				   resource_size(&adev->res));
 	if (!ldata->base) {
 		ret = -ENOMEM;
-		goto out_no_remap;
+		goto out;
 	}
 
 	amba_set_drvdata(adev, ldata);
@@ -374,12 +375,19 @@ static int pl031_probe(struct amba_device *adev, const struct amba_id *id)
 		}
 	}
 
+	if (!adev->irq[0]) {
+		/* When there's no interrupt, no point in exposing the alarm */
+		ops->read_alarm = NULL;
+		ops->set_alarm = NULL;
+		ops->alarm_irq_enable = NULL;
+	}
+
 	device_init_wakeup(&adev->dev, true);
 	ldata->rtc = rtc_device_register("pl031", &adev->dev, ops,
 					THIS_MODULE);
 	if (IS_ERR(ldata->rtc)) {
 		ret = PTR_ERR(ldata->rtc);
-		goto out_no_rtc;
+		goto out;
 	}
 
 	if (adev->irq[0]) {
@@ -393,10 +401,6 @@ static int pl031_probe(struct amba_device *adev, const struct amba_id *id)
 
 out_no_irq:
 	rtc_device_unregister(ldata->rtc);
-out_no_rtc:
-	iounmap(ldata->base);
-out_no_remap:
-	kfree(ldata);
 out:
 	amba_release_regions(adev);
 err_req:
@@ -448,7 +452,7 @@ static struct pl031_vendor_data stv2_pl031 = {
 	.irqflags = IRQF_SHARED | IRQF_COND_SUSPEND,
 };
 
-static struct amba_id pl031_ids[] = {
+static const struct amba_id pl031_ids[] = {
 	{
 		.id = 0x00041031,
 		.mask = 0x000fffff,

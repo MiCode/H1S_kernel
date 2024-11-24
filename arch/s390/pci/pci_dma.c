@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright IBM Corp. 2012
  *
@@ -180,6 +181,9 @@ out_unlock:
 static int __dma_purge_tlb(struct zpci_dev *zdev, dma_addr_t dma_addr,
 			   size_t size, int flags)
 {
+	unsigned long irqflags;
+	int ret;
+
 	/*
 	 * With zdev->tlb_refresh == 0, rpcit is not required to establish new
 	 * translations when previously invalid translation-table entries are
@@ -195,8 +199,22 @@ static int __dma_purge_tlb(struct zpci_dev *zdev, dma_addr_t dma_addr,
 			return 0;
 	}
 
-	return zpci_refresh_trans((u64) zdev->fh << 32, dma_addr,
-				  PAGE_ALIGN(size));
+	ret = zpci_refresh_trans((u64) zdev->fh << 32, dma_addr,
+				 PAGE_ALIGN(size));
+	if (ret == -ENOMEM && !s390_iommu_strict) {
+		/* enable the hypervisor to free some resources */
+		if (zpci_refresh_global(zdev))
+			goto out;
+
+		spin_lock_irqsave(&zdev->iommu_bitmap_lock, irqflags);
+		bitmap_andnot(zdev->iommu_bitmap, zdev->iommu_bitmap,
+			      zdev->lazy_bitmap, zdev->iommu_pages);
+		bitmap_zero(zdev->lazy_bitmap, zdev->iommu_pages);
+		spin_unlock_irqrestore(&zdev->iommu_bitmap_lock, irqflags);
+		ret = 0;
+	}
+out:
+	return ret;
 }
 
 static int dma_update_trans(struct zpci_dev *zdev, unsigned long pa,
@@ -527,6 +545,17 @@ static void s390_dma_unmap_sg(struct device *dev, struct scatterlist *sg,
 		s->dma_length = 0;
 	}
 }
+
+static unsigned long *bitmap_vzalloc(size_t bits, gfp_t flags)
+{
+	size_t n = BITS_TO_LONGS(bits);
+	size_t bytes;
+
+	if (unlikely(check_mul_overflow(n, sizeof(unsigned long), &bytes)))
+		return NULL;
+
+	return vzalloc(bytes);
+}
 	
 static int s390_mapping_error(struct device *dev, dma_addr_t dma_addr)
 {
@@ -568,13 +597,13 @@ int zpci_dma_init_device(struct zpci_dev *zdev)
 				zdev->end_dma - zdev->start_dma + 1);
 	zdev->end_dma = zdev->start_dma + zdev->iommu_size - 1;
 	zdev->iommu_pages = zdev->iommu_size >> PAGE_SHIFT;
-	zdev->iommu_bitmap = vzalloc(zdev->iommu_pages / 8);
+	zdev->iommu_bitmap = bitmap_vzalloc(zdev->iommu_pages, GFP_KERNEL);
 	if (!zdev->iommu_bitmap) {
 		rc = -ENOMEM;
 		goto free_dma_table;
 	}
 	if (!s390_iommu_strict) {
-		zdev->lazy_bitmap = vzalloc(zdev->iommu_pages / 8);
+		zdev->lazy_bitmap = bitmap_vzalloc(zdev->iommu_pages, GFP_KERNEL);
 		if (!zdev->lazy_bitmap) {
 			rc = -ENOMEM;
 			goto free_bitmap;
@@ -650,15 +679,6 @@ void zpci_dma_exit(void)
 	kmem_cache_destroy(dma_region_table_cache);
 }
 
-#define PREALLOC_DMA_DEBUG_ENTRIES	(1 << 16)
-
-static int __init dma_debug_do_init(void)
-{
-	dma_debug_init(PREALLOC_DMA_DEBUG_ENTRIES);
-	return 0;
-}
-fs_initcall(dma_debug_do_init);
-
 const struct dma_map_ops s390_pci_dma_ops = {
 	.alloc		= s390_dma_alloc,
 	.free		= s390_dma_free,
@@ -667,8 +687,6 @@ const struct dma_map_ops s390_pci_dma_ops = {
 	.map_page	= s390_dma_map_pages,
 	.unmap_page	= s390_dma_unmap_pages,
 	.mapping_error	= s390_mapping_error,
-	/* if we support direct DMA this must be conditional */
-	.is_phys	= 0,
 	/* dma_supported is unconditionally true without a callback */
 };
 EXPORT_SYMBOL_GPL(s390_pci_dma_ops);

@@ -34,6 +34,7 @@
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_plane_helper.h>
 #include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_fb_cma_helper.h>
 #include <drm/drm_rect.h>
 #include <drm/drm_fb_helper.h>
@@ -78,7 +79,11 @@ static const struct drm_mode_config_funcs meson_mode_config_funcs = {
 	.output_poll_changed = meson_fb_output_poll_changed,
 	.atomic_check        = drm_atomic_helper_check,
 	.atomic_commit       = drm_atomic_helper_commit,
-	.fb_create           = drm_fb_cma_create,
+	.fb_create           = drm_gem_fb_create,
+};
+
+static const struct drm_mode_config_helper_funcs meson_mode_config_helpers = {
+	.atomic_commit_tail = drm_atomic_helper_commit_tail_rpm,
 };
 
 static irqreturn_t meson_irq(int irq, void *arg)
@@ -136,8 +141,11 @@ static bool meson_vpu_has_available_connectors(struct device *dev)
 	for_each_endpoint_of_node(dev->of_node, ep) {
 		/* If the endpoint node exists, consider it enabled */
 		remote = of_graph_get_remote_port(ep);
-		if (remote)
+		if (remote) {
+			of_node_put(remote);
+			of_node_put(ep);
 			return true;
+		}
 	}
 
 	return false;
@@ -149,6 +157,14 @@ static struct regmap_config meson_regmap_config = {
 	.reg_stride     = 4,
 	.max_register   = 0x1000,
 };
+
+static void meson_vpu_init(struct meson_drm *priv)
+{
+	writel_relaxed(0x210000, priv->io_base + _REG(VPU_RDARB_MODE_L1C1));
+	writel_relaxed(0x10000, priv->io_base + _REG(VPU_RDARB_MODE_L1C2));
+	writel_relaxed(0x900000, priv->io_base + _REG(VPU_RDARB_MODE_L2C1));
+	writel_relaxed(0x20000, priv->io_base + _REG(VPU_WRARB_MODE_L2C1));
+}
 
 static int meson_drv_bind_master(struct device *dev, bool has_components)
 {
@@ -188,6 +204,10 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	priv->io_base = regs;
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "hhi");
+	if (!res) {
+		ret = -EINVAL;
+		goto free_drm;
+	}
 	/* Simply ioremap since it may be a shared register zone */
 	regs = devm_ioremap(dev, res->start, resource_size(res));
 	if (!regs) {
@@ -204,6 +224,10 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	}
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "dmc");
+	if (!res) {
+		ret = -EINVAL;
+		goto free_drm;
+	}
 	/* Simply ioremap since it may be a shared register zone */
 	regs = devm_ioremap(dev, res->start, resource_size(res));
 	if (!regs) {
@@ -229,9 +253,11 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 	drm->mode_config.max_width = 3840;
 	drm->mode_config.max_height = 2160;
 	drm->mode_config.funcs = &meson_mode_config_funcs;
+	drm->mode_config.helper_private	= &meson_mode_config_helpers;
 
 	/* Hardware Initialization */
 
+	meson_vpu_init(priv);
 	meson_venc_init(priv);
 	meson_vpp_init(priv);
 	meson_viu_init(priv);
@@ -284,7 +310,7 @@ static int meson_drv_bind_master(struct device *dev, bool has_components)
 uninstall_irq:
 	drm_irq_uninstall(drm);
 free_drm:
-	drm_dev_unref(drm);
+	drm_dev_put(drm);
 
 	return ret;
 }
@@ -304,7 +330,7 @@ static void meson_drv_unbind(struct device *dev)
 	drm_kms_helper_poll_fini(drm);
 	drm_fbdev_cma_fini(priv->fbdev);
 	drm_mode_config_cleanup(drm);
-	drm_dev_unref(drm);
+	drm_dev_put(drm);
 
 }
 
@@ -361,6 +387,17 @@ static int meson_probe_remote(struct platform_device *pdev,
 	return count;
 }
 
+static void meson_drv_shutdown(struct platform_device *pdev)
+{
+	struct meson_drm *priv = dev_get_drvdata(&pdev->dev);
+
+	if (!priv)
+		return;
+
+	drm_kms_helper_poll_fini(priv->drm);
+	drm_atomic_helper_shutdown(priv->drm);
+}
+
 static int meson_drv_probe(struct platform_device *pdev)
 {
 	struct component_match *match = NULL;
@@ -405,6 +442,7 @@ MODULE_DEVICE_TABLE(of, dt_match);
 
 static struct platform_driver meson_drm_platform_driver = {
 	.probe      = meson_drv_probe,
+	.shutdown   = meson_drv_shutdown,
 	.driver     = {
 		.name	= "meson-drm",
 		.of_match_table = dt_match,

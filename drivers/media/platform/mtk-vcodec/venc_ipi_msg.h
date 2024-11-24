@@ -1,18 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2016 MediaTek Inc.
- * Author: Jungchang Tsao <jungchang.tsao@mediatek.com>
- *         Daniel Hsiao <daniel.hsiao@mediatek.com>
- *         Tiffany Lin <tiffany.lin@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _VENC_IPI_MSG_H_
@@ -58,16 +46,18 @@ enum venc_ipi_msg_id {
 
 /* enum venc_get_param_type - The type of set parameter used in
  *                            venc_if_get_param()
- * GET_PARAM_CAPABILITY_SUPPORTED_FORMATS: get codec supported format capability
- * GET_PARAM_CAPABILITY_FRAME_SIZES:
+ * VENC_GET_PARAM_CAPABILITY_SUPPORTED_FORMATS: get codec supported format capability
+ * VENC_GET_PARAM_CAPABILITY_FRAME_SIZES:
  *         get codec supported frame size & alignment info
  */
 enum venc_get_param_type {
-	GET_PARAM_CAPABILITY_SUPPORTED_FORMATS,
-	GET_PARAM_CAPABILITY_FRAME_SIZES,
-	GET_PARAM_FREE_BUFFERS,
-	GET_PARAM_ROI_RC_QP,
-	GET_PARAM_RESOLUTION_CHANGE,
+	VENC_GET_PARAM_CAPABILITY_SUPPORTED_FORMATS,
+	VENC_GET_PARAM_CAPABILITY_FRAME_SIZES,
+	VENC_GET_PARAM_FREE_BUFFERS,
+	VENC_GET_PARAM_ROI_RC_QP,
+	VENC_GET_PARAM_RESOLUTION_CHANGE,
+	VENC_GET_PARAM_REFBUF_FRAME_NUM,
+	VENC_GET_PARAM_LOG,
 };
 
 /*
@@ -85,6 +75,7 @@ enum venc_get_param_type {
  * @VENC_SET_PARAM_TS_MODE: set VP8 temporal scalability mode
  * @VENC_SET_PARAM_SCENARIO: set encoder scenario mode for different RC control
  * @VENC_SET_PARAM_NONREFP: set encoder non reference P period
+ * @VENC_SET_PARAM_LOG: set encoder log
  */
 enum venc_set_param_type {
 	VENC_SET_PARAM_ENC,
@@ -109,6 +100,15 @@ enum venc_set_param_type {
 	VENC_SET_PARAM_SEC_MODE,
 	VENC_SET_PARAM_TSVC,
 	VENC_SET_PARAM_NONREFPFREQ,
+	VENC_SET_PARAM_ADJUST_MAX_QP,
+	VENC_SET_PARAM_ADJUST_MIN_QP,
+	VENC_SET_PARAM_ADJUST_I_P_QP_DELTA,
+	VENC_SET_PARAM_ADJUST_FRAME_LEVEL_QP,
+	VENC_SET_PARAM_MAX_REFP_NUM,
+	VENC_SET_PARAM_REFP_DISTANCE,
+	VENC_SET_PARAM_REFP_FRMNUM,
+	VENC_SET_PARAM_LOG,
+	VENC_SET_PARAM_ENABLE_DUMMY_NAL,
 };
 
 /**
@@ -220,6 +220,9 @@ struct venc_ap_ipi_msg_enc {
 	__s16 bs_fd;
 	__u8 fb_num_planes;
 	__u8 bs_mode;
+	__u32 meta_size;
+	__s16 meta_fd;
+	__u32 qpmap;
 };
 
 /**
@@ -404,7 +407,16 @@ struct venc_vcu_config {
 	__u32 p_qp;
 	__u32 b_qp;
 	__u32 svp_mode;
+	__u32 svp_is_hal_secure_handle;
 	__u32 tsvc;
+	__u32 max_qp;
+	__u32 min_qp;
+	__u32 i_p_qp_delta;
+	__u32 qp_control_mode;
+	__u32 frame_level_qp;
+	__u32 maxrefpnum;
+	__u32 maxrefbufFrameNum;
+	__u32 dummynal;
 };
 
 /**
@@ -441,6 +453,7 @@ struct venc_info {
 	__u32 index;
 	__u64 timestamp;
 	__u32 roimap;
+	__u32 qpmap;
 };
 
 /**

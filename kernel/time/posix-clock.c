@@ -66,13 +66,13 @@ static ssize_t posix_clock_read(struct file *fp, char __user *buf,
 	return err;
 }
 
-static unsigned int posix_clock_poll(struct file *fp, poll_table *wait)
+static __poll_t posix_clock_poll(struct file *fp, poll_table *wait)
 {
 	struct posix_clock *clk = get_posix_clock(fp);
-	unsigned int result = 0;
+	__poll_t result = 0;
 
 	if (!clk)
-		return POLLERR;
+		return EPOLLERR;
 
 	if (clk->ops.poll)
 		result = clk->ops.poll(clk, fp, wait);
@@ -211,7 +211,7 @@ struct posix_clock_desc {
 
 static int get_clock_desc(const clockid_t id, struct posix_clock_desc *cd)
 {
-	struct file *fp = fget(CLOCKID_TO_FD(id));
+	struct file *fp = fget(clockid_to_fd(id));
 	int err = -EINVAL;
 
 	if (!fp)
@@ -302,6 +302,9 @@ static int pc_clock_settime(clockid_t id, const struct timespec64 *ts)
 {
 	struct posix_clock_desc cd;
 	int err;
+
+	if (!timespec64_valid_strict(ts))
+		return -EINVAL;
 
 	err = get_clock_desc(id, &cd);
 	if (err)

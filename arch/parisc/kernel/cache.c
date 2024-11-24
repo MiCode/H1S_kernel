@@ -88,7 +88,8 @@ update_mmu_cache(struct vm_area_struct *vma, unsigned long address, pte_t *ptep)
 		return;
 
 	page = pfn_to_page(pfn);
-	if (page_mapping(page) && test_bit(PG_dcache_dirty, &page->flags)) {
+	if (page_mapping_file(page) &&
+	    test_bit(PG_dcache_dirty, &page->flags)) {
 		flush_kernel_dcache_page_addr(pfn_va(pfn));
 		clear_bit(PG_dcache_dirty, &page->flags);
 	} else if (parisc_requires_coherency())
@@ -253,7 +254,7 @@ parisc_cache_init(void)
 	}
 }
 
-void disable_sr_hashing(void)
+void __init disable_sr_hashing(void)
 {
 	int srhash_type, retval;
 	unsigned long space_bits;
@@ -304,10 +305,11 @@ __flush_cache_page(struct vm_area_struct *vma, unsigned long vmaddr,
 
 void flush_dcache_page(struct page *page)
 {
-	struct address_space *mapping = page_mapping(page);
+	struct address_space *mapping = page_mapping_file(page);
 	struct vm_area_struct *mpnt;
 	unsigned long offset;
 	unsigned long addr, old_addr = 0;
+	unsigned long flags;
 	pgoff_t pgoff;
 
 	if (mapping && !mapping_mapped(mapping)) {
@@ -327,7 +329,7 @@ void flush_dcache_page(struct page *page)
 	 * declared as MAP_PRIVATE or MAP_SHARED), so we only need
 	 * to flush one address here for them all to become coherent */
 
-	flush_dcache_mmap_lock(mapping);
+	flush_dcache_mmap_lock_irqsave(mapping, flags);
 	vma_interval_tree_foreach(mpnt, &mapping->i_mmap, pgoff, pgoff) {
 		offset = (pgoff - mpnt->vm_pgoff) << PAGE_SHIFT;
 		addr = mpnt->vm_start + offset;
@@ -350,7 +352,7 @@ void flush_dcache_page(struct page *page)
 			old_addr = addr;
 		}
 	}
-	flush_dcache_mmap_unlock(mapping);
+	flush_dcache_mmap_unlock_irqrestore(mapping, flags);
 }
 EXPORT_SYMBOL(flush_dcache_page);
 

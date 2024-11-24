@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -66,7 +55,7 @@
 
 static int mtk_fm_i2s_probe(struct platform_device *pdev);
 static int mtk_pcm_fm_i2s_close(struct snd_pcm_substream *substream);
-static int mtk_afe_fm_i2s_probe(struct snd_soc_platform *platform);
+static int mtk_afe_fm_i2s_component_probe(struct snd_soc_component *component);
 
 static unsigned int mfm_i2s_Volume = 0x10000;
 static bool mPrepareDone;
@@ -74,7 +63,7 @@ static bool mPrepareDone;
 static int Audio_fm_i2s_Volume_Get(struct snd_kcontrol *kcontrol,
 				   struct snd_ctl_elem_value *ucontrol)
 {
-	pr_debug("Audio_AmpR_Get = %d\n", mfm_i2s_Volume);
+	/* pr_debug("Audio_AmpR_Get = %d\n", mfm_i2s_Volume); */
 	ucontrol->value.integer.value[0] = mfm_i2s_Volume;
 	return 0;
 }
@@ -115,6 +104,7 @@ static struct snd_pcm_hardware mtk_fm_i2s_hardware = {
 
 static int mtk_pcm_fm_i2s_stop(struct snd_pcm_substream *substream)
 {
+	pr_debug("mtk_pcm_fm_i2s_stop\n");
 	return 0;
 }
 
@@ -138,6 +128,7 @@ static int mtk_pcm_fm_i2s_hw_params(struct snd_pcm_substream *substream,
 
 static int mtk_pcm_fm_i2s_hw_free(struct snd_pcm_substream *substream)
 {
+	/* pr_debug("mtk_pcm_fm_i2s_hw_free\n"); */
 	return snd_pcm_lib_free_pages(substream);
 }
 
@@ -156,6 +147,7 @@ static int mtk_pcm_fm_i2s_open(struct snd_pcm_substream *substream)
 	AudDrv_Clk_On();
 	AudDrv_I2S_Clk_On();
 
+	pr_debug("mtk_pcm_fm_i2s_open\n");
 	runtime->hw = mtk_fm_i2s_hardware;
 	memcpy((void *)(&(runtime->hw)), (void *)&mtk_fm_i2s_hardware,
 	       sizeof(struct snd_pcm_hardware));
@@ -166,12 +158,13 @@ static int mtk_pcm_fm_i2s_open(struct snd_pcm_substream *substream)
 					    SNDRV_PCM_HW_PARAM_PERIODS);
 
 	if (ret < 0) {
-		pr_err("pcm_fm_i2s_close\n");
+		pr_err("mtk_pcm_fm_i2s_close\n");
 		mtk_pcm_fm_i2s_close(substream);
 		return ret;
 	}
 
 	SetFMEnableFlag(true);
+	/* pr_debug("mtk_pcm_fm_i2s_open return\n"); */
 	return 0;
 }
 
@@ -228,8 +221,7 @@ static int mtk_pcm_fm_i2s_prepare(struct snd_pcm_substream *substream)
 		/* Set HW_GAIN */
 		SetHwDigitalGainMode(Soc_Aud_Digital_Block_HW_GAIN1,
 				     runtime->rate, 0x40);
-		SetHwDigitalGainEnable(Soc_Aud_Digital_Block_HW_GAIN1,
-				       true);
+		SetHwDigitalGainEnable(Soc_Aud_Digital_Block_HW_GAIN1, true);
 		SetHwDigitalGain(Soc_Aud_Digital_Block_HW_GAIN1,
 				 mfm_i2s_Volume);
 
@@ -293,6 +285,8 @@ static int mtk_pcm_fm_i2s_start(struct snd_pcm_substream *substream)
 
 static int mtk_pcm_fm_i2s_trigger(struct snd_pcm_substream *substream, int cmd)
 {
+	pr_debug("mtk_pcm_fm_i2s_trigger cmd = %d\n", cmd);
+
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
@@ -302,6 +296,23 @@ static int mtk_pcm_fm_i2s_trigger(struct snd_pcm_substream *substream, int cmd)
 		return mtk_pcm_fm_i2s_stop(substream);
 	}
 	return -EINVAL;
+}
+
+static int mtk_pcm_fm_i2s_copy(struct snd_pcm_substream *substream,
+			       int channel,
+			       unsigned long pos,
+			       void __user *buf,
+			       unsigned long bytes)
+{
+	return bytes;
+}
+
+static int mtk_pcm_fm_i2s_silence(struct snd_pcm_substream *substream,
+				  int channel,
+				  unsigned long pos,
+				  unsigned long bytes)
+{
+	return 0; /* do nothing */
 }
 
 static void *dummy_page[2];
@@ -321,36 +332,41 @@ static struct snd_pcm_ops mtk_fm_i2s_ops = {
 	.prepare = mtk_pcm_fm_i2s_prepare,
 	.trigger = mtk_pcm_fm_i2s_trigger,
 	.pointer = mtk_pcm_fm_i2s_pointer,
+	.copy_user = mtk_pcm_fm_i2s_copy,
+	.fill_silence = mtk_pcm_fm_i2s_silence,
 	.page = mtk_fm_i2s_pcm_page,
 };
 
-static struct snd_soc_platform_driver mtk_fm_i2s_soc_platform = {
-	.ops = &mtk_fm_i2s_ops, .probe = mtk_afe_fm_i2s_probe,
+static struct snd_soc_component_driver mtk_fm_i2s_soc_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_fm_i2s_ops,
+	.probe = mtk_afe_fm_i2s_component_probe,
 };
 
 static int mtk_fm_i2s_probe(struct platform_device *pdev)
 {
-	if (pdev->dev.of_node) {
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_FM_I2S_PCM);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
-	return snd_soc_register_platform(&pdev->dev, &mtk_fm_i2s_soc_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_fm_i2s_soc_component,
+					  NULL,
+					  0);
 }
 
-static int mtk_afe_fm_i2s_probe(struct snd_soc_platform *platform)
+static int mtk_afe_fm_i2s_component_probe(struct snd_soc_component *component)
 {
-	snd_soc_add_platform_controls(platform, Audio_snd_fm_i2s_controls,
+	pr_debug("%s\n", __func__);
+	snd_soc_add_component_controls(component, Audio_snd_fm_i2s_controls,
 				      ARRAY_SIZE(Audio_snd_fm_i2s_controls));
 	return 0;
 }
 
 static int mtk_fm_i2s_remove(struct platform_device *pdev)
 {
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

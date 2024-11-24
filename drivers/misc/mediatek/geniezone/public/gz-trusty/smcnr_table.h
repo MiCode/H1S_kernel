@@ -1,14 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ */
+
+/*
+ * GenieZone (hypervisor-based seucrity platform) enables hardware protected
+ * and isolated security execution environment, includes
+ * 1. GZ hypervisor
+ * 2. Hypervisor-TEE OS (built-in Trusty OS)
+ * 3. Drivers (ex: debug, communication and interrupt) for GZ and
+ *    hypervisor-TEE OS
+ * 4. GZ and hypervisor-TEE and GZ framework (supporting multiple TEE
+ *    ecosystem, ex: M-TEE, Trusty, GlobalPlatform, ...)
  */
 
 
@@ -44,6 +48,7 @@ enum smc_functions {
 	SMCF_FC_GET_VERSION_STR,
 	SMCF_FC_API_VERSION,
 	SMCF_FC_GET_CMASK,
+	SMCF_FC_GET_CPU_REQUEST,
 	SMCF_SC_NS_RETURN,
 
 	MT_SMCF_SC_ADD,
@@ -59,6 +64,7 @@ enum smc_functions {
 	MT_SMCF_FC_DEVAPC_VIO,
 	MT_SMCF_SC_SET_RAMCONSOLE,
 	MT_SMCF_SC_VPU,
+	MT_SMCF_FC_KTIME_ALIGN,
 
 	SMCF_FC_TEST_ADD,
 	SMCF_FC_TEST_MULTIPLY,

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "LCM"
@@ -417,18 +409,6 @@ int lcm_bias_enable(void)
 		pr_info("set voltage disp_bias_neg fail, ret = %d\n", ret);
 	retval |= ret;
 
-#if 0
-	/* get voltage */
-	ret = mtk_regulator_get_voltage(&disp_bias_pos);
-	if (ret < 0)
-		pr_info("get voltage disp_bias_pos fail\n");
-	pr_debug("pos voltage = %d\n", ret);
-
-	ret = mtk_regulator_get_voltage(&disp_bias_neg);
-	if (ret < 0)
-		pr_info("get voltage disp_bias_neg fail\n");
-	pr_debug("neg voltage = %d\n", ret);
-#endif
 	/* enable regulator */
 	ret = regulator_enable(disp_bias_pos);
 	if (ret < 0)

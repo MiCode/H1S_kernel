@@ -19,4 +19,8 @@ obj-y += nn_notify.o
 obj-y += xpu_notify.o
 obj-y += eara_thrm_notify.o
 
+ifeq ($(CONFIG_MACH_MT6781),y)
+obj-y += platform/mt6781/
+else
 obj-y += platform/$(MTK_PLATFORM)/
+endif

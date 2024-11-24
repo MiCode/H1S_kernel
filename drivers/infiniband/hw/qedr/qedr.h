@@ -33,6 +33,7 @@
 #define __QEDR_H__
 
 #include <linux/pci.h>
+#include <linux/idr.h>
 #include <rdma/ib_addr.h>
 #include <linux/qed/qed_if.h>
 #include <linux/qed/qed_chain.h>
@@ -43,6 +44,8 @@
 
 #define QEDR_NODE_DESC "QLogic 579xx RoCE HCA"
 #define DP_NAME(dev) ((dev)->ibdev.name)
+#define IS_IWARP(_dev) ((_dev)->rdma_type == QED_RDMA_TYPE_IWARP)
+#define IS_ROCE(_dev) ((_dev)->rdma_type == QED_RDMA_TYPE_ROCE)
 
 #define DP_DEBUG(dev, module, fmt, ...)					\
 	pr_debug("(%s) " module ": " fmt,				\
@@ -55,7 +58,9 @@
 #define QEDR_MSG_RQ   "  RQ"
 #define QEDR_MSG_SQ   "  SQ"
 #define QEDR_MSG_QP   "  QP"
+#define QEDR_MSG_SRQ  " SRQ"
 #define QEDR_MSG_GSI  " GSI"
+#define QEDR_MSG_IWARP  " IW"
 
 #define QEDR_CQ_MAGIC_NUMBER	(0x11223344)
 
@@ -118,6 +123,11 @@ struct qedr_device_attr {
 
 #define QEDR_ENET_STATE_BIT	(0)
 
+struct qedr_idr {
+	spinlock_t idr_lock; /* Protect idr data-structure */
+	struct idr idr;
+};
+
 struct qedr_dev {
 	struct ib_device	ibdev;
 	struct qed_dev		*cdev;
@@ -160,6 +170,11 @@ struct qedr_dev {
 	struct qedr_cq		*gsi_sqcq;
 	struct qedr_cq		*gsi_rqcq;
 	struct qedr_qp		*gsi_qp;
+	enum qed_rdma_type	rdma_type;
+	struct qedr_idr		qpidr;
+	struct qedr_idr		srqidr;
+	struct workqueue_struct *iwarp_wq;
+	u16			iwarp_max_mtu;
 
 	unsigned long enet_state;
 
@@ -317,6 +332,9 @@ struct qedr_qp_hwq_info {
 	/* DB */
 	void __iomem *db;
 	union db_prod32 db_data;
+
+	void __iomem *iwarp_db2;
+	union db_prod32 iwarp_db2_data;
 };
 
 #define QEDR_INC_SW_IDX(p_info, index)					\
@@ -324,6 +342,34 @@ struct qedr_qp_hwq_info {
 		p_info->index = (p_info->index + 1) &			\
 				qed_chain_get_capacity(p_info->pbl)	\
 	} while (0)
+
+struct qedr_srq_hwq_info {
+	u32 max_sges;
+	u32 max_wr;
+	struct qed_chain pbl;
+	u64 p_phys_addr_tbl;
+	u32 wqe_prod;
+	u32 sge_prod;
+	u32 wr_prod_cnt;
+	atomic_t wr_cons_cnt;
+	u32 num_elems;
+
+	struct rdma_srq_producers *virt_prod_pair_addr;
+	dma_addr_t phy_prod_pair_addr;
+};
+
+struct qedr_srq {
+	struct ib_srq ibsrq;
+	struct qedr_dev *dev;
+
+	struct qedr_userq	usrq;
+	struct qedr_srq_hwq_info hw_srq;
+	struct ib_umem *prod_umem;
+	u16 srq_id;
+	u32 srq_limit;
+	/* lock to protect srq recv post */
+	spinlock_t lock;
+};
 
 enum qedr_qp_err_bitmap {
 	QEDR_QP_ERR_SQ_FULL = 1,
@@ -337,7 +383,7 @@ enum qedr_qp_err_bitmap {
 struct qedr_qp {
 	struct ib_qp ibqp;	/* must be first */
 	struct qedr_dev *dev;
-
+	struct qedr_iw_ep *ep;
 	struct qedr_qp_hwq_info sq;
 	struct qedr_qp_hwq_info rq;
 
@@ -361,6 +407,7 @@ struct qedr_qp {
 	u32 sq_psn;
 	u32 qkey;
 	u32 dest_qp_num;
+	u8 timeout;
 
 	/* Relevant to qps created from kernel space only (ULPs) */
 	u8 prev_wqe_size;
@@ -394,6 +441,8 @@ struct qedr_qp {
 	/* Relevant to qps created from user space only (applications) */
 	struct qedr_userq usq;
 	struct qedr_userq urq;
+	atomic_t refcnt;
+	bool destroyed;
 };
 
 struct qedr_ah {
@@ -474,6 +523,21 @@ static inline int qedr_get_dmac(struct qedr_dev *dev,
 	return 0;
 }
 
+struct qedr_iw_listener {
+	struct qedr_dev *dev;
+	struct iw_cm_id *cm_id;
+	int		backlog;
+	void		*qed_handle;
+};
+
+struct qedr_iw_ep {
+	struct qedr_dev	*dev;
+	struct iw_cm_id	*cm_id;
+	struct qedr_qp	*qp;
+	void		*qed_context;
+	u8		during_connect;
+};
+
 static inline
 struct qedr_ucontext *get_qedr_ucontext(struct ib_ucontext *ibucontext)
 {
@@ -508,5 +572,10 @@ static inline struct qedr_ah *get_qedr_ah(struct ib_ah *ibah)
 static inline struct qedr_mr *get_qedr_mr(struct ib_mr *ibmr)
 {
 	return container_of(ibmr, struct qedr_mr, ibmr);
+}
+
+static inline struct qedr_srq *get_qedr_srq(struct ib_srq *ibsrq)
+{
+	return container_of(ibsrq, struct qedr_srq, ibsrq);
 }
 #endif

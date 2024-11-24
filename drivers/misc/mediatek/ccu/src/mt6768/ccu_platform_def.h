@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 #ifndef _CCU_PLATFORM_DEF_
 #define _CCU_PLATFORM_DEF_
 
@@ -30,4 +22,8 @@
 #define CCU_SENSOR_PM_SIZE  (0x1000)
 #define CCU_SENSOR_DM_SIZE  (0x600)
 
+#define CCU_ISR_LOG_BASE	(0x1A00)
+#define CCU_ISR_LOG_SIZE	(0x200)
+
+#define CCU_HEADER_NUM (20)
 #endif

@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * USB Type-C Connector System Software Interface driver
  *
  * Copyright (C) 2017, Intel Corporation
  * Author: Heikki Krogerus <heikki.krogerus@linux.intel.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/completion.h>
@@ -263,38 +260,45 @@ static void ucsi_pwr_opmode_change(struct ucsi_connector *con)
 
 static int ucsi_register_partner(struct ucsi_connector *con)
 {
-	struct typec_partner_desc partner;
+	struct typec_partner_desc desc;
+	struct typec_partner *partner;
 
 	if (con->partner)
 		return 0;
 
-	memset(&partner, 0, sizeof(partner));
+	memset(&desc, 0, sizeof(desc));
 
 	switch (con->status.partner_type) {
 	case UCSI_CONSTAT_PARTNER_TYPE_DEBUG:
-		partner.accessory = TYPEC_ACCESSORY_DEBUG;
+		desc.accessory = TYPEC_ACCESSORY_DEBUG;
 		break;
 	case UCSI_CONSTAT_PARTNER_TYPE_AUDIO:
-		partner.accessory = TYPEC_ACCESSORY_AUDIO;
+		desc.accessory = TYPEC_ACCESSORY_AUDIO;
 		break;
 	default:
 		break;
 	}
 
-	partner.usb_pd = con->status.pwr_op_mode == UCSI_CONSTAT_PWR_OPMODE_PD;
+	desc.usb_pd = con->status.pwr_op_mode == UCSI_CONSTAT_PWR_OPMODE_PD;
 
-	con->partner = typec_register_partner(con->port, &partner);
-	if (!con->partner) {
-		dev_err(con->ucsi->dev, "con%d: failed to register partner\n",
-			con->num);
-		return -ENODEV;
+	partner = typec_register_partner(con->port, &desc);
+	if (IS_ERR(partner)) {
+		dev_err(con->ucsi->dev,
+			"con%d: failed to register partner (%ld)\n", con->num,
+			PTR_ERR(partner));
+		return PTR_ERR(partner);
 	}
+
+	con->partner = partner;
 
 	return 0;
 }
 
 static void ucsi_unregister_partner(struct ucsi_connector *con)
 {
+	if (!con->partner)
+		return;
+
 	typec_unregister_partner(con->partner);
 	con->partner = NULL;
 }
@@ -601,11 +605,18 @@ static int ucsi_register_port(struct ucsi *ucsi, int index)
 		return ret;
 
 	if (con->cap.op_mode & UCSI_CONCAP_OPMODE_DRP)
-		cap->type = TYPEC_PORT_DRP;
+		cap->data = TYPEC_PORT_DRD;
 	else if (con->cap.op_mode & UCSI_CONCAP_OPMODE_DFP)
-		cap->type = TYPEC_PORT_DFP;
+		cap->data = TYPEC_PORT_DFP;
 	else if (con->cap.op_mode & UCSI_CONCAP_OPMODE_UFP)
-		cap->type = TYPEC_PORT_UFP;
+		cap->data = TYPEC_PORT_UFP;
+
+	if (con->cap.provider && con->cap.consumer)
+		cap->type = TYPEC_PORT_DRP;
+	else if (con->cap.provider)
+		cap->type = TYPEC_PORT_SRC;
+	else if (con->cap.consumer)
+		cap->type = TYPEC_PORT_SNK;
 
 	cap->revision = ucsi->cap.typec_version;
 	cap->pd_revision = ucsi->cap.pd_version;
@@ -622,8 +633,8 @@ static int ucsi_register_port(struct ucsi *ucsi, int index)
 
 	/* Register the connector */
 	con->port = typec_register_port(ucsi->dev, cap);
-	if (!con->port)
-		return -ENODEV;
+	if (IS_ERR(con->port))
+		return PTR_ERR(con->port);
 
 	/* Get the status */
 	UCSI_CMD_GET_CONNECTOR_STATUS(ctrl, con->num);
@@ -724,6 +735,7 @@ err_unregister:
 	}
 
 err_reset:
+	memset(&ucsi->cap, 0, sizeof(ucsi->cap));
 	ucsi_reset_ppm(ucsi);
 err:
 	mutex_unlock(&ucsi->ppm_lock);

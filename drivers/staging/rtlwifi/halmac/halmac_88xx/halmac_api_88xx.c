@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
  * Copyright(c) 2016  Realtek Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * The full GNU General Public License is included in this distribution in the
- * file called LICENSE.
  *
  * Contact Information:
  * wlanfae <wlanfae@realtek.com>
@@ -3391,8 +3380,10 @@ halmac_cfg_txbf_88xx(struct halmac_adapter *halmac_adapter, u8 userid,
 		switch (bw) {
 		case HALMAC_BW_80:
 			temp42C |= BIT_R_TXBF0_80M;
+			/* fall through */
 		case HALMAC_BW_40:
 			temp42C |= BIT_R_TXBF0_40M;
+			/* fall through */
 		case HALMAC_BW_20:
 			temp42C |= BIT_R_TXBF0_20M;
 			break;

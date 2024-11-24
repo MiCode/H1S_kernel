@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <generated/autoconf.h>
 #include <linux/module.h>
@@ -307,6 +298,7 @@ static int mtkfb1_blank(int blank_mode, struct fb_info *info)
 static int mtkfb_blank(int blank_mode, struct fb_info *info)
 {
 	enum mtkfb_power_mode prev_pm = primary_display_get_power_mode();
+	DISPDBG("%s, blank_mode=%d\n", __func__, blank_mode);
 
 	if ((info == prim_fbi) && (blank_mode == FB_BLANK_UNBLANK) &&
 		atomic_read(&prim_panel_is_on)) {
@@ -341,12 +333,12 @@ static int mtkfb_blank(int blank_mode, struct fb_info *info)
 				     bypass_blank);
 			break;
 		}
-
-		primary_display_set_power_mode(FB_SUSPEND);
-		mtkfb_early_suspend();
+		if (prev_pm != FB_SUSPEND) {
+			primary_display_set_power_mode(FB_SUSPEND);
+			mtkfb_early_suspend();
+		}
 
 		debug_print_power_mode_check(prev_pm, FB_SUSPEND);
-
 		break;
 	default:
 		return -EINVAL;
@@ -997,7 +989,7 @@ unsigned int mtkfb_fm_auto_test(void)
 	}
 
 	if (idle_state_backup) {
-		primary_display_idlemgr_kick(__func__, 0);
+		primary_display_idlemgr_kick(__func__, 1);
 		enable_idlemgr(0);
 	}
 
@@ -1033,6 +1025,7 @@ unsigned int mtkfb_fm_auto_test(void)
 	mtkfb_pan_display_impl(&mtkfb_fbi->var, mtkfb_fbi);
 	msleep(100);
 
+	primary_display_idlemgr_kick(__func__, 1);
 	result = primary_display_lcm_ATA();
 
 	if (idle_state_backup)
@@ -1052,7 +1045,7 @@ int mtkfb_aod_mode_switch(enum mtkfb_aod_power_mode aod_pm)
 	enum mtkfb_power_mode prev_pm = primary_display_get_power_mode();
 
 	DISPCHECK("AOD: ioctl: %s\n",
-		aod_pm ? "AOD_DOZE_SUSPEND" : "AOD_DOZE");
+		(aod_pm != 0) ? "AOD_DOZE_SUSPEND" : "AOD_DOZE");
 	if (!primary_is_aod_supported()) {
 		DISPCHECK("AOD: feature not support\n");
 		return ret;
@@ -1085,7 +1078,7 @@ int mtkfb_aod_mode_switch(enum mtkfb_aod_power_mode aod_pm)
 	}
 	if (ret < 0)
 		DISP_PR_ERR("AOD: set %s failed\n",
-			aod_pm ? "AOD_SUSPEND" : "AOD_RESUME");
+			(aod_pm != MTKFB_AOD_DOZE) ? "AOD_SUSPEND" : "AOD_RESUME");
 	return ret;
 }
 
@@ -1224,96 +1217,10 @@ static int mtkfb_ioctl(struct fb_info *info, unsigned int cmd,
 	}
 	case MTKFB_CAPTURE_FRAMEBUFFER:
 	{
-#if 0 /* comment this for iofuzzer security issue */
-		unsigned long *src_pbuf = 0;
-		unsigned int pixel_bpp = primary_display_get_bpp() / 8;
-		unsigned int fbsize = DISP_GetScreenHeight() *
-			DISP_GetScreenWidth() * pixel_bpp;
-
-		src_pbuf = vmalloc(fbsize);
-		if (!src_pbuf) {
-			MTKFB_LOG(
-				"[FB]: vmalloc capture src_pbuf failed! line:%d\n",
-				  __LINE__);
-			return -EFAULT;
-		}
-
-		dprec_logger_start(DPREC_LOGGER_WDMA_DUMP, 0, 0);
-		ret = primary_display_capture_framebuffer_ovl(
-					(unsigned long)src_pbuf, UFMT_BGRA8888);
-		if (ret < 0)
-			DISP_PR_ERR(
-			"primary display capture framebuffer failed\n");
-		dprec_logger_done(DPREC_LOGGER_WDMA_DUMP, 0, 0);
-		if (copy_to_user((void __user *)arg, src_pbuf, fbsize)) {
-			MTKFB_LOG("[FB]: copy_to_user failed! line:%d\n",
-				  __LINE__);
-			ret = -EFAULT;
-		}
-		vfree(src_pbuf);
-#endif
 		return ret;
 	}
 	case MTKFB_SLT_AUTO_CAPTURE:
 	{
-#if 0 /* please open this when need SLT */
-		struct fb_slt_catpure capConfig;
-		unsigned long *src_pbuf = 0;
-		unsigned int format;
-		unsigned int pixel_bpp = primary_display_get_bpp() / 8;
-		unsigned int fbsize = DISP_GetScreenHeight() *
-					DISP_GetScreenWidth() * pixel_bpp;
-
-		if (copy_from_user(&capConfig, (void __user *)arg,
-				   sizeof(capConfig))) {
-			MTKFB_LOG("[FB]: copy_from_user failed! line:%d\n",
-				  __LINE__);
-			return -EFAULT;
-		}
-
-		switch (capConfig.format) {
-		case MTK_FB_FORMAT_RGB888:
-			format = UFMT_RGB888;
-			break;
-		case MTK_FB_FORMAT_BGR888:
-			format = UFMT_BGR888;
-			break;
-		case MTK_FB_FORMAT_ARGB8888:
-			format = UFMT_ARGB8888;
-			break;
-		case MTK_FB_FORMAT_RGB565:
-			format = UFMT_RGB565;
-			break;
-		case MTK_FB_FORMAT_UYVY:
-			format = UFMT_UYVY;
-			break;
-		case MTK_FB_FORMAT_ABGR8888:
-		default:
-			format = UFMT_ABGR8888;
-			break;
-		}
-		src_pbuf = vmalloc(fbsize);
-		if (!src_pbuf) {
-			MTKFB_LOG(
-				"[FB]: vmalloc capture src_pbuf failed! line:%d\n",
-				  __LINE__);
-			return -EFAULT;
-		}
-
-		ret = primary_display_capture_framebuffer_ovl(
-					(unsigned long)src_pbuf, format);
-		if (ret < 0)
-			DISP_PR_ERR(
-			"primary display capture framebuffer failed\n");
-
-		if (copy_to_user((unsigned long *)capConfig.outputBuffer,
-				 src_pbuf, fbsize)) {
-			MTKFB_LOG("[FB]: copy_to_user failed! line:%d\n",
-				  __LINE__);
-			ret = -EFAULT;
-		}
-		vfree(src_pbuf);
-#endif
 		return ret;
 	}
 	case MTKFB_GET_OVERLAY_LAYER_INFO:
@@ -2603,6 +2510,7 @@ static struct fb_info *allocate_fb_by_index(struct device *dev)
 	return fb_dev;
 }
 #endif
+
 //2020.11.19 longcheer kouxiangxiang add for node start
 static ssize_t fb_lcd_name(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -2646,6 +2554,50 @@ static int lcd_node_create_sysfs(void)
    }*/
    return 0;
 }
+
+// add product node for kernel logo
+static char g_product_id[128];
+static struct kobject *msm_product_name = NULL;
+static ssize_t product_name_show(struct kobject *dev,
+		struct kobj_attribute *attr, char *buf)
+{
+   ssize_t ret = 0;
+   pr_debug("%s: g_product_id =%s\n", __func__, g_product_id);
+   sprintf(buf, "%s\n", g_product_id);
+   ret = strlen(buf) + 1;
+   return ret;
+}
+static struct kobj_attribute dev_attr_product_name =
+      __ATTR(product_name, S_IRUGO, product_name_show, NULL);
+
+static int msm_product_name_create_sysfs(void)
+{
+	int ret;
+	msm_product_name = kobject_create_and_add("android_product",NULL);
+	pr_debug("%s: g_product_id =%s, msm_product_name=%s\n", __func__, g_product_id, msm_product_name);
+
+	if (msm_product_name == NULL) {
+		pr_err("%s: failed \n", __func__);
+		ret = -ENOMEM;
+		return ret;
+	}
+
+	ret = sysfs_create_file(msm_product_name,&dev_attr_product_name.attr);
+	if (ret) {
+    	pr_err("%s: failed \n", __func__);
+    	kobject_del(msm_product_name);
+	}
+
+	return 0;
+}
+
+static int __init lcm_get_product_type(char *str)
+{
+  	strcpy(g_product_id, str);
+	pr_debug("[: %s %d]androidboot.product.vendor.sku=%s \n",__FUNCTION__,__LINE__,g_product_id);
+  	return 1;
+}
+__setup("androidboot.product.vendor.sku=", lcm_get_product_type);
 
 static int mtkfb_probe(struct platform_device *pdev)
 {
@@ -2699,42 +2651,11 @@ static int mtkfb_probe(struct platform_device *pdev)
 	fbdev->dev = &(pdev->dev);
 	dev_set_drvdata(&(pdev->dev), fbdev);
 
-	atomic_set(&fbdev->resume_pending, 0);
-	init_waitqueue_head(&fbdev->resume_wait_q);
+	DISPMSG("%s: fb_pa = %pa\n", __func__, &fb_base);
 
-	fbdev->is_prim_panel = true;
-	prim_fbi = fbi;
-	atomic_set(&prim_panel_is_on, false);
-	INIT_DELAYED_WORK(&prim_panel_work, prim_panel_off_delayed_work);
-
-	DISPMSG("mtkfb_probe: fb_pa = %pa\n", &fb_base);
-
-#ifdef CONFIG_MTK_IOMMU_V2
-	temp_va = (size_t)ioremap_wc(fb_base, vramsize);
-	fbdev->fb_va_base = (void *)temp_va;
-	ion_display_client = disp_ion_create("disp_fb0");
-	if (ion_display_client == NULL) {
-		DISP_PR_ERR("%s: fail to create ion\n", __func__);
-		ret = -1;
-		goto cleanup;
-	}
-
-	ion_display_handle = disp_ion_alloc(ion_display_client,
-		ION_HEAP_MULTIMEDIA_PA2MVA_MASK,
-		fb_base, vramsize);
-	if (ret) {
-		DISP_PR_ERR(
-			"%s: fail to allocate buffer\n", __func__);
-		ret = -1;
-		goto cleanup;
-	}
-
-	disp_ion_get_mva(ion_display_client, ion_display_handle,
-			 (unsigned int *)&fb_mva, 0, DISP_M4U_PORT_DISP_OVL0);
-#else
 	disp_hal_allocate_framebuffer(fb_base, (fb_base + vramsize - 1),
 				(unsigned long *)(&fbdev->fb_va_base), &fb_mva);
-#endif
+
 	fbdev->fb_pa_base = fb_base;
 
 	primary_display_set_frame_buffer_address((unsigned long)
@@ -2767,6 +2688,7 @@ static int mtkfb_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto cleanup;
 	}
+	msm_product_name_create_sysfs();
 	lcd_node_create_sysfs();
 	init_state++; /* 2 */
 
@@ -2848,6 +2770,13 @@ static int mtkfb_probe(struct platform_device *pdev)
 #endif
 	fbdev->state = MTKFB_ACTIVE;
 
+	atomic_set(&fbdev->resume_pending, 0);
+	init_waitqueue_head(&fbdev->resume_wait_q);
+	fbdev->is_prim_panel = true;
+	prim_fbi = fbi;
+	atomic_set(&prim_panel_is_on, false);
+	INIT_DELAYED_WORK(&prim_panel_work, prim_panel_off_delayed_work);
+
 	MSG_FUNC_LEAVE();
 	pr_info("disp driver(2) %s end\n", __func__);
 	return 0;
@@ -2867,6 +2796,9 @@ static int mtkfb_remove(struct platform_device *pdev)
 
 	MSG_FUNC_ENTER();
 	/* FIXME: wait till completion of pending events */
+
+	atomic_set(&prim_panel_is_on, false);
+	cancel_delayed_work(&prim_panel_work);
 
 	fbdev->state = MTKFB_DISABLED;
 	mtkfb_free_resources(fbdev, saved_state);
@@ -3203,9 +3135,13 @@ int mtkfb_prim_panel_unblank(int timeout)
 
 	if (prim_fbi) {
 		fbdev = (struct mtkfb_device *)prim_fbi->par;
-		wait_event_timeout(fbdev->resume_wait_q,
+		ret = wait_event_timeout(fbdev->resume_wait_q,
 				!atomic_read(&fbdev->resume_pending),
 				msecs_to_jiffies(WAIT_RESUME_TIMEOUT));
+		if (!ret) {
+			printk("Primary fb resume timeout\n");
+			return -ETIMEDOUT;
+		}
 		console_lock();
 		if (!lock_fb_info(prim_fbi)) {
 			console_unlock();

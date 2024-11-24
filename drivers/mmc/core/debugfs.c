@@ -196,18 +196,7 @@ static int mmc_ios_show(struct seq_file *s, void *data)
 
 	return 0;
 }
-
-static int mmc_ios_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, mmc_ios_show, inode->i_private);
-}
-
-static const struct file_operations mmc_ios_fops = {
-	.open		= mmc_ios_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(mmc_ios);
 
 static int mmc_clock_opt_get(void *data, u64 *val)
 {
@@ -222,11 +211,8 @@ static int mmc_clock_opt_set(void *data, u64 val)
 {
 	struct mmc_host *host = data;
 
-	/* We need this check due to input value is u64
-	 * error case: val < host->f_min; the case will trigger
-	 * IO hang
-	 */
-	if (val > host->f_max || val < host->f_min)
+	/* We need this check due to input value is u64 */
+	if (val != 0 && (val > host->f_max || val < host->f_min))
 		return -EINVAL;
 
 	mmc_claim_host(host);
@@ -255,6 +241,12 @@ void mmc_add_host_debugfs(struct mmc_host *host)
 	host->debugfs_root = root;
 
 	if (!debugfs_create_file("ios", S_IRUSR, root, host, &mmc_ios_fops))
+		goto err_node;
+
+	if (!debugfs_create_x32("caps", S_IRUSR, root, &host->caps))
+		goto err_node;
+
+	if (!debugfs_create_x32("caps2", S_IRUSR, root, &host->caps2))
 		goto err_node;
 
 	if (!debugfs_create_file("clock", S_IRUSR | S_IWUSR, root, host,
@@ -319,3 +311,9 @@ void mmc_remove_card_debugfs(struct mmc_card *card)
 	debugfs_remove_recursive(card->debugfs_root);
 	card->debugfs_root = NULL;
 }
+/*
+ *void mmc_crypto_debugfs(struct mmc_host *host)
+ *{
+ *mmc_crypto_debug(host);
+ *}
+ */

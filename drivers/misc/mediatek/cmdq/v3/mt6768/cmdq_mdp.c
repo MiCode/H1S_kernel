@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 #include "cmdq_reg.h"
 #include "cmdq_mdp_common.h"
 #include "cmdq_sec_iwc_common.h"
@@ -355,7 +347,7 @@ mtk_iommu_callback_ret_t cmdq_TranslationFault_callback(
 	return MTK_IOMMU_CALLBACK_HANDLED;
 }
 #elif defined(CONFIG_MTK_M4U)
-enum m4u_callback_ret_t cmdq_TranslationFault_callback(
+m4u_callback_ret_t cmdq_TranslationFault_callback(
 	int port, unsigned int mva, void *data)
 {
 	char dispatchModel[MDP_DISPATCH_KEY_STR_LEN] = "MDP";

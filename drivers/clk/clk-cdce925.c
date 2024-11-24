@@ -616,7 +616,7 @@ static int cdce925_probe(struct i2c_client *client,
 	struct device_node *node = client->dev.of_node;
 	const char *parent_name;
 	const char *pll_clk_name[MAX_NUMBER_OF_PLLS] = {NULL,};
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 	u32 value;
 	int i;
 	int err;
@@ -665,7 +665,7 @@ static int cdce925_probe(struct i2c_client *client,
 	init.ops = &cdce925_pll_ops;
 	init.flags = 0;
 	init.parent_names = &parent_name;
-	init.num_parents = parent_name ? 1 : 0;
+	init.num_parents = 1;
 
 	/* Register PLL clocks */
 	for (i = 0; i < data->chip_info->num_plls; ++i) {

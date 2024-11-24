@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2018 MediaTek Inc.
  */
 
 #include <linux/io.h>
@@ -20,14 +12,13 @@
 #include <sspm_define.h>
 #include <sspm_reservedmem.h>
 
+#if !(defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6885))/* temp , wait dramc */
 #ifdef CONFIG_MTK_DRAMC
 #include <mtk_dramc.h>
-#endif /* CONFIG_MTK_DRAMC */
-
-#ifdef CONFIG_MEDIATEK_DRAMC
-#include <dramc.h>
-#endif /* CONFIG_MEDIATEK_DRAMC */
-
+#else
+__weak int dram_steps_freq(unsigned int step) { return 0; }
+#endif
+#endif /* CONFIG_MACH_MT6893  */
 
 static int qos_bound_enabled;
 static int qos_bound_stress_enabled;
@@ -88,7 +79,6 @@ unsigned int get_qos_bound_count(void)
 	return qos_bound_count;
 }
 EXPORT_SYMBOL(get_qos_bound_count);
-
 unsigned int *get_qos_bound_buf(void)
 {
 	return qos_bound_buf;
@@ -110,12 +100,12 @@ int get_qos_bound_bw_threshold(int state)
 {
 	int val = 0;
 
-#ifdef CONFIG_MEDIATEK_DRAMC
-	val = mtk_dramc_get_steps_freq(0) * QOS_BOUND_EMI_CH * 2;
-#endif
-#ifdef CONFIG_MTK_DRAMC
+#if !(defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6885)) /* temp , wait dramc */
 	val = dram_steps_freq(0) * QOS_BOUND_EMI_CH * 2;
-#endif
+#else
+    /* temp , wait dramc */
+	val = 4266 * QOS_BOUND_EMI_CH * 2;
+#endif /* CONFIG_MACH_MT6893  */
 
 	if (state == QOS_BOUND_BW_FULL)
 		return val * QOS_BOUND_BW_FULL_PCT / 100;

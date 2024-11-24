@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/font.h>
 #include <linux/string.h>
@@ -504,6 +496,8 @@ void screen_logger_add_message(char *obj, enum message_mode mode, char *message)
 		case MESSAGE_APPEND:
 			len = strlen(p->message) + strlen(message);
 			new = kmalloc(sizeof(char) * (len + 1), GFP_KERNEL);
+			if (!new)
+				break;
 			strncpy(new, p->message, strlen(p->message));
 			if (strlen(message) + strlen(p->message) < len)
 				strncat(new, message, strlen(message));

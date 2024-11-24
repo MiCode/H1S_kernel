@@ -1,25 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
-
 #define LOG_TAG "LCM"
-
 #ifndef BUILD_LK
 #  include <linux/string.h>
 #  include <linux/kernel.h>
 #endif
-
 #include "lcm_drv.h"
-
 #ifdef BUILD_LK
 #  include <platform/upmu_common.h>
 #  include <platform/mt_gpio.h>
@@ -29,7 +17,6 @@
 #elif defined(BUILD_UBOOT)
 #  include <asm/arch/mt_gpio.h>
 #endif
-
 #ifdef BUILD_LK
 #  define LCM_LOGI(string, args...)  dprintf(0, "[LK/"LOG_TAG"]"string, ##args)
 #  define LCM_LOGD(string, args...)  dprintf(1, "[LK/"LOG_TAG"]"string, ##args)
@@ -37,13 +24,10 @@
 #  define LCM_LOGI(fmt, args...)  pr_debug("[KERNEL/"LOG_TAG"]"fmt, ##args)
 #  define LCM_LOGD(fmt, args...)  pr_debug("[KERNEL/"LOG_TAG"]"fmt, ##args)
 #endif
-
 static struct LCM_UTIL_FUNCS lcm_util;
-
 #define SET_RESET_PIN(v)	(lcm_util.set_reset_pin((v)))
 #define MDELAY(n)		(lcm_util.mdelay(n))
 #define UDELAY(n)		(lcm_util.udelay(n))
-
 #define dsi_set_cmdq_V22(cmdq, cmd, count, ppara, force_update) \
 		lcm_util.dsi_set_cmdq_V22(cmdq, cmd, count, ppara, force_update)
 #define dsi_set_cmdq_V2(cmd, count, ppara, force_update) \
@@ -56,7 +40,6 @@ static struct LCM_UTIL_FUNCS lcm_util;
 #define read_reg(cmd)	lcm_util.dsi_dcs_read_lcm_reg(cmd)
 #define read_reg_v2(cmd, buffer, buffer_size) \
 		lcm_util.dsi_dcs_read_lcm_reg_v2(cmd, buffer, buffer_size)
-
 #ifndef BUILD_LK
 #  include <linux/kernel.h>
 #  include <linux/module.h>
@@ -71,50 +54,40 @@ static struct LCM_UTIL_FUNCS lcm_util;
 #  include <linux/io.h>
 #  include <linux/platform_device.h>
 #endif
-
 #define FRAME_WIDTH			(1080)
 #define FRAME_HEIGHT			(2520)
-
 /* physical size in um */
 #define LCM_PHYSICAL_WIDTH		(64500)
 #define LCM_PHYSICAL_HEIGHT		(129000)
 #define LCM_DENSITY			(480)
-
 #define REGFLAG_DELAY			0xFFFC
 #define REGFLAG_UDELAY			0xFFFB
 #define REGFLAG_END_OF_TABLE		0xFFFD
 #define REGFLAG_RESET_LOW		0xFFFE
 #define REGFLAG_RESET_HIGH		0xFFFF
-
 #ifndef TRUE
 #define TRUE 1
 #endif
-
 #ifndef FALSE
 #define FALSE 0
 #endif
-
 #include "disp_dts_gpio.h"
 #if defined(CONFIG_RT5081_PMU_DSV) || defined(CONFIG_MT6370_PMU_DSV)
 static struct regulator *disp_bias_pos;
 static struct regulator *disp_bias_neg;
 static int regulator_inited;
 #endif
-
-
 struct LCM_setting_table {
 	unsigned int cmd;
 	unsigned char count;
 	unsigned char para_list[200];
 };
-
 static struct LCM_setting_table lcm_suspend_setting[] = {
 	{0x28, 0, {} },
 	{REGFLAG_DELAY, 50, {} },
 	{0x10, 0, {} },
 	{REGFLAG_DELAY, 150, {} },
 };
-
 static struct LCM_setting_table init_setting_vdo[] = {
 	{0xB0, 0x1, {0x00} },
 	{0xB6, 0x5, {0x30, 0x6b, 0x00, 0x02, 0x03} },
@@ -179,7 +152,6 @@ static struct LCM_setting_table init_setting_vdo[] = {
 		0x1e, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x20,
 		0x00, 0x00, 0x00, 0x00, 0x22, 0x22, 0x22, 0x00, 0x00, 0x00,
 		0x00, 0x10, 0x00} },
-
 	//GAMMA2.2_20180522
 	{0xC7, 0x4C, {0x00, 0xF6, 0x01, 0x8D, 0x01, 0xE3, 0x01, 0xE7, 0x01,
 		0xE4, 0x01, 0xD6, 0x01, 0xC4, 0x01, 0xA7, 0x01, 0xBC, 0x01,
@@ -189,7 +161,6 @@ static struct LCM_setting_table init_setting_vdo[] = {
 		0xD6, 0x01, 0xC4, 0x01, 0xA7, 0x01, 0xBC, 0x01, 0x83, 0x01,
 		0xC0, 0x01, 0x6C, 0x01, 0xA1, 0x01, 0x4B, 0x01, 0xA8, 0x01,
 		0xA1, 0x02, 0x20, 0x02, 0x6C, 0x02, 0x70} },
-
 	{0xCB, 0xE, {0xCB, 0xa0, 0x80, 0x70, 0x00, 0x20, 0x00, 0x00, 0x2d, 0x41,
 				0x00, 0x00, 0x00, 0x00, 0xff} },
 	{0xCE, 0x21, {0x5d, 0x40, 0x49, 0x53, 0x59, 0x5e, 0x63, 0x68, 0x6e,
@@ -224,11 +195,9 @@ static struct LCM_setting_table init_setting_vdo[] = {
 	{0xD4, 0x17, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 		0x00, 0x00, 0x00, 0x00} },
-
 	//And,VCOM,reference,setting,
 	{0xE5, 0x1, {0x03} },
 	{0xD5, 0x2, {0x00, 0x26} },//26
-
 	{0xD7, 0x4A, {0x21, 0x10, 0x52, 0x52, 0x00, 0xbf, 0x00, 0x05, 0x00,
 		0xb6, 0x04, 0xfd, 0x01, 0x00, 0x03, 0x00, 0x05, 0x05, 0x05,
 		0x07, 0x04, 0x05, 0x06, 0x07, 0x00, 0x02, 0x02, 0x08, 0x03,
@@ -281,27 +250,21 @@ static struct LCM_setting_table init_setting_vdo[] = {
 		0x03, 0x00, 0x02} },
 	{0xF9, 0x5, {0x44, 0x3f, 0x00, 0x8d, 0xbf} },
 	{0xB0, 0x1, {0x03} },
-
 	{0xB0, 0x1, {0x00} },//Unlock,Manufacture,Command,Access,Protect
 	{0x36, 0x1, {0xF1} },//inversion
 	{0xD6, 0x1, {0x00} },//OTP/Flash,Load,setting
 	{0xB0, 0x1, {0x03} },//Manufacture,Command,Access,Protect
-
 	//TE ON
 	{0x35, 0x1, {0x00} },
-
 	//CABC
 	{0x51, 0x1, {0xFF} },//Write_Display_Brightness
 	{0x53, 0x1, {0x0C} },//Write_CTRL_Display
 	{0x55, 0x1, {0x00} },//Write_CABC
-
 	{0x11, 0, {} },
 	{REGFLAG_DELAY, 150, {} }, //Delay 150ms
 	{0x29, 0, {} },
-
 	{REGFLAG_DELAY, 20, {} }, //Delay 20ms
 };
-
 static struct LCM_setting_table
 __maybe_unused lcm_deep_sleep_mode_in_setting[] = {
 	{0x28, 1, {0x00} },
@@ -309,19 +272,16 @@ __maybe_unused lcm_deep_sleep_mode_in_setting[] = {
 	{0x10, 1, {0x00} },
 	{REGFLAG_DELAY, 150, {} },
 };
-
 static struct LCM_setting_table __maybe_unused lcm_sleep_out_setting[] = {
 	{0x11, 1, {0x00} },
 	{REGFLAG_DELAY, 120, {} },
 	{0x29, 1, {0x00} },
 	{REGFLAG_DELAY, 50, {} },
 };
-
 static struct LCM_setting_table bl_level[] = {
 	{0x51, 1, {0xFF} },
 	{REGFLAG_END_OF_TABLE, 0x00, {} }
 };
-
 static void push_table(void *cmdq, struct LCM_setting_table *table,
 		       unsigned int count, unsigned char force_update)
 {
@@ -349,18 +309,14 @@ static void push_table(void *cmdq, struct LCM_setting_table *table,
 		}
 	}
 }
-
 static void lcm_set_util_funcs(const struct LCM_UTIL_FUNCS *util)
 {
 	memcpy(&lcm_util, util, sizeof(struct LCM_UTIL_FUNCS));
 }
-
 static void lcm_get_params(struct LCM_PARAMS *params)
 {
 	memset(params, 0, sizeof(struct LCM_PARAMS));
-
 	params->type = LCM_TYPE_DSI;
-
 	params->width = FRAME_WIDTH;
 	params->height = FRAME_HEIGHT;
 	params->physical_width = LCM_PHYSICAL_WIDTH / 1000;
@@ -368,13 +324,11 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 	params->physical_width_um = LCM_PHYSICAL_WIDTH;
 	params->physical_height_um = LCM_PHYSICAL_HEIGHT;
 	params->density = LCM_DENSITY;
-
 	params->dsi.mode = SYNC_PULSE_VDO_MODE;
 	params->dsi.switch_mode = CMD_MODE;
 	lcm_dsi_mode = SYNC_PULSE_VDO_MODE;
 	LCM_LOGI("%s: lcm_dsi_mode %d\n", __func__, lcm_dsi_mode);
 	params->dsi.switch_mode_enable = 0;
-
 	/* DSI */
 	/* Command mode setting */
 	params->dsi.LANE_NUM = LCM_FOUR_LANE;
@@ -383,19 +337,15 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 	params->dsi.data_format.trans_seq = LCM_DSI_TRANS_SEQ_MSB_FIRST;
 	params->dsi.data_format.padding = LCM_DSI_PADDING_ON_LSB;
 	params->dsi.data_format.format = LCM_DSI_FORMAT_RGB888;
-
 	/* Highly depends on LCD driver capability. */
 	params->dsi.packet_size = 256;
 	/* video mode timing */
-
 	params->dsi.PS = LCM_PACKED_PS_24BIT_RGB888;
-
 	params->dsi.vertical_sync_active = 4;
 	params->dsi.vertical_backporch = 60;
 	params->dsi.vertical_frontporch = 20;
 	params->dsi.vertical_frontporch_for_low_power = 750;
 	params->dsi.vertical_active_line = FRAME_HEIGHT;
-
 	params->dsi.horizontal_sync_active = 10;
 	params->dsi.horizontal_backporch = 20;
 	params->dsi.horizontal_frontporch = 40;
@@ -417,11 +367,9 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 	params->dsi.lcm_esd_check_table[0].cmd = 0x0a;
 	params->dsi.lcm_esd_check_table[0].count = 1;
 	params->dsi.lcm_esd_check_table[0].para_list[0] = 0x1C;
-
 	/* for ARR 2.0 */
 	params->max_refresh_rate = 60;
 	params->min_refresh_rate = 45;
-
 }
 #if defined(CONFIG_RT5081_PMU_DSV) || defined(CONFIG_MT6370_PMU_DSV)
 int lcm_bias_regulator_init(void)
@@ -430,7 +378,6 @@ int lcm_bias_regulator_init(void)
 
 	if (regulator_inited)
 		return ret;
-
 	/* please only get regulator once in a driver */
 	disp_bias_pos = regulator_get(NULL, "dsv_pos");
 	if (IS_ERR(disp_bias_pos)) { /* handle return value */
@@ -438,99 +385,84 @@ int lcm_bias_regulator_init(void)
 		pr_info("get dsv_pos fail, error: %d\n", ret);
 		return ret;
 	}
-
 	disp_bias_neg = regulator_get(NULL, "dsv_neg");
 	if (IS_ERR(disp_bias_neg)) { /* handle return value */
 		ret = PTR_ERR(disp_bias_neg);
 		pr_info("get dsv_neg fail, error: %d\n", ret);
 		return ret;
 	}
-
 	regulator_inited = 1;
 	return ret; /* must be 0 */
-
 }
-
 int lcm_bias_enable(void)
 {
 	int ret = 0;
 	int retval = 0;
 
 	lcm_bias_regulator_init();
-
 	/* set voltage with min & max*/
 	ret = regulator_set_voltage(disp_bias_pos, 5500000, 5500000);
 	if (ret < 0)
 		pr_info("set voltage disp_bias_pos fail, ret = %d\n", ret);
 	retval |= ret;
-
 	ret = regulator_set_voltage(disp_bias_neg, 5500000, 5500000);
 	if (ret < 0)
 		pr_info("set voltage disp_bias_neg fail, ret = %d\n", ret);
 	retval |= ret;
 
-#if 0
-	/* get voltage */
-	ret = mtk_regulator_get_voltage(&disp_bias_pos);
-	if (ret < 0)
-		pr_info("get voltage disp_bias_pos fail\n");
-	pr_debug("pos voltage = %d\n", ret);
 
-	ret = mtk_regulator_get_voltage(&disp_bias_neg);
-	if (ret < 0)
-		pr_info("get voltage disp_bias_neg fail\n");
-	pr_debug("neg voltage = %d\n", ret);
-#endif
+	/* get voltage */
+
+	//ret = mtk_regulator_get_voltage(&disp_bias_pos);
+	//if (ret < 0)
+	//	pr_info("get voltage disp_bias_pos fail\n");
+	//pr_debug("pos voltage = %d\n", ret);
+	//ret = mtk_regulator_get_voltage(&disp_bias_neg);
+	//if (ret < 0)
+	//	pr_info("get voltage disp_bias_neg fail\n");
+	//pr_debug("neg voltage = %d\n", ret);
+
+
 	/* enable regulator */
 	ret = regulator_enable(disp_bias_pos);
 	if (ret < 0)
 		pr_info("enable regulator disp_bias_pos fail, ret = %d\n",
 			ret);
 	retval |= ret;
-
 	ret = regulator_enable(disp_bias_neg);
 	if (ret < 0)
 		pr_info("enable regulator disp_bias_neg fail, ret = %d\n",
 			ret);
 	retval |= ret;
-
 	return retval;
 }
-
-
 int lcm_bias_disable(void)
 {
 	int ret = 0;
 	int retval = 0;
 
 	lcm_bias_regulator_init();
-
 	ret = regulator_disable(disp_bias_neg);
 	if (ret < 0)
 		pr_info("disable regulator disp_bias_neg fail, ret = %d\n",
 			ret);
 	retval |= ret;
-
 	ret = regulator_disable(disp_bias_pos);
 	if (ret < 0)
 		pr_info("disable regulator disp_bias_pos fail, ret = %d\n",
 			ret);
 	retval |= ret;
-
 	return retval;
 }
-
 #else
 int lcm_bias_regulator_init(void)
 {
 	return 0;
 }
-
 int lcm_bias_enable(void)
 {
 	return 0;
 }
-
 int lcm_bias_disable(void)
 {
 	return 0;
@@ -540,51 +472,41 @@ int lcm_bias_disable(void)
 static void lcm_init_power(void)
 {
 	lcm_bias_enable();
-
 }
-
 static void lcm_suspend_power(void)
 {
 	SET_RESET_PIN(0);
 	lcm_bias_disable();
 }
-
 /* turn on gate ic & control voltage to 5.5V */
 static void lcm_resume_power(void)
 {
 	SET_RESET_PIN(0);
 	lcm_init_power();
 }
-
 static void lcm_init(void)
 {
 	/* set TP rst high */
 	disp_dts_gpio_select_state(DTS_GPIO_STATE_TP_RST_OUT1);
-
 	SET_RESET_PIN(1);
 	MDELAY(1);
 	SET_RESET_PIN(0);
 	MDELAY(10);
-
 	SET_RESET_PIN(1);
 	MDELAY(5);
-
 	push_table(NULL, init_setting_vdo, ARRAY_SIZE(init_setting_vdo), 1);
 	LCM_LOGI("td4320_fhdp----tps6132----lcm mode = vdo mode :%d----\n",
 		 lcm_dsi_mode);
 }
-
 static void lcm_suspend(void)
 {
 	push_table(NULL, lcm_suspend_setting,
 		   ARRAY_SIZE(lcm_suspend_setting), 1);
 }
-
 static void lcm_resume(void)
 {
 	lcm_init();
 }
-
 static unsigned int lcm_ata_check(unsigned char *buffer)
 {
 #ifndef BUILD_LK
@@ -595,12 +517,9 @@ static unsigned int lcm_ata_check(unsigned char *buffer)
 
 	data_array[0] = 0x00043700; /* set max return size = 3 */
 	dsi_set_cmdq(data_array, 1, 1);
-
 	read_reg_v2(0xbf, read_buf, 4); /* read lcm id */
-
 	LCM_LOGI("ATA read = 0x%x, 0x%x, 0x%x, 0x%x\n",
 		 read_buf[0], read_buf[1], read_buf[2], read_buf[3]);
-
 	if ((read_buf[0] == id[0]) &&
 	    (read_buf[1] == id[1]) &&
 	    (read_buf[2] == id[2]) &&
@@ -608,22 +527,17 @@ static unsigned int lcm_ata_check(unsigned char *buffer)
 		ret = 1;
 	else
 		ret = 0;
-
 	return ret;
 #else
 	return 0;
 #endif
 }
-
 static void lcm_setbacklight_cmdq(void *handle, unsigned int level)
 {
 	LCM_LOGI("%s,td4320 backlight: level = %d\n", __func__, level);
-
 	bl_level[0].para_list[0] = level;
-
 	push_table(handle, bl_level, ARRAY_SIZE(bl_level), 1);
 }
-
 static void lcm_update(unsigned int x, unsigned int y, unsigned int width,
 	unsigned int height)
 {
@@ -631,7 +545,6 @@ static void lcm_update(unsigned int x, unsigned int y, unsigned int width,
 	unsigned int y0 = y;
 	unsigned int x1 = x0 + width - 1;
 	unsigned int y1 = y0 + height - 1;
-
 	unsigned char x0_MSB = ((x0 >> 8) & 0xFF);
 	unsigned char x0_LSB = (x0 & 0xFF);
 	unsigned char x1_MSB = ((x1 >> 8) & 0xFF);
@@ -640,27 +553,21 @@ static void lcm_update(unsigned int x, unsigned int y, unsigned int width,
 	unsigned char y0_LSB = (y0 & 0xFF);
 	unsigned char y1_MSB = ((y1 >> 8) & 0xFF);
 	unsigned char y1_LSB = (y1 & 0xFF);
-
 	unsigned int data_array[16];
-
 #ifdef LCM_SET_DISPLAY_ON_DELAY
 	lcm_set_display_on();
 #endif
-
 	data_array[0] = 0x00053902;
 	data_array[1] = (x1_MSB << 24) | (x0_LSB << 16) | (x0_MSB << 8) | 0x2a;
 	data_array[2] = (x1_LSB);
 	dsi_set_cmdq(data_array, 3, 1);
-
 	data_array[0] = 0x00053902;
 	data_array[1] = (y1_MSB << 24) | (y0_LSB << 16) | (y0_MSB << 8) | 0x2b;
 	data_array[2] = (y1_LSB);
 	dsi_set_cmdq(data_array, 3, 1);
-
 	data_array[0] = 0x002c3909;
 	dsi_set_cmdq(data_array, 1, 0);
 }
-
 struct LCM_DRIVER td4320_fhdp_dsi_vdo_auo_rt5081_lcm_drv = {
 	.name = "td4320_fhdp_dsi_vdo_auo_rt5081_drv",
 	.set_util_funcs = lcm_set_util_funcs,
@@ -675,4 +582,3 @@ struct LCM_DRIVER td4320_fhdp_dsi_vdo_auo_rt5081_lcm_drv = {
 	.ata_check = lcm_ata_check,
 	.update = lcm_update,
 };
-

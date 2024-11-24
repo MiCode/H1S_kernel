@@ -97,6 +97,7 @@ static void watchdog_check_min_max_timeout(struct watchdog_device *wdd)
 
 /**
  * watchdog_init_timeout() - initialize the timeout field
+ * @wdd: watchdog device
  * @timeout_parm: timeout module parameter
  * @dev: Device that stores the timeout-sec property
  *
@@ -140,9 +141,9 @@ EXPORT_SYMBOL_GPL(watchdog_init_timeout);
 static int watchdog_reboot_notifier(struct notifier_block *nb,
 				    unsigned long code, void *data)
 {
-	struct watchdog_device *wdd = container_of(nb, struct watchdog_device,
-						   reboot_nb);
+	struct watchdog_device *wdd;
 
+	wdd = container_of(nb, struct watchdog_device, reboot_nb);
 	if (code == SYS_DOWN || code == SYS_HALT) {
 		if (watchdog_active(wdd)) {
 			int ret;
@@ -245,15 +246,19 @@ static int __watchdog_register_device(struct watchdog_device *wdd)
 	}
 
 	if (test_bit(WDOG_STOP_ON_REBOOT, &wdd->status)) {
-		wdd->reboot_nb.notifier_call = watchdog_reboot_notifier;
+		if (!wdd->ops->stop)
+			pr_warn("watchdog%d: stop_on_reboot not supported\n", wdd->id);
+		else {
+			wdd->reboot_nb.notifier_call = watchdog_reboot_notifier;
 
-		ret = register_reboot_notifier(&wdd->reboot_nb);
-		if (ret) {
-			pr_err("watchdog%d: Cannot register reboot notifier (%d)\n",
-			       wdd->id, ret);
-			watchdog_dev_unregister(wdd);
-			ida_simple_remove(&watchdog_ida, wdd->id);
-			return ret;
+			ret = register_reboot_notifier(&wdd->reboot_nb);
+			if (ret) {
+				pr_err("watchdog%d: Cannot register reboot notifier (%d)\n",
+					wdd->id, ret);
+				watchdog_dev_unregister(wdd);
+				ida_simple_remove(&watchdog_ida, id);
+				return ret;
+			}
 		}
 	}
 

@@ -20,19 +20,9 @@
 		stdout-path = &uart1;
 	};
 
-	memory {
+	memory@8000000 {
+		device_type = "memory";
 		reg = <0x08000000 0x04000000>;
-	};
-
-	clocks {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		clk32 {
-			compatible = "fsl,imx-clk32", "fixed-clock";
-			#clock-cells = <0>;
-			clock-frequency = <32000>;
-		};
 	};
 };
 
@@ -81,7 +71,7 @@
 	pinctrl-0 = <&pinctrl_weim>;
 	status = "okay";
 
-	nor: nor@0,0 {
+	nor: flash@0,0 {
 		compatible = "cfi-flash";
 		reg = <0 0x00000000 0x02000000>;
 		bank-width = <4>;

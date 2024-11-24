@@ -718,7 +718,7 @@ static void check_batteries(struct cardinfo *card)
 		set_fault_to_battery_status(card);
 }
 
-static void check_all_batteries(unsigned long ptr)
+static void check_all_batteries(struct timer_list *unused)
 {
 	int i;
 
@@ -738,8 +738,7 @@ static void check_all_batteries(unsigned long ptr)
 
 static void init_battery_timer(void)
 {
-	init_timer(&battery_timer);
-	battery_timer.function = check_all_batteries;
+	timer_setup(&battery_timer, check_all_batteries, 0);
 	battery_timer.expires = jiffies + (HZ * 60);
 	add_timer(&battery_timer);
 }
@@ -889,13 +888,14 @@ static int mm_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	card->Active = -1;	/* no page is active */
 	card->bio = NULL;
 	card->biotail = &card->bio;
+	spin_lock_init(&card->lock);
 
-	card->queue = blk_alloc_queue(GFP_KERNEL);
+	card->queue = blk_alloc_queue_node(GFP_KERNEL, NUMA_NO_NODE,
+					   &card->lock);
 	if (!card->queue)
 		goto failed_alloc;
 
 	blk_queue_make_request(card->queue, mm_make_request);
-	card->queue->queue_lock = &card->lock;
 	card->queue->queuedata = card;
 
 	tasklet_init(&card->tasklet, process_page, (unsigned long)card);
@@ -968,8 +968,6 @@ static int mm_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 
 	dev_printk(KERN_INFO, &card->dev->dev,
 		"Window size %d bytes, IRQ %d\n", data, dev->irq);
-
-	spin_lock_init(&card->lock);
 
 	pci_set_drvdata(dev, card);
 

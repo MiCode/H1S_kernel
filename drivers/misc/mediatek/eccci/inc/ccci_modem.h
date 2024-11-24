@@ -1,20 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __CCCI_MODEM_H__
 #define __CCCI_MODEM_H__
 
-#include <mt-plat/mtk_ccci_common.h>
+#include "mt-plat/mtk_ccci_common.h"
 
 enum MD_FORCE_ASSERT_TYPE {
 	MD_FORCE_ASSERT_RESERVE = 0x000,
@@ -27,16 +19,16 @@ enum MD_FORCE_ASSERT_TYPE {
 };
 
 enum MODEM_DUMP_FLAG {
-	DUMP_FLAG_CCIF = (1 << 0),
+	DUMP_FLAG_CCIF = (1 << 0), /* dump ccif sw data. */
 	/* tricky part, use argument length as queue index */
 	DUMP_FLAG_CLDMA = (1 << 1),
-	DUMP_FLAG_REG = (1 << 2),
+	DUMP_FLAG_REG = (1 << 2), /* dump modem reg. */
 	DUMP_FLAG_SMEM_EXP = (1 << 3),
 	DUMP_FLAG_IMAGE = (1 << 4),
 	DUMP_FLAG_LAYOUT = (1 << 5),
 	DUMP_FLAG_QUEUE_0 = (1 << 6),
 	DUMP_FLAG_QUEUE_0_1 = (1 << 7),
-	DUMP_FLAG_CCIF_REG = (1 << 8),
+	DUMP_FLAG_CCIF_REG = (1 << 8), /* dump ccif reg. */
 	DUMP_FLAG_SMEM_MDSLP = (1 << 9),
 	DUMP_FLAG_MD_WDT = (1 << 10),
 	DUMP_FLAG_SMEM_CCISM = (1<<11),
@@ -45,6 +37,7 @@ enum MODEM_DUMP_FLAG {
 	DUMP_FLAG_SMEM_CCB_CTRL = (1<<14),
 	DUMP_FLAG_SMEM_CCB_DATA = (1<<15),
 	DUMP_FLAG_PCCIF_REG = (1 << 16),
+	DUMP_FLAG_GET_TRAFFIC = (1 << 18),
 };
 
 enum {
@@ -79,6 +72,15 @@ enum {
 	MD_CFG_MDLOG_MODE,
 	MD_CFG_SBP_CODE,
 	MD_CFG_DUMP_FLAG,
+	MD_CFG_SBP_SUB_ID,
+	MD_CFG_RAT_CHK_FLAG,
+	MD_CFG_RAT_STR0,
+	MD_CFG_RAT_STR1,
+	MD_CFG_RAT_STR2,
+	MD_CFG_RAT_STR3,
+	MD_CFG_RAT_STR4,
+	MD_CFG_RAT_STR5,
+	MD_CFG_WM_IDX,
 };
 
 enum {
@@ -286,7 +288,7 @@ struct modem_runtime {
 	u32 BootChannel;		/* Channel to ACK AP with boot ready */
 	/* MD is booting. NORMAL_BOOT_ID or META_BOOT_ID */
 	u32 BootingStartID;
-#if 1 /* not using in EEMCS */
+	/* not using in EEMCS */
 	u32 BootAttributes;	 /* Attributes passing from AP to MD Booting */
 	/* MD response ID if boot successful and ready */
 	u32 BootReadyID;
@@ -303,9 +305,9 @@ struct modem_runtime {
 	u32 TotalShareMemBase;
 	u32 TotalShareMemSize;
 	u32 CheckSum;
-#endif
+
 	u32 Postfix; /* "CCIF" */
-#if 1 /* misc region */
+	/* misc region */
 	u32 misc_prefix;	/* "MISC" */
 	u32 support_mask;
 	u32 index;
@@ -328,7 +330,7 @@ struct modem_runtime {
 	u32 feature_15_val[4];
 	u32 reserved_2[3];
 	u32 misc_postfix;	/* "MISC" */
-#endif
+
 } __packed;
 
 struct ccci_runtime_feature {
@@ -367,8 +369,6 @@ enum {
 	MD_FLIGHT_MODE_ENTER = 1,
 	MD_FLIGHT_MODE_LEAVE = 2
 };/* FLIGHT_STAGE */
-
-extern unsigned int is_cdma2000_enable(int md_id);
 
 struct ccci_mem_layout *ccci_md_get_mem(int md_id);
 struct ccci_smem_region *ccci_md_get_smem_by_user_id(int md_id,
@@ -422,9 +422,6 @@ struct ccci_per_md {
 	int dtr_state; /* only for usb bypass */
 	unsigned int is_in_ee_dump;
 
-	unsigned long long latest_isr_time;
-	unsigned long long latest_q0_isr_time;
-	unsigned long long latest_q0_rx_time;
 #ifdef CCCI_SKB_TRACE
 	unsigned long long netif_rx_profile[8];
 #endif
@@ -445,5 +442,6 @@ struct ccci_runtime_feature *ccci_md_get_rt_feature_by_id(unsigned char md_id,
 
 int ccci_md_parse_rt_feature(unsigned char md_id,
 	struct ccci_runtime_feature *rt_feature, void *data, u32 data_len);
+extern int ccci_register_dev_node(const char *name, int major_id, int minor);
 
 #endif

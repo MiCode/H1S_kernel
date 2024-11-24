@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2020 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/backlight.h>
 #include <linux/delay.h>
@@ -348,10 +340,10 @@ static struct mtk_panel_params ext_params = {
 	.dyn_fps = {
 		.switch_en = 0,
 		.vact_timing_fps = MODE_0_FPS,
-		.lfr_enable = 1,
-		.lfr_minimum_fps = 60,
 	},
 	.data_rate = DATA_RATE,
+	.lfr_enable = 1,
+	.lfr_minimum_fps = 60,
 };
 
 
@@ -408,10 +400,10 @@ static struct mtk_panel_params ext_params_90hz = {
 	.dyn_fps = {
 		.switch_en = 0,
 		.vact_timing_fps = MODE_1_FPS,
-		.lfr_enable = 1,
-		.lfr_minimum_fps = 60,
 	},
 	.data_rate = DATA_RATE,
+	.lfr_enable = 1,
+	.lfr_minimum_fps = 60,
 };
 
 static struct mtk_panel_params ext_params_60hz = {
@@ -467,10 +459,10 @@ static struct mtk_panel_params ext_params_60hz = {
 	.dyn_fps = {
 		.switch_en = 0,
 		.vact_timing_fps = MODE_2_FPS,
-		.lfr_enable = 1,
-		.lfr_minimum_fps = 60,
 	},
 	.data_rate = DATA_RATE,
+	.lfr_enable = 1,
+	.lfr_minimum_fps = 60,
 };
 
 static int tianma_setbacklight_cmdq(void *dsi, dcs_write_gce cb,

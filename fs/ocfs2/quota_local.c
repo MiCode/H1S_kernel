@@ -137,14 +137,13 @@ static int ocfs2_read_quota_block(struct inode *inode, u64 v_block,
 	int rc = 0;
 	struct buffer_head *tmp = *bh;
 
-	if (i_size_read(inode) >> inode->i_sb->s_blocksize_bits <= v_block) {
-		ocfs2_error(inode->i_sb,
-			    "Quota file %llu is probably corrupted! Requested to read block %Lu but file has size only %Lu\n",
-			    (unsigned long long)OCFS2_I(inode)->ip_blkno,
-			    (unsigned long long)v_block,
-			    (unsigned long long)i_size_read(inode));
-		return -EIO;
-	}
+	if (i_size_read(inode) >> inode->i_sb->s_blocksize_bits <= v_block)
+		return ocfs2_error(inode->i_sb,
+				"Quota file %llu is probably corrupted! Requested to read block %Lu but file has size only %Lu\n",
+				(unsigned long long)OCFS2_I(inode)->ip_blkno,
+				(unsigned long long)v_block,
+				(unsigned long long)i_size_read(inode));
+
 	rc = ocfs2_read_virt_blocks(inode, v_block, 1, &tmp, 0,
 				    ocfs2_validate_quota_block);
 	if (rc)
@@ -690,7 +689,7 @@ static int ocfs2_local_read_info(struct super_block *sb, int type)
 	int status;
 	struct buffer_head *bh = NULL;
 	struct ocfs2_quota_recovery *rec;
-	int locked = 0;
+	int locked = 0, global_read = 0;
 
 	info->dqi_max_spc_limit = 0x7fffffffffffffffLL;
 	info->dqi_max_ino_limit = 0x7fffffffffffffffLL;
@@ -698,6 +697,7 @@ static int ocfs2_local_read_info(struct super_block *sb, int type)
 	if (!oinfo) {
 		mlog(ML_ERROR, "failed to allocate memory for ocfs2 quota"
 			       " info.");
+		status = -ENOMEM;
 		goto out_err;
 	}
 	info->dqi_priv = oinfo;
@@ -710,6 +710,7 @@ static int ocfs2_local_read_info(struct super_block *sb, int type)
 	status = ocfs2_global_read_info(sb, type);
 	if (status < 0)
 		goto out_err;
+	global_read = 1;
 
 	status = ocfs2_inode_lock(lqinode, &oinfo->dqi_lqi_bh, 1);
 	if (status < 0) {
@@ -780,10 +781,12 @@ out_err:
 		if (locked)
 			ocfs2_inode_unlock(lqinode, 1);
 		ocfs2_release_local_quota_bitmaps(&oinfo->dqi_chunk);
+		if (global_read)
+			cancel_delayed_work_sync(&oinfo->dqi_sync_work);
 		kfree(oinfo);
 	}
 	brelse(bh);
-	return -1;
+	return status;
 }
 
 /* Write local info to quota file */

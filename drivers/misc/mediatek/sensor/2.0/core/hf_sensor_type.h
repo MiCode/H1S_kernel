@@ -1,20 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #ifndef _HF_SENSOR_TYPE_H_
 #define _HF_SENSOR_TYPE_H_
 
 enum {
+	SENSOR_TYPE_INVALID = 0,
 	/* follow google default sensor type */
 	SENSOR_TYPE_ACCELEROMETER = 1,
 	SENSOR_TYPE_MAGNETIC_FIELD,
@@ -72,7 +65,10 @@ enum {
 	SENSOR_TYPE_GYRO_TEMPERATURE,
 	SENSOR_TYPE_SAR,
 	SENSOR_TYPE_OIS,
+	SENSOR_TYPE_FLICKER,
 	SENSOR_TYPE_GYRO_SECONDARY,
+	SENSOR_TYPE_FLICKER_REAR,
+	SENSOR_TYPE_RGBW_REAR,
 	SENSOR_TYPE_SENSOR_MAX,
 };
 
@@ -136,7 +132,10 @@ enum {
 	ID_GYRO_TEMPERATURE,
 	ID_SAR,
 	ID_OIS,
+	ID_FLICKER,
 	ID_GYRO_SECONDARY,
+	ID_FLICKER_REAR,
+	ID_RGBW_REAR,
 	ID_SENSOR_MAX,
 };
 

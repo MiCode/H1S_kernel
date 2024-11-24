@@ -10,3 +10,5 @@ config CUSTOM_KERNEL_SENSORHUB
 #source "drivers/misc/mediatek/sensors-1.0/sensorHub/SCP_sensorHub/Kconfig"
 #source "drivers/misc/mediatek/sensors-1.0/sensorHub/SCP_sensorHub_v1/Kconfig"
 #source "drivers/misc/mediatek/sensors-1.0/sensorHub/SCP_shf/Kconfig"
+
+source "drivers/misc/mediatek/sensors-1.0/sensorHub/nanohub/Kconfig"

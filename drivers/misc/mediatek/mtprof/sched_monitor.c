@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #define DEBUG 1
@@ -43,6 +35,7 @@ struct irq_count_period_setting {
 	const char *name;
 	unsigned int period;
 } irq_count_plist[] = {
+	{"usb0", 16666}, /* 60000 irqs per sec*/
 	{"ufshcd", 10000}, /* 100000 irqs per sec*/
 	{"arch_timer", 50000}, /* 20000 irqs per sec*/
 	{"musb-hdrc", 16666} /* 60000 irqs per sec*/

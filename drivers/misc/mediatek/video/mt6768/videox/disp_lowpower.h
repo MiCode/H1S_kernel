@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _DISP_LOWPOWER_H_
 #define _DISP_LOWPOWER_H_
@@ -47,6 +39,8 @@ unsigned int get_idlemgr_flag(void);
 unsigned int set_idlemgr(unsigned int flag, int need_lock);
 unsigned int get_us_perline(unsigned int width);
 unsigned int time_to_line(unsigned int ms, unsigned int width);
+unsigned long long disp_lp_set_idle_check_interval(
+	unsigned long long new_interval);
 /******************************** for met************************************/
 /*return 0: not enter ultra lowpower state which means mipi pll enable*/
 /*return 1: enter ultra lowpower state whicn means mipi pll disable*/

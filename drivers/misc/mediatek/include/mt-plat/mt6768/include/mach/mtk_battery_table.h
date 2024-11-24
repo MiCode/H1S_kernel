@@ -1,21 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _MTK_BATTERY_TABLE_H
 #define _MTK_BATTERY_TABLE_H
 
-#include "mtk_battery.h"
+#include "v1/mtk_battery.h"
 
 #ifndef _DEA_MODIFY_
 #else
@@ -32,30 +23,16 @@
 #define Q_MAX_H_CURRENT 10000
 
 /* multiple battery profile compile options */
-#if defined(CONFIG_SMB1351_USB_CHARGER)
-#define MTK_GET_BATTERY_ID_BY_AUXADC
-#else
 /*#define MTK_GET_BATTERY_ID_BY_AUXADC*/
-#endif
+
 
 /* if ACTIVE_TABLE == 0 && MULTI_BATTERY == 0
  * load g_FG_PSEUDO100_Tx from dtsi
  */
 #define MULTI_BATTERY 0
-#if defined(CONFIG_SMB1351_USB_CHARGER)
-#define BATTERY_ID_CHANNEL_NUM 2
-#else
 #define BATTERY_ID_CHANNEL_NUM 1
-#endif
 #define BATTERY_PROFILE_ID 0
 #define TOTAL_BATTERY_NUMBER 4
-
-#if defined(CONFIG_SMB1351_USB_CHARGER)
-#define NVT_MIN_VOLTAGE		550000
-#define NVT_MAX_VOLTAGE		800000
-#define GY_MIN_VOLTAGE	800000
-#define GY_MAX_VOLTAGE	1000000
-#endif
 
 /*
  * if ACTIVE_TABLE == 0 , use DTSI table
@@ -69,11 +46,11 @@
 /* Qmax for battery  */
 int g_Q_MAX[MAX_TABLE][TOTAL_BATTERY_NUMBER] = {
 	/*bat1,   bat2,   bat3,    bat4*/
-	{ 3841, 3824, 2490, 1965},/*T0*/
-	{ 3869, 3880, 2468, 1984},/*T1*/
-	{ 3879, 3884, 2310, 1946},/*T2*/
-	{ 3884, 3879, 1858, 1873},/*T3*/
-	{ 3892, 3883, 1843, 1851},/*T4*/
+	{ 2946, 2712, 2490, 1965},/*T0*/
+	{ 2796, 2851, 2468, 1984},/*T1*/
+	{ 2718, 2432, 2310, 1946},/*T2*/
+	{ 2535, 1991, 1858, 1873},/*T3*/
+	{ 2523, 1960, 1843, 1851},/*T4*/
 	{ 2211, 1652, 1533, 1541},/*T5*/
 	{ 2201, 1642, 1523, 1531},/*T6*/
 	{ 2191, 1632, 1513, 1521},/*T7*/
@@ -102,51 +79,6 @@ int g_Q_MAX_SYS_VOLTAGE[TOTAL_BATTERY_NUMBER] = { 3400, 3400, 3400, 3400};
 int g_battery_id_voltage[TOTAL_BATTERY_NUMBER] = {
 	500000, 1000000, 1500000, -1};
 
-#if defined(CONFIG_SMB1351_USB_CHARGER)
-int g_FG_PSEUDO1[MAX_TABLE][TOTAL_BATTERY_NUMBER] = {
-	/*bat1,   bat2,   bat3,    bat4*/
-	{ 12, 11, 12, 11},/*T0*/
-	{ 12, 13, 13, 12},/*T1*/
-	{ 13, 14, 15, 16},/*T2*/
-	{ 17, 18, 19, 20},/*T3*/
-	{ 21, 22, 23, 24},/*T4*/
-	{ 23, 22, 21, 20},/*T5*/
-	{ 19, 18, 17, 16},/*T6*/
-	{ 15, 14, 13, 12},/*T7*/
-	{ 11, 10, 11, 12},/*T8*/
-	{ 13, 14, 15, 16} /*T9*/
-};
-
-#if defined(TARGET_PRODUCT_LANCELOT) || defined(TARGET_PRODUCT_SHIVA)
-int g_FG_PSEUDO100[MAX_TABLE][TOTAL_BATTERY_NUMBER] = {
-	/*bat1,   bat2,   bat3,    bat4*/
-	{ 99, 99, 99, 99},/*T0*/
-	{ 99, 96, 99, 99},/*T1*/
-	{ 90, 80, 80, 80},/*T2*/
-	{ 90, 80, 80, 80},/*T3*/
-	{ 100, 100, 100, 100},/*T4*/
-	{ 100, 100, 100, 100},/*T5*/
-	{ 100, 100, 100, 100},/*T6*/
-	{ 100, 100, 100, 100},/*T7*/
-	{ 100, 100, 100, 100},/*T8*/
-	{ 100, 100, 100, 100} /*T9*/
-};
-#else
-int g_FG_PSEUDO100[MAX_TABLE][TOTAL_BATTERY_NUMBER] = {
-	/*bat1,   bat2,   bat3,    bat4*/
-	{ 99, 99, 99, 99},/*T0*/
-	{ 99, 99, 99, 99},/*T1*/
-	{ 90, 80, 80, 80},/*T2*/
-	{ 90, 80, 80, 80},/*T3*/
-	{ 100, 100, 100, 100},/*T4*/
-	{ 100, 100, 100, 100},/*T5*/
-	{ 100, 100, 100, 100},/*T6*/
-	{ 100, 100, 100, 100},/*T7*/
-	{ 100, 100, 100, 100},/*T8*/
-	{ 100, 100, 100, 100} /*T9*/
-};
-#endif
-#else
 int g_FG_PSEUDO1[MAX_TABLE][TOTAL_BATTERY_NUMBER] = {
 	/*bat1,   bat2,   bat3,    bat4*/
 	{ 5, 6, 7, 8},/*T0*/
@@ -174,21 +106,20 @@ int g_FG_PSEUDO100[MAX_TABLE][TOTAL_BATTERY_NUMBER] = {
 	{ 100, 100, 100, 100},/*T8*/
 	{ 100, 100, 100, 100} /*T9*/
 };
-#endif
 
 /* shutdown_hl_zcv */
 int g_SHUTDOWN_HL_ZCV[MAX_TABLE][TOTAL_BATTERY_NUMBER] = {
 	/*bat1,   bat2,   bat3,    bat4*/
-	{3400, 3400, 3400, 3400},/*T0*/
-	{3400, 3400, 3400, 3400},/*T1*/
-	{3400, 3400, 3400, 3400},/*T2*/
-	{3400, 3400, 3400, 3400},/*T3*/
-	{3400, 3400, 3400, 3400},/*T4*/
-	{3400, 3400, 3400, 3400},/*T5*/
-	{3400, 3400, 3400, 3400},/*T6*/
-	{3400, 3400, 3400, 3400},/*T7*/
-	{3400, 3400, 3400, 3400},/*T8*/
-	{3400, 3400, 3400, 3400} /*T9*/
+	{3400, 3410, 3420, 3430},/*T0*/
+	{3450, 3460, 3470, 3480},/*T1*/
+	{3500, 3510, 3520, 3530},/*T2*/
+	{3550, 3460, 3470, 3480},/*T3*/
+	{3600, 3610, 3620, 3630},/*T4*/
+	{3601, 3611, 3621, 3631},/*T5*/
+	{3602, 3612, 3622, 3632},/*T6*/
+	{3603, 3613, 3623, 3633},/*T7*/
+	{3604, 3614, 3624, 3634},/*T8*/
+	{3605, 3615, 3625, 3635} /*T9*/
 };
 
 /* g_FG_PSEUDO1_OFFSET */
@@ -224,41 +155,6 @@ int g_PON_SYS_IBOOT[MAX_TABLE][TOTAL_BATTERY_NUMBER] = {
 	{5000, 5000, 5000, 5000} /*T9*/
 };
 
-#if defined(CONFIG_SMB1351_USB_CHARGER)
-#if defined(TARGET_PRODUCT_LANCELOT) || defined(TARGET_PRODUCT_SHIVA)
-
-/* Q_MAX_SYS_VOLTAGE by temp ,control by MULTI_TEMP_GAUGE0=1, */
-int g_QMAX_SYS_VOL[MAX_TABLE][TOTAL_BATTERY_NUMBER] = {
-	/*bat1,   bat2,   bat3,    bat4*/
-	{34000, 34000, 34000, 34000},/*T0*/
-	{34000, 34000, 34000, 34000},/*T1*/
-	{34500, 35000, 34300, 34300},/*T2*/
-	{33700, 34300, 34100, 34100},/*T3*/
-	{34300, 33800, 34300, 34300},/*T4*/
-	{34000, 34000, 34000, 34000},/*T5*/
-	{34000, 34000, 34000, 34000},/*T6*/
-	{34000, 34000, 34000, 34000},/*T7*/
-	{34000, 34000, 34000, 34000},/*T8*/
-	{34000, 34000, 34000, 34000} /*T9*/
-};
-#else
-
-/* Q_MAX_SYS_VOLTAGE by temp ,control by MULTI_TEMP_GAUGE0=1, */
-int g_QMAX_SYS_VOL[MAX_TABLE][TOTAL_BATTERY_NUMBER] = {
-	/*bat1,   bat2,   bat3,    bat4*/
-	{34000, 34000, 34000, 34000},/*T0*/
-	{34000, 34000, 34000, 34000},/*T1*/
-	{34300, 34000, 34300, 34300},/*T2*/
-	{34100, 33800, 34100, 34100},/*T3*/
-	{34300, 33800, 34300, 34300},/*T4*/
-	{34000, 34000, 34000, 34000},/*T5*/
-	{34000, 34000, 34000, 34000},/*T6*/
-	{34000, 34000, 34000, 34000},/*T7*/
-	{34000, 34000, 34000, 34000},/*T8*/
-	{34000, 34000, 34000, 34000} /*T9*/
-};
-#endif
-#else
 /* Q_MAX_SYS_VOLTAGE by temp ,control by MULTI_TEMP_GAUGE0=1, */
 int g_QMAX_SYS_VOL[MAX_TABLE][TOTAL_BATTERY_NUMBER] = {
 	/*bat1,   bat2,   bat3,    bat4*/
@@ -273,7 +169,7 @@ int g_QMAX_SYS_VOL[MAX_TABLE][TOTAL_BATTERY_NUMBER] = {
 	{33500, 33500, 33500, 33500},/*T8*/
 	{33500, 33500, 33500, 33500} /*T9*/
 };
-#endif
+
 
 #define TEMPERATURE_TB0	255
 #define TEMPERATURE_TB1	254
@@ -291,19 +187,9 @@ int g_temperature[MAX_TABLE] = {
 	-45/*TEMPERATURE_T9*/
 };
 
-#if defined(CONFIG_SMB1351_USB_CHARGER)
-#define BAT_NTC_10 0
-#define BAT_NTC_47 0
-#define BAT_NTC_100 1
-#else
+
 #define BAT_NTC_10 1
 #define BAT_NTC_47 0
-#define BAT_NTC_100 0
-#endif
-
-#if (BAT_NTC_100 == 1)
-#define RBAT_PULL_UP_R             100000
-#endif
 
 #if (BAT_NTC_10 == 1)
 #define RBAT_PULL_UP_R             24000
@@ -316,70 +202,6 @@ int g_temperature[MAX_TABLE] = {
 #define RBAT_PULL_UP_VOLT          2800
 
 #define BIF_NTC_R 16000
-
-#if (BAT_NTC_100 == 1)
-#if defined(TARGET_PRODUCT_LANCELOT) || defined(TARGET_PRODUCT_SHIVA)
-struct FUELGAUGE_TEMPERATURE Fg_Temperature_Table[27] = {
-		{-40, 4251000},
-		{-35, 3005000},
-		{-30, 2149000},
-		{-25, 1554000},
-		{-20, 1135000},
-		{-15, 837800},
-		{-10, 624100},
-		{-5, 469100},
-		{0, 355600},
-		{5, 271800},
-		{10, 209400},
-		{15, 162500},
-		{20, 127000},
-		{25, 100000},
-		{30, 79230},
-		{35, 63180},
-		{40, 50680},
-		{45, 40900},
-		{50, 33190},
-		{55, 27090},
-		{60, 22220},
-		{65, 18320},
-		{70, 15180},
-		{75, 12640},
-		{80, 10580},
-		{85, 8887},
-		{90, 7500}
-};
-#else
-struct FUELGAUGE_TEMPERATURE Fg_Temperature_Table[27] = {
-		{-40, 4251000},
-		{-35, 3005000},
-		{-30, 2149000},
-		{-25, 1554000},
-		{-20, 1016120},
-		{-15, 718920},
-		{-10, 562100},
-		{-5, 460000},
-		{0, 338840},
-		{5, 261800},
-		{10, 199400},
-		{15, 152500},
-		{20, 125000},
-		{25, 100000},
-		{30, 74230},
-		{35, 60180},
-		{40, 48680},
-		{45, 39900},
-		{50, 30990},
-		{55, 25090},
-		{60, 21620},
-		{65, 18020},
-		{70, 14980},
-		{75, 12640},
-		{80, 10508},
-		{85, 8887},
-		{90, 7500}
-};
-#endif
-#endif
 
 #if (BAT_NTC_10 == 1)
 struct FUELGAUGE_TEMPERATURE Fg_Temperature_Table[21] = {

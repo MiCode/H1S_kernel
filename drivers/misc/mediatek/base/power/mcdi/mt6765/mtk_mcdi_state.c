@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/cpumask.h>
@@ -207,9 +199,9 @@ static struct cpuidle_driver
 do {                                                                     \
 	mtk_acao_mcdi_state[type].states[i].member = val;                \
 	if (i == MCDI_STATE_CPU_OFF) {                                   \
-		if (type == CPU_TYPE_L)                              \
+		if (cpu_type == CPU_TYPE_L)                              \
 			mtk_cpuidle_driver_set_0.states[i].member = val; \
-		else if (type == CPU_TYPE_LL)                        \
+		else if (cpu_type == CPU_TYPE_LL)                        \
 			mtk_cpuidle_driver_set_1.states[i].member = val; \
 	}                                                                \
 } while (0)

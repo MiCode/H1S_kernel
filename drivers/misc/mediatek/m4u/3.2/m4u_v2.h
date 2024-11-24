@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __M4U_V2_H__
@@ -17,10 +9,7 @@
 #include <linux/fs.h>
 #include "m4u_port.h"
 #include <linux/scatterlist.h>
-
-#if 1 /*ndef CONFIG_MTK_IOMMU*/
 #include "m4u_v2_ext.h"
-#endif
 
 struct m4u_port_array {
 	#define M4U_PORT_ATTR_EN		(1<<0)
@@ -34,7 +23,7 @@ int m4u_power_on(int m4u_index);
 int m4u_power_off(int m4u_index);
 
 int m4u_alloc_mva(struct m4u_client_t *client,
-					unsigned int port,
+					int port,
 					unsigned long va,
 					struct sg_table *sg_table,
 					unsigned int size, unsigned int prot,
@@ -45,11 +34,7 @@ int m4u_dealloc_mva(struct m4u_client_t *client,
 			int port, unsigned int mva);
 
 int m4u_config_port(struct M4U_PORT_STRUCT *pM4uPort);
-void m4u_port_array_init(struct m4u_port_array *port_array);
-int m4u_port_array_add(
-	struct m4u_port_array *port_array,
-	unsigned int port, int m4u_en, int secure);
-//int m4u_config_port_array(struct m4u_port_array *port_array);
+int m4u_config_port_array(struct m4u_port_array *port_array);
 int m4u_monitor_start(int m4u_id);
 int m4u_monitor_stop(int m4u_id);
 
@@ -57,6 +42,7 @@ struct m4u_client_t *m4u_create_client(void);
 int m4u_destroy_client(struct m4u_client_t *client);
 
 int m4u_dump_reg_for_smi_hang_issue(void);
+int m4u_dump_reg_for_vpu_hang_issue(void);
 int m4u_display_fake_engine_test(unsigned long ulFakeReadAddr,
 				 unsigned long ulFakeWriteAddr);
 

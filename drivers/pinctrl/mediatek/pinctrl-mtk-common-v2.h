@@ -18,29 +18,28 @@
 #define MTK_PULLDOWN   0
 #define MTK_PULLUP     1
 
-#define EINT_NA        U16_MAX
-#define NO_EINT_SUPPORT EINT_NA
-#define EINT_NO_GPIO   9999
+#define EINT_NA	U16_MAX
+#define NO_EINT_SUPPORT	EINT_NA
 
 #define PIN_FIELD_CALC(_s_pin, _e_pin, _i_base, _s_addr, _x_addrs,      \
-		       _s_bit, _x_bits, _sz_reg, _fixed) {              \
-		.s_pin = _s_pin,                                        \
-		.e_pin = _e_pin,                                        \
-		.i_base = _i_base,                                      \
-		.s_addr = _s_addr,                                      \
-		.x_addrs = _x_addrs,                                    \
-		.s_bit = _s_bit,                                        \
-		.x_bits = _x_bits,                                      \
-		.sz_reg = _sz_reg,                                      \
-		.fixed = _fixed,                                        \
+		       _s_bit, _x_bits, _sz_reg, _fixed) {		\
+		.s_pin = _s_pin,					\
+		.e_pin = _e_pin,					\
+		.i_base = _i_base,					\
+		.s_addr = _s_addr,					\
+		.x_addrs = _x_addrs,					\
+		.s_bit = _s_bit,					\
+		.x_bits = _x_bits,					\
+		.sz_reg = _sz_reg,					\
+		.fixed = _fixed,					\
 	}
 
-#define PIN_FIELD(_s_pin, _e_pin, _s_addr, _x_addrs, _s_bit, _x_bits)   \
-	PIN_FIELD_CALC(_s_pin, _e_pin, 0, _s_addr, _x_addrs, _s_bit,    \
+#define PIN_FIELD(_s_pin, _e_pin, _s_addr, _x_addrs, _s_bit, _x_bits)	\
+	PIN_FIELD_CALC(_s_pin, _e_pin, 0, _s_addr, _x_addrs, _s_bit,	\
 		       _x_bits, 32, 0)
 
-#define PINS_FIELD(_s_pin, _e_pin, _s_addr, _x_addrs, _s_bit, _x_bits)  \
-	PIN_FIELD_CALC(_s_pin, _e_pin, 0, _s_addr, _x_addrs, _s_bit,    \
+#define PINS_FIELD(_s_pin, _e_pin, _s_addr, _x_addrs, _s_bit, _x_bits)	\
+	PIN_FIELD_CALC(_s_pin, _e_pin, 0, _s_addr, _x_addrs, _s_bit,	\
 		       _x_bits, 32, 1)
 
 /* List these attributes which could be modified for the pin */
@@ -87,12 +86,12 @@ static const char * const mtk_default_register_base_names[] = {
 };
 
 /* struct mtk_pin_field - the structure that holds the information of the field
- *                        used to describe the attribute for the pin
- * @base:               the index pointing to the entry in base address list
- * @offset:             the register offset relative to the base address
- * @mask:               the mask used to filter out the field from the register
- * @bitpos:             the start bit relative to the register
- * @next:               the indication that the field would be extended to the
+ *			  used to describe the attribute for the pin
+ * @base:		the index pointing to the entry in base address list
+ * @offset:		the register offset relative to the base address
+ * @mask:		the mask used to filter out the field from the register
+ * @bitpos:		the start bit relative to the register
+ * @next:		the indication that the field would be extended to the
 			next register
  */
 struct mtk_pin_field {
@@ -104,19 +103,19 @@ struct mtk_pin_field {
 };
 
 /* struct mtk_pin_field_calc - the structure that holds the range providing
- *                             the guide used to look up the relevant field
- * @s_pin:              the start pin within the range
- * @e_pin:              the end pin within the range
- * @i_base:             the index pointing to the entry in base address list
- * @s_addr:             the start address for the range
- * @x_addrs:            the address distance between two consecutive registers
- *                      within the range
- * @s_bit:              the start bit for the first register within the range
- * @x_bits:             the bit distance between two consecutive pins within
- *                      the range
- * @sz_reg:             the size of bits in a register
- * @fixed:              the consecutive pins share the same bits with the 1st
- *                      pin
+ *			       the guide used to look up the relevant field
+ * @s_pin:		the start pin within the range
+ * @e_pin:		the end pin within the range
+ * @i_base:		the index pointing to the entry in base address list
+ * @s_addr:		the start address for the range
+ * @x_addrs:		the address distance between two consecutive registers
+ *			within the range
+ * @s_bit:		the start bit for the first register within the range
+ * @x_bits:		the bit distance between two consecutive pins within
+ *			the range
+ * @sz_reg:		the size of bits in a register
+ * @fixed:		the consecutive pins share the same bits with the 1st
+ *			pin
  */
 struct mtk_pin_field_calc {
 	u16 s_pin;
@@ -131,10 +130,10 @@ struct mtk_pin_field_calc {
 };
 
 /* struct mtk_pin_reg_calc - the structure that holds all ranges used to
- *                           determine which register the pin would make use of
- *                           for certain pin attribute.
- * @range:                   the start address for the range
- * @nranges:                 the number of items in the range
+ *			     determine which register the pin would make use of
+ *			     for certain pin attribute.
+ * @range:		     the start address for the range
+ * @nranges:		     the number of items in the range
  */
 struct mtk_pin_reg_calc {
 	const struct mtk_pin_field_calc *range;
@@ -143,9 +142,9 @@ struct mtk_pin_reg_calc {
 
 /**
  * struct mtk_func_desc - the structure that providing information
- *                        all the funcs for this pin
- * @name:               the name of function
- * @muxval:             the mux to the function
+ *			  all the funcs for this pin
+ * @name:		the name of function
+ * @muxval:		the mux to the function
  */
 struct mtk_func_desc {
 	const char *name;
@@ -154,9 +153,9 @@ struct mtk_func_desc {
 
 /**
  * struct mtk_eint_desc - the structure that providing information
- *                             for eint data per pin
- * @eint_m:             the eint mux for this pin
- * @eitn_n:             the eint number for this pin
+ *			       for eint data per pin
+ * @eint_m:		the eint mux for this pin
+ * @eitn_n:		the eint number for this pin
  */
 struct mtk_eint_desc {
 	u16 eint_m;
@@ -176,14 +175,14 @@ struct mtk_eh_pin_pinmux {
 
 /**
  * struct mtk_pin_desc - the structure that providing information
- *                             for each pin of chips
- * @number:             unique pin number from the global pin number space
- * @name:               name for this pin
- * @eint:               the eint data for this pin
- * @drv_n:              the index with the driving group
- * @funcs:              all available functions for this pins (only used in
- *                      those drivers compatible to pinctrl-mtk-common.c-like
- *                      ones)
+ *			       for each pin of chips
+ * @number:		unique pin number from the global pin number space
+ * @name:		name for this pin
+ * @eint:		the eint data for this pin
+ * @drv_n:		the index with the driving group
+ * @funcs:		all available functions for this pins (only used in
+ *			those drivers compatible to pinctrl-mtk-common.c-like
+ *			ones)
  */
 struct mtk_pin_desc {
 	unsigned int number;
@@ -194,28 +193,28 @@ struct mtk_pin_desc {
 };
 
 struct mtk_pinctrl_group {
-	const char      *name;
-	unsigned long   config;
-	unsigned int    pin;
+	const char	*name;
+	unsigned long	config;
+	unsigned	pin;
 };
 
 struct mtk_pinctrl;
 
 /* struct mtk_pin_soc - the structure that holds SoC-specific data */
 struct mtk_pin_soc {
-	const struct mtk_pin_reg_calc   *reg_cal;
-	const struct mtk_pin_desc       *pins;
-	unsigned int                    npins;
-	const struct group_desc         *grps;
-	unsigned int                    ngrps;
-	const struct function_desc      *funcs;
-	unsigned int                    nfuncs;
-	const struct mtk_eint_regs      *eint_regs;
-	const struct mtk_eint_hw        *eint_hw;
+	const struct mtk_pin_reg_calc	*reg_cal;
+	const struct mtk_pin_desc	*pins;
+	unsigned int			npins;
+	const struct group_desc		*grps;
+	unsigned int			ngrps;
+	const struct function_desc	*funcs;
+	unsigned int			nfuncs;
+	const struct mtk_eint_regs	*eint_regs;
+	const struct mtk_eint_hw	*eint_hw;
 
 	/* Specific parameters per SoC */
-	u8                              gpio_m;
-	bool                            ies_present;
+	u8				gpio_m;
+	bool				ies_present;
 	bool                            race_free_access;
 	const char * const              *base_names;
 	unsigned int                    nbase_names;
@@ -230,6 +229,11 @@ struct mtk_pin_soc {
 			const struct mtk_pin_desc *desc, bool pullup);
 	int (*bias_get)(struct mtk_pinctrl *hw,
 			const struct mtk_pin_desc *desc, bool pullup, int *res);
+
+	int (*bias_set_combo)(struct mtk_pinctrl *hw,
+			const struct mtk_pin_desc *desc, u32 pullup, u32 arg);
+	int (*bias_get_combo)(struct mtk_pinctrl *hw,
+			const struct mtk_pin_desc *desc, u32 *pullup, u32 *arg);
 
 	int (*drive_set)(struct mtk_pinctrl *hw,
 			 const struct mtk_pin_desc *desc, u32 arg);
@@ -247,25 +251,20 @@ struct mtk_pin_soc {
 	int (*adv_drive_get)(struct mtk_pinctrl *hw,
 			     const struct mtk_pin_desc *desc, u32 *val);
 
-	int (*bias_set_combo)(struct mtk_pinctrl *hw,
-			const struct mtk_pin_desc *desc, u32 pullup, u32 arg);
-	int (*bias_get_combo)(struct mtk_pinctrl *hw,
-			const struct mtk_pin_desc *desc, u32 *pullup, u32 *arg);
-
 	/* Specific driver data */
-	void                            *driver_data;
+	void				*driver_data;
 };
 
 struct mtk_pinctrl {
-	struct pinctrl_dev              *pctrl;
-	void __iomem                    **base;
-	u8                              nbase;
-	struct device                   *dev;
-	struct gpio_chip                chip;
+	struct pinctrl_dev		*pctrl;
+	void __iomem			**base;
+	u8				nbase;
+	struct device			*dev;
+	struct gpio_chip		chip;
 	const struct mtk_pin_soc        *soc;
-	struct mtk_eint                 *eint;
-	struct mtk_pinctrl_group        *groups;
-	const char                      **grp_names;
+	struct mtk_eint			*eint;
+	struct mtk_pinctrl_group	*groups;
+	const char          **grp_names;
 };
 
 void mtk_rmw(struct mtk_pinctrl *pctl, u8 i, u32 reg, u32 mask, u32 set);
@@ -313,9 +312,9 @@ int mtk_pinconf_drive_set_rev1(struct mtk_pinctrl *hw,
 int mtk_pinconf_drive_get_rev1(struct mtk_pinctrl *hw,
 			       const struct mtk_pin_desc *desc, int *val);
 
-int mtk_pinconf_drive_set_direct_val(struct mtk_pinctrl *hw,
+int mtk_pinconf_drive_set_raw(struct mtk_pinctrl *hw,
 			       const struct mtk_pin_desc *desc, u32 arg);
-int mtk_pinconf_drive_get_direct_val(struct mtk_pinctrl *hw,
+int mtk_pinconf_drive_get_raw(struct mtk_pinctrl *hw,
 			       const struct mtk_pin_desc *desc, int *val);
 
 int mtk_pinconf_adv_pull_set(struct mtk_pinctrl *hw,
@@ -337,4 +336,5 @@ int mtk_pinconf_bias_get_combo(struct mtk_pinctrl *hw,
 			      const struct mtk_pin_desc *desc,
 			      u32 *pullup, u32 *enable);
 
+bool mtk_is_virt_gpio(struct mtk_pinctrl *hw, unsigned int gpio_n);
 #endif /* __PINCTRL_MTK_COMMON_V2_H */

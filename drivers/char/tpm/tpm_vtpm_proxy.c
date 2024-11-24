@@ -173,22 +173,22 @@ static ssize_t vtpm_proxy_fops_write(struct file *filp, const char __user *buf,
  *
  * Return: Poll flags
  */
-static unsigned int vtpm_proxy_fops_poll(struct file *filp, poll_table *wait)
+static __poll_t vtpm_proxy_fops_poll(struct file *filp, poll_table *wait)
 {
 	struct proxy_dev *proxy_dev = filp->private_data;
-	unsigned ret;
+	__poll_t ret;
 
 	poll_wait(filp, &proxy_dev->wq, wait);
 
-	ret = POLLOUT;
+	ret = EPOLLOUT;
 
 	mutex_lock(&proxy_dev->buf_lock);
 
 	if (proxy_dev->req_len)
-		ret |= POLLIN | POLLRDNORM;
+		ret |= EPOLLIN | EPOLLRDNORM;
 
 	if (!(proxy_dev->state & STATE_OPENED_FLAG))
-		ret |= POLLHUP;
+		ret |= EPOLLHUP;
 
 	mutex_unlock(&proxy_dev->buf_lock);
 
@@ -417,7 +417,7 @@ static int vtpm_proxy_request_locality(struct tpm_chip *chip, int locality)
 	proxy_dev->state |= STATE_DRIVER_COMMAND;
 
 	rc = tpm_transmit_cmd(chip, NULL, buf.data, tpm_buf_length(&buf), 0,
-			      TPM_TRANSMIT_UNLOCKED | TPM_TRANSMIT_RAW,
+			      TPM_TRANSMIT_NESTED,
 			      "attempting to set locality");
 
 	proxy_dev->state &= ~STATE_DRIVER_COMMAND;
@@ -700,37 +700,21 @@ static struct miscdevice vtpmx_miscdev = {
 	.fops = &vtpmx_fops,
 };
 
-static int vtpmx_init(void)
-{
-	return misc_register(&vtpmx_miscdev);
-}
-
-static void vtpmx_cleanup(void)
-{
-	misc_deregister(&vtpmx_miscdev);
-}
-
 static int __init vtpm_module_init(void)
 {
 	int rc;
 
-	rc = vtpmx_init();
-	if (rc) {
-		pr_err("couldn't create vtpmx device\n");
-		return rc;
-	}
-
 	workqueue = create_workqueue("tpm-vtpm");
 	if (!workqueue) {
 		pr_err("couldn't create workqueue\n");
-		rc = -ENOMEM;
-		goto err_vtpmx_cleanup;
+		return -ENOMEM;
 	}
 
-	return 0;
-
-err_vtpmx_cleanup:
-	vtpmx_cleanup();
+	rc = misc_register(&vtpmx_miscdev);
+	if (rc) {
+		pr_err("couldn't create vtpmx device\n");
+		destroy_workqueue(workqueue);
+	}
 
 	return rc;
 }
@@ -738,7 +722,7 @@ err_vtpmx_cleanup:
 static void __exit vtpm_module_exit(void)
 {
 	destroy_workqueue(workqueue);
-	vtpmx_cleanup();
+	misc_deregister(&vtpmx_miscdev);
 }
 
 module_init(vtpm_module_init);

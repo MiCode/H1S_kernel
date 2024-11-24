@@ -69,7 +69,7 @@ static int space_init(struct entry_space *es, unsigned nr_entries)
 		return 0;
 	}
 
-	es->begin = vzalloc(sizeof(struct entry) * nr_entries);
+	es->begin = vzalloc(array_size(nr_entries, sizeof(struct entry)));
 	if (!es->begin)
 		return -ENOMEM;
 
@@ -211,6 +211,19 @@ static void l_del(struct entry_space *es, struct ilist *l, struct entry *e)
 
 	if (!e->sentinel)
 		l->nr_elts--;
+}
+
+static struct entry *l_pop_head(struct entry_space *es, struct ilist *l)
+{
+	struct entry *e;
+
+	for (e = l_head(es, l); e; e = l_next(es, e))
+		if (!e->sentinel) {
+			l_del(es, l, e);
+			return e;
+		}
+
+	return NULL;
 }
 
 static struct entry *l_pop_tail(struct entry_space *es, struct ilist *l)
@@ -575,7 +588,7 @@ static int h_init(struct smq_hash_table *ht, struct entry_space *es, unsigned nr
 	nr_buckets = roundup_pow_of_two(max(nr_entries / 4u, 16u));
 	ht->hash_bits = __ffs(nr_buckets);
 
-	ht->buckets = vmalloc(sizeof(*ht->buckets) * nr_buckets);
+	ht->buckets = vmalloc(array_size(nr_buckets, sizeof(*ht->buckets)));
 	if (!ht->buckets)
 		return -ENOMEM;
 
@@ -719,7 +732,7 @@ static struct entry *alloc_entry(struct entry_alloc *ea)
 	if (l_empty(&ea->free))
 		return NULL;
 
-	e = l_pop_tail(ea->es, &ea->free);
+	e = l_pop_head(ea->es, &ea->free);
 	init_entry(e);
 	ea->nr_allocated++;
 
@@ -841,7 +854,13 @@ struct smq_policy {
 
 	struct background_tracker *bg_work;
 
-	bool migrations_allowed;
+	bool migrations_allowed:1;
+
+	/*
+	 * If this is set the policy will try and clean the whole cache
+	 * even if the device is not idle.
+	 */
+	bool cleaner:1;
 };
 
 /*----------------------------------------------------------------*/
@@ -1120,7 +1139,7 @@ static bool clean_target_met(struct smq_policy *mq, bool idle)
 	 * Cache entries may not be populated.  So we cannot rely on the
 	 * size of the clean queue.
 	 */
-	if (idle) {
+	if (idle || mq->cleaner) {
 		/*
 		 * We'd like to clean everything.
 		 */
@@ -1158,13 +1177,13 @@ static void clear_pending(struct smq_policy *mq, struct entry *e)
 	e->pending_work = false;
 }
 
-static void queue_writeback(struct smq_policy *mq)
+static void queue_writeback(struct smq_policy *mq, bool idle)
 {
 	int r;
 	struct policy_work work;
 	struct entry *e;
 
-	e = q_peek(&mq->dirty, mq->dirty.nr_levels, !mq->migrations_allowed);
+	e = q_peek(&mq->dirty, mq->dirty.nr_levels, idle);
 	if (e) {
 		mark_pending(mq, e);
 		q_del(&mq->dirty, e);
@@ -1174,12 +1193,16 @@ static void queue_writeback(struct smq_policy *mq)
 		work.cblock = infer_cblock(mq, e);
 
 		r = btracker_queue(mq->bg_work, &work, NULL);
-		WARN_ON_ONCE(r); // FIXME: finish, I think we have to get rid of this race.
+		if (r) {
+			clear_pending(mq, e);
+			q_push_front(&mq->dirty, e);
+		}
 	}
 }
 
 static void queue_demotion(struct smq_policy *mq)
 {
+	int r;
 	struct policy_work work;
 	struct entry *e;
 
@@ -1189,7 +1212,7 @@ static void queue_demotion(struct smq_policy *mq)
 	e = q_peek(&mq->clean, mq->clean.nr_levels / 2, true);
 	if (!e) {
 		if (!clean_target_met(mq, true))
-			queue_writeback(mq);
+			queue_writeback(mq, false);
 		return;
 	}
 
@@ -1199,12 +1222,17 @@ static void queue_demotion(struct smq_policy *mq)
 	work.op = POLICY_DEMOTE;
 	work.oblock = e->oblock;
 	work.cblock = infer_cblock(mq, e);
-	btracker_queue(mq->bg_work, &work, NULL);
+	r = btracker_queue(mq->bg_work, &work, NULL);
+	if (r) {
+		clear_pending(mq, e);
+		q_push_front(&mq->clean, e);
+	}
 }
 
 static void queue_promotion(struct smq_policy *mq, dm_oblock_t oblock,
 			    struct policy_work **workp)
 {
+	int r;
 	struct entry *e;
 	struct policy_work work;
 
@@ -1234,7 +1262,9 @@ static void queue_promotion(struct smq_policy *mq, dm_oblock_t oblock,
 	work.op = POLICY_PROMOTE;
 	work.oblock = oblock;
 	work.cblock = infer_cblock(mq, e);
-	btracker_queue(mq->bg_work, &work, workp);
+	r = btracker_queue(mq->bg_work, &work, workp);
+	if (r)
+		free_entry(&mq->cache_alloc, e);
 }
 
 /*----------------------------------------------------------------*/
@@ -1418,7 +1448,7 @@ static int smq_get_background_work(struct dm_cache_policy *p, bool idle,
 	r = btracker_issue(mq->bg_work, result);
 	if (r == -ENODATA) {
 		if (!clean_target_met(mq, idle)) {
-			queue_writeback(mq);
+			queue_writeback(mq, idle);
 			r = btracker_issue(mq->bg_work, result);
 		}
 	}
@@ -1692,11 +1722,9 @@ static void calc_hotspot_params(sector_t origin_size,
 		*hotspot_block_size /= 2u;
 }
 
-static struct dm_cache_policy *__smq_create(dm_cblock_t cache_size,
-					    sector_t origin_size,
-					    sector_t cache_block_size,
-					    bool mimic_mq,
-					    bool migrations_allowed)
+static struct dm_cache_policy *
+__smq_create(dm_cblock_t cache_size, sector_t origin_size, sector_t cache_block_size,
+	     bool mimic_mq, bool migrations_allowed, bool cleaner)
 {
 	unsigned i;
 	unsigned nr_sentinels_per_queue = 2u * NR_CACHE_LEVELS;
@@ -1778,11 +1806,12 @@ static struct dm_cache_policy *__smq_create(dm_cblock_t cache_size,
 	mq->next_hotspot_period = jiffies;
 	mq->next_cache_period = jiffies;
 
-	mq->bg_work = btracker_create(10240); /* FIXME: hard coded value */
+	mq->bg_work = btracker_create(4096); /* FIXME: hard coded value */
 	if (!mq->bg_work)
 		goto bad_btracker;
 
 	mq->migrations_allowed = migrations_allowed;
+	mq->cleaner = cleaner;
 
 	return &mq->policy;
 
@@ -1806,21 +1835,24 @@ static struct dm_cache_policy *smq_create(dm_cblock_t cache_size,
 					  sector_t origin_size,
 					  sector_t cache_block_size)
 {
-	return __smq_create(cache_size, origin_size, cache_block_size, false, true);
+	return __smq_create(cache_size, origin_size, cache_block_size,
+			    false, true, false);
 }
 
 static struct dm_cache_policy *mq_create(dm_cblock_t cache_size,
 					 sector_t origin_size,
 					 sector_t cache_block_size)
 {
-	return __smq_create(cache_size, origin_size, cache_block_size, true, true);
+	return __smq_create(cache_size, origin_size, cache_block_size,
+			    true, true, false);
 }
 
 static struct dm_cache_policy *cleaner_create(dm_cblock_t cache_size,
 					      sector_t origin_size,
 					      sector_t cache_block_size)
 {
-	return __smq_create(cache_size, origin_size, cache_block_size, false, false);
+	return __smq_create(cache_size, origin_size, cache_block_size,
+			    false, false, true);
 }
 
 /*----------------------------------------------------------------*/

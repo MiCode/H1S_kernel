@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  bus driver for ccwgroup
  *
@@ -322,8 +323,10 @@ int ccwgroup_create_dev(struct device *parent, struct ccwgroup_driver *gdrv,
 	struct ccw_dev_id dev_id;
 	int rc, i;
 
-	gdev = kzalloc(sizeof(*gdev) + num_devices * sizeof(gdev->cdev[0]),
-		       GFP_KERNEL);
+	if (num_devices < 1)
+		return -EINVAL;
+
+	gdev = kzalloc(struct_size(gdev, cdev, num_devices), GFP_KERNEL);
 	if (!gdev)
 		return -ENOMEM;
 
@@ -370,6 +373,12 @@ int ccwgroup_create_dev(struct device *parent, struct ccwgroup_driver *gdrv,
 	}
 	/* Check for trailing stuff. */
 	if (i == num_devices && buf && strlen(buf) > 0) {
+		rc = -EINVAL;
+		goto error;
+	}
+	/* Check if the devices are bound to the required ccw driver. */
+	if (gdrv && gdrv->ccw_driver &&
+	    gdev->cdev[0]->drv != gdrv->ccw_driver) {
 		rc = -EINVAL;
 		goto error;
 	}
@@ -550,6 +559,12 @@ static struct bus_type ccwgroup_bus_type = {
 	.shutdown = ccwgroup_shutdown,
 	.pm = &ccwgroup_pm_ops,
 };
+
+bool dev_is_ccwgroup(struct device *dev)
+{
+	return dev->bus == &ccwgroup_bus_type;
+}
+EXPORT_SYMBOL(dev_is_ccwgroup);
 
 /**
  * ccwgroup_driver_register() - register a ccw group driver

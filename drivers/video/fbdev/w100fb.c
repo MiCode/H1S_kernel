@@ -110,7 +110,7 @@ static ssize_t flip_store(struct device *dev, struct device_attribute *attr, con
 	return count;
 }
 
-static DEVICE_ATTR(flip, 0644, flip_show, flip_store);
+static DEVICE_ATTR_RW(flip);
 
 static ssize_t w100fb_reg_read(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
@@ -166,7 +166,7 @@ static ssize_t fastpllclk_store(struct device *dev, struct device_attribute *att
 	return count;
 }
 
-static DEVICE_ATTR(fastpllclk, 0644, fastpllclk_show, fastpllclk_store);
+static DEVICE_ATTR_RW(fastpllclk);
 
 /*
  * Some touchscreens need hsync information from the video driver to
@@ -695,7 +695,8 @@ int w100fb_probe(struct platform_device *pdev)
 		goto out;
 	}
 
-	info->pseudo_palette = kmalloc(sizeof (u32) * MAX_PALETTES, GFP_KERNEL);
+	info->pseudo_palette = kmalloc_array(MAX_PALETTES, sizeof(u32),
+					     GFP_KERNEL);
 	if (!info->pseudo_palette) {
 		err = -ENOMEM;
 		goto out;
@@ -772,12 +773,18 @@ out:
 		fb_dealloc_cmap(&info->cmap);
 		kfree(info->pseudo_palette);
 	}
-	if (remapped_fbuf != NULL)
+	if (remapped_fbuf != NULL) {
 		iounmap(remapped_fbuf);
-	if (remapped_regs != NULL)
+		remapped_fbuf = NULL;
+	}
+	if (remapped_regs != NULL) {
 		iounmap(remapped_regs);
-	if (remapped_base != NULL)
+		remapped_regs = NULL;
+	}
+	if (remapped_base != NULL) {
 		iounmap(remapped_base);
+		remapped_base = NULL;
+	}
 	if (info)
 		framebuffer_release(info);
 	return err;
@@ -802,8 +809,11 @@ static int w100fb_remove(struct platform_device *pdev)
 	fb_dealloc_cmap(&info->cmap);
 
 	iounmap(remapped_base);
+	remapped_base = NULL;
 	iounmap(remapped_regs);
+	remapped_regs = NULL;
 	iounmap(remapped_fbuf);
+	remapped_fbuf = NULL;
 
 	framebuffer_release(info);
 

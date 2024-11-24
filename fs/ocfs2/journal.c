@@ -989,7 +989,7 @@ void ocfs2_journal_shutdown(struct ocfs2_super *osb)
 	if (!igrab(inode))
 		BUG();
 
-	num_running_trans = atomic_read(&(osb->journal->j_num_trans));
+	num_running_trans = atomic_read(&(journal->j_num_trans));
 	trace_ocfs2_journal_shutdown(num_running_trans);
 
 	/* Do a commit_cache here. It will flush our journal, *and*
@@ -1008,9 +1008,10 @@ void ocfs2_journal_shutdown(struct ocfs2_super *osb)
 		osb->commit_task = NULL;
 	}
 
-	BUG_ON(atomic_read(&(osb->journal->j_num_trans)) != 0);
+	BUG_ON(atomic_read(&(journal->j_num_trans)) != 0);
 
-	if (ocfs2_mount_local(osb)) {
+	if (ocfs2_mount_local(osb) &&
+	    (journal->j_journal->j_flags & JBD2_LOADED)) {
 		jbd2_journal_lock_updates(journal->j_journal);
 		status = jbd2_journal_flush(journal->j_journal);
 		jbd2_journal_unlock_updates(journal->j_journal);
@@ -1385,15 +1386,23 @@ static int __ocfs2_recovery_thread(void *arg)
 	int rm_quota_used = 0, i;
 	struct ocfs2_quota_recovery *qrec;
 
+	/* Whether the quota supported. */
+	int quota_enabled = OCFS2_HAS_RO_COMPAT_FEATURE(osb->sb,
+			OCFS2_FEATURE_RO_COMPAT_USRQUOTA)
+		|| OCFS2_HAS_RO_COMPAT_FEATURE(osb->sb,
+			OCFS2_FEATURE_RO_COMPAT_GRPQUOTA);
+
 	status = ocfs2_wait_on_mount(osb);
 	if (status < 0) {
 		goto bail;
 	}
 
-	rm_quota = kzalloc(osb->max_slots * sizeof(int), GFP_NOFS);
-	if (!rm_quota) {
-		status = -ENOMEM;
-		goto bail;
+	if (quota_enabled) {
+		rm_quota = kcalloc(osb->max_slots, sizeof(int), GFP_NOFS);
+		if (!rm_quota) {
+			status = -ENOMEM;
+			goto bail;
+		}
 	}
 restart:
 	status = ocfs2_super_lock(osb, 1);
@@ -1429,9 +1438,14 @@ restart:
 		 * then quota usage would be out of sync until some node takes
 		 * the slot. So we remember which nodes need quota recovery
 		 * and when everything else is done, we recover quotas. */
-		for (i = 0; i < rm_quota_used && rm_quota[i] != slot_num; i++);
-		if (i == rm_quota_used)
-			rm_quota[rm_quota_used++] = slot_num;
+		if (quota_enabled) {
+			for (i = 0; i < rm_quota_used
+					&& rm_quota[i] != slot_num; i++)
+				;
+
+			if (i == rm_quota_used)
+				rm_quota[rm_quota_used++] = slot_num;
+		}
 
 		status = ocfs2_recover_node(osb, node_num, slot_num);
 skip_recovery:
@@ -1459,16 +1473,19 @@ skip_recovery:
 	/* Now it is right time to recover quotas... We have to do this under
 	 * superblock lock so that no one can start using the slot (and crash)
 	 * before we recover it */
-	for (i = 0; i < rm_quota_used; i++) {
-		qrec = ocfs2_begin_quota_recovery(osb, rm_quota[i]);
-		if (IS_ERR(qrec)) {
-			status = PTR_ERR(qrec);
-			mlog_errno(status);
-			continue;
+	if (quota_enabled) {
+		for (i = 0; i < rm_quota_used; i++) {
+			qrec = ocfs2_begin_quota_recovery(osb, rm_quota[i]);
+			if (IS_ERR(qrec)) {
+				status = PTR_ERR(qrec);
+				mlog_errno(status);
+				continue;
+			}
+			ocfs2_queue_recovery_completion(osb->journal,
+					rm_quota[i],
+					NULL, NULL, qrec,
+					ORPHAN_NEED_TRUNCATE);
 		}
-		ocfs2_queue_recovery_completion(osb->journal, rm_quota[i],
-						NULL, NULL, qrec,
-						ORPHAN_NEED_TRUNCATE);
 	}
 
 	ocfs2_super_unlock(osb, 1);
@@ -1490,7 +1507,8 @@ bail:
 
 	mutex_unlock(&osb->recovery_lock);
 
-	kfree(rm_quota);
+	if (quota_enabled)
+		kfree(rm_quota);
 
 	/* no one is callint kthread_stop() for us so the kthread() api
 	 * requires that we call do_exit().  And it isn't exported, but

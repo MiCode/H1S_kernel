@@ -189,7 +189,7 @@ struct csis_drvdata {
  * @irq: requested s5p-mipi-csis irq number
  * @interrupt_mask: interrupt mask of the all used interrupts
  * @flags: the state variable for power and streaming control
- * @clock_frequency: device bus clock frequency
+ * @clk_frequency: device bus clock frequency
  * @hs_settle: HS-RX settle time
  * @num_lanes: number of MIPI-CSI data lanes used
  * @max_num_lanes: maximum number of MIPI-CSI data lanes supported
@@ -513,8 +513,10 @@ static int s5pcsis_s_stream(struct v4l2_subdev *sd, int enable)
 	if (enable) {
 		s5pcsis_clear_counters(state);
 		ret = pm_runtime_get_sync(&state->pdev->dev);
-		if (ret && ret != 1)
+		if (ret && ret != 1) {
+			pm_runtime_put_noidle(&state->pdev->dev);
 			return ret;
+		}
 	}
 
 	mutex_lock(&state->lock);
@@ -891,8 +893,7 @@ e_clkput:
 
 static int s5pcsis_pm_suspend(struct device *dev, bool runtime)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct v4l2_subdev *sd = platform_get_drvdata(pdev);
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct csis_state *state = sd_to_csis_state(sd);
 	int ret = 0;
 
@@ -921,8 +922,7 @@ static int s5pcsis_pm_suspend(struct device *dev, bool runtime)
 
 static int s5pcsis_pm_resume(struct device *dev, bool runtime)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	struct v4l2_subdev *sd = platform_get_drvdata(pdev);
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct csis_state *state = sd_to_csis_state(sd);
 	int ret = 0;
 

@@ -1,4 +1,4 @@
-/**
+/*
  * Driver for Infineon tua6100 pll.
  *
  * (c) 2006 Andrew de Quincey
@@ -155,9 +155,9 @@ static int tua6100_get_frequency(struct dvb_frontend *fe, u32 *frequency)
 static const struct dvb_tuner_ops tua6100_tuner_ops = {
 	.info = {
 		.name = "Infineon TUA6100",
-		.frequency_min = 950000,
-		.frequency_max = 2150000,
-		.frequency_step = 1000,
+		.frequency_min_hz  =  950 * MHz,
+		.frequency_max_hz  = 2150 * MHz,
+		.frequency_step_hz =    1 * MHz,
 	},
 	.release = tua6100_release,
 	.sleep = tua6100_sleep,
@@ -194,7 +194,7 @@ struct dvb_frontend *tua6100_attach(struct dvb_frontend *fe, int addr, struct i2
 	fe->tuner_priv = priv;
 	return fe;
 }
-EXPORT_SYMBOL(tua6100_attach);
+EXPORT_SYMBOL_GPL(tua6100_attach);
 
 MODULE_DESCRIPTION("DVB tua6100 driver");
 MODULE_AUTHOR("Andrew de Quincey");

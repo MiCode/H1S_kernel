@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Cryptographic API.
  *
@@ -7,11 +8,6 @@
  *   Copyright IBM Corp. 2017
  *   Author(s): Martin Schwidefsky <schwidefsky@de.ibm.com>
  *		Harald Freudenberger <freude@de.ibm.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License (version 2 only)
- * as published by the Free Software Foundation.
- *
  */
 
 #define KMSG_COMPONENT "paes_s390"
@@ -142,7 +138,7 @@ static int ecb_paes_decrypt(struct blkcipher_desc *desc,
 static struct crypto_alg ecb_paes_alg = {
 	.cra_name		=	"ecb(paes)",
 	.cra_driver_name	=	"ecb-paes-s390",
-	.cra_priority		=	400,	/* combo: aes + ecb */
+	.cra_priority		=	401,	/* combo: aes + ecb + 1 */
 	.cra_flags		=	CRYPTO_ALG_TYPE_BLKCIPHER,
 	.cra_blocksize		=	AES_BLOCK_SIZE,
 	.cra_ctxsize		=	sizeof(struct s390_paes_ctx),
@@ -245,7 +241,7 @@ static int cbc_paes_decrypt(struct blkcipher_desc *desc,
 static struct crypto_alg cbc_paes_alg = {
 	.cra_name		=	"cbc(paes)",
 	.cra_driver_name	=	"cbc-paes-s390",
-	.cra_priority		=	400,	/* combo: aes + cbc */
+	.cra_priority		=	402,	/* ecb-paes-s390 + 1 */
 	.cra_flags		=	CRYPTO_ALG_TYPE_BLKCIPHER,
 	.cra_blocksize		=	AES_BLOCK_SIZE,
 	.cra_ctxsize		=	sizeof(struct s390_paes_ctx),
@@ -381,7 +377,7 @@ static int xts_paes_decrypt(struct blkcipher_desc *desc,
 static struct crypto_alg xts_paes_alg = {
 	.cra_name		=	"xts(paes)",
 	.cra_driver_name	=	"xts-paes-s390",
-	.cra_priority		=	400,	/* combo: aes + xts */
+	.cra_priority		=	402,	/* ecb-paes-s390 + 1 */
 	.cra_flags		=	CRYPTO_ALG_TYPE_BLKCIPHER,
 	.cra_blocksize		=	AES_BLOCK_SIZE,
 	.cra_ctxsize		=	sizeof(struct s390_pxts_ctx),
@@ -527,7 +523,7 @@ static int ctr_paes_decrypt(struct blkcipher_desc *desc,
 static struct crypto_alg ctr_paes_alg = {
 	.cra_name		=	"ctr(paes)",
 	.cra_driver_name	=	"ctr-paes-s390",
-	.cra_priority		=	400,	/* combo: aes + ctr */
+	.cra_priority		=	402,	/* ecb-paes-s390 + 1 */
 	.cra_flags		=	CRYPTO_ALG_TYPE_BLKCIPHER,
 	.cra_blocksize		=	1,
 	.cra_ctxsize		=	sizeof(struct s390_paes_ctx),

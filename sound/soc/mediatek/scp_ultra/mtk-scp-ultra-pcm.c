@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 //
 // Copyright (c) 2018 MediaTek Inc.
-// Copyright (C) 2021 XiaoMi, Inc.
 
 #include <linux/delay.h>
 #include <linux/module.h>
@@ -15,7 +14,6 @@
 #include "mtk-scp-ultra-mem-control.h"
 #include "mtk-scp-ultra-platform-driver.h"
 #include "ultra_ipi.h"
-#include "audio_buf.h"
 
 #define MTK_PCM_RATES (SNDRV_PCM_RATE_8000_48000 |\
 			SNDRV_PCM_RATE_88200 |\
@@ -58,18 +56,21 @@ static int scp_ultra_pcm_dev_probe(struct platform_device *pdev)
 	if (!scp_ultra)
 		return -ENOMEM;
 
-	scp_ultra->ultra_dump.dump_ops =
-			devm_kzalloc(&pdev->dev,
-					sizeof(struct scp_ultra_dump_ops),
-					GFP_KERNEL);
-	if (!scp_ultra->ultra_dump.dump_ops)
-		return -ENOMEM;
-
+	ret = of_property_read_u32(pdev->dev.of_node, "scp_ultra_dl_memif_id",
+				   &scp_ultra->scp_ultra_dl_memif_id);
+	if (ret != 0) {
+		pr_info("%s scp_ultra_dl_memif_id error\n", __func__);
+		return 0;
+	}
+	ret = of_property_read_u32(pdev->dev.of_node, "scp_ultra_ul_memif_id",
+				   &scp_ultra->scp_ultra_ul_memif_id);
+	if (ret != 0) {
+		pr_info("%s scp_ultra_ul_memif_id error\n", __func__);
+		return 0;
+	}
 	/*  register dsp dai driver*/
 	scp_ultra->mtk_scp_hardware = &scp_ultra_hardware;
 	scp_ultra->dev = &pdev->dev;
-	// reset_audio_dma_buf(&scp_ultra->ultra_mem.ultra_dl_dma_buf);
-	// reset_audio_dma_buf(&scp_ultra->ultra_mem.ultra_ul_dma_buf);
 	scp_ultra->ultra_mem.ultra_ul_memif_id = -1;
 	scp_ultra->ultra_mem.ultra_dl_memif_id = -1;
 	scp_ultra->usnd_state = SCP_ULTRA_STATE_OFF;
@@ -85,20 +86,18 @@ static int scp_ultra_pcm_dev_probe(struct platform_device *pdev)
 		pr_debug("%s(), pdev->dev.of_node NULL!!!\n", __func__);
 	}
 
-	ret = snd_soc_register_platform(&pdev->dev,
-			&mtk_scp_ultra_pcm_platform);
+	ret = snd_soc_register_component(&pdev->dev,
+			&mtk_scp_ultra_pcm_platform, NULL, 0);
 	if (ret) {
 		dev_warn(&pdev->dev, "err_platform\n");
 		goto err_platform;
 	}
-
-	set_ipi_recv_private((void *)scp_ultra);
 	set_scp_ultra_base((void *)scp_ultra);
 
 	return 0;
 
 err_platform:
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 
 	return ret;
 }

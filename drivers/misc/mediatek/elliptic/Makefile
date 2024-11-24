@@ -7,7 +7,7 @@ IO_MODULE := mtk
 
 ifeq ($(IO_MODULE), mtk)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/scp/$(MTK_PLATFORM)
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/audio_ipi/common/framework
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/audio_ipi/common_v2/framework
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sensors-1.0/hwmon/include
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sensors-1.0/sensorHub/inc_v1
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sensor/2.0/core

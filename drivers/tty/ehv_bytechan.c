@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /* ePAPR hypervisor byte channel device driver
  *
  * Copyright 2009-2011 Freescale Semiconductor, Inc.
  *
  * Author: Timur Tabi <timur@freescale.com>
- *
- * This file is licensed under the terms of the GNU General Public License
- * version 2.  This program is licensed "as is" without any warranty of any
- * kind, whether express or implied.
  *
  * This driver support three distinct interfaces, all of which are related to
  * ePAPR hypervisor byte channels.
@@ -343,7 +340,7 @@ console_initcall(ehv_bc_console_init);
 /******************************** TTY DRIVER ********************************/
 
 /*
- * byte channel receive interupt handler
+ * byte channel receive interrupt handler
  *
  * This ISR is called whenever data is available on a byte channel.
  */
@@ -443,7 +440,7 @@ static void ehv_bc_tx_dequeue(struct ehv_bc_data *bc)
 }
 
 /*
- * byte channel transmit interupt handler
+ * byte channel transmit interrupt handler
  *
  * This ISR is called whenever space becomes available for transmitting
  * characters on a byte channel.
@@ -772,7 +769,7 @@ static int __init ehv_bc_init(void)
 	 * array, then you can use pointer math (e.g. "bc - bcs") to get its
 	 * tty index.
 	 */
-	bcs = kzalloc(count * sizeof(struct ehv_bc_data), GFP_KERNEL);
+	bcs = kcalloc(count, sizeof(struct ehv_bc_data), GFP_KERNEL);
 	if (!bcs)
 		return -ENOMEM;
 

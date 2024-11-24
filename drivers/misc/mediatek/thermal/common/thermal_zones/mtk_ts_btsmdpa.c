@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2019 MediaTek Inc.
  */
+
 
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -34,9 +26,7 @@
 #include <tmp_bts.h>
 #include <linux/slab.h>
 #if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
-#include <linux/of.h>
 #include <linux/iio/consumer.h>
-#include <linux/iio/iio.h>
 #endif
 /*=============================================================
  *Weak functions
@@ -101,7 +91,7 @@ static int polling_factor2 = 10000;
 #define mtkts_btsmdpa_dprintk(fmt, args...)   \
 do {                                    \
 	if (mtkts_btsmdpa_debug_log) {                \
-		pr_debug("[Thermal/TZ/BTSMDPA]" fmt, ##args); \
+		pr_notice("[Thermal/TZ/BTSMDPA]" fmt, ##args); \
 	}                                   \
 } while (0)
 
@@ -111,7 +101,6 @@ pr_notice("[Thermal/TZ/BTSMDPA]" fmt, ##args)
 
 #if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
 struct iio_channel *thermistor_ch1;
-static int g_ADC_channel;
 #endif
 
 /* #define INPUT_PARAM_FROM_USER_AP */
@@ -266,28 +255,6 @@ static struct BTSMDPA_TEMPERATURE BTSMDPA_Temperature_Table3[] = {
 	{60, 2970}		/* FIX_ME */
 };
 
-#if 0
-/* AP_NTC_10 */
-static struct BTSMDPA_TEMPERATURE BTSMDPA_Temperature_Table4[] = {
-	{-20, 68237},
-	{-15, 53650},
-	{-10, 42506},
-	{-5, 33892},
-	{0, 27219},
-	{5, 22021},
-	{10, 17926},
-	{15, 14674},
-	{20, 12081},
-	{25, 10000},
-	{30, 8315},
-	{35, 6948},
-	{40, 5834},
-	{45, 4917},
-	{50, 4161},
-	{55, 3535},
-	{60, 3014}
-};
-#else
 /* AP_NTC_10(TSM0A103F34D1RZ) */
 static struct BTSMDPA_TEMPERATURE BTSMDPA_Temperature_Table4[] = {
 	{-40, 188500},
@@ -325,7 +292,6 @@ static struct BTSMDPA_TEMPERATURE BTSMDPA_Temperature_Table4[] = {
 	{120, 599},
 	{125, 534}
 };
-#endif
 
 /* AP_NTC_47 */
 static struct BTSMDPA_TEMPERATURE BTSMDPA_Temperature_Table5[] = {
@@ -498,21 +464,30 @@ static struct BTSMDPA_TEMPERATURE BTSMDPA_Temperature_Table7[] = {
 
 
 /* convert register to temperature  */
-static __s16 mtkts_btsmdpa_thermistor_conver_temp(__s32 Res)
+static __s32 mtkts_btsmdpa_thermistor_conver_temp(__s32 Res)
 {
 	int i = 0;
 	int asize = 0;
 	__s32 RES1 = 0, RES2 = 0;
 	__s32 TAP_Value = -200, TMP1 = 0, TMP2 = 0;
 
+#ifdef APPLY_PRECISE_BTS_TEMP
+	TAP_Value = TAP_Value * 1000;
+#endif
 	asize = (ntc_tbl_size / sizeof(struct BTSMDPA_TEMPERATURE));
 	/* mtkts_btsmdpa_dprintk("%s() :
 	 * asize = %d, Res = %d\n", __func__,asize,Res);
 	 */
 	if (Res >= BTSMDPA_Temperature_Table[0].TemperatureR) {
 		TAP_Value = -40;	/* min */
+#ifdef APPLY_PRECISE_BTS_TEMP
+		TAP_Value = TAP_Value * 1000;
+#endif
 	} else if (Res <= BTSMDPA_Temperature_Table[asize - 1].TemperatureR) {
 		TAP_Value = 125;	/* max */
+#ifdef APPLY_PRECISE_BTS_TEMP
+		TAP_Value = TAP_Value * 1000;
+#endif
 	} else {
 		RES1 = BTSMDPA_Temperature_Table[0].TemperatureR;
 		TMP1 = BTSMDPA_Temperature_Table[0].BTSMDPA_Temp;
@@ -539,11 +514,16 @@ static __s16 mtkts_btsmdpa_thermistor_conver_temp(__s32 Res)
 			 */
 		}
 
+#ifdef APPLY_PRECISE_BTS_TEMP
+		TAP_Value = mult_frac((((Res - RES2) * TMP1) +
+			((RES1 - Res) * TMP2)), 1000, (RES1 - RES2));
+#else
 		TAP_Value = (((Res - RES2) * TMP1) + ((RES1 - Res) * TMP2))
 								/ (RES1 - RES2);
+#endif
 	}
 
-#if 0
+
 	mtkts_btsmdpa_dprintk(
 			"%s() : TAP_Value = %d\n", __func__,
 			TAP_Value);
@@ -562,14 +542,14 @@ static __s16 mtkts_btsmdpa_thermistor_conver_temp(__s32 Res)
 	mtkts_btsmdpa_dprintk(
 			"%s() : TMP2 = %d\n", __func__,
 			TMP2);
-#endif
+
 
 	return TAP_Value;
 }
 
 /* convert ADC_AP_temp_volt to register */
 /*Volt to Temp formula same with 6589*/
-static __s16 mtk_ts_btsmdpa_volt_to_temp(__u32 dwVolt)
+static __s32 mtk_ts_btsmdpa_volt_to_temp(__u32 dwVolt)
 {
 	__s32 TRes;
 	__u64 dwVCriAP = 0;
@@ -589,6 +569,16 @@ static __s16 mtk_ts_btsmdpa_volt_to_temp(__u32 dwVolt)
 	do_div(dwVCriAP, dwVCriAP2);
 
 
+#ifdef APPLY_PRECISE_BTS_TEMP
+	if ((dwVolt / 100) > ((__u32)dwVCriAP)) {
+		TRes = g_TAP_over_critical_low;
+	} else {
+		/* TRes = (39000*dwVolt) / (1800-dwVolt); */
+		/* TRes = (RAP_PULL_UP_R*dwVolt) / (RAP_PULL_UP_VOLT-dwVolt); */
+		TRes = ((long long)g_RAP_pull_up_R * dwVolt) /
+					(g_RAP_pull_up_voltage * 100 - dwVolt);
+	}
+#else
 	if (dwVolt > ((__u32)dwVCriAP)) {
 		TRes = g_TAP_over_critical_low;
 	} else {
@@ -598,6 +588,7 @@ static __s16 mtk_ts_btsmdpa_volt_to_temp(__u32 dwVolt)
 		TRes = (g_RAP_pull_up_R * dwVolt)
 				/ (g_RAP_pull_up_voltage - dwVolt);
 	}
+#endif
 	/* ------------------------------------------------------------------ */
 
 	g_btsmdpa_TemperatureR = TRes;
@@ -620,16 +611,23 @@ static int get_hw_btsmdpa_temp(void)
 #endif
 
 #if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
+	if (IS_ERR_OR_NULL(thermistor_ch1)) {
+		mtkts_btsmdpa_dprintk("invalid thermistor_ch1:0x%p\n", thermistor_ch1);
+		return ret;
+	}
 	ret = iio_read_channel_processed(thermistor_ch1, &val);
-	mtkts_btsmdpa_dprintk("get_hw_btsmdpa_temp val=%d\n", val);
+	mtkts_btsmdpa_dprintk("%s val=%d\n", __func__, val);
 
 	if (ret < 0) {
 		mtkts_btsmdpa_printk("IIO channel read failed %d\n", ret);
 		return ret;
 	}
 
-	/*val * 1500 / 4096*/
-	ret = (val * 1500) >> 12;
+#ifdef APPLY_PRECISE_BTS_TEMP
+	ret = val * 100;
+#else
+	ret = val;
+#endif
 #else
 
 #if defined(APPLY_AUXADC_CALI_DATA)
@@ -693,7 +691,11 @@ static int get_hw_btsmdpa_temp(void)
 	/* #define AUXADC_PRECISE      4096 // 12 bits */
 #if defined(APPLY_AUXADC_CALI_DATA)
 #else
+#ifdef APPLY_PRECISE_BTS_TEMP
+	ret = (val * 9375) >>  8;
+#else
 	ret = ret * 1500 / 4096;
+#endif
 #endif
 #endif /*CONFIG_MEDIATEK_MT6577_AUXADC*/
 
@@ -719,7 +721,9 @@ int mtkts_btsmdpa_get_hw_temp(void)
 	/* get HW AP temp (TSAP) */
 	/* cat /sys/class/power_supply/AP/AP_temp */
 	t_ret = get_hw_btsmdpa_temp();
+#ifndef APPLY_PRECISE_BTS_TEMP
 	t_ret = t_ret * 1000;
+#endif
 
 #if MTKTS_BTSMDPA_SW_FILTER
 	if ((t_ret > 100000) || (t_ret < -30000)) {
@@ -1169,22 +1173,6 @@ void mtkts_btsmdpa_prepare_table(int table_num)
 	pr_notice("[Thermal/TZ/BTSMDPA] %s table_num=%d\n",
 						__func__, table_num);
 
-#if 0
-	{
-		int i = 0;
-
-		for (i = 0; i < (ntc_tbl_size
-					/ sizeof(struct BTSMDPA_TEMPERATURE));
-		     i++) {
-			pr_notice(
-				"BTSMDPA_Temperature_Table[%d].APteryTemp =%d\n",
-				i, BTSMDPA_Temperature_Table[i].BTSMDPA_Temp);
-			pr_notice(
-				"BTSMDPA_Temperature_Table[%d].TemperatureR=%d\n",
-				i, BTSMDPA_Temperature_Table[i].TemperatureR);
-		}
-	}
-#endif
 }
 
 static int mtkts_btsmdpa_param_read(struct seq_file *m, void *v)
@@ -1193,11 +1181,8 @@ static int mtkts_btsmdpa_param_read(struct seq_file *m, void *v)
 	seq_printf(m, "%d\n", g_RAP_pull_up_voltage);
 	seq_printf(m, "%d\n", g_TAP_over_critical_low);
 	seq_printf(m, "%d\n", g_RAP_ntc_table);
-#if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
-	seq_printf(m, "%d\n", g_ADC_channel);
-#else
 	seq_printf(m, "%d\n", g_RAP_ADC_channel);
-#endif
+
 	return 0;
 }
 
@@ -1328,30 +1313,6 @@ struct file *file, const char __user *buffer, size_t count, loff_t *data)
  * }
  */
 
-#if 0
-static void mtkts_btsmdpa_cancel_thermal_timer(void)
-{
-	/* cancel timer
-	 * mtkts_btsmdpa_printk("mtkts_btsmdpa_cancel_thermal_timer\n");
-	 *
-	 * stop thermal framework polling when entering deep idle
-	 * if (thz_dev)
-	 *	cancel_delayed_work(&(thz_dev->poll_queue));
-	 */
-}
-
-
-static void mtkts_btsmdpa_start_thermal_timer(void)
-{
-	/* mtkts_btsmdpa_printk("mtkts_btsmdpa_start_thermal_timer\n");
-	 * resume thermal framework polling when leaving deep idle
-	 * if (thz_dev != NULL && interval != 0)
-	 *	mod_delayed_work(system_freezable_power_efficient_wq,
-	 *			&(thz_dev->poll_queue), round_jiffies(
-	 *			msecs_to_jiffies(3000)));
-	 */
-}
-#endif
 
 static int mtkts_btsmdpa_register_thermal(void)
 {
@@ -1415,10 +1376,13 @@ static const struct file_operations mtkts_btsmdpa_param_fops = {
 #if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
 static int mtkts_btsmdpa_probe(struct platform_device *pdev)
 {
+	struct proc_dir_entry *entry = NULL;
+	struct proc_dir_entry *mtkts_btsmdpa_dir = NULL;
 	int err = 0;
 	int ret = 0;
 
 	mtkts_btsmdpa_dprintk("[%s]\n", __func__);
+
 
 	if (!pdev->dev.of_node) {
 		mtkts_btsmdpa_printk("[%s]Only DT based supported\n",
@@ -1439,11 +1403,27 @@ static int mtkts_btsmdpa_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	g_ADC_channel = thermistor_ch1->channel->channel;
-	mtkts_btsmdpa_printk("[%s]get auxadc iio ch: %d\n", __func__,
-		thermistor_ch1->channel->channel);
+	/* setup default table */
+	mtkts_btsmdpa_prepare_table(g_RAP_ntc_table);
 
+	mtkts_btsmdpa_dir = mtk_thermal_get_proc_drv_therm_dir_entry();
+	if (!mtkts_btsmdpa_dir) {
+		mtkts_btsmdpa_dprintk(
+			"[%s]: mkdir /proc/driver/thermal failed\n",
+			__func__);
+	} else {
+		entry = proc_create("tzbtspa", 0664, mtkts_btsmdpa_dir,
+				&mtkts_btsmdpa_fops);
+		if (entry)
+			proc_set_user(entry, uid, gid);
 
+	entry = proc_create("tzbtspa_param", 0664, mtkts_btsmdpa_dir,
+				&mtkts_btsmdpa_param_fops);
+		if (entry)
+			proc_set_user(entry, uid, gid);
+	}
+
+	mtkts_btsmdpa_register_thermal();
 	return err;
 }
 
@@ -1472,13 +1452,16 @@ static struct platform_driver mtk_thermal_btsmdpa_driver = {
 
 static int __init mtkts_btsmdpa_init(void)
 {
-	struct proc_dir_entry *entry = NULL;
-	struct proc_dir_entry *mtkts_btsmdpa_dir = NULL;
+
 #if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
 	int err = 0;
+#else
+	struct proc_dir_entry *entry = NULL;
+	struct proc_dir_entry *mtkts_btsmdpa_dir = NULL;
 #endif
 
 	mtkts_btsmdpa_dprintk("[%s]\n", __func__);
+
 
 #if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
 	err = platform_driver_register(&mtk_thermal_btsmdpa_driver);
@@ -1486,7 +1469,7 @@ static int __init mtkts_btsmdpa_init(void)
 		mtkts_btsmdpa_printk("thermal driver callback register failed.\n");
 		return err;
 	}
-#endif
+#else
 	/* setup default table */
 	mtkts_btsmdpa_prepare_table(g_RAP_ntc_table);
 
@@ -1507,9 +1490,6 @@ static int __init mtkts_btsmdpa_init(void)
 	}
 
 	mtkts_btsmdpa_register_thermal();
-#if 0
-	mtkTTimer_register("mtktsbtsmdpa", mtkts_btsmdpa_start_thermal_timer,
-					mtkts_btsmdpa_cancel_thermal_timer);
 #endif
 	return 0;
 }
@@ -1518,9 +1498,6 @@ static void __exit mtkts_btsmdpa_exit(void)
 {
 	mtkts_btsmdpa_dprintk("[%s]\n", __func__);
 	mtkts_btsmdpa_unregister_thermal();
-#if 0
-	mtkTTimer_unregister("mtktsbtsmdpa");
-#endif
 	/* mtkts_btsmdpa_unregister_cooler(); */
 }
 

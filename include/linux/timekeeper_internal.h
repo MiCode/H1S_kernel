@@ -14,19 +14,22 @@
 /**
  * struct tk_read_base - base structure for timekeeping readout
  * @clock:	Current clocksource used for timekeeping.
- * @read:	Read function of @clock
  * @mask:	Bitmask for two's complement subtraction of non 64bit clocks
  * @cycle_last: @clock cycle value at last update
  * @mult:	(NTP adjusted) multiplier for scaled math conversion
  * @shift:	Shift value for scaled math conversion
  * @xtime_nsec: Shifted (fractional) nano seconds offset for readout
  * @base:	ktime_t (nanoseconds) base time for readout
+ * @base_real:	Nanoseconds base value for clock REALTIME readout
  *
  * This struct has size 56 byte on 64 bit. Together with a seqcount it
  * occupies a single 64byte cache line.
  *
  * The struct is separate from struct timekeeper as it is also used
  * for a fast NMI safe accessors.
+ *
+ * @base_real is for the fast NMI safe accessor to allow reading clock
+ * realtime from any context.
  */
 struct tk_read_base {
 	struct clocksource	*clock;
@@ -36,6 +39,7 @@ struct tk_read_base {
 	u32			shift;
 	u64			xtime_nsec;
 	ktime_t			base;
+	u64			base_real;
 };
 
 /**
@@ -53,6 +57,7 @@ struct tk_read_base {
  * @cs_was_changed_seq:	The sequence number of clocksource change events
  * @next_leap_ktime:	CLOCK_MONOTONIC time value of a pending leap-second
  * @raw_sec:		CLOCK_MONOTONIC_RAW  time in seconds
+ * @monotonic_to_boot:	CLOCK_MONOTONIC to CLOCK_BOOTTIME offset
  * @cycle_interval:	Number of clock cycles in one NTP interval
  * @xtime_interval:	Number of clock shifted nano seconds in one NTP
  *			interval.
@@ -80,6 +85,9 @@ struct tk_read_base {
  *
  * wall_to_monotonic is no longer the boot time, getboottime must be
  * used instead.
+ *
+ * @monotonic_to_boottime is a timespec64 representation of @offs_boot to
+ * accelerate the VDSO update for CLOCK_BOOTTIME.
  */
 struct timekeeper {
 	struct tk_read_base	tkr_mono;
@@ -95,6 +103,7 @@ struct timekeeper {
 	u8			cs_was_changed_seq;
 	ktime_t			next_leap_ktime;
 	u64			raw_sec;
+	struct timespec64	monotonic_to_boot;
 
 	/* The following members are for timekeeping internal use */
 	u64			cycle_interval;
@@ -113,6 +122,8 @@ struct timekeeper {
 	s64			ntp_error;
 	u32			ntp_error_shift;
 	u32			ntp_err_mult;
+	/* Flag used to avoid updating NTP twice with same second */
+	u32			skip_second_overflow;
 #ifdef CONFIG_DEBUG_TIMEKEEPING
 	long			last_warning;
 	/*
@@ -130,13 +141,6 @@ struct timekeeper {
 #ifdef CONFIG_GENERIC_TIME_VSYSCALL
 
 extern void update_vsyscall(struct timekeeper *tk);
-extern void update_vsyscall_tz(void);
-
-#elif defined(CONFIG_GENERIC_TIME_VSYSCALL_OLD)
-
-extern void update_vsyscall_old(struct timespec *ts, struct timespec *wtm,
-				struct clocksource *c, u32 mult,
-				u64 cycle_last);
 extern void update_vsyscall_tz(void);
 
 #else

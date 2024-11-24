@@ -17,7 +17,6 @@
 #include <linux/platform_device.h>
 #include <linux/list.h>
 #include <linux/pm.h>
-#include <asm/olpc.h>
 
 /*
  * The default port config.
@@ -775,7 +774,14 @@ static int __init via_core_init(void)
 		return ret;
 	viafb_i2c_init();
 	viafb_gpio_init();
-	return pci_register_driver(&via_driver);
+	ret = pci_register_driver(&via_driver);
+	if (ret) {
+		viafb_gpio_exit();
+		viafb_i2c_exit();
+		return ret;
+	}
+
+	return 0;
 }
 
 static void __exit via_core_exit(void)

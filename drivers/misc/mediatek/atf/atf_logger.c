@@ -12,8 +12,8 @@
 #include <linux/platform_device.h>
 #include <linux/kernel.h>       /* min() */
 #include <linux/uaccess.h>      /* copy_to_user() */
-#include <linux/sched/clock.h>	/* local_clock() */
-#include <linux/sched/signal.h> /* schedule */
+#include <linux/sched/clock.h> /* local_clock() */
+#include <linux/sched/signal.h> /* TASK_INTERRUPTIBLE/signal_pending/schedule */
 #include <linux/poll.h>
 #include <linux/io.h>           /* ioremap() */
 #include <linux/of_fdt.h>
@@ -27,7 +27,7 @@
 #include <linux/atomic.h>
 #include <linux/irq.h>
 #include <linux/syscore_ops.h>
-#include <mt-plat/mtk_secure_api.h>
+#include <linux/soc/mediatek/mtk_sip_svc.h> /* for SMC ID table */
 #ifdef CONFIG_OF_RESERVED_MEM
 #include <linux/of_reserved_mem.h>
 #define ATF_LOG_RESERVED_MEMORY_KEY "mediatek,atf-log-reserved"
@@ -76,10 +76,26 @@ static unsigned char *atf_buf_vir_addr;
 static unsigned char *atf_log_vir_addr;
 static unsigned int atf_log_len;
 
-#ifdef CONFIG_OF_RESERVED_MEM
 
-int atf_log_reserved_mem_of_init(struct reserved_mem *rmem)
+#if defined(CONFIG_OF)
+static int dt_parse_atf_logger_buf(void)
 {
+	struct device_node *atf_logger_rmem_np;
+	struct reserved_mem *rmem;
+
+	atf_logger_rmem_np = of_find_compatible_node(NULL, NULL,
+			ATF_LOG_RESERVED_MEMORY_KEY);
+
+	if (!atf_logger_rmem_np) {
+		pr_info("No atf_logger reserved memory\n");
+		return -EINVAL;
+	}
+	rmem = of_reserved_mem_lookup(atf_logger_rmem_np);
+	if (!rmem) {
+		pr_info("No rmem\n");
+		return -EINVAL;
+	}
+
 	atf_buf_phy_ctrl = (phys_addr_t) rmem->base;
 	atf_buf_len = (phys_addr_t) rmem->size;
 
@@ -90,10 +106,6 @@ int atf_log_reserved_mem_of_init(struct reserved_mem *rmem)
 #endif
 	return 0;
 }
-
-RESERVEDMEM_OF_DECLARE(atf_log_reserved_init,
-		ATF_LOG_RESERVED_MEMORY_KEY,
-		atf_log_reserved_mem_of_init);
 #endif
 
 static ssize_t atf_log_write(struct file *file,
@@ -132,7 +144,8 @@ static ssize_t do_read_log_to_usr(char __user *buf, size_t count)
 	size_t right;
 	unsigned int local_write_index =
 		atf_buf_vir_ctrl->info.atf_write_offset;
-	unsigned int local_read_index = atf_buf_vir_ctrl->info.atf_read_offset;
+	unsigned int local_read_index =
+		atf_buf_vir_ctrl->info.atf_read_offset;
 
 	/* check copy length */
 	copy_len = (local_write_index +
@@ -294,7 +307,7 @@ static void show_data(unsigned long addr,
 {
 	uint64_t i, j;
 	uint64_t nlines;
-	uint64_t *p = 0;
+	uint32_t *p = 0;
 
 	pr_notice("\n%s: %#lx:\n", name, addr);
 
@@ -302,7 +315,7 @@ static void show_data(unsigned long addr,
 	 * round address down to a 32 bit boundary
 	 * and always dump a multiple of 32 bytes
 	 */
-	p = (uint64_t *)(addr & ~(sizeof(uint32_t) - 1));
+	p = (uint32_t *)(addr & ~(sizeof(uint32_t) - 1));
 	nbytes += (uint64_t) (addr & (sizeof(uint32_t) - 1));
 	nlines = (nbytes + 31) / 32;
 
@@ -459,7 +472,8 @@ static int __init atf_logger_probe(struct platform_device *pdev)
 	struct arm_smccc_res res;
 
 	pr_notice("atf_log: inited");
-	if (atf_buf_len == 0) {
+	err = dt_parse_atf_logger_buf();
+	if (unlikely(err)) {
 		pr_info("No atf_log_buffer\n");
 		return -1;
 	}
@@ -565,4 +579,5 @@ module_exit(atf_log_exit);
 
 MODULE_DESCRIPTION("MEDIATEK Module ATF Logging Driver");
 MODULE_AUTHOR("Chun Fan<chun.fan@mediatek.com>");
+MODULE_LICENSE("GPL");
 

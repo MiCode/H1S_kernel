@@ -1,12 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #include <linux/platform_device.h>
@@ -14,8 +8,10 @@
 #include <linux/module.h>
 #include <linux/completion.h>
 #include <linux/workqueue.h>
+#include <linux/slab.h>
+#include <scp.h>
+
 #include "main.h"
-#include "bl.h"
 #include "comms.h"
 #include "nanohub-mtk.h"
 
@@ -73,13 +69,11 @@ void mtk_ipi_scp_isr_sim(int got_size)
 
 static void nano_ipi_start(void)
 {
-	pr_debug("%s notify\n", __func__);
 	WRITE_ONCE(scp_nano_ipi_status, 1);
 }
 
 static void nano_ipi_stop(void)
 {
-	pr_debug("%s notify\n", __func__);
 	WRITE_ONCE(scp_nano_ipi_status, 0);
 }
 
@@ -108,7 +102,7 @@ int nanohub_ipi_write(void *data, u8 *tx, int length, int timeout)
 #if CHRE_IPI_DEBUG
 	int i;
 
-	pr_debug("AP->(%d) ", length);
+	pr_debug("nanohub AP send ipi(%d) ", length);
 	for (i = 0; i < length; i++)
 		pr_debug("%02x ", tx[i]);
 	pr_debug("\n");
@@ -122,7 +116,7 @@ int nanohub_ipi_write(void *data, u8 *tx, int length, int timeout)
 	}
 
 	if (ret == SCP_IPI_BUSY)
-		pr_debug("%s ipi busy, ret=%d\n", __func__, ret);
+		pr_debug("nanohub ipi busy, ret=%d\n", ret);
 
 	if (ret == SCP_IPI_DONE)
 		return length;
@@ -222,7 +216,7 @@ void scp_to_ap_ipi_handler(int id, void *data, unsigned int len)
 	int i;
 	unsigned char *data_p = data;
 
-	pr_debug("->AP(%d):", len);
+	pr_info("%s %d, IPI_CHRE ->AP(len:%d)\n", __func__, __LINE__, len);
 	for (i = 0; i < len; i++)
 		pr_debug("%02x ", data_p[i]);
 	pr_debug("\n");
@@ -242,11 +236,13 @@ int nanohub_ipi_probe(struct platform_device *pdev)
 	nano_dev = kzalloc(sizeof(*nano_dev), GFP_KERNEL);
 	if (!nano_dev)
 		return -ENOMEM;
+
 	ipi_data = kzalloc(sizeof(*ipi_data), GFP_KERNEL);
 	if (!ipi_data) {
 		kfree(nano_dev);
 		return -ENOMEM;
 	}
+
 	ipi_data->nanohub_dev = nano_dev;
 	nano_dev->drv_data = &ipi_data->data;
 	nanohub_probe(&pdev->dev, nano_dev);
@@ -257,11 +253,22 @@ int nanohub_ipi_probe(struct platform_device *pdev)
 	init_completion(&nanohub_ipi_rx.isr_comp);
 	status = scp_ipi_registration(IPI_CHRE,
 		scp_to_ap_ipi_handler, "chre_ap_rx");
+
+	if (status != SCP_IPI_DONE) {
+		pr_err("nonahub: IPI_CHRE(%d) register fail, err:%d\n",
+			   IPI_CHRE, status);
+		goto exit_kfree;
+	}
 	/*init nano scp ipi status*/
 	WRITE_ONCE(scp_nano_ipi_status, 1);
 	scp_A_register_notify(&nano_ipi_notifier);
 
 	return 0;
+
+exit_kfree:
+	kfree(nano_dev);
+	kfree(ipi_data);
+	return status;
 }
 
 static int nanohub_ipi_remove(struct platform_device *pdev)
@@ -287,17 +294,20 @@ int nanohub_ipi_init(void)
 
 	ret = platform_device_register(&nanohub_ipi_pdev);
 	if (ret) {
-		pr_debug("nanohub_ipi_pdev fail\n");
-		goto _nanohub_ipi_init_exit;
+		pr_err("nanohub_ipi platform dev register fail,ret:%d\n", ret);
+		goto err_exit;
 	}
 
 	ret = platform_driver_register(&nanohub_ipi_pdrv);
 	if (ret) {
-		pr_debug("nanohub_ipi_pdrv fail\n");
-		platform_device_unregister(&nanohub_ipi_pdev);
-		goto _nanohub_ipi_init_exit;
+		pr_warn("nanohub_ipi platform driver register fail,ret:%d\n", ret);
+		goto err_unregister_device;
 	}
 
-_nanohub_ipi_init_exit:
+	return 0;
+
+err_unregister_device:
+	platform_device_unregister(&nanohub_ipi_pdev);
+err_exit:
 	return ret;
 }

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTK_DRM_TRACE__
 #define __MTK_DRM_TRACE__
@@ -21,6 +13,7 @@
 #define DRM_TRACE_FENCE_ID (DRM_TRACE_ID + 2)
 #define DRM_TRACE_VSYNC_ID (DRM_TRACE_ID + 3)
 
+extern int hwc_pid;
 
 /* MTK_DRM FTRACE */
 extern bool g_trace_log;
@@ -40,6 +33,24 @@ extern bool g_trace_log;
 		preempt_enable(); \
 	} \
 } while (0)
+
+#define mtk_drm_trace_async_begin(fmt, args...) do { \
+		if (g_trace_log) { \
+			preempt_disable(); \
+			event_trace_printk(mtk_drm_get_tracing_mark(), \
+				"S|%d|"fmt"\n", current->tgid, ##args); \
+			preempt_enable();\
+		} \
+	} while (0)
+
+#define mtk_drm_trace_async_end(fmt, args...) do { \
+		if (g_trace_log) { \
+			preempt_disable(); \
+			event_trace_printk(mtk_drm_get_tracing_mark(), \
+				"F|%d|"fmt"\n", current->tgid, ##args); \
+			preempt_enable(); \
+		} \
+	} while (0)
 
 #define mtk_drm_trace_c(fmt, args...) do { \
 	if (g_trace_log) { \

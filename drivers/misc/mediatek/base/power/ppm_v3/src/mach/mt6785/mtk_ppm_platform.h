@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 
 #ifndef __MT_PPM_PLATFORM_H__
@@ -22,11 +15,11 @@ extern "C" {
 #include "mtk_ppm_api.h"
 #include "mach/mtk_cpufreq_api.h"
 
-#if 0 /* No PPM in SSPM @ 6768 */
+#if 0 /* No PPM in SSPM @ 6785 */
 #ifdef CONFIG_MTK_TINYSYS_SSPM_SUPPORT
 #define PPM_SSPM_SUPPORT        (1)
 #endif
-#endif /* No PPM in SSPM @ 6768 */
+#endif /* No PPM in SSPM @ 6785 */
 
 /*==============================================================*/
 /* Macros							*/
@@ -65,6 +58,7 @@ extern "C" {
 #define PWRTHRO_BAT_OC_MW	(600)
 #define PWRTHRO_LOW_BAT_LV1_MW	(600)
 #define PWRTHRO_LOW_BAT_LV2_MW	(600)
+#define PWRTHRO_LOW_BAT_LV1_OPP	(3)
 
 #define DVFS_OPP_NUM		(16)
 #define get_cluster_ptpod_fix_freq_idx(id)	(mt_cpufreq_find_Vboot_idx(id))
@@ -139,6 +133,12 @@ extern void ppm_cobra_lookup_get_result(
 
 unsigned int __attribute__((weak))
 	mt_cpufreq_get_cur_phy_freq_no_lock(unsigned int id)
+{
+	return 0;
+}
+
+unsigned int __attribute__((weak))
+	mt_cpufreq_find_Vboot_idx(unsigned int id)
 {
 	return 0;
 }

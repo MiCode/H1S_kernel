@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifdef DFT_TAG
@@ -116,31 +108,32 @@ static int btif_tx_thr_set(struct _MTK_BTIF_INFO_STR_ *p_btif,
 			   unsigned int thr_count);
 #endif
 
-static int btif_dump_array(const char *string, const char *p_buf, int len)
+int btif_dump_array(const char *string, const char *p_buf, int len)
 {
+#define BTIF_LENGTH_PER_LINE 32
 	unsigned int idx = 0;
-	unsigned char str[30];
+	unsigned char str[BTIF_LENGTH_PER_LINE * 3 + 2];
 	unsigned char *p_str = NULL;
 
-	pr_debug("========dump %s start <length:%d>========\n", string, len);
+	pr_info("========dump %s start <length:%d>========\n", string, len);
 	p_str = &str[0];
 	for (idx = 0; idx < len; idx++, p_buf++) {
 		if (sprintf(p_str, "%02x ", *p_buf) < 0)
 			return -1;
 		p_str += 3;
-		if (7 == (idx % 8)) {
+		if ((BTIF_LENGTH_PER_LINE - 1) == (idx % BTIF_LENGTH_PER_LINE)) {
 			*p_str++ = '\n';
 			*p_str = '\0';
-			pr_debug("%s", str);
+			pr_info("%s", str);
 			p_str = &str[0];
 		}
 	}
-	if (len % 8) {
+	if (len % BTIF_LENGTH_PER_LINE) {
 		*p_str++ = '\n';
 		*p_str = '\0';
-		pr_debug("%s", str);
+		pr_info("%s", str);
 	}
-	pr_debug("========dump %s end========\n", string);
+	pr_info("========dump %s end========\n", string);
 	return 0;
 }
 
@@ -769,14 +762,6 @@ int hal_btif_irq_handler(struct _MTK_BTIF_INFO_STR_ *p_btif,
 	unsigned int iir = 0;
 	unsigned int rx_len = 0;
 	unsigned long base = p_btif->base;
-
-#if 0
-/*check parameter valid or not*/
-	if ((p_buf == NULL) || (max_len == 0)) {
-		i_ret = ERR_INVALID_PAR;
-		return i_ret;
-	}
-#endif
 	unsigned long irq_flag = 0;
 
 	spin_lock_irqsave(&(g_clk_cg_spinlock), irq_flag);
@@ -791,18 +776,6 @@ int hal_btif_irq_handler(struct _MTK_BTIF_INFO_STR_ *p_btif,
 #endif
 /*read interrupt identifier register*/
 	iir = BTIF_READ32(BTIF_IIR(base));
-
-/*is rx interrupt exist?*/
-#if 0
-	while ((iir & BTIF_IIR_RX) && (rx_len < max_len)) {
-		rx_len +=
-		    btif_rx_irq_handler(p_btif, (p_buf + rx_len),
-					(max_len - rx_len));
-
-/*update IIR*/
-		iir = BTIF_READ32(BTIF_IIR(base));
-	}
-#endif
 
 	while (iir & (BTIF_IIR_RX | BTIF_IIR_RX_TIMEOUT)) {
 		rx_len += btif_rx_irq_handler(p_btif, p_buf, max_len);
@@ -1186,9 +1159,6 @@ int hal_btif_dump_reg(struct _MTK_BTIF_INFO_STR_ *p_btif,
 			      __FILE__);
 		return i_ret;
 	}
-#endif
-#if defined(CONFIG_MTK_GIC_V3_EXT)
-	mt_irq_dump_status(p_btif->p_irq->irq_id);
 #endif
 	lsr = BTIF_READ32(BTIF_LSR(base));
 	dma_en = BTIF_READ32(BTIF_DMA_EN(base));

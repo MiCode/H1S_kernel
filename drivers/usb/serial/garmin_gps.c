@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Garmin GPS driver
  *
@@ -7,20 +8,6 @@
  * http://sourceforge.net/projects/garmin-gps/
  *
  * This driver has been derived from v2.1 of the visor driver.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111 USA
  */
 
 #include <linux/kernel.h>
@@ -876,44 +863,34 @@ static int garmin_clear(struct garmin_data *garmin_data_p)
 
 static int garmin_init_session(struct usb_serial_port *port)
 {
-	struct usb_serial *serial = port->serial;
 	struct garmin_data *garmin_data_p = usb_get_serial_port_data(port);
-	int status = 0;
-	int i = 0;
+	int status;
+	int i;
 
-	if (status == 0) {
-		usb_kill_urb(port->interrupt_in_urb);
+	usb_kill_urb(port->interrupt_in_urb);
 
-		dev_dbg(&serial->dev->dev, "%s - adding interrupt input\n", __func__);
-		status = usb_submit_urb(port->interrupt_in_urb, GFP_KERNEL);
-		if (status)
-			dev_err(&serial->dev->dev,
-			  "%s - failed submitting interrupt urb, error %d\n",
-							__func__, status);
+	status = usb_submit_urb(port->interrupt_in_urb, GFP_KERNEL);
+	if (status) {
+		dev_err(&port->dev, "failed to submit interrupt urb: %d\n",
+				status);
+		return status;
 	}
 
 	/*
 	 * using the initialization method from gpsbabel. See comments in
 	 * gpsbabel/jeeps/gpslibusb.c gusb_reset_toggles()
 	 */
-	if (status == 0) {
-		dev_dbg(&serial->dev->dev, "%s - starting session ...\n", __func__);
-		garmin_data_p->state = STATE_ACTIVE;
+	dev_dbg(&port->dev, "%s - starting session ...\n", __func__);
+	garmin_data_p->state = STATE_ACTIVE;
 
-		for (i = 0; i < 3; i++) {
-			status = garmin_write_bulk(port,
-					GARMIN_START_SESSION_REQ,
-					sizeof(GARMIN_START_SESSION_REQ), 0);
-
-			if (status < 0)
-				goto err_kill_urbs;
-		}
-
-		if (status > 0)
-			status = 0;
+	for (i = 0; i < 3; i++) {
+		status = garmin_write_bulk(port, GARMIN_START_SESSION_REQ,
+				sizeof(GARMIN_START_SESSION_REQ), 0);
+		if (status < 0)
+			goto err_kill_urbs;
 	}
 
-	return status;
+	return 0;
 
 err_kill_urbs:
 	usb_kill_anchored_urbs(&garmin_data_p->write_urbs);
@@ -1378,9 +1355,9 @@ static void garmin_unthrottle(struct tty_struct *tty)
  * the tty in cases where the protocol provides no own handshaking
  * to initiate the transfer.
  */
-static void timeout_handler(unsigned long data)
+static void timeout_handler(struct timer_list *t)
 {
-	struct garmin_data *garmin_data_p = (struct garmin_data *) data;
+	struct garmin_data *garmin_data_p = from_timer(garmin_data_p, t, timer);
 
 	/* send the next queued packet to the tty port */
 	if (garmin_data_p->mode == MODE_NATIVE)
@@ -1399,12 +1376,9 @@ static int garmin_port_probe(struct usb_serial_port *port)
 	if (!garmin_data_p)
 		return -ENOMEM;
 
-	init_timer(&garmin_data_p->timer);
+	timer_setup(&garmin_data_p->timer, timeout_handler, 0);
 	spin_lock_init(&garmin_data_p->lock);
 	INIT_LIST_HEAD(&garmin_data_p->pktlist);
-	/* garmin_data_p->timer.expires = jiffies + session_timeout; */
-	garmin_data_p->timer.data = (unsigned long)garmin_data_p;
-	garmin_data_p->timer.function = timeout_handler;
 	garmin_data_p->port = port;
 	garmin_data_p->state = 0;
 	garmin_data_p->flags = 0;

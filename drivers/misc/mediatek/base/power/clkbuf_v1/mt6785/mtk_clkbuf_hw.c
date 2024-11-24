@@ -1,15 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
 
 /*
@@ -27,6 +18,7 @@
 #include <mt-plat/mtk_boot.h>
 //#include <mt-plat/upmu_common.h>
 #include <linux/string.h>
+#include <linux/delay.h>
 #include <linux/board_id.h>
 
 static void __iomem *pwrap_base;
@@ -117,6 +109,8 @@ static unsigned int xo_mode_init[XO_NUMBER];
 /* #define CLK_BUF_HW_BBLPM_EN */
 static unsigned int bblpm_switch = 2;
 
+static unsigned int bblpm_cnt;
+
 static unsigned int pwrap_dcxo_en_init;
 
 static unsigned int clk_buf7_ctrl = true;
@@ -201,14 +195,16 @@ unsigned int __attribute__((weak))
 
 static void pmic_clk_buf_ctrl_ext(short on)
 {
-	if (on)
+	if (on) {
 		pmic_config_interface(PMIC_DCXO_CW09_SET_ADDR, 0x1,
 				      PMIC_XO_EXTBUF7_EN_M_MASK,
 				      PMIC_XO_EXTBUF7_EN_M_SHIFT);
-	else
+		udelay(400);
+	} else {
 		pmic_config_interface(PMIC_DCXO_CW09_CLR_ADDR, 0x1,
 				      PMIC_XO_EXTBUF7_EN_M_MASK,
 				      PMIC_XO_EXTBUF7_EN_M_SHIFT);
+	}
 }
 
 void clk_buf_ctrl_bblpm_hw(short on)
@@ -801,6 +797,32 @@ bool clk_buf_ctrl(enum clk_buf_id id, bool onoff)
 		return true;
 }
 EXPORT_SYMBOL(clk_buf_ctrl);
+
+void clk_buf_disp_ctrl(bool onoff)
+{
+	if (onoff) {
+		pmic_config_interface(PMIC_DCXO_CW00_CLR,
+			      PMIC_XO_EXTBUF3_MODE_MASK,
+			      PMIC_XO_EXTBUF3_MODE_MASK,
+			      PMIC_XO_EXTBUF3_MODE_SHIFT);
+		pmic_config_interface(PMIC_DCXO_CW00_SET,
+			PMIC_XO_EXTBUF3_EN_M_MASK,
+			PMIC_XO_EXTBUF3_EN_M_MASK,
+			PMIC_XO_EXTBUF3_EN_M_SHIFT);
+		pmic_clk_buf_swctrl[XO_NFC] = 1;
+	} else {
+		pmic_config_interface(PMIC_DCXO_CW00_CLR,
+			PMIC_XO_EXTBUF3_MODE_MASK,
+			PMIC_XO_EXTBUF3_MODE_MASK,
+			PMIC_XO_EXTBUF3_MODE_SHIFT);
+		pmic_config_interface(PMIC_DCXO_CW00_CLR,
+			PMIC_XO_EXTBUF3_EN_M_MASK,
+			PMIC_XO_EXTBUF3_EN_M_MASK,
+			PMIC_XO_EXTBUF3_EN_M_SHIFT);
+		pmic_clk_buf_swctrl[XO_NFC] = 0;
+	}
+}
+EXPORT_SYMBOL(clk_buf_disp_ctrl);
 
 void clk_buf_dump_dts_log(void)
 {
@@ -1426,7 +1448,7 @@ int clk_buf_dts_map(void)
 }
 #endif
 
-void clk_buf_init_pmic_clkbuf(void)
+void clk_buf_init_pmic_clkbuf_legacy(void)
 {
 	clk_buf_dump_clkbuf_log();
 }
@@ -1479,20 +1501,9 @@ short is_clkbuf_bringup(void)
 
 void clk_buf_post_init(void)
 {
-#if defined(CONFIG_MTK_UFS_SUPPORT)
-	int boot_type;
 	int project_number;
-	boot_type = get_boot_type();
-	/* no need to use XO_EXT if storage is emmc */
-	if (boot_type != BOOTDEV_UFS) {
-		clk_buf_ctrl_internal(CLK_BUF_UFS, CLK_BUF_FORCE_OFF);
-		CLK_BUF7_STATUS = CLOCK_BUFFER_DISABLE;
-	}
-#else
-	clk_buf_ctrl_internal(CLK_BUF_UFS, CLK_BUF_FORCE_OFF);
-	CLK_BUF7_STATUS = CLOCK_BUFFER_DISABLE;
-#endif
 	project_number = board_id_get_hwversion_product_num();
+
 #ifndef CONFIG_NFC_CHIP_SUPPORT
 	/* no need to use XO_NFC if no NFC */
 	clk_buf_ctrl_internal(CLK_BUF_NFC, CLK_BUF_FORCE_OFF);
@@ -1504,7 +1515,6 @@ void clk_buf_post_init(void)
 		CLK_BUF3_STATUS = CLOCK_BUFFER_DISABLE;
 	}
 #endif
-
 #ifdef CLKBUF_USE_BBLPM
 	if (bblpm_switch == 2) {
 		clk_buf_ctrl_bblpm_mask(CLK_BUF_BB_MD, true);

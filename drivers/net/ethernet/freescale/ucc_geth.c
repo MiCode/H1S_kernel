@@ -2256,9 +2256,9 @@ static int ucc_geth_alloc_tx(struct ucc_geth_private *ugeth)
 	/* Init Tx bds */
 	for (j = 0; j < ug_info->numQueuesTx; j++) {
 		/* Setup the skbuff rings */
-		ugeth->tx_skbuff[j] = kmalloc(sizeof(struct sk_buff *) *
-					      ugeth->ug_info->bdRingLenTx[j],
-					      GFP_KERNEL);
+		ugeth->tx_skbuff[j] =
+			kmalloc_array(ugeth->ug_info->bdRingLenTx[j],
+				      sizeof(struct sk_buff *), GFP_KERNEL);
 
 		if (ugeth->tx_skbuff[j] == NULL) {
 			if (netif_msg_ifup(ugeth))
@@ -2329,9 +2329,9 @@ static int ucc_geth_alloc_rx(struct ucc_geth_private *ugeth)
 	/* Init Rx bds */
 	for (j = 0; j < ug_info->numQueuesRx; j++) {
 		/* Setup the skbuff rings */
-		ugeth->rx_skbuff[j] = kmalloc(sizeof(struct sk_buff *) *
-					      ugeth->ug_info->bdRingLenRx[j],
-					      GFP_KERNEL);
+		ugeth->rx_skbuff[j] =
+			kmalloc_array(ugeth->ug_info->bdRingLenRx[j],
+				      sizeof(struct sk_buff *), GFP_KERNEL);
 
 		if (ugeth->rx_skbuff[j] == NULL) {
 			if (netif_msg_ifup(ugeth))
@@ -3100,6 +3100,7 @@ ucc_geth_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	ugeth_vdbg("%s: IN", __func__);
 
+	netdev_sent_queue(dev, skb->len);
 	spin_lock_irqsave(&ugeth->lock, flags);
 
 	dev->stats.tx_bytes += skb->len;
@@ -3244,6 +3245,8 @@ static int ucc_geth_tx(struct net_device *dev, u8 txQ)
 {
 	/* Start from the next BD that should be filled */
 	struct ucc_geth_private *ugeth = netdev_priv(dev);
+	unsigned int bytes_sent = 0;
+	int howmany = 0;
 	u8 __iomem *bd;		/* BD pointer */
 	u32 bd_status;
 
@@ -3261,7 +3264,8 @@ static int ucc_geth_tx(struct net_device *dev, u8 txQ)
 		skb = ugeth->tx_skbuff[txQ][ugeth->skb_dirtytx[txQ]];
 		if (!skb)
 			break;
-
+		howmany++;
+		bytes_sent += skb->len;
 		dev->stats.tx_packets++;
 
 		dev_consume_skb_any(skb);
@@ -3283,6 +3287,7 @@ static int ucc_geth_tx(struct net_device *dev, u8 txQ)
 		bd_status = in_be32((u32 __iomem *)bd);
 	}
 	ugeth->confBd[txQ] = bd;
+	netdev_completed_queue(dev, howmany, bytes_sent);
 	return 0;
 }
 
@@ -3483,6 +3488,7 @@ static int ucc_geth_open(struct net_device *dev)
 
 	phy_start(ugeth->phydev);
 	napi_enable(&ugeth->napi);
+	netdev_reset_queue(dev);
 	netif_start_queue(dev);
 
 	device_set_wakeup_capable(&dev->dev,
@@ -3513,6 +3519,7 @@ static int ucc_geth_close(struct net_device *dev)
 	free_irq(ugeth->ug_info->uf_info.irq, ugeth->ndev);
 
 	netif_stop_queue(dev);
+	netdev_reset_queue(dev);
 
 	return 0;
 }
@@ -3861,8 +3868,9 @@ static int ucc_geth_probe(struct platform_device* ofdev)
 	}
 
 	if (netif_msg_probe(&debug))
-		pr_info("UCC%1d at 0x%8x (irq = %d)\n",
-			ug_info->uf_info.ucc_num + 1, ug_info->uf_info.regs,
+		pr_info("UCC%1d at 0x%8llx (irq = %d)\n",
+			ug_info->uf_info.ucc_num + 1,
+			(u64)ug_info->uf_info.regs,
 			ug_info->uf_info.irq);
 
 	/* Create an ethernet device instance */
@@ -3894,6 +3902,7 @@ static int ucc_geth_probe(struct platform_device* ofdev)
 	INIT_WORK(&ugeth->timeout_work, ucc_geth_timeout_work);
 	netif_napi_add(dev, &ugeth->napi, ucc_geth_poll, 64);
 	dev->mtu = 1500;
+	dev->max_mtu = 1518;
 
 	ugeth->msg_enable = netif_msg_init(debug.msg_enable, UGETH_MSG_DEFAULT);
 	ugeth->phy_interface = phy_interface;
@@ -3939,12 +3948,12 @@ static int ucc_geth_remove(struct platform_device* ofdev)
 	struct device_node *np = ofdev->dev.of_node;
 
 	unregister_netdev(dev);
-	free_netdev(dev);
 	ucc_geth_memclean(ugeth);
 	if (of_phy_is_fixed_link(np))
 		of_phy_deregister_fixed_link(np);
 	of_node_put(ugeth->ug_info->tbi_node);
 	of_node_put(ugeth->ug_info->phy_node);
+	free_netdev(dev);
 
 	return 0;
 }

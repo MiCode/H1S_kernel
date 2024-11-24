@@ -17,6 +17,7 @@ struct drm_vblank_crtc;
 struct drm_sg_mem;
 struct drm_local_map;
 struct drm_vma_offset_manager;
+struct drm_fb_helper;
 
 struct inode;
 
@@ -37,7 +38,6 @@ struct drm_device {
 	struct device *dev;		/**< Device structure of bus-device */
 	struct drm_driver *driver;	/**< DRM driver managing the device */
 	void *dev_private;		/**< DRM driver private data */
-	struct drm_minor *control;		/**< Control node */
 	struct drm_minor *primary;		/**< Primary node */
 	struct drm_minor *render;		/**< Render node */
 	bool registered;
@@ -45,7 +45,14 @@ struct drm_device {
 	/* currently active master for this device. Protected by master_mutex */
 	struct drm_master *master;
 
-	atomic_t unplugged;			/**< Flag whether dev is dead */
+	/**
+	 * @unplugged:
+	 *
+	 * Flag to tell if the device has been unplugged.
+	 * See drm_dev_enter() and drm_dev_is_unplugged().
+	 */
+	bool unplugged;
+
 	struct inode *anon_inode;		/**< inode for private address-space */
 	char *unique;				/**< unique name of the device */
 	/*@} */
@@ -66,6 +73,27 @@ struct drm_device {
 
 	struct mutex filelist_mutex;
 	struct list_head filelist;
+
+	/**
+	 * @filelist_internal:
+	 *
+	 * List of open DRM files for in-kernel clients. Protected by @filelist_mutex.
+	 */
+	struct list_head filelist_internal;
+
+	/**
+	 * @clientlist_mutex:
+	 *
+	 * Protects @clientlist access.
+	 */
+	struct mutex clientlist_mutex;
+
+	/**
+	 * @clientlist:
+	 *
+	 * List of in-kernel clients. Protected by @clientlist_mutex.
+	 */
+	struct list_head clientlist;
 
 	/** \name Memory management */
 	/*@{ */
@@ -146,7 +174,13 @@ struct drm_device {
 	 * races and imprecision over longer time periods, hence exposing a
 	 * hardware vblank counter is always recommended.
 	 *
-	 * If non-zeor, &drm_crtc_funcs.get_vblank_counter must be set.
+	 * This is the statically configured device wide maximum. The driver
+	 * can instead choose to use a runtime configurable per-crtc value
+	 * &drm_vblank_crtc.max_vblank_count, in which case @max_vblank_count
+	 * must be left at zero. See drm_crtc_set_max_vblank_count() on how
+	 * to use the per-crtc value.
+	 *
+	 * If non-zero, &drm_crtc_funcs.get_vblank_counter must be set.
 	 */
 	u32 max_vblank_count;           /**< size of vblank counter register */
 
@@ -185,6 +219,14 @@ struct drm_device {
 	struct drm_vma_offset_manager *vma_offset_manager;
 	/*@} */
 	int switch_power_state;
+
+	/**
+	 * @fb_helper:
+	 *
+	 * Pointer to the fbdev emulation structure.
+	 * Set by drm_fb_helper_init() and cleared by drm_fb_helper_fini().
+	 */
+	struct drm_fb_helper *fb_helper;
 };
 
 #endif

@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #define LOG_TAG "ddp_manager"
 
@@ -34,6 +25,10 @@
 
 #include "ddp_log.h"
 #include "disp_drv_platform.h"
+#include "ddp_dsi.h"
+#ifdef CONFIG_MTK_MT6382_BDG
+#include "ddp_disp_bdg.h"
+#endif
 
 /* #define __GED_NOTIFICATION_SUPPORT__ */
 #ifdef __GED_NOTIFICATION_SUPPORT__
@@ -520,6 +515,11 @@ int dpmgr_modify_path_power_on_new_modules(disp_path_handle dp_handle,
 	for (i = 0; i < new_m_num; i++) {
 		m = new_list[i];
 		/* new module's count is 0 */
+		if (m < 0 || m >= DISP_MODULE_NUM) {
+			DISP_LOG_E("%s: error module_id:%d\n",
+				   __func__, m);
+			return 1;
+		}
 		if (c->module_usage_table[m] == 0) {
 			c->module_usage_table[m]++;
 			c->module_path_table[m] = phandle;
@@ -584,6 +584,11 @@ int dpmgr_modify_path_power_off_old_modules(enum DDP_SCENARIO_ENUM old_scn,
 
 	for (i = 0; i < old_m_num; i++) {
 		m = old_list[i];
+		if (m < 0 || m >= DISP_MODULE_NUM) {
+			DISP_LOG_E("%s: error module_id:%d\n",
+				   __func__, m);
+			return 1;
+		}
 		if (ddp_is_module_in_scenario(new_scn, m))
 			continue;
 
@@ -622,11 +627,22 @@ int dpmgr_destroy_path_handle(disp_path_handle dp_handle)
 	release_mutex(phandle->hwmutexid);
 	for (i = 0; i < m_num; i++) {
 		m = list[i];
+		if (m < 0 || m >= DISP_MODULE_NUM) {
+			DISP_LOG_E("%s: error module_id:%d\n",
+				   __func__, m);
+			return 1;
+		}
 		c->module_usage_table[m]--;
 		c->module_path_table[m] = NULL;
 	}
 	c->handle_cnt--;
 	ASSERT(c->handle_cnt >= 0);
+	if (phandle->hwmutexid < 0 ||
+		phandle->hwmutexid >= DDP_MAX_MANAGER_HANDLE) {
+		DISP_LOG_E("%s: error hwmutexid:%d\n",
+			   __func__, phandle->hwmutexid);
+		return 1;
+	}
 	c->handle_pool[phandle->hwmutexid] = NULL;
 	kfree(phandle);
 
@@ -1303,6 +1319,15 @@ int dpmgr_path_trigger(disp_path_handle dp_handle, void *trigger_loop_handle,
 	int *list;
 	int m_num, m;
 	int i;
+#ifdef CONFIG_MTK_MT6382_BDG
+	char para[7] = {0x10, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00};
+	char para1[7] = {0x10, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00};
+	char para2[7] = {0x50, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00};
+	char para3[7] = {0x50, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00};
+	char para4[7] = {0x10, 0x02, 0x00, 0x3c, 0x00, 0x00, 0x00};
+	char para5[7] = {0x1d, 0x02, 0x00, 0x09, 0x39, 0x2c, 0x00};
+	char para6[7] = {0x10, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00};
+#endif
 	struct DDP_MODULE_DRIVER *m_drv;
 
 	ASSERT(dp_handle);
@@ -1314,7 +1339,27 @@ int dpmgr_path_trigger(disp_path_handle dp_handle, void *trigger_loop_handle,
 		   ddp_get_scenario_name(phandle->scenario));
 	list = ddp_get_scenario_list(phandle->scenario);
 	m_num = ddp_get_module_num(phandle->scenario);
-
+#ifdef CONFIG_MTK_MT6382_BDG
+	if (phandle->scenario != DDP_SCENARIO_PRIMARY_OVL_MEMOUT &&
+		phandle->scenario != DDP_SCENARIO_SUB_OVL_MEMOUT) {
+		if (get_mt6382_init() && (get_bdg_tx_mode() == CMD_MODE)) {
+			DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, trigger_loop_handle,
+						0x90, 7, para4, 1);
+			DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, trigger_loop_handle,
+						0x00, 7, para5, 1);
+			DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, trigger_loop_handle,
+						0x60, 7, para6, 1);
+			DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, trigger_loop_handle,
+						0x00, 7, para, 1);
+			DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, trigger_loop_handle,
+						0x00, 7, para1, 1);
+			DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, trigger_loop_handle,
+						0x20, 7, para2, 1);
+			DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, trigger_loop_handle,
+						0x20, 7, para3, 1);
+		}
+	}
+#endif
 	ddp_mutex_enable(phandle->hwmutexid, phandle->scenario, phandle->mode,
 			 trigger_loop_handle);
 	for (i = 0; i < m_num; i++) {
@@ -1566,7 +1611,11 @@ static int is_module_in_path(enum DISP_MODULE_ENUM module,
 			     struct ddp_path_handle *phandle)
 {
 	struct DDP_MANAGER_CONTEXT *c = _get_context();
-
+	if (module >= DISP_MODULE_NUM) {
+		DISP_LOG_E("%s: error module_id:%d\n",
+			   __func__, module);
+		return -1;
+	}
 	ASSERT(module < DISP_MODULE_UNKNOWN);
 	if (c->module_path_table[module] == phandle)
 		return 1;
@@ -1751,6 +1800,10 @@ int dpmgr_enable_event(disp_path_handle dp_handle, enum DISP_PATH_EVENT event)
 	struct DPMGR_WQ_HANDLE *wq_handle;
 
 	ASSERT(dp_handle);
+	if (event >= DISP_PATH_EVENT_NUM) {
+		DISP_LOG_E("%s: error:event:%d\n", __func__, event);
+		return 1;
+	}
 	phandle = (struct ddp_path_handle *)dp_handle;
 	wq_handle = &phandle->wq_list[event];
 
@@ -2021,7 +2074,10 @@ int dpmgr_signal_event(disp_path_handle dp_handle, enum DISP_PATH_EVENT event)
 	ASSERT(dp_handle);
 	phandle = (struct ddp_path_handle *)dp_handle;
 	wq_handle = &phandle->wq_list[event];
-
+	if (event >= DISP_PATH_EVENT_NUM) {
+		DISP_LOG_E("%s: error:event:%d\n", __func__, event);
+		return 1;
+	}
 	if (phandle->wq_list[event].init) {
 		wq_handle->data = ktime_to_ns(ktime_get());
 		wake_up_interruptible(&(phandle->wq_list[event].wq));

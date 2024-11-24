@@ -12,7 +12,7 @@
  *
  * 1999-08-02 (jmt) - Initial rewrite for Unified ADB.
  * 2000-03-29 Tony Mantler <tonym@mac.linux-m68k.org>
- * 				- Big overhaul, should actually work now.
+ *            - Big overhaul, should actually work now.
  * 2006-12-31 Finn Thain - Another overhaul.
  *
  * Suggested reading:
@@ -23,7 +23,7 @@
  * Apple's "ADB Analyzer" bus sniffer is invaluable:
  *   ftp://ftp.apple.com/developer/Tool_Chest/Devices_-_Hardware/Apple_Desktop_Bus/
  */
- 
+
 #include <stdarg.h>
 #include <linux/types.h>
 #include <linux/errno.h>
@@ -77,7 +77,7 @@ static volatile unsigned char *via;
 #define ST_ODD		0x20		/* ADB state: odd data byte */
 #define ST_IDLE		0x30		/* ADB state: idle, nothing to send */
 
-static int  macii_init_via(void);
+static int macii_init_via(void);
 static void macii_start(void);
 static irqreturn_t macii_interrupt(int irq, void *arg);
 static void macii_queue_poll(void);
@@ -91,13 +91,13 @@ static void macii_poll(void);
 static int macii_reset_bus(void);
 
 struct adb_driver via_macii_driver = {
-	"Mac II",
-	macii_probe,
-	macii_init,
-	macii_send_request,
-	macii_autopoll,
-	macii_poll,
-	macii_reset_bus
+	.name         = "Mac II",
+	.probe        = macii_probe,
+	.init         = macii_init,
+	.send_request = macii_send_request,
+	.autopoll     = macii_autopoll,
+	.poll         = macii_poll,
+	.reset_bus    = macii_reset_bus,
 };
 
 static enum macii_state {
@@ -120,27 +120,11 @@ static int srq_asserted;     /* have to poll for the device that asserted it */
 static int command_byte;         /* the most recent command byte transmitted */
 static int autopoll_devs;      /* bits set are device addresses to be polled */
 
-/* Sanity check for request queue. Doesn't check for cycles. */
-static int request_is_queued(struct adb_request *req) {
-	struct adb_request *cur;
-	unsigned long flags;
-	local_irq_save(flags);
-	cur = current_req;
-	while (cur) {
-		if (cur == req) {
-			local_irq_restore(flags);
-			return 1;
-		}
-		cur = cur->next;
-	}
-	local_irq_restore(flags);
-	return 0;
-}
-
 /* Check for MacII style ADB */
 static int macii_probe(void)
 {
-	if (macintosh_config->adb_type != MAC_ADB_II) return -ENODEV;
+	if (macintosh_config->adb_type != MAC_ADB_II)
+		return -ENODEV;
 
 	via = via1;
 
@@ -151,25 +135,22 @@ static int macii_probe(void)
 /* Initialize the driver */
 int macii_init(void)
 {
-	unsigned long flags;
 	int err;
-	
-	local_irq_save(flags);
-	
+
 	err = macii_init_via();
-	if (err) goto out;
+	if (err)
+		return err;
 
 	err = request_irq(IRQ_MAC_ADB, macii_interrupt, 0, "ADB",
 			  macii_interrupt);
-	if (err) goto out;
+	if (err)
+		return err;
 
 	macii_state = idle;
-out:
-	local_irq_restore(flags);
-	return err;
+	return 0;
 }
 
-/* initialize the hardware */	
+/* initialize the hardware */
 static int macii_init_via(void)
 {
 	unsigned char x;
@@ -179,7 +160,7 @@ static int macii_init_via(void)
 
 	/* Set up state: idle */
 	via[B] |= ST_IDLE;
-	last_status = via[B] & (ST_MASK|CTLR_IRQ);
+	last_status = via[B] & (ST_MASK | CTLR_IRQ);
 
 	/* Shift register on input */
 	via[ACR] = (via[ACR] & ~SR_CTRL) | SR_EXT;
@@ -205,7 +186,8 @@ static void macii_queue_poll(void)
 	int next_device;
 	static struct adb_request req;
 
-	if (!autopoll_devs) return;
+	if (!autopoll_devs)
+		return;
 
 	device_mask = (1 << (((command_byte & 0xF0) >> 4) + 1)) - 1;
 	if (autopoll_devs & ~device_mask)
@@ -213,10 +195,7 @@ static void macii_queue_poll(void)
 	else
 		next_device = ffs(autopoll_devs) - 1;
 
-	BUG_ON(request_is_queued(&req));
-
-	adb_request(&req, NULL, ADBREQ_NOSEND, 1,
-	            ADB_READREG(next_device, 0));
+	adb_request(&req, NULL, ADBREQ_NOSEND, 1, ADB_READREG(next_device, 0));
 
 	req.sent = 0;
 	req.complete = 0;
@@ -237,18 +216,13 @@ static int macii_send_request(struct adb_request *req, int sync)
 	int err;
 	unsigned long flags;
 
-	BUG_ON(request_is_queued(req));
-
 	local_irq_save(flags);
 	err = macii_write(req);
 	local_irq_restore(flags);
 
-	if (!err && sync) {
-		while (!req->complete) {
+	if (!err && sync)
+		while (!req->complete)
 			macii_poll();
-		}
-		BUG_ON(request_is_queued(req));
-	}
 
 	return err;
 }
@@ -260,7 +234,7 @@ static int macii_write(struct adb_request *req)
 		req->complete = 1;
 		return -EINVAL;
 	}
-	
+
 	req->next = NULL;
 	req->sent = 0;
 	req->complete = 0;
@@ -272,7 +246,8 @@ static int macii_write(struct adb_request *req)
 	} else {
 		current_req = req;
 		last_req = req;
-		if (macii_state == idle) macii_start();
+		if (macii_state == idle)
+			macii_start();
 	}
 	return 0;
 }
@@ -287,7 +262,8 @@ static int macii_autopoll(int devs)
 	/* bit 1 == device 1, and so on. */
 	autopoll_devs = devs & 0xFFFE;
 
-	if (!autopoll_devs) return 0;
+	if (!autopoll_devs)
+		return 0;
 
 	local_irq_save(flags);
 
@@ -304,7 +280,8 @@ static int macii_autopoll(int devs)
 	return err;
 }
 
-static inline int need_autopoll(void) {
+static inline int need_autopoll(void)
+{
 	/* Was the last command Talk Reg 0
 	 * and is the target on the autopoll list?
 	 */
@@ -326,9 +303,6 @@ static void macii_poll(void)
 static int macii_reset_bus(void)
 {
 	static struct adb_request req;
-	
-	if (request_is_queued(&req))
-		return 0;
 
 	/* Command = 0, Address = ignored */
 	adb_request(&req, NULL, 0, 1, ADB_BUSRESET);
@@ -345,10 +319,6 @@ static void macii_start(void)
 	struct adb_request *req;
 
 	req = current_req;
-
-	BUG_ON(req == NULL);
-
-	BUG_ON(macii_state != idle);
 
 	/* Now send it. Be careful though, that first byte of the request
 	 * is actually ADB_PACKET; the real data begins at index 1!
@@ -375,7 +345,7 @@ static void macii_start(void)
  * to be activity on the ADB bus. The chip will poll to achieve this.
  *
  * The basic ADB state machine was left unchanged from the original MacII code
- * by Alan Cox, which was based on the CUDA driver for PowerMac. 
+ * by Alan Cox, which was based on the CUDA driver for PowerMac.
  * The syntax of the ADB status lines is totally different on MacII,
  * though. MacII uses the states Command -> Even -> Odd -> Even ->...-> Idle
  * for sending and Idle -> Even -> Odd -> Even ->...-> Idle for receiving.
@@ -387,7 +357,6 @@ static void macii_start(void)
 static irqreturn_t macii_interrupt(int irq, void *arg)
 {
 	int x;
-	static int entered;
 	struct adb_request *req;
 
 	if (!arg) {
@@ -398,153 +367,150 @@ static irqreturn_t macii_interrupt(int irq, void *arg)
 			return IRQ_NONE;
 	}
 
-	BUG_ON(entered++);
-
 	last_status = status;
-	status = via[B] & (ST_MASK|CTLR_IRQ);
+	status = via[B] & (ST_MASK | CTLR_IRQ);
 
 	switch (macii_state) {
-		case idle:
-			if (reading_reply) {
-				reply_ptr = current_req->reply;
-			} else {
-				BUG_ON(current_req != NULL);
-				reply_ptr = reply_buf;
-			}
+	case idle:
+		if (reading_reply) {
+			reply_ptr = current_req->reply;
+		} else {
+			WARN_ON(current_req);
+			reply_ptr = reply_buf;
+		}
 
-			x = via[SR];
+		x = via[SR];
 
-			if ((status & CTLR_IRQ) && (x == 0xFF)) {
-				/* Bus timeout without SRQ sequence:
-				 *     data is "FF" while CTLR_IRQ is "H"
-				 */
-				reply_len = 0;
-				srq_asserted = 0;
-				macii_state = read_done;
-			} else {
-				macii_state = reading;
-				*reply_ptr = x;
-				reply_len = 1;
-			}
-
-			/* set ADB state = even for first data byte */
-			via[B] = (via[B] & ~ST_MASK) | ST_EVEN;
-			break;
-
-		case sending:
-			req = current_req;
-			if (data_index >= req->nbytes) {
-				req->sent = 1;
-				macii_state = idle;
-
-				if (req->reply_expected) {
-					reading_reply = 1;
-				} else {
-					req->complete = 1;
-					current_req = req->next;
-					if (req->done) (*req->done)(req);
-
-					if (current_req)
-						macii_start();
-					else
-						if (need_autopoll())
-							macii_autopoll(autopoll_devs);
-				}
-
-				if (macii_state == idle) {
-					/* reset to shift in */
-					via[ACR] &= ~SR_OUT;
-					x = via[SR];
-					/* set ADB state idle - might get SRQ */
-					via[B] = (via[B] & ~ST_MASK) | ST_IDLE;
-				}
-			} else {
-				via[SR] = req->data[data_index++];
-
-				if ( (via[B] & ST_MASK) == ST_CMD ) {
-					/* just sent the command byte, set to EVEN */
-					via[B] = (via[B] & ~ST_MASK) | ST_EVEN;
-				} else {
-					/* invert state bits, toggle ODD/EVEN */
-					via[B] ^= ST_MASK;
-				}
-			}
-			break;
-
-		case reading:
-			x = via[SR];
-			BUG_ON((status & ST_MASK) == ST_CMD ||
-			       (status & ST_MASK) == ST_IDLE);
-
-			/* Bus timeout with SRQ sequence:
-			 *     data is "XX FF"      while CTLR_IRQ is "L L"
-			 * End of packet without SRQ sequence:
-			 *     data is "XX...YY 00" while CTLR_IRQ is "L...H L"
-			 * End of packet SRQ sequence:
-			 *     data is "XX...YY 00" while CTLR_IRQ is "L...L L"
-			 * (where XX is the first response byte and
-			 * YY is the last byte of valid response data.)
+		if ((status & CTLR_IRQ) && (x == 0xFF)) {
+			/* Bus timeout without SRQ sequence:
+			 *     data is "FF" while CTLR_IRQ is "H"
 			 */
-
+			reply_len = 0;
 			srq_asserted = 0;
-			if (!(status & CTLR_IRQ)) {
-				if (x == 0xFF) {
-					if (!(last_status & CTLR_IRQ)) {
-						macii_state = read_done;
-						reply_len = 0;
-						srq_asserted = 1;
-					}
-				} else if (x == 0x00) {
-					macii_state = read_done;
-					if (!(last_status & CTLR_IRQ))
-						srq_asserted = 1;
-				}
-			}
+			macii_state = read_done;
+		} else {
+			macii_state = reading;
+			*reply_ptr = x;
+			reply_len = 1;
+		}
 
-			if (macii_state == reading) {
-				BUG_ON(reply_len > 15);
-				reply_ptr++;
-				*reply_ptr = x;
-				reply_len++;
-			}
+		/* set ADB state = even for first data byte */
+		via[B] = (via[B] & ~ST_MASK) | ST_EVEN;
+		break;
 
-			/* invert state bits, toggle ODD/EVEN */
-			via[B] ^= ST_MASK;
-			break;
-
-		case read_done:
-			x = via[SR];
-
-			if (reading_reply) {
-				reading_reply = 0;
-				req = current_req;
-				req->reply_len = reply_len;
-				req->complete = 1;
-				current_req = req->next;
-				if (req->done) (*req->done)(req);
-			} else if (reply_len && autopoll_devs)
-				adb_input(reply_buf, reply_len, 0);
-
+	case sending:
+		req = current_req;
+		if (data_index >= req->nbytes) {
+			req->sent = 1;
 			macii_state = idle;
 
-			/* SRQ seen before, initiate poll now */
-			if (srq_asserted)
-				macii_queue_poll();
+			if (req->reply_expected) {
+				reading_reply = 1;
+			} else {
+				req->complete = 1;
+				current_req = req->next;
+				if (req->done)
+					(*req->done)(req);
 
-			if (current_req)
-				macii_start();
-			else
-				if (need_autopoll())
+				if (current_req)
+					macii_start();
+				else if (need_autopoll())
 					macii_autopoll(autopoll_devs);
+			}
 
-			if (macii_state == idle)
+			if (macii_state == idle) {
+				/* reset to shift in */
+				via[ACR] &= ~SR_OUT;
+				x = via[SR];
+				/* set ADB state idle - might get SRQ */
 				via[B] = (via[B] & ~ST_MASK) | ST_IDLE;
-			break;
+			}
+		} else {
+			via[SR] = req->data[data_index++];
 
-		default:
+			if ((via[B] & ST_MASK) == ST_CMD) {
+				/* just sent the command byte, set to EVEN */
+				via[B] = (via[B] & ~ST_MASK) | ST_EVEN;
+			} else {
+				/* invert state bits, toggle ODD/EVEN */
+				via[B] ^= ST_MASK;
+			}
+		}
+		break;
+
+	case reading:
+		x = via[SR];
+		WARN_ON((status & ST_MASK) == ST_CMD ||
+			(status & ST_MASK) == ST_IDLE);
+
+		/* Bus timeout with SRQ sequence:
+		 *     data is "XX FF"      while CTLR_IRQ is "L L"
+		 * End of packet without SRQ sequence:
+		 *     data is "XX...YY 00" while CTLR_IRQ is "L...H L"
+		 * End of packet SRQ sequence:
+		 *     data is "XX...YY 00" while CTLR_IRQ is "L...L L"
+		 * (where XX is the first response byte and
+		 * YY is the last byte of valid response data.)
+		 */
+
+		srq_asserted = 0;
+		if (!(status & CTLR_IRQ)) {
+			if (x == 0xFF) {
+				if (!(last_status & CTLR_IRQ)) {
+					macii_state = read_done;
+					reply_len = 0;
+					srq_asserted = 1;
+				}
+			} else if (x == 0x00) {
+				macii_state = read_done;
+				if (!(last_status & CTLR_IRQ))
+					srq_asserted = 1;
+			}
+		}
+
+		if (macii_state == reading &&
+		    reply_len < ARRAY_SIZE(reply_buf)) {
+			reply_ptr++;
+			*reply_ptr = x;
+			reply_len++;
+		}
+
+		/* invert state bits, toggle ODD/EVEN */
+		via[B] ^= ST_MASK;
+		break;
+
+	case read_done:
+		x = via[SR];
+
+		if (reading_reply) {
+			reading_reply = 0;
+			req = current_req;
+			req->reply_len = reply_len;
+			req->complete = 1;
+			current_req = req->next;
+			if (req->done)
+				(*req->done)(req);
+		} else if (reply_len && autopoll_devs)
+			adb_input(reply_buf, reply_len, 0);
+
+		macii_state = idle;
+
+		/* SRQ seen before, initiate poll now */
+		if (srq_asserted)
+			macii_queue_poll();
+
+		if (current_req)
+			macii_start();
+		else if (need_autopoll())
+			macii_autopoll(autopoll_devs);
+
+		if (macii_state == idle)
+			via[B] = (via[B] & ~ST_MASK) | ST_IDLE;
+		break;
+
+	default:
 		break;
 	}
 
-	entered--;
 	return IRQ_HANDLED;
 }

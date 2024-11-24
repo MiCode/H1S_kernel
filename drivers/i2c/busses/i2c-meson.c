@@ -8,6 +8,7 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/completion.h>
 #include <linux/i2c.h>
@@ -16,6 +17,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/types.h>
 
@@ -34,12 +36,17 @@
 #define REG_CTRL_ACK_IGNORE	BIT(1)
 #define REG_CTRL_STATUS		BIT(2)
 #define REG_CTRL_ERROR		BIT(3)
-#define REG_CTRL_CLKDIV_SHIFT	12
-#define REG_CTRL_CLKDIV_MASK	GENMASK(21, 12)
-#define REG_CTRL_CLKDIVEXT_SHIFT 28
-#define REG_CTRL_CLKDIVEXT_MASK	GENMASK(29, 28)
+#define REG_CTRL_CLKDIV		GENMASK(21, 12)
+#define REG_CTRL_CLKDIVEXT	GENMASK(29, 28)
+
+#define REG_SLV_ADDR		GENMASK(7, 0)
+#define REG_SLV_SDA_FILTER	GENMASK(10, 8)
+#define REG_SLV_SCL_FILTER	GENMASK(13, 11)
+#define REG_SLV_SCL_LOW		GENMASK(27, 16)
+#define REG_SLV_SCL_LOW_EN	BIT(28)
 
 #define I2C_TIMEOUT_MS		500
+#define FILTER_DELAY		15
 
 enum {
 	TOKEN_END = 0,
@@ -57,6 +64,10 @@ enum {
 	STATE_WRITE,
 };
 
+struct meson_i2c_data {
+	unsigned char div_factor;
+};
+
 /**
  * struct meson_i2c - Meson I2C device private data
  *
@@ -64,7 +75,6 @@ enum {
  * @dev:	Pointer to device structure
  * @regs:	Base address of the device memory mapped registers
  * @clk:	Pointer to clock structure
- * @irq:	IRQ number
  * @msg:	Pointer to the current I2C message
  * @state:	Current state in the driver state machine
  * @last:	Flag set for the last message in the transfer
@@ -75,6 +85,7 @@ enum {
  * @done:	Completion used to wait for transfer termination
  * @tokens:	Sequence of tokens to be written to the device
  * @num_tokens:	Number of tokens
+ * @data:	Pointer to the controlller's platform data
  */
 struct meson_i2c {
 	struct i2c_adapter	adap;
@@ -93,6 +104,8 @@ struct meson_i2c {
 	struct completion	done;
 	u32			tokens[2];
 	int			num_tokens;
+
+	const struct meson_i2c_data *data;
 };
 
 static void meson_i2c_set_mask(struct meson_i2c *i2c, int reg, u32 mask,
@@ -128,19 +141,24 @@ static void meson_i2c_set_clk_div(struct meson_i2c *i2c, unsigned int freq)
 	unsigned long clk_rate = clk_get_rate(i2c->clk);
 	unsigned int div;
 
-	div = DIV_ROUND_UP(clk_rate, freq * 4);
+	div = DIV_ROUND_UP(clk_rate, freq);
+	div -= FILTER_DELAY;
+	div = DIV_ROUND_UP(div, i2c->data->div_factor);
 
 	/* clock divider has 12 bits */
-	if (div >= (1 << 12)) {
+	if (div > GENMASK(11, 0)) {
 		dev_err(i2c->dev, "requested bus frequency too low\n");
-		div = (1 << 12) - 1;
+		div = GENMASK(11, 0);
 	}
 
-	meson_i2c_set_mask(i2c, REG_CTRL, REG_CTRL_CLKDIV_MASK,
-			   (div & GENMASK(9, 0)) << REG_CTRL_CLKDIV_SHIFT);
+	meson_i2c_set_mask(i2c, REG_CTRL, REG_CTRL_CLKDIV,
+			   FIELD_PREP(REG_CTRL_CLKDIV, div & GENMASK(9, 0)));
 
-	meson_i2c_set_mask(i2c, REG_CTRL, REG_CTRL_CLKDIVEXT_MASK,
-			   (div >> 10) << REG_CTRL_CLKDIVEXT_SHIFT);
+	meson_i2c_set_mask(i2c, REG_CTRL, REG_CTRL_CLKDIVEXT,
+			   FIELD_PREP(REG_CTRL_CLKDIVEXT, div >> 10));
+
+	/* Disable HIGH/LOW mode */
+	meson_i2c_set_mask(i2c, REG_SLAVE_ADDR, REG_SLV_SCL_LOW_EN, 0);
 
 	dev_dbg(i2c->dev, "%s: clk %lu, freq %u, div %u\n", __func__,
 		clk_rate, freq, div);
@@ -269,7 +287,10 @@ static void meson_i2c_do_start(struct meson_i2c *i2c, struct i2c_msg *msg)
 	token = (msg->flags & I2C_M_RD) ? TOKEN_SLAVE_ADDR_READ :
 		TOKEN_SLAVE_ADDR_WRITE;
 
-	writel(msg->addr << 1, i2c->regs + REG_SLAVE_ADDR);
+
+	meson_i2c_set_mask(i2c, REG_SLAVE_ADDR, REG_SLV_ADDR,
+			   FIELD_PREP(REG_SLV_ADDR, msg->addr << 1));
+
 	meson_i2c_add_token(i2c, TOKEN_START);
 	meson_i2c_add_token(i2c, token);
 }
@@ -376,6 +397,9 @@ static int meson_i2c_probe(struct platform_device *pdev)
 	spin_lock_init(&i2c->lock);
 	init_completion(&i2c->done);
 
+	i2c->data = (const struct meson_i2c_data *)
+		of_device_get_match_data(&pdev->dev);
+
 	i2c->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(i2c->clk)) {
 		dev_err(&pdev->dev, "can't get device clock\n");
@@ -425,6 +449,10 @@ static int meson_i2c_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	/* Disable filtering */
+	meson_i2c_set_mask(i2c, REG_SLAVE_ADDR,
+			   REG_SLV_SDA_FILTER | REG_SLV_SCL_FILTER, 0);
+
 	meson_i2c_set_clk_div(i2c, timings.bus_freq_hz);
 
 	return 0;
@@ -440,11 +468,25 @@ static int meson_i2c_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id meson_i2c_match[] = {
-	{ .compatible = "amlogic,meson6-i2c" },
-	{ .compatible = "amlogic,meson-gxbb-i2c" },
-	{ },
+static const struct meson_i2c_data i2c_meson6_data = {
+	.div_factor = 4,
 };
+
+static const struct meson_i2c_data i2c_gxbb_data = {
+	.div_factor = 4,
+};
+
+static const struct meson_i2c_data i2c_axg_data = {
+	.div_factor = 3,
+};
+
+static const struct of_device_id meson_i2c_match[] = {
+	{ .compatible = "amlogic,meson6-i2c", .data = &i2c_meson6_data },
+	{ .compatible = "amlogic,meson-gxbb-i2c", .data = &i2c_gxbb_data },
+	{ .compatible = "amlogic,meson-axg-i2c", .data = &i2c_axg_data },
+	{},
+};
+
 MODULE_DEVICE_TABLE(of, meson_i2c_match);
 
 static struct platform_driver meson_i2c_driver = {

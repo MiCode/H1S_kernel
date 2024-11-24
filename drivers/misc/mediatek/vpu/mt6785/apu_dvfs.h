@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __APU_DVFS_H
@@ -18,7 +11,7 @@
 #include <linux/io.h>
 #include <linux/interrupt.h>
 #include <linux/regulator/consumer.h>
-#include <linux/pm_qos.h>
+#include <linux/soc/mediatek/mtk-pm-qos.h>
 
 #define VVPU_DVFS_VOLT0	 (82500)	/* mV x 100 */
 #define VVPU_DVFS_VOLT1	 (72500)	/* mV x 100 */
@@ -67,7 +60,7 @@ enum vvpu_opp {
 	VVPU_OPP_2,
 	VVPU_OPP_3,
 	VVPU_OPP_NUM,
-	VVPU_OPP_UNREQ = PM_QOS_VVPU_OPP_DEFAULT_VALUE,
+	VVPU_OPP_UNREQ = MTK_PM_QOS_VVPU_OPP_DEFAULT_VALUE,
 };
 
 

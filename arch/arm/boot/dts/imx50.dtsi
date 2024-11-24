@@ -22,10 +22,8 @@
 	 * The decompressor and also some bootloaders rely on a
 	 * pre-existing /chosen node to be available to insert the
 	 * command line and merge other ATAGS info.
-	 * Also for U-Boot there must be a pre-existing /memory node.
 	 */
 	chosen {};
-	memory { device_type = "memory"; reg = <0 0>; };
 
 	aliases {
 		ethernet0 = &fec;
@@ -52,7 +50,7 @@
 		};
 	};
 
-	tzic: tz-interrupt-controller@0fffc000 {
+	tzic: tz-interrupt-controller@fffc000 {
 		compatible = "fsl,imx50-tzic", "fsl,imx53-tzic", "fsl,tzic";
 		interrupt-controller;
 		#interrupt-cells = <1>;
@@ -60,9 +58,6 @@
 	};
 
 	clocks {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
 		ckil {
 			compatible = "fsl,imx-ckil", "fixed-clock";
 			#clock-cells = <0>;
@@ -208,24 +203,6 @@
 				reg = <0x53f80200 0x0200>;
 				interrupts = <14>;
 				clocks = <&clks IMX5_CLK_USB_PHY2_GATE>;
-				dr_mode = "host";
-				status = "disabled";
-			};
-
-			usbh2: usb@53f80400 {
-				compatible = "fsl,imx50-usb", "fsl,imx27-usb";
-				reg = <0x53f80400 0x0200>;
-				interrupts = <16>;
-				clocks = <&clks IMX5_CLK_USBOH3_GATE>;
-				dr_mode = "host";
-				status = "disabled";
-			};
-
-			usbh3: usb@53f80600 {
-				compatible = "fsl,imx50-usb", "fsl,imx27-usb";
-				reg = <0x53f80600 0x0200>;
-				interrupts = <17>;
-				clocks = <&clks IMX5_CLK_USBOH3_GATE>;
 				dr_mode = "host";
 				status = "disabled";
 			};
@@ -443,6 +420,7 @@
 				clocks = <&clks IMX5_CLK_SDMA_GATE>,
 					 <&clks IMX5_CLK_AHB>;
 				clock-names = "ipg", "ahb";
+				#dma-cells = <3>;
 				fsl,sdma-ram-script-name = "imx/sdma/sdma-imx50.bin";
 			};
 

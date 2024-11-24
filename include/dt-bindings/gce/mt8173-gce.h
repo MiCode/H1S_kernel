@@ -8,10 +8,6 @@
 #ifndef _DT_BINDINGS_GCE_MT8173_H
 #define _DT_BINDINGS_GCE_MT8173_H
 
-#define CMDQ_NO_TIMEOUT		0xffffffff
-
-#define CMDQ_THR_MAX_COUNT	16
-
 /* GCE HW thread priority */
 #define CMDQ_THR_PRIO_LOWEST	0
 #define CMDQ_THR_PRIO_HIGHEST	1

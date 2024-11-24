@@ -15,7 +15,6 @@ Documentation/devicetree/bindings/net/marvell-bt-8xxx.txt
 
 Optional properties:
 
-  - interrupt-parent: phandle of the parent interrupt controller
   - interrupt-names: (see below)
   - interrupts : The interrupt specified by the name "wakeup" is the interrupt
 		 that shall be used for out-of-band wake-on-bt. Driver will
@@ -36,7 +35,7 @@ Following example uses irq pin number 3 of gpio0 for out of band wake-on-bt:
 	compatible = "usb1286,204e";
 	reg = <1>;
 	interrupt-parent = <&gpio0>;
-	interrupt-name = "wakeup";
+	interrupt-names = "wakeup";
 	interrupts = <3 IRQ_TYPE_LEVEL_LOW>;
     };
 };

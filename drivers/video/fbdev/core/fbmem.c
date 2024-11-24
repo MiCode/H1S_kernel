@@ -496,7 +496,8 @@ static int fb_show_logo_line(struct fb_info *info, int rotate,
 	}
 
 	if (fb_logo.depth <= 4) {
-		logo_new = kmalloc(logo->width * logo->height, GFP_KERNEL);
+		logo_new = kmalloc_array(logo->width, logo->height,
+					 GFP_KERNEL);
 		if (logo_new == NULL) {
 			kfree(palette);
 			if (saved_pseudo_palette)
@@ -513,8 +514,8 @@ static int fb_show_logo_line(struct fb_info *info, int rotate,
 	image.height = logo->height;
 
 	if (rotate) {
-		logo_rotate = kmalloc(logo->width *
-				      logo->height, GFP_KERNEL);
+		logo_rotate = kmalloc_array(logo->width, logo->height,
+					    GFP_KERNEL);
 		if (logo_rotate)
 			fb_rotate_logo(info, logo_rotate, &image, rotate);
 	}
@@ -720,19 +721,6 @@ static const struct seq_operations proc_fb_seq_ops = {
 	.show	= fb_seq_show,
 };
 
-static int proc_fb_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &proc_fb_seq_ops);
-}
-
-static const struct file_operations fb_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= proc_fb_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= seq_release,
-};
-
 /*
  * We hold a reference to the fb_info in file->private_data,
  * but if the current registered fb has changed, we don't
@@ -762,6 +750,9 @@ fb_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 	int c, cnt = 0, err = 0;
 	unsigned long total_size;
 
+	if (p % 8 != 0)
+		p = (p + 7) / 8;
+
 	if (!info || ! info->screen_base)
 		return -ENODEV;
 
@@ -770,7 +761,7 @@ fb_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
 
 	if (info->fbops->fb_read)
 		return info->fbops->fb_read(info, buf, count, ppos);
-	
+
 	total_size = info->screen_size;
 
 	if (total_size == 0)
@@ -827,6 +818,9 @@ fb_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 	int c, cnt = 0, err = 0;
 	unsigned long total_size;
 
+	if (p % 8 != 0)
+		p = (p + 7) / 8;
+
 	if (!info || !info->screen_base)
 		return -ENODEV;
 
@@ -835,7 +829,7 @@ fb_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
 
 	if (info->fbops->fb_write)
 		return info->fbops->fb_write(info, buf, count, ppos);
-	
+
 	total_size = info->screen_size;
 
 	if (total_size == 0)
@@ -983,6 +977,7 @@ fb_set_var(struct fb_info *info, struct fb_var_screeninfo *var)
 	if ((var->activate & FB_ACTIVATE_FORCE) ||
 	    memcmp(&info->var, var, sizeof(struct fb_var_screeninfo))) {
 		u32 activate = var->activate;
+		u32 unused;
 
 		/* When using FOURCC mode, make sure the red, green, blue and
 		 * transp fields are set to 0.
@@ -1003,10 +998,30 @@ fb_set_var(struct fb_info *info, struct fb_var_screeninfo *var)
 			goto done;
 		}
 
+		/* bitfill_aligned() assumes that it's at least 8x8 */
+		if (var->xres < 8 || var->yres < 8)
+			return -EINVAL;
+
+		/* Too huge resolution causes multiplication overflow. */
+		if (check_mul_overflow(var->xres, var->yres, &unused) ||
+		    check_mul_overflow(var->xres_virtual, var->yres_virtual, &unused))
+			return -EINVAL;
+
 		ret = info->fbops->fb_check_var(var, info);
 
 		if (ret)
 			goto done;
+
+		/* verify that virtual resolution >= physical resolution */
+		if (var->xres_virtual < var->xres ||
+		    var->yres_virtual < var->yres) {
+			pr_warn("WARNING: fbcon: Driver '%s' missed to adjust virtual screen size (%ux%u vs. %ux%u)\n",
+				info->fix.id,
+				var->xres_virtual, var->yres_virtual,
+				var->xres, var->yres);
+			ret = -EINVAL;
+			goto done;
+		}
 
 		if ((var->activate & FB_ACTIVATE_MASK) == FB_ACTIVATE_NOW) {
 			struct fb_var_screeninfo old_var;
@@ -1070,8 +1085,6 @@ fb_blank(struct fb_info *info, int blank)
  	if (blank > FB_BLANK_POWERDOWN)
  		blank = FB_BLANK_POWERDOWN;
 
-	pr_debug("%s blank = %d\n", __func__, blank);
-
 	if (info->blank == blank) {
 		if (info->fbops->fb_blank)
 			ret = info->fbops->fb_blank(blank, info);
@@ -1081,23 +1094,20 @@ fb_blank(struct fb_info *info, int blank)
 	event.info = info;
 	event.data = &blank;
 
-	printk("----FTS----FB-EARLY-EVENT-BLANK");
 	early_ret = fb_notifier_call_chain(FB_EARLY_EVENT_BLANK, &event);
 
 	if (info->fbops->fb_blank)
  		ret = info->fbops->fb_blank(blank, info);
 
-	if (!ret){
-		printk("----FTS----FB-EVENT-BLANK");
-		fb_notifier_call_chain(FB_EVENT_BLANK, &event);}
+	if (!ret)
+		fb_notifier_call_chain(FB_EVENT_BLANK, &event);
 	else {
 		/*
 		 * if fb_blank is failed then revert effects of
 		 * the early blank event.
 		 */
-		if (!early_ret){
-			printk("----FTS----FB-EARLY-EVENT-BLANK2");
-			fb_notifier_call_chain(FB_R_EARLY_EVENT_BLANK, &event);}
+		if (!early_ret)
+			fb_notifier_call_chain(FB_R_EARLY_EVENT_BLANK, &event);
 	}
 
 	if (!ret)
@@ -1137,9 +1147,12 @@ static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
 			console_unlock();
 			return -ENODEV;
 		}
-		info->flags |= FBINFO_MISC_USEREVENT;
-		ret = fb_set_var(info, &var);
-		info->flags &= ~FBINFO_MISC_USEREVENT;
+		ret = fbcon_modechange_possible(info, &var);
+		if (!ret) {
+			info->flags |= FBINFO_MISC_USEREVENT;
+			ret = fb_set_var(info, &var);
+			info->flags &= ~FBINFO_MISC_USEREVENT;
+		}
 		unlock_fb_info(info);
 		console_unlock();
 		if (!ret && copy_to_user(argp, &var, sizeof(var)))
@@ -1380,6 +1393,7 @@ static long fb_compat_ioctl(struct file *file, unsigned int cmd,
 	case FBIOGET_CON2FBMAP:
 	case FBIOPUT_CON2FBMAP:
 		arg = (unsigned long) compat_ptr(arg);
+		/* fall through */
 	case FBIOBLANK:
 		ret = do_fb_ioctl(info, cmd, arg);
 		break;
@@ -1626,10 +1640,8 @@ static int do_remove_conflicting_framebuffers(struct apertures_struct *a,
 	int i, ret;
 
 	/* check all firmware fbs and kick off if the base addr overlaps */
-	for (i = 0 ; i < FB_MAX; i++) {
+	for_each_registered_fb(i) {
 		struct apertures_struct *gen_aper;
-		if (!registered_fb[i])
-			continue;
 
 		if (!(registered_fb[i]->flags & FBINFO_MISC_FIRMWARE))
 			continue;
@@ -1725,17 +1737,22 @@ static int do_register_framebuffer(struct fb_info *fb_info)
 	event.info = fb_info;
 	if (!lockless_register_fb)
 		console_lock();
+	else
+		atomic_inc(&ignore_console_lock_warning);
 	if (!lock_fb_info(fb_info)) {
-		if (!lockless_register_fb)
-			console_unlock();
-		return -ENODEV;
+		ret = -ENODEV;
+		goto unlock_console;
 	}
+	ret = 0;
 
 	fb_notifier_call_chain(FB_EVENT_FB_REGISTERED, &event);
 	unlock_fb_info(fb_info);
+unlock_console:
 	if (!lockless_register_fb)
 		console_unlock();
-	return 0;
+	else
+		atomic_dec(&ignore_console_lock_warning);
+	return ret;
 }
 
 static int unbind_console(struct fb_info *fb_info)
@@ -1925,7 +1942,7 @@ fbmem_init(void)
 {
 	int ret;
 
-	if (!proc_create("fb", 0, NULL, &fb_proc_fops))
+	if (!proc_create_seq("fb", 0, NULL, &proc_fb_seq_ops))
 		return -ENOMEM;
 
 	ret = register_chrdev(FB_MAJOR, "fb", &fb_fops);

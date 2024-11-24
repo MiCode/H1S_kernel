@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 
@@ -42,30 +34,6 @@ struct DISP_EXEC_COMMAND {
 	uint32_t *pTileBaseSW;
 	uint32_t blockSize;
 };
-
-
-/* PQ */
-#define COLOR_TUNING_INDEX 19
-#define THSHP_PARAM_MAX 146 /* TDSHP_3_0 */
-#define PARTIAL_Y_INDEX 10
-
-#define GLOBAL_SAT_SIZE 10
-#define CONTRAST_SIZE 10
-#define BRIGHTNESS_SIZE 10
-#define PARTIAL_Y_SIZE 16
-#define PQ_HUE_ADJ_PHASE_CNT 4
-#define PQ_SAT_ADJ_PHASE_CNT 4
-#define PQ_PARTIALS_CONTROL 5
-#define PURP_TONE_SIZE 3
-#define SKIN_TONE_SIZE 8	/* (-6) */
-#define GRASS_TONE_SIZE 6	/* (-2) */
-#define SKY_TONE_SIZE 3
-#define CCORR_COEF_CNT 4 /* ccorr feature */
-
-
-
-
-
 
 enum DISP_INTERLACE_FORMAT {
 	DISP_INTERLACE_FORMAT_NONE,
@@ -150,6 +118,8 @@ struct disp_iommu_device *disp_get_iommu_dev(void);
 	_IOW(DISP_IOCTL_MAGIC, 17, struct DISP_AAL_PARAM)
 #define DISP_IOCTL_AAL_INIT_REG \
 	_IOW(DISP_IOCTL_MAGIC, 18, struct DISP_AAL_INITREG)
+#define DISP_IOCTL_AAL_GET_SIZE \
+	_IOW(DISP_IOCTL_MAGIC, 25, struct DISP_AAL_DISPLAY_SIZE)
 #define DISP_IOCTL_SET_SMARTBACKLIGHT \
 	_IOW(DISP_IOCTL_MAGIC, 19, int)
 /* Add for AAL control - E */
@@ -166,9 +136,10 @@ struct disp_iommu_device *disp_get_iommu_dev(void);
 /* Get CCORR interrupt */
 #define DISP_IOCTL_CCORR_GET_IRQ \
 	_IOR(DISP_IOCTL_MAGIC, 111, int)
-
+/* Get color transform support */
 #define DISP_IOCTL_SUPPORT_COLOR_TRANSFORM \
 	_IOW(DISP_IOCTL_MAGIC, 112, struct DISP_COLOR_TRANSFORM)
+
 
 /*---------------------------------------------------------------------------*/
 /*  DDP Kernel Mode API  (for Kernel Trap) */

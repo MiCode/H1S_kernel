@@ -628,14 +628,6 @@ int stop_machine(cpu_stop_fn_t fn, void *data, const struct cpumask *cpus)
 }
 EXPORT_SYMBOL_GPL(stop_machine);
 
-int cpu_park(int cpu)
-{
-	struct cpu_stopper *stopper = &per_cpu(cpu_stopper, cpu);
-
-	return !(stopper->enabled);
-}
-EXPORT_SYMBOL(cpu_park);
-
 /**
  * stop_machine_from_inactive_cpu - stop_machine() from inactive CPU
  * @fn: the function to run

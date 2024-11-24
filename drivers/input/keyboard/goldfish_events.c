@@ -17,15 +17,12 @@
 #include <linux/interrupt.h>
 #include <linux/types.h>
 #include <linux/input.h>
-#include <linux/input/mt.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/irq.h>
 #include <linux/io.h>
 #include <linux/acpi.h>
-
-#define GOLDFISH_MAX_FINGERS 5
 
 enum {
 	REG_READ        = 0x00,
@@ -48,33 +45,19 @@ struct event_dev {
 static irqreturn_t events_interrupt(int irq, void *dev_id)
 {
 	struct event_dev *edev = dev_id;
-	unsigned type, code, value;
+	unsigned int type, code, value;
 
 	type = __raw_readl(edev->addr + REG_READ);
 	code = __raw_readl(edev->addr + REG_READ);
 	value = __raw_readl(edev->addr + REG_READ);
 
 	input_event(edev->input, type, code, value);
-	// Send an extra (EV_SYN, SYN_REPORT, 0x0) event
-	// if a key was pressed. Some keyboard device
-        // drivers may only send the EV_KEY event and
-        // not EV_SYN.
-        // Note that sending an extra SYN_REPORT is not
-        // necessary nor correct protocol with other
-        // devices such as touchscreens, which will send
-        // their own SYN_REPORT's when sufficient event
-        // information has been collected (e.g., for
-        // touchscreens, when pressure and X/Y coordinates
-	// have been received). Hence, we will only send
-	// this extra SYN_REPORT if type == EV_KEY.
-	if (type == EV_KEY) {
-		input_sync(edev->input);
-	}
+	input_sync(edev->input);
 	return IRQ_HANDLED;
 }
 
 static void events_import_bits(struct event_dev *edev,
-			unsigned long bits[], unsigned type, size_t count)
+			unsigned long bits[], unsigned int type, size_t count)
 {
 	void __iomem *addr = edev->addr;
 	int i, j;
@@ -116,6 +99,7 @@ static void events_import_abs_params(struct event_dev *edev)
 
 		for (j = 0; j < ARRAY_SIZE(val); j++) {
 			int offset = (i * ARRAY_SIZE(val) + j) * sizeof(u32);
+
 			val[j] = __raw_readl(edev->addr + REG_DATA + offset);
 		}
 
@@ -129,7 +113,7 @@ static int events_probe(struct platform_device *pdev)
 	struct input_dev *input_dev;
 	struct event_dev *edev;
 	struct resource *res;
-	unsigned keymapnamelen;
+	unsigned int keymapnamelen;
 	void __iomem *addr;
 	int irq;
 	int i;
@@ -167,19 +151,10 @@ static int events_probe(struct platform_device *pdev)
 	for (i = 0; i < keymapnamelen; i++)
 		edev->name[i] = __raw_readb(edev->addr + REG_DATA + i);
 
-	pr_debug("events_probe() keymap=%s\n", edev->name);
+	pr_debug("%s: keymap=%s\n", __func__, edev->name);
 
 	input_dev->name = edev->name;
 	input_dev->id.bustype = BUS_HOST;
-	// Set the Goldfish Device to be multi-touch.
-	// In the Ranchu kernel, there is multi-touch-specific
-	// code for handling ABS_MT_SLOT events.
-	// See drivers/input/input.c:input_handle_abs_event.
-	// If we do not issue input_mt_init_slots,
-        // the kernel will filter out needed ABS_MT_SLOT
-        // events when we touch the screen in more than one place,
-        // preventing multi-touch with more than one finger from working.
-	input_mt_init_slots(input_dev, GOLDFISH_MAX_FINGERS, 0);
 
 	events_import_bits(edev, input_dev->evbit, EV_SYN, EV_MAX);
 	events_import_bits(edev, input_dev->keybit, EV_KEY, KEY_MAX);

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "mclk.h"
@@ -47,10 +39,11 @@ static enum IMGSENSOR_RETURN mclk_init(void *pinstance)
 	int i, j;
 	enum   IMGSENSOR_RETURN ret           = IMGSENSOR_RETURN_SUCCESS;
 	char str_pinctrl_name[LENGTH_FOR_SNPRINTF];
+	int ret_snprintf = 0;
 
 	pinst->ppinctrl = devm_pinctrl_get(&pplatform_dev->dev);
 	if (IS_ERR(pinst->ppinctrl)) {
-		pr_err("%s : Cannot find camera pinctrl!\n", __func__);
+		pr_info("%s : Cannot find camera pinctrl!\n", __func__);
 		return IMGSENSOR_RETURN_ERROR;
 	}
 
@@ -59,13 +52,18 @@ static enum IMGSENSOR_RETURN mclk_init(void *pinstance)
 	    i++) {
 		for (j = MCLK_STATE_DISABLE; j < MCLK_STATE_MAX_NUM; j++) {
 			if (mclk_pinctrl_list[j].ppinctrl_names) {
-				snprintf(str_pinctrl_name,
+				ret_snprintf = snprintf(str_pinctrl_name,
 					sizeof(str_pinctrl_name),
 					"cam%d_mclk_%s",
 					i,
 					mclk_pinctrl_list[j].ppinctrl_names);
+				if (ret_snprintf < 0) {
+					pr_info(
+					"snprintf alloc error!, ret = %d", ret);
+					return IMGSENSOR_RETURN_ERROR;
+				}
 				pinst->ppinctrl_state[i][j] =
-			    pinctrl_lookup_state(pinst->ppinctrl,
+				pinctrl_lookup_state(pinst->ppinctrl,
 							str_pinctrl_name);
 				if (IS_ERR(pinst->ppinctrl_state[i][j])) {
 					pr_debug("%s : pinctrl err, %s\n",
@@ -76,7 +74,7 @@ static enum IMGSENSOR_RETURN mclk_init(void *pinstance)
 					if (j == MCLK_STATE_DISABLE) {
 						mutex_lock(&pinctrl_mutex);
 						pinctrl_select_state(
-							pinst->ppinctrl,
+						pinst->ppinctrl,
 						pinst->ppinctrl_state[i][j]);
 						mutex_unlock(&pinctrl_mutex);
 					}
@@ -103,6 +101,7 @@ static enum IMGSENSOR_RETURN mclk_set(
 	 *__func__, sensor_idx, pin, pin_state);
 	 */
 
+
 	if (pin_state < IMGSENSOR_HW_PIN_STATE_LEVEL_0 ||
 	   pin_state > IMGSENSOR_HW_PIN_STATE_LEVEL_HIGH) {
 		ret = IMGSENSOR_RETURN_ERROR;
@@ -110,12 +109,13 @@ static enum IMGSENSOR_RETURN mclk_set(
 		state_index = (pin_state > IMGSENSOR_HW_PIN_STATE_LEVEL_0)
 		    ? MCLK_STATE_ENABLE : MCLK_STATE_DISABLE;
 
+
 		ppinctrl_state = pinst->ppinctrl_state[sensor_idx][state_index];
 		mutex_lock(&pinctrl_mutex);
 		if (ppinctrl_state != NULL && !IS_ERR(ppinctrl_state))
 			pinctrl_select_state(pinst->ppinctrl, ppinctrl_state);
 		else
-			pr_err(
+			pr_info(
 			    "%s : sensor_idx %d fail to set pinctrl, PinIdx %d, Val %d\n",
 			    __func__,
 			    sensor_idx,

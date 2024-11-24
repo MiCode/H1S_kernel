@@ -91,6 +91,9 @@ acpi_evaluate_dsm_typed(acpi_handle handle, const guid_t *guid, u64 rev,
 bool acpi_dev_found(const char *hid);
 bool acpi_dev_present(const char *hid, const char *uid, s64 hrv);
 
+const char *
+acpi_dev_get_first_match_name(const char *hid, const char *uid, s64 hrv);
+
 #ifdef CONFIG_ACPI
 
 #include <linux/proc_fs.h>
@@ -212,7 +215,7 @@ struct acpi_device_flags {
 	u32 of_compatible_ok:1;
 	u32 coherent_dma:1;
 	u32 cca_seen:1;
-	u32 spi_i2c_slave:1;
+	u32 enumeration_by_parent:1;
 	u32 reserved:19;
 };
 
@@ -245,6 +248,7 @@ struct acpi_pnp_type {
 
 struct acpi_device_pnp {
 	acpi_bus_id bus_id;		/* Object name */
+	int instance_no;		/* Instance number of this object */
 	struct acpi_pnp_type type;	/* ID type */
 	acpi_bus_address bus_address;	/* _ADR */
 	char *unique_id;		/* _UID */
@@ -619,7 +623,6 @@ acpi_status acpi_remove_pm_notifier(struct acpi_device *adev);
 bool acpi_pm_device_can_wakeup(struct device *dev);
 int acpi_pm_device_sleep_state(struct device *, int *, int);
 int acpi_pm_set_device_wakeup(struct device *dev, bool enable);
-int acpi_pm_set_bridge_wakeup(struct device *dev, bool enable);
 #else
 static inline void acpi_pm_wakeup_event(struct device *dev)
 {
@@ -647,10 +650,6 @@ static inline int acpi_pm_device_sleep_state(struct device *d, int *p, int m)
 		m : ACPI_STATE_D0;
 }
 static inline int acpi_pm_set_device_wakeup(struct device *dev, bool enable)
-{
-	return -ENODEV;
-}
-static inline int acpi_pm_set_bridge_wakeup(struct device *dev, bool enable)
 {
 	return -ENODEV;
 }

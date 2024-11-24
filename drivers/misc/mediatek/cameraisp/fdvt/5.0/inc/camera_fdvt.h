@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
 
 #ifndef _MT_FDVT_H
@@ -41,7 +33,7 @@
 
 #define FDVT_REG_RANGE           (0x1000)
 
-#define FDVT_BASE_HW   0x1502B000
+#define FDVT_BASE_HW   0x1B001000
 
 
 /*This macro is for setting irq status represnted
@@ -49,7 +41,6 @@
  */
 #define FDVT_INT_ST                 (1<<0)
 
-extern void mt_irq_dump_status(int irq);
 
 struct FDVT_REG_STRUCT {
 	unsigned int module;

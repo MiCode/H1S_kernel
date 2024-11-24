@@ -1,19 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
-/* unmark after met ready */
-/* #define CMDQ_MDP_MET_STATUS */
-/* #define CMDQ_MET_READY */
-
 
 #include "cmdq_core.h"
 #include "cmdq_virtual.h"
@@ -55,7 +43,7 @@
 #include <mach/mt_irq.h>
 #include "ddp_reg.h"
 #endif
-#include <mt-plat/mtk_lpae.h>
+/* #include <mt-plat/mtk_lpae.h> */
 
 
 /* #define CMDQ_PROFILE_COMMAND_TRIGGER_LOOP */
@@ -875,7 +863,7 @@ bool cmdq_core_support_sync_non_suspendable(void)
 #endif
 }
 
-ssize_t cmdqCorePrintLogLevel(struct device *dev,
+ssize_t log_level_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	int len = 0;
@@ -886,7 +874,7 @@ ssize_t cmdqCorePrintLogLevel(struct device *dev,
 	return len;
 }
 
-ssize_t cmdqCoreWriteLogLevel(struct device *dev,
+ssize_t log_level_store(struct device *dev,
 			      struct device_attribute *attr,
 			      const char *buf, size_t size)
 {
@@ -921,7 +909,7 @@ ssize_t cmdqCoreWriteLogLevel(struct device *dev,
 	return status;
 }
 
-ssize_t cmdqCorePrintProfileEnable(struct device *dev,
+ssize_t profile_enable_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	int len = 0;
@@ -933,7 +921,7 @@ ssize_t cmdqCorePrintProfileEnable(struct device *dev,
 
 }
 
-ssize_t cmdqCoreWriteProfileEnable(struct device *dev,
+ssize_t profile_enable_store(struct device *dev,
 				   struct device_attribute *attr,
 				   const char *buf, size_t size)
 {
@@ -1609,7 +1597,7 @@ int cmdqCorePrintStatusSeq(struct seq_file *m, void *v)
 	return 0;
 }
 
-ssize_t cmdqCorePrintRecord(struct device *dev,
+ssize_t record_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	unsigned long flags;
@@ -1666,7 +1654,7 @@ ssize_t cmdqCorePrintRecord(struct device *dev,
 	return curPos;
 }
 
-ssize_t cmdqCorePrintError(struct device *dev,
+ssize_t error_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	int i;
@@ -1690,7 +1678,7 @@ ssize_t cmdqCorePrintError(struct device *dev,
 	return length;
 }
 
-ssize_t cmdqCorePrintStatus(struct device *dev,
+ssize_t status_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	unsigned long flags = 0L;
@@ -2219,8 +2207,8 @@ int32_t cmdqCoreRegisterCB(enum CMDQ_GROUP_ENUM engGroup,
 		return -EFAULT;
 
 	CMDQ_MSG("Register %d group engines' callback\n", engGroup);
-	CMDQ_MSG("clockOn:  0x%pf, dumpInfo: 0x%pf\n", clockOn, dumpInfo);
-	CMDQ_MSG("resetEng: 0x%pf, clockOff: 0x%pf\n", resetEng, clockOff);
+	CMDQ_MSG("clockOn:  0x%p, dumpInfo: 0x%p\n", clockOn, dumpInfo);
+	CMDQ_MSG("resetEng: 0x%p, clockOff: 0x%p\n", resetEng, clockOff);
 
 	pCallback = &(gCmdqGroupCallback[engGroup]);
 
@@ -2265,7 +2253,7 @@ int32_t cmdqCoreRegisterTrackTaskCB(enum CMDQ_GROUP_ENUM engGroup,
 		return -EFAULT;
 
 	CMDQ_MSG("Register %d group engines' callback\n", engGroup);
-	CMDQ_MSG("trackTask:  %pf\n", trackTask);
+	CMDQ_MSG("trackTask:  %p\n", trackTask);
 
 	pCallback = &(gCmdqGroupCallback[engGroup]);
 
@@ -3945,9 +3933,7 @@ static void cmdq_core_enable_clock(uint64_t engineFlag,
 				gCmdqEngineGroupBits[CMDQ_GROUP_ISP] &
 				engineFlag);
 
-#if 1
 			++gCmdqISPClockCounter;
-#endif
 
 			if (status < 0) {
 				/* Error status print */
@@ -4213,7 +4199,7 @@ static int32_t cmdq_core_find_a_free_HW_thread(uint64_t engineFlag,
 		CMDQ_VERBOSE("THREAD: isEngineConflict:%d, thread:%d\n",
 			isEngineConflict, thread);
 
-#if 1		/* TODO: secure path proting */
+		/* TODO: secure path proting */
 		/* because all thread are pre-dispatched,
 		 * there 2 outcome of engine conflict check:
 		 * 1. pre-dispatched secure thread,
@@ -4230,7 +4216,6 @@ static int32_t cmdq_core_find_a_free_HW_thread(uint64_t engineFlag,
 			isEngineConflict = true;
 			break;
 		}
-#endif
 		/* no enfine conflict with running thread, */
 		/* AND used engines have no owner */
 		/* try to find a free thread */
@@ -4434,14 +4419,12 @@ static void cmdq_core_disable_clock(uint64_t engineFlag,
 				gCmdqEngineGroupBits[CMDQ_GROUP_ISP] &
 					engineFlag);
 
-#if 1
 			--gCmdqISPClockCounter;
 			if (gCmdqISPClockCounter != 0) {
 				/* ISP clock off */
 				CMDQ_VERBOSE("CLOCK: ISP clockOff cnt=%d\n",
 					gCmdqISPClockCounter);
 			}
-#endif
 
 			if (status < 0)
 				CMDQ_ERR("CLK:disable ISP clockOff fail\n");
@@ -5572,7 +5555,7 @@ CmdqModulePAStatStruct *cmdq_core_Initial_and_get_module_stat(void)
 	return &gCmdqModulePAStat;
 }
 
-ssize_t cmdqCorePrintInstructionCountLevel(struct device *dev,
+ssize_t instruction_count_level_show(struct device *dev,
 	struct device_attribute *attr,
 	char *buf)
 {
@@ -5584,7 +5567,7 @@ ssize_t cmdqCorePrintInstructionCountLevel(struct device *dev,
 	return len;
 }
 
-ssize_t cmdqCoreWriteInstructionCountLevel(struct device *dev,
+ssize_t instruction_count_level_store(struct device *dev,
 					   struct device_attribute *attr,
 					   const char *buf,
 					   size_t size)
@@ -6054,10 +6037,6 @@ static void cmdq_core_track_task_record(struct TaskStruct *pTask,
 	char buf[256];
 	int length;
 
-#if 0
-	if (cmdq_get_func()->shouldProfile(pTask->scenario))
-		return;
-#endif
 
 	done = sched_clock();
 
@@ -7204,10 +7183,6 @@ static int32_t cmdq_core_handle_wait_task_result_secure_impl(
 		throwAEE = !(private && private->internal &&
 			private->ignore_timeout);
 		/* shall we pass the error instru back from secure path?? */
-		#if 0
-		cmdq_core_parse_error(pTask, thread,
-			&module, &irqFlag, &instA, &instB);
-		#endif
 		module = cmdq_get_func()->parseErrorModule(pTask);
 
 		/* module dump */
@@ -9402,10 +9377,6 @@ int32_t cmdqCoreInitialize(void)
 	cmdq_sec_create_shared_memory(&(gCmdqContext.hSecSharedMem), PAGE_SIZE);
 #endif
 
-#if 0
-	cmdqCoreRegisterDebugRegDumpCB(testcase_regdump_begin,
-		testcase_regdump_end);
-#endif
 
 	/* Initialize MET for statistics */
 	/* note that we don't need to uninit it. */

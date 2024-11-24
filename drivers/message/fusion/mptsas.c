@@ -1165,7 +1165,6 @@ mptsas_schedule_target_reset(void *iocp)
 	 * issue target reset to next device in the queue
 	 */
 
-	head = &hd->target_reset_list;
 	if (list_empty(head))
 		return;
 
@@ -1930,7 +1929,7 @@ static enum blk_eh_timer_return mptsas_eh_timed_out(struct scsi_cmnd *sc)
 	MPT_SCSI_HOST *hd;
 	MPT_ADAPTER   *ioc;
 	VirtDevice    *vdevice;
-	enum blk_eh_timer_return rc = BLK_EH_NOT_HANDLED;
+	enum blk_eh_timer_return rc = BLK_EH_DONE;
 
 	hd = shost_priv(sc->device->host);
 	if (hd == NULL) {
@@ -2969,7 +2968,7 @@ out_unlock:
 	mutex_unlock(&ioc->sas_mgmt.mutex);
 out:
 	return ret;
- }
+}
 
 static void
 mptsas_parse_device_info(struct sas_identify *identify,
@@ -4321,13 +4320,14 @@ mptsas_hotplug_work(MPT_ADAPTER *ioc, struct fw_event_work *fw_event,
 			if (ioc->raid_data.pIocPg2->RaidVolume[i].VolumeID ==
 			    hot_plug_info->id) {
 				printk(MYIOC_s_WARN_FMT "firmware bug: unable "
-				    "to add hidden disk - target_id matchs "
+				    "to add hidden disk - target_id matches "
 				    "volume_id\n", ioc->name);
 				mptsas_free_fw_event(ioc, fw_event);
 				return;
 			}
 		}
 		mpt_findImVolumes(ioc);
+		/* fall through */
 
 	case MPTSAS_ADD_DEVICE:
 		memset(&sas_device, 0, sizeof(struct mptsas_devinfo));

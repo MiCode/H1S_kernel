@@ -178,6 +178,7 @@
 #define SONIC_TCR_NCRS          0x0100
 #define SONIC_TCR_CRLS          0x0080
 #define SONIC_TCR_EXC           0x0040
+#define SONIC_TCR_OWC           0x0020
 #define SONIC_TCR_PMB           0x0008
 #define SONIC_TCR_FU            0x0004
 #define SONIC_TCR_BCM           0x0002
@@ -316,13 +317,12 @@ struct sonic_local {
 	u32 rda_laddr;              /* logical DMA address of RDA */
 	dma_addr_t rx_laddr[SONIC_NUM_RRS]; /* logical DMA addresses of rx skbuffs */
 	dma_addr_t tx_laddr[SONIC_NUM_TDS]; /* logical DMA addresses of tx skbuffs */
-	unsigned int rra_end;
-	unsigned int cur_rwp;
 	unsigned int cur_rx;
 	unsigned int cur_tx;           /* first unacked transmit packet */
 	unsigned int eol_rx;
 	unsigned int eol_tx;           /* last unacked transmit packet */
 	unsigned int next_tx;          /* next free TD */
+	int msg_enable;
 	struct device *device;         /* generic device */
 	struct net_device_stats stats;
 	spinlock_t lock;
@@ -341,6 +341,7 @@ static struct net_device_stats *sonic_get_stats(struct net_device *dev);
 static void sonic_multicast_list(struct net_device *dev);
 static int sonic_init(struct net_device *dev);
 static void sonic_tx_timeout(struct net_device *dev);
+static void sonic_msg_init(struct net_device *dev);
 
 /* Internal inlines for reading/writing DMA buffers.  Note that bus
    size and endianness matter here, whereas they don't for registers,
@@ -448,6 +449,22 @@ static inline __u16 sonic_rra_get(struct net_device* dev, int entry,
 	struct sonic_local *lp = netdev_priv(dev);
 	return sonic_buf_get(lp->rra, lp->dma_bitmode,
 			     (entry * SIZEOF_SONIC_RR) + offset);
+}
+
+static inline u16 sonic_rr_addr(struct net_device *dev, int entry)
+{
+	struct sonic_local *lp = netdev_priv(dev);
+
+	return lp->rra_laddr +
+	       entry * SIZEOF_SONIC_RR * SONIC_BUS_SCALE(lp->dma_bitmode);
+}
+
+static inline u16 sonic_rr_entry(struct net_device *dev, u16 addr)
+{
+	struct sonic_local *lp = netdev_priv(dev);
+
+	return (addr - (u16)lp->rra_laddr) / (SIZEOF_SONIC_RR *
+					      SONIC_BUS_SCALE(lp->dma_bitmode));
 }
 
 static const char version[] =

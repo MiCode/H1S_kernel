@@ -18,7 +18,8 @@
 #include "dm.h"
 
 #define DM_RESERVED_MAX_IOS		1024
-#define DM_WAIT_DEV_MAX_TIME		5000
+#define DM_MAX_TARGETS			1048576
+#define DM_MAX_TARGET_PARAMS		1024
 
 struct dm_kobject_holder {
 	struct kobject kobj;
@@ -32,6 +33,9 @@ struct dm_kobject_holder {
 struct mapped_device {
 	struct mutex suspend_lock;
 
+	struct mutex table_devices_lock;
+	struct list_head table_devices;
+
 	/*
 	 * The current mapping (struct dm_table *).
 	 * Use dm_get_live_table{_fast} or take suspend_lock for
@@ -39,17 +43,14 @@ struct mapped_device {
 	 */
 	void __rcu *map;
 
-	struct list_head table_devices;
-	struct mutex table_devices_lock;
-
 	unsigned long flags;
 
-	struct request_queue *queue;
-	int numa_node_id;
-
-	enum dm_queue_mode type;
 	/* Protect queue and type against concurrent access. */
 	struct mutex type_lock;
+	enum dm_queue_mode type;
+
+	int numa_node_id;
+	struct request_queue *queue;
 
 	atomic_t holders;
 	atomic_t open_count;
@@ -57,20 +58,20 @@ struct mapped_device {
 	struct dm_target *immutable_target;
 	struct target_type *immutable_target_type;
 
+	char name[16];
 	struct gendisk *disk;
 	struct dax_device *dax_dev;
-	char name[16];
-
-	void *interface_ptr;
 
 	/*
 	 * A list of ios that arrived while we were suspended.
 	 */
-	atomic_t pending[2];
-	wait_queue_head_t wait;
 	struct work_struct work;
+	wait_queue_head_t wait;
+	atomic_t pending[2];
 	spinlock_t deferred_lock;
 	struct bio_list deferred;
+
+	void *interface_ptr;
 
 	/*
 	 * Event handling.
@@ -85,16 +86,15 @@ struct mapped_device {
 	unsigned internal_suspend_count;
 
 	/*
+	 * io objects are allocated from here.
+	 */
+	struct bio_set io_bs;
+	struct bio_set bs;
+
+	/*
 	 * Processing queue (flush)
 	 */
 	struct workqueue_struct *wq;
-
-	/*
-	 * io objects are allocated from here.
-	 */
-	mempool_t *io_pool;
-
-	struct bio_set *bs;
 
 	/*
 	 * freeze/thaw support require holding onto a super block
@@ -104,10 +104,10 @@ struct mapped_device {
 	/* forced geometry settings */
 	struct hd_geometry geometry;
 
-	struct block_device *bdev;
-
 	/* kobject and completion */
 	struct dm_kobject_holder kobj_holder;
+
+	struct block_device *bdev;
 
 	/* zero-length flush that will be cloned and submitted to targets */
 	struct bio flush_bio;
@@ -131,9 +131,8 @@ struct mapped_device {
 	struct srcu_struct io_barrier;
 };
 
-void dm_init_md_queue(struct mapped_device *md);
-void dm_init_normal_md_queue(struct mapped_device *md);
 int md_in_flight(struct mapped_device *md);
+void disable_discard(struct mapped_device *md);
 void disable_write_same(struct mapped_device *md);
 void disable_write_zeroes(struct mapped_device *md);
 

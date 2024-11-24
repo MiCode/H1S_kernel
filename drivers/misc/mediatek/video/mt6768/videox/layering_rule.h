@@ -1,14 +1,7 @@
-/* * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __LAYER_STRATEGY_EX__
 #define __LAYER_STRATEGY_EX__
@@ -16,16 +9,32 @@
 #include "layering_rule_base.h"
 
 #ifdef CONFIG_MTK_ROUND_CORNER_SUPPORT
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+#define MAX_PHY_OVL_CNT (3+2)
+#else
 #define MAX_PHY_OVL_CNT (12-2)
+#endif
+#else
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+#define MAX_PHY_OVL_CNT (4+3)
 #else
 #define MAX_PHY_OVL_CNT (12)
+#endif
 #endif
 
 /* #define HAS_LARB_HRT */
 #ifndef CONFIG_MTK_ROUND_CORNER_SUPPORT
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+#define HRT_AEE_LAYER_MASK 0xFFFFFFF7
+#else
 #define HRT_AEE_LAYER_MASK 0xFFFFFFDF
+#endif
+#else
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+#define HRT_AEE_LAYER_MASK 0xFFFFFFFB
 #else
 #define HRT_AEE_LAYER_MASK 0xFFFFFFEF
+#endif
 #endif
 
 enum DISP_DEBUG_LEVEL {

@@ -15,7 +15,7 @@
 #include <linux/fs.h>
 #include <linux/module.h>
 
-#include <dvbdev.h>
+#include <media/dvbdev.h>
 
 #include "firedtv.h"
 
@@ -138,6 +138,8 @@ static int fdtv_ca_pmt(struct firedtv *fdtv, void *arg)
 	} else {
 		data_length = msg->msg[3];
 	}
+	if (data_length > sizeof(msg->msg) - data_pos)
+		return -EINVAL;
 
 	return avc_ca_pmt(fdtv, &msg->msg[data_pos], data_length);
 }
@@ -207,9 +209,9 @@ static int fdtv_ca_ioctl(struct file *file, unsigned int cmd, void *arg)
 	return err;
 }
 
-static unsigned int fdtv_ca_io_poll(struct file *file, poll_table *wait)
+static __poll_t fdtv_ca_io_poll(struct file *file, poll_table *wait)
 {
-	return POLLIN;
+	return EPOLLIN;
 }
 
 static const struct file_operations fdtv_ca_fops = {

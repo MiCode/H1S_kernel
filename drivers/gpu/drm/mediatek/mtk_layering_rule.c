@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/delay.h>
 #include <linux/sched.h>
@@ -24,9 +16,9 @@
 #include <linux/vmalloc.h>
 #include <linux/slab.h>
 
-#if defined(CONFIG_MTK_DRAMC)
-#include "mtk_dramc.h"
-#endif
+//#if defined(CONFIG_MTK_DRAMC)
+//#include "mtk_dramc.h"
+//#endif
 #include "mtk_layering_rule.h"
 #ifdef MTK_FB_MMDVFS_SUPPORT
 #include "mmdvfs_mgr.h"
@@ -40,7 +32,7 @@
 static struct layering_rule_ops l_rule_ops;
 static struct layering_rule_info_t l_rule_info;
 
-static DEFINE_SPINLOCK(hrt_table_lock);
+static DEFINE_MUTEX(hrt_table_lock);
 
 /* To backup for primary display drm_mtk_layer_config */
 static struct drm_mtk_layer_config *g_input_config;
@@ -135,7 +127,7 @@ static void filter_by_yuv_layers(struct drm_mtk_layering_info *disp_info)
 	unsigned int disp_idx = 0, i = 0;
 	struct drm_mtk_layer_config *info;
 	unsigned int yuv_gpu_cnt;
-	unsigned int yuv_layer_gpu[12];
+	unsigned int yuv_layer_gpu[MAX_PHY_OVL_CNT];
 	int yuv_layer_ovl = -1;
 
 	for (disp_idx = 0 ; disp_idx < HRT_TYPE_NUM ; disp_idx++) {
@@ -152,9 +144,13 @@ static void filter_by_yuv_layers(struct drm_mtk_layering_info *disp_info)
 				if (info->secure == 1 &&
 				    yuv_layer_ovl < 0) {
 					yuv_layer_ovl = i;
-				} else {
+				} else if (yuv_gpu_cnt < MAX_PHY_OVL_CNT) {
 					yuv_layer_gpu[yuv_gpu_cnt] = i;
 					yuv_gpu_cnt++;
+				} else {
+					DDPPR_ERR("%s: yuv_gpu_cnt %d over MAX_PHY_OVL_CNT\n",
+						__func__, yuv_gpu_cnt);
+					return;
 				}
 			}
 		}
@@ -180,10 +176,11 @@ static void filter_by_yuv_layers(struct drm_mtk_layering_info *disp_info)
 
 static void filter_2nd_display(struct drm_mtk_layering_info *disp_info)
 {
-	unsigned int i, j, layer_cnt = 0;
+	unsigned int i = 0, j = 0;
 
 	for (i = HRT_SECONDARY; i < HRT_TYPE_NUM; i++) {
 		unsigned int max_layer_cnt = SECONDARY_OVL_LAYER_NUM;
+		unsigned int layer_cnt = 0;
 
 		if (is_triple_disp(disp_info) && i == HRT_SECONDARY)
 			max_layer_cnt = 1;
@@ -192,7 +189,7 @@ static void filter_2nd_display(struct drm_mtk_layering_info *disp_info)
 				continue;
 
 			layer_cnt++;
-			if (layer_cnt > max_layer_cnt)
+			if (layer_cnt >= max_layer_cnt)
 				mtk_rollback_layer_to_GPU(disp_info, i, j);
 		}
 	}
@@ -267,16 +264,18 @@ static void filter_by_wcg(struct drm_device *dev,
 
 static bool can_be_compress(uint32_t format)
 {
-#if defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853)
+#if defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) || \
+	defined(CONFIG_MACH_MT6877) || defined(CONFIG_MACH_MT6833) || \
+	defined(CONFIG_MACH_MT6781)
 	if (mtk_is_yuv(format))
 		return 0;
 #else
-	if (mtk_is_yuv(format) || format == DRM_FORMAT_RGB565)
+	if (mtk_is_yuv(format) || format == DRM_FORMAT_RGB565 ||
+	    format == DRM_FORMAT_BGR565)
 		return 0;
 #endif
 
-	else
-		return 1;
+	return 1;
 }
 
 static void filter_by_fbdc(struct drm_mtk_layering_info *disp_info)
@@ -336,7 +335,6 @@ static int layering_get_valid_hrt(struct drm_crtc *crtc,
 static void copy_hrt_bound_table(struct drm_mtk_layering_info *disp_info,
 			int is_larb, int *hrt_table, struct drm_device *dev)
 {
-	unsigned long flags = 0;
 	int valid_num, ovl_bound, i;
 	struct drm_crtc *crtc;
 	struct drm_display_mode *mode;
@@ -354,7 +352,7 @@ static void copy_hrt_bound_table(struct drm_mtk_layering_info *disp_info,
 		disp_info->disp_mode_idx[0]);
 
 	/* update table if hrt bw is enabled */
-	spin_lock_irqsave(&hrt_table_lock, flags);
+	mutex_lock(&hrt_table_lock);
 	valid_num = layering_get_valid_hrt(crtc, mode);
 	ovl_bound = mtk_get_phy_layer_limit(
 		get_mapping_table(dev, 0, DISP_HW_LAYER_TB, MAX_PHY_OVL_CNT));
@@ -362,7 +360,7 @@ static void copy_hrt_bound_table(struct drm_mtk_layering_info *disp_info,
 
 	for (i = 0; i < HRT_LEVEL_NUM; i++)
 		emi_bound_table[l_rule_info.bound_tb_idx][i] = valid_num;
-	spin_unlock_irqrestore(&hrt_table_lock, flags);
+	mutex_unlock(&hrt_table_lock);
 
 	for (i = 0; i < HRT_LEVEL_NUM; i++)
 		hrt_table[i] = emi_bound_table[l_rule_info.bound_tb_idx][i];
@@ -519,7 +517,11 @@ unsigned long long _layering_get_frame_bw(struct drm_crtc *crtc,
 
 	bw_base = (unsigned long long)width * height * fps * 125 * 4;
 
+#if BITS_PER_LONG == 32
+	do_div(bw_base, 100 * 1024 * 1024);
+#else
 	bw_base /= 100 * 1024 * 1024;
+#endif
 
 	return bw_base;
 }
@@ -549,7 +551,11 @@ static int layering_get_valid_hrt(struct drm_crtc *crtc,
 		DDPPR_ERR("Get frame hrt bw by datarate is zero\n");
 		return 600;
 	}
+#if BITS_PER_LONG == 32
+	do_div(dvfs_bw, tmp * 100);
+#else
 	dvfs_bw /= tmp * 100;
+#endif
 
 	/* error handling when requested BW is less than 2 layers */
 	if (dvfs_bw < 200) {
@@ -641,6 +647,7 @@ static void backup_input_config(struct drm_mtk_layering_info *disp_info)
 {
 	unsigned int size = 0;
 
+	mutex_lock(&hrt_table_lock);
 	/* free before use */
 	if (g_input_config != 0) {
 		kfree(g_input_config);
@@ -648,21 +655,25 @@ static void backup_input_config(struct drm_mtk_layering_info *disp_info)
 	}
 
 	if (disp_info->layer_num[HRT_PRIMARY] <= 0 ||
-	    disp_info->input_config[HRT_PRIMARY] == NULL)
+	    disp_info->input_config[HRT_PRIMARY] == NULL) {
+		mutex_unlock(&hrt_table_lock);
 		return;
+	}
 
 	/* memory allocate */
 	size = sizeof(struct drm_mtk_layer_config) *
 	       disp_info->layer_num[HRT_PRIMARY];
-	g_input_config = kzalloc(size, GFP_KERNEL);
+	g_input_config = kzalloc(size, GFP_ATOMIC);
 
 	if (g_input_config == 0) {
 		DDPPR_ERR("%s: allocate memory fail\n", __func__);
+		mutex_unlock(&hrt_table_lock);
 		return;
 	}
 
 	/* memory copy */
 	memcpy(g_input_config, disp_info->input_config[HRT_PRIMARY], size);
+	mutex_unlock(&hrt_table_lock);
 }
 
 static void fbdc_pre_calculate(struct drm_mtk_layering_info *disp_info)

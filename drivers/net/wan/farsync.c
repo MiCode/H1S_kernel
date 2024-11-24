@@ -2134,7 +2134,6 @@ static void
 fst_openport(struct fst_port_info *port)
 {
 	int signals;
-	int txq_length;
 
 	/* Only init things if card is actually running. This allows open to
 	 * succeed for downloads etc.
@@ -2161,7 +2160,6 @@ fst_openport(struct fst_port_info *port)
 		else
 			netif_carrier_off(port_to_dev(port));
 
-		txq_length = port->txqe - port->txqs;
 		port->txqe = 0;
 		port->txqs = 0;
 	}
@@ -2619,6 +2617,7 @@ fst_remove_one(struct pci_dev *pdev)
 	for (i = 0; i < card->nports; i++) {
 		struct net_device *dev = port_to_dev(&card->ports[i]);
 		unregister_hdlc_device(dev);
+		free_netdev(dev);
 	}
 
 	fst_disable_intr(card);
@@ -2639,6 +2638,7 @@ fst_remove_one(struct pci_dev *pdev)
 				    card->tx_dma_handle_card);
 	}
 	fst_card_array[card->card_no] = NULL;
+	kfree(card);
 }
 
 static struct pci_driver fst_driver = {

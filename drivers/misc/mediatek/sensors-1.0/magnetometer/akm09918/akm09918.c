@@ -1,28 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
-/* akm09918.c - akm09918 compass driver
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- */
 #define pr_fmt(fmt) "[AKM09918] " fmt
 
 #include "cust_mag.h"
@@ -42,6 +22,10 @@ static DECLARE_WAIT_QUEUE_HEAD(open_wq);
 #if AKM_CONTINUOUS
 #define AKM_CONTINUOUS_MODE
 #endif
+
+#define DRIVER_ATTR(_name, _mode, _show, _store) \
+        struct driver_attribute driver_attr_##_name = \
+        __ATTR(_name, _mode, _show, _store)
 
 static short akmd_delay = AKM09918_DEFAULT_DELAY;
 static int factory_mode;
@@ -1216,9 +1200,16 @@ static ssize_t show_shipment_test(struct device_driver *ddri, char *buf)
 static ssize_t show_daemon_name(struct device_driver *ddri, char *buf)
 {
 	char strbuf[AKM09918_BUFSIZE];
+	int ret;
 
-	sprintf(strbuf, "akmd09918");
-	return sprintf(buf, "%s", strbuf);
+	ret = sprintf(strbuf, "akmd09918");
+	if (ret < 0)
+		pr_debug("%s:strbuf sprintf Error:%d\n", __func__, ret);
+	ret = sprintf(buf, "%s", strbuf);
+	if (ret < 0)
+		pr_debug("%s:strbuf to buf sprintf Error:%d\n", __func__, ret);
+
+	return ret;
 }
 
 static ssize_t show_chipinfo_value(struct device_driver *ddri, char *buf)
@@ -1256,12 +1247,17 @@ static ssize_t show_sensordata_value(struct device_driver *ddri, char *buf)
 
 	AKECS_GetData(sensordata, SENSOR_DATA_SIZE);
 
-	sprintf(strbuf, "%d %d %d %d %d %d %d %d %d\n",
+	ret = sprintf(strbuf, "%d %d %d %d %d %d %d %d %d\n",
 		sensordata[0], sensordata[1], sensordata[2],
 		sensordata[3], sensordata[4], sensordata[5],
 		sensordata[6], sensordata[7], sensordata[8]);
+	if (ret < 0)
+		pr_debug("%s:sensor_data sprintf Error:%d\n", __func__, ret);
 
-	return sprintf(buf, "%s\n", strbuf);
+	ret = sprintf(buf, "%s\n", strbuf);
+	if (ret < 0)
+		pr_debug("%s:sensor_data to buf sprintf Error:%d\n", __func__, ret);
+	return ret;
 }
 
 /*----------------------------------------------------------------------------*/
@@ -1412,6 +1408,8 @@ static ssize_t show_power_status(struct device_driver *ddri, char *buf)
 	if (ret < 0)
 		pr_debug("%s:%d Error.\n", __func__, __LINE__);
 	res = snprintf(buf, PAGE_SIZE, "0x%04X\n", uData);
+	if (res < 0)
+		pr_debug("%s:PAGE_SIZE snprintf Error:%d\n", __func__, res);
 	return res;
 }
 

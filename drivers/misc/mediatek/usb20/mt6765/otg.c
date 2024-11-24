@@ -1,14 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2018 MediaTek Inc.
  */
+
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/init.h>
@@ -52,7 +46,7 @@ int send_switch_cmd(void)
 	DBG(0, "after usb_control_msg retval = %d\n", retval);
 
 	if (retval != 0) {
-		DBG(0, "send_switch_cmd fail retval = %d\n", retval);
+		DBG(0, "%s fail retval = %d\n", __func__, retval);
 		return -1;
 	}
 
@@ -94,7 +88,7 @@ static void carplay_disconnect(struct usb_interface *intf)
 	kfree(car_dev);
 	apple_dev = NULL;
 	apple = false;
-	DBG(0, "carplay_disconnect.\n");
+	DBG(0, "%s.\n", __func__);
 }
 
 static const struct usb_device_id id_table[] = {
@@ -127,7 +121,7 @@ static struct usb_driver carplay_driver = {
 
 static int __init carplay_init(void)
 {
-	DBG(0, "carplay_init register carplay_driver\n");
+	DBG(0, "%s register carplay_driver\n", __func__);
 	return usb_register(&carplay_driver);
 }
 module_init(carplay_init);

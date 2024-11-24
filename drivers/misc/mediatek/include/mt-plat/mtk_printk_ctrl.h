@@ -9,7 +9,7 @@
 #include <linux/kernel.h>
 #include <linux/sched.h>
 
-#ifdef CONFIG_MTK_PRINTK_UART_CONSOLE
+#ifdef CONFIG_PRINTK_MTK_UART_CONSOLE
 bool mt_get_uartlog_status(void);
 void mt_disable_uart(void);
 void mt_enable_uart(void);

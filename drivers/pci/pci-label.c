@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Purpose: Export the firmware instance and label associated with
- * a pci device to sysfs
+ * Export the firmware instance and label associated with a PCI device to
+ * sysfs
+ *
  * Copyright (C) 2010 Dell Inc.
  * by Narendra K <Narendra_K@dell.com>,
  * Jordan Hargrave <Jordan_Hargrave@dell.com>
@@ -161,7 +162,7 @@ static void dsm_label_utf16s_to_utf8s(union acpi_object *obj, char *buf)
 	len = utf16s_to_utf8s((const wchar_t *)obj->buffer.pointer,
 			      obj->buffer.length,
 			      UTF16_LITTLE_ENDIAN,
-			      buf, PAGE_SIZE);
+			      buf, PAGE_SIZE - 1);
 	buf[len] = '\n';
 }
 

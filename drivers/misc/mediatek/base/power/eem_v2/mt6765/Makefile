@@ -14,9 +14,9 @@
 #
 
 ccflags-y += \
+	-I$(srctree)/drivers/misc/mediatek/base/power/include/	\
 	-I$(srctree)/drivers/misc/mediatek/base/power/include/spm_v3/	\
 	-I$(srctree)/drivers/misc/mediatek/base/power/$(CONFIG_MTK_PLATFORM)\
-	-I$(srctree)/drivers/misc/mediatek/base/power/include/	\
 	-I$(srctree)/drivers/misc/mediatek/include/mt-plat/	\
 	-I$(srctree)/drivers/misc/mediatek/include/mt-plat/$(CONFIG_MTK_PLATFORM)/include/mach	\
 	-I$(srctree)/drivers/misc/mediatek/thermal/$(CONFIG_MTK_PLATFORM)/inc/mach	\
@@ -29,6 +29,7 @@ ccflags-y += \
 	-I$(srctree)/drivers/misc/mediatek/dramc/$(MTK_PLATFORM)	\
 	-I$(EEM_ROOT_DIR)/$(CONFIG_MTK_PLATFORM)/inc	\
 	-I$(srctree)/drivers/misc/mediatek/base/power/mcdi/include/	\
+	-I$(srctree)/drivers/gpu/mediatek/gpufreq/include/
 
 ifeq ($(CONFIG_MTK_TINYSYS_SSPM_SUPPORT), y)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/sspm/
@@ -39,4 +40,10 @@ obj-y += mtk_eem.o
 obj-y += mtk_eem_platform.o
 obj-y += mtk_eem_internal.o
 obj-y += mtk_eem_api.o
+
+ifeq ($(CONFIG_MTK_BASE_POWER), y)
+obj-y += mtk_picachu.o
+endif
+
+
 

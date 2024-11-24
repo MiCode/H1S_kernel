@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /***************************************************************************
@@ -82,7 +71,7 @@ static void StartAudioCaptureHardware(struct snd_pcm_substream *substream);
 static void StopAudioCaptureHardware(struct snd_pcm_substream *substream);
 static int mtk_capture_probe(struct platform_device *pdev);
 static int mtk_capture_pcm_close(struct snd_pcm_substream *substream);
-static int mtk_afe_capture_probe(struct snd_soc_platform *platform);
+static int mtk_afe_capture_component_probe(struct snd_soc_component *component);
 
 static struct snd_pcm_hardware mtk_capture_hardware = {
 	.info = (SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
@@ -102,6 +91,8 @@ static struct snd_pcm_hardware mtk_capture_hardware = {
 
 static void StopAudioCaptureHardware(struct snd_pcm_substream *substream)
 {
+	pr_debug("StopAudioCaptureHardware\n");
+
 	SetMemoryPathEnable(Soc_Aud_Digital_Block_I2S_IN_2, false);
 	if (GetMemoryPathEnable(Soc_Aud_Digital_Block_I2S_IN_2) == false)
 		Set2ndI2SInEnable(false);
@@ -123,6 +114,8 @@ static void StopAudioCaptureHardware(struct snd_pcm_substream *substream)
 static void StartAudioCaptureHardware(struct snd_pcm_substream *substream)
 {
 	struct audio_digital_i2s m2ndI2SInAttribute;
+
+	pr_debug("StartAudioCaptureHardware\n");
 
 	memset_io((void *)&m2ndI2SInAttribute, 0, sizeof(m2ndI2SInAttribute));
 
@@ -177,7 +170,8 @@ static void StartAudioCaptureHardware(struct snd_pcm_substream *substream)
 
 static int mtk_capture_pcm_prepare(struct snd_pcm_substream *substream)
 {
-	pr_debug("capture_pcm_prepare substream->rate = %d  substream->channels = %d\n",
+	pr_debug(
+		"mtk_capture_pcm_prepare substream->rate = %d  substream->channels = %d\n",
 		substream->runtime->rate, substream->runtime->channels);
 	return 0;
 }
@@ -186,7 +180,7 @@ static int mtk_capture_alsa_stop(struct snd_pcm_substream *substream)
 {
 	struct afe_block_t *Vul_Block = &(TDM_VUL_Control_context->rBlock);
 
-	pr_debug("capture_alsa_stop\n");
+	pr_debug("mtk_capture_alsa_stop\n");
 	StopAudioCaptureHardware(substream);
 	Vul_Block->u4DMAReadIdx = 0;
 	Vul_Block->u4WriteIdx = 0;
@@ -237,7 +231,7 @@ static int mtk_capture_pcm_hw_params(struct snd_pcm_substream *substream,
 		mCaptureUseSram = true;
 		AudDrv_Emi_Clk_On();
 	} else {
-		pr_debug("capture_pcm_hw_params snd_pcm_lib_malloc_pages\n");
+		pr_debug("mtk_capture_pcm_hw_params snd_pcm_lib_malloc_pages\n");
 		ret = snd_pcm_lib_malloc_pages(substream,
 					       params_buffer_bytes(hw_params));
 	}
@@ -255,7 +249,7 @@ static int mtk_capture_pcm_hw_params(struct snd_pcm_substream *substream,
 
 static int mtk_capture_pcm_hw_free(struct snd_pcm_substream *substream)
 {
-	pr_debug("capture_pcm_hw_free\n");
+	pr_debug("mtk_capture_pcm_hw_free\n");
 	if (Capture_dma_buf->area) {
 		if (mCaptureUseSram == true) {
 			AudDrv_Emi_Clk_Off();
@@ -297,7 +291,7 @@ static int mtk_capture_pcm_open(struct snd_pcm_substream *substream)
 					    SNDRV_PCM_HW_PARAM_PERIODS);
 
 
-	pr_debug("capture_pcm_open runtime rate = %d channels = %d\n",
+	pr_debug("mtk_capture_pcm_open runtime rate = %d channels = %d\n",
 		 runtime->rate, runtime->channels);
 	runtime->hw.info |= SNDRV_PCM_INFO_INTERLEAVED;
 	runtime->hw.info |= SNDRV_PCM_INFO_NONINTERLEAVED;
@@ -305,11 +299,11 @@ static int mtk_capture_pcm_open(struct snd_pcm_substream *substream)
 
 
 	if (ret < 0) {
-		pr_err("capture_pcm_close\n");
+		pr_err("mtk_capture_pcm_close\n");
 		mtk_capture_pcm_close(substream);
 		return ret;
 	}
-	pr_debug("capture_pcm_open return\n");
+	pr_debug("mtk_capture_pcm_open return\n");
 	return 0;
 }
 
@@ -321,7 +315,7 @@ static int mtk_capture_pcm_close(struct snd_pcm_substream *substream)
 
 static int mtk_capture_alsa_start(struct snd_pcm_substream *substream)
 {
-	pr_debug("capture_alsa_start\n");
+	pr_debug("mtk_capture_alsa_start\n");
 	SetMemifSubStream(Soc_Aud_Digital_Block_MEM_VUL, substream);
 	StartAudioCaptureHardware(substream);
 	return 0;
@@ -329,7 +323,7 @@ static int mtk_capture_alsa_start(struct snd_pcm_substream *substream)
 
 static int mtk_capture_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 {
-	pr_debug("capture_pcm_trigger cmd = %d\n", cmd);
+	pr_debug("mtk_capture_pcm_trigger cmd = %d\n", cmd);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -343,12 +337,22 @@ static int mtk_capture_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 }
 
 static int mtk_capture_pcm_copy(struct snd_pcm_substream *substream,
-				int channel, unsigned long pos,
-				void __user *dst, unsigned long count)
+				int channel,
+				unsigned long pos,
+				void __user *buf,
+				unsigned long bytes)
 {
-	return mtk_memblk_copy(substream, channel, pos, dst, count,
+	return mtk_memblk_copy(substream, channel, pos, buf, bytes,
 			       TDM_VUL_Control_context,
 			       Soc_Aud_Digital_Block_MEM_VUL);
+}
+
+static int mtk_capture_pcm_silence(struct snd_pcm_substream *substream,
+				   int channel,
+				   unsigned long pos,
+				   unsigned long bytes)
+{
+	return 0; /* do nothing */
 }
 
 static void *dummy_page[2];
@@ -369,30 +373,39 @@ static struct snd_pcm_ops mtk_afe_capture_ops = {
 	.trigger = mtk_capture_pcm_trigger,
 	.pointer = mtk_capture_pcm_pointer,
 	.copy_user = mtk_capture_pcm_copy,
+	.fill_silence = mtk_capture_pcm_silence,
 	.page = mtk_capture_pcm_page,
 };
 
-static struct snd_soc_platform_driver mtk_soc_platform = {
-	.ops = &mtk_afe_capture_ops, .probe = mtk_afe_capture_probe,
+static struct snd_soc_component_driver mtk_soc_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_afe_capture_ops,
+	.probe = mtk_afe_capture_component_probe,
 };
 
 static int mtk_capture_probe(struct platform_device *pdev)
 {
-	if (pdev->dev.of_node) {
+	pr_debug("tdm mtk_capture_probe\n");
+
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_TDMRX_PCM);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
-	return snd_soc_register_platform(&pdev->dev, &mtk_soc_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_soc_component,
+					  NULL,
+					  0);
 }
 
-static int mtk_afe_capture_probe(struct snd_soc_platform *platform)
+static int mtk_afe_capture_component_probe(struct snd_soc_component *component)
 {
-	pr_debug("afe_capture_probe TODO\n");
-	AudDrv_Allocate_mem_Buffer(platform->dev, Soc_Aud_Digital_Block_MEM_VUL,
+	pr_debug("%s\n", __func__);
+	AudDrv_Allocate_mem_Buffer(component->dev, Soc_Aud_Digital_Block_MEM_VUL,
 				   UL1_MAX_BUFFER_SIZE);
 	Capture_dma_buf = Get_Mem_Buffer(Soc_Aud_Digital_Block_MEM_VUL);
 	mAudioDigitalI2S =
@@ -403,7 +416,7 @@ static int mtk_afe_capture_probe(struct snd_soc_platform *platform)
 static int mtk_capture_remove(struct platform_device *pdev)
 {
 	pr_debug("%s\n", __func__);
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

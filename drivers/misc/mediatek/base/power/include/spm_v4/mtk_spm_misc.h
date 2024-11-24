@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTK_SPM_MISC_H__
 #define __MTK_SPM_MISC_H__
@@ -179,8 +171,19 @@ int vcorefs_get_curr_ddr(void)
 	printk_deferred("[name:spm&]NO %s !!!\n", __func__);
 	return -1;
 }
+struct mem_desc{
+	u64 start;
+	u64 size;
+};
+
+
+struct dram_info {
+	u32 rank_num;
+	struct mem_desc rank_info[4];
+};
 
 extern int mt_cpu_dormant_init(void);
+
 
 extern struct dram_info *g_dram_info_dummy_read;
 

@@ -1,16 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2016 MediaTek Inc.
- * Author: PC Chen <pc.chen@mediatek.com>
- *         Tiffany Lin <tiffany.lin@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/slab.h>
@@ -58,7 +48,10 @@ static int fops_vcodec_open(struct file *file)
 
 	mutex_lock(&dev->dev_mutex);
 	ctx->dec_flush_buf = mtk_buf;
-	ctx->id = dev->id_counter++;
+	dev->id_counter++;
+	if (dev->id_counter == 0)
+		dev->id_counter++;
+	ctx->id = dev->id_counter;
 	v4l2_fh_init(&ctx->fh, video_devdata(file));
 	file->private_data = &ctx->fh;
 	v4l2_fh_add(&ctx->fh);
@@ -68,6 +61,7 @@ static int fops_vcodec_open(struct file *file)
 		init_waitqueue_head(&ctx->queue[i]);
 	mutex_init(&ctx->buf_lock);
 	mutex_init(&ctx->worker_lock);
+	mutex_init(&ctx->hw_status);
 
 	ctx->type = MTK_INST_DECODER;
 	ret = mtk_vcodec_dec_ctrls_setup(ctx);
@@ -116,7 +110,6 @@ static int fops_vcodec_open(struct file *file)
 		mtk_v4l2_debug(0, "decoder capability %x", dev->dec_capability);
 	}
 
-	list_add(&ctx->list, &dev->ctx_list);
 	dev->dec_cnt++;
 
 	mutex_unlock(&dev->dev_mutex);
@@ -164,7 +157,6 @@ static int fops_vcodec_release(struct file *file)
 	v4l2_fh_exit(&ctx->fh);
 	v4l2_ctrl_handler_free(&ctx->ctrl_hdl);
 
-	list_del_init(&ctx->list);
 	kfree(ctx->dec_flush_buf);
 	kfree(ctx);
 	if (dev->dec_cnt > 0)
@@ -184,7 +176,7 @@ static const struct v4l2_file_operations mtk_vcodec_fops = {
 
 
 /**
- * Suspsend callbacks after user space processes are frozen
+ * Suspend callbacks after user space processes are frozen
  * Since user space processes are frozen, there is no need and cannot hold same
  * mutex that protects lock owner while checking status.
  * If video codec hardware is still active now, must not to enter suspend.
@@ -282,7 +274,7 @@ static int mtk_vcodec_dec_probe(struct platform_device *pdev)
 	for (i = VDEC_SYS; i < NUM_MAX_VDEC_REG_BASE; i++) {
 		res = platform_get_resource(pdev, IORESOURCE_MEM, i);
 		if (res == NULL) {
-			dev_err(&pdev->dev, "get memory resource failed.");
+			dev_info(&pdev->dev, "get memory resource failed.");
 			ret = -ENXIO;
 			goto err_res;
 		}
@@ -306,8 +298,12 @@ static int mtk_vcodec_dec_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_res;
 
-	for (i = 0; i < MTK_VDEC_HW_NUM; i++)
+	for (i = 0; i < MTK_VDEC_HW_NUM; i++) {
 		sema_init(&dev->dec_sem[i], 1);
+		spin_lock_init(&dev->dec_power_lock[i]);
+		dev->dec_is_power_on[i] = false;
+	}
+	mutex_init(&dev->ctx_mutex);
 	mutex_init(&dev->dev_mutex);
 	mutex_init(&dev->dec_dvfs_mutex);
 	spin_lock_init(&dev->irqlock);
@@ -380,6 +376,9 @@ static int mtk_vcodec_dec_probe(struct platform_device *pdev)
 			return ret;
 		}
 	}
+#ifdef DEC_TF_CALLBACK
+	mtk_vdec_translation_fault_callback_setting(dev);
+#endif
 #endif
 	mtk_v4l2_debug(0, "decoder registered as /dev/video%d",
 				   vfd_dec->num);
@@ -414,6 +413,12 @@ static const struct of_device_id mtk_vcodec_match[] = {
 	{.compatible = "mediatek,mt6885-vcodec-dec",},
 	{.compatible = "mediatek,mt6873-vcodec-dec",},
 	{.compatible = "mediatek,mt6853-vcodec-dec",},
+	{.compatible = "mediatek,mt6779-vcodec-dec",},
+	{.compatible = "mediatek,mt6833-vcodec-dec",},
+	{.compatible = "mediatek,mt6877-vcodec-dec",},
+	{.compatible = "mediatek,mt6781-vcodec-dec",},
+	{.compatible = "mediatek,mt6768-vcodec-dec",},
+	{.compatible = "mediatek,mt6785-vcodec-dec",},
 	{.compatible = "mediatek,vdec_gcon",},
 	{},
 };

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __DISP_DRV_LOG_H__
 #define __DISP_DRV_LOG_H__
@@ -75,6 +67,20 @@
 		dprec_logger_pr(DPREC_LOGGER_DEBUG, "func|%s\n", __func__); \
 		if (g_mobilelog)					\
 			pr_info("[DISP]func|%s\n", __func__);		\
+	} while (0)
+
+#define DISPFUNCSTART()							\
+	do {								\
+		dprec_logger_pr(DPREC_LOGGER_DEBUG, "func|%s START\n", __func__); \
+		if (g_mobilelog)					\
+			pr_info("[DISP]mt6382 %s start, line:%d", __func__, __LINE__);\
+	} while (0)
+
+#define DISPFUNCEND()							\
+	do {								\
+		dprec_logger_pr(DPREC_LOGGER_DEBUG, "func|%s END\n", __func__); \
+		if (g_mobilelog)					\
+			pr_info("[DISP]mt6382 %s end, line:%d", __func__, __LINE__);\
 	} while (0)
 
 #define DISPDBGFUNC() DISPFUNC()

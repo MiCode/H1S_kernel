@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -236,8 +228,10 @@ bool is_vcorefs_feature_enable(void)
 	}
 
 	if (!spm_load_firmware_status()) {
+        #ifdef CONFIG_MTK_BOOT
 		if (get_boot_mode() != RECOVERY_BOOT)
 			vcorefs_err("SPM FIRMWARE IS NOT READY\n");
+        #endif
 		return false;
 	}
 #if defined(CONFIG_MACH_MT6771)
@@ -822,6 +816,11 @@ int vcorefs_module_init(void)
  */
 void governor_autok_manager(void)
 {
+#ifdef CONFIG_MMC_MTK
+#if defined(CONFIG_MACH_MT6771)
+	return;
+#endif
+#else
 	int r;
 
 	/* notify MM DVFS for msdc autok start */
@@ -835,6 +834,7 @@ void governor_autok_manager(void)
 
 	r = sdio_autok();
 	vcorefs_crit("SDIO autok done: %s\n", (r == 0) ? "Yes" : "No");
+#endif
 }
 
 bool governor_autok_check(int kicker)

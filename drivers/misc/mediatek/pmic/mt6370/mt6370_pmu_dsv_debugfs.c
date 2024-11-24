@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2018 MediaTek Inc.
-
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 
@@ -68,7 +61,7 @@ int mt6370_pmu_dsv_scp_ocp_irq_debug(struct mt6370_pmu_chip *chip,
 			__func__, dbvbst, dbvpos, dbvneg, dbmask);
 
 		err = snprintf(s, 50, "Vbst=0x%x,Vpos=0x%x,Vneg=0x%x,mask=0x%x",
-			dbvbst, dbvpos, dbvneg, dbmask);
+				dbvbst, dbvpos, dbvneg, dbmask);
 		if (err >= 0 && g_irq_mask_warning)
 			aee_kernel_warning("mt6370 dsv irq",
 				"db irq type = %x %s\n", mode, s);

@@ -11,13 +11,12 @@
 # GNU General Public License for more details.
 #
 
-ccflags-y += -I$(srctree)/drivers/staging/android/ion
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/gud/$(MTK_PLATFORM)/gud/MobiCoreKernelApi/public
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/gud/$(MTK_PLATFORM)/gud/MobiCoreKernelApi/include
-#ccflags-y += -I$(srctree)/drivers/misc/mediatek/mach/$(MTK_PLATFORM)/include/trustzone/m4u
-#ccflags-y += -I$(srctree)/drivers/misc/mediatek/mach/$(MTK_PLATFORM)/include/mach
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/irq/$(MTK_PLATFORM)/
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/$(MTK_PLATFORM)/include
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/gud/$(subst ",,$(CONFIG_MTK_PLATFORM))/gud/MobiCoreKernelApi/public
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/gud/$(subst ",,$(CONFIG_MTK_PLATFORM))/gud/MobiCoreKernelApi/include
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/mach/$(subst ",,$(CONFIG_MTK_PLATFORM))/include/trustzone/m4u
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/mach/$(subst ",,$(CONFIG_MTK_PLATFORM))/include/mach
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/irq/$(subst ",,$(CONFIG_MTK_PLATFORM))/
+ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat/$(subst ",,$(CONFIG_MTK_PLATFORM))/include
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/mmp/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/smi/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat

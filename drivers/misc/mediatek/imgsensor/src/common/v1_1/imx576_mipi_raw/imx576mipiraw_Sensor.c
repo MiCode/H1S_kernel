@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /*****************************************************************************
@@ -225,7 +217,7 @@ static struct imgsensor_struct imgsensor = {
 	.dummy_line = 0, /* current dummyline */
 	.current_fps = 0,
 	.autoflicker_en = KAL_FALSE,
-	.test_pattern = KAL_FALSE,
+	.test_pattern = 0,
 	.current_scenario_id = MSDK_SCENARIO_ID_CAMERA_PREVIEW,
 	.ihdr_mode = 0, /* sensor need support LE, SE with HDR feature */
 	.hdr_mode = 0, /* HDR mODE : 0: disable HDR, 1:IHDR, 2:HDR, 9:ZHDR */
@@ -345,12 +337,18 @@ static kal_uint16 imx576_seq_write_cmos_sensor(kal_uint16 addr,
 static kal_uint16 imx576_table_write_cmos_sensor(kal_uint16 *para,
 						 kal_uint32 len)
 {
-	char puSendCmd[I2C_BUFFER_LEN];
-	kal_uint32 tosend, IDX;
+	kal_uint32 tosend = 0, IDX = 0;
 	kal_uint16 addr = 0, addr_last = 0, data;
+	char *puSendCmd = NULL;
 
-	tosend = 0;
-	IDX = 0;
+	puSendCmd = kmalloc(
+		sizeof(char) * I2C_BUFFER_LEN,
+		GFP_KERNEL);
+
+	if (puSendCmd == NULL) {
+		pr_info("allocate mem failed\n");
+		return -ENOMEM;
+	}
 
 	while (len > IDX) {
 		addr = para[IDX];
@@ -382,12 +380,8 @@ static kal_uint16 imx576_table_write_cmos_sensor(kal_uint16 *para,
 		tosend = 0;
 #endif
 	}
+	kfree(puSendCmd);
 
-#if 0 /*for debug*/
-	for (int i = 0; i < len/2; i++)
-		LOG_INF("readback addr(0x%x)=0x%x\n",
-			para[2*i], read_cmos_sensor_8(para[2*i]));
-#endif
 	return 0;
 }
 
@@ -1599,7 +1593,7 @@ static kal_uint32 open(void)
 	imgsensor.dummy_pixel = 0;
 	imgsensor.dummy_line = 0;
 	imgsensor.ihdr_mode = 0;
-	imgsensor.test_pattern = KAL_FALSE;
+	imgsensor.test_pattern = 0;
 	imgsensor.current_fps = imgsensor_info.pre.max_framerate;
 	spin_unlock(&imgsensor_drv_lock);
 
@@ -2217,21 +2211,35 @@ static kal_uint32 get_default_framerate_by_scenario(
 	return ERROR_NONE;
 }
 
-static kal_uint32 set_test_pattern_mode(kal_bool enable)
+static kal_uint32 set_test_pattern_mode(kal_uint32 modes,
+	struct SET_SENSOR_PATTERN_SOLID_COLOR *pdata)
 {
-	LOG_INF("enable: %d\n", enable);
+	kal_uint16 Color_R, Color_Gr, Color_Gb, Color_B;
 
-	if (enable) {
-	/* 0x5E00[8]: 1 enable,  0 disable */
-	/* 0x5E00[1:0]; 00 Color bar, 01 Random Data, 10 Square, 11 BLACK */
-		write_cmos_sensor_8(0x0601, 0x0002);
-	} else {
-	/* 0x5E00[8]: 1 enable,  0 disable */
-	/* 0x5E00[1:0]; 00 Color bar, 01 Random Data, 10 Square, 11 BLACK */
-		write_cmos_sensor_8(0x0601, 0x0000);
-	}
+	pr_debug("set_test_pattern enum: %d\n", modes);
+
+	if (modes) {
+		write_cmos_sensor_8(0x0601, modes);
+		if (modes == 1 && (pdata != NULL)) { //Solid Color
+			pr_debug("R=0x%x,Gr=0x%x,B=0x%x,Gb=0x%x",
+				pdata->COLOR_R, pdata->COLOR_Gr, pdata->COLOR_B, pdata->COLOR_Gb);
+			Color_R = (pdata->COLOR_R >> 22) & 0x3FF; //10bits depth color
+			Color_Gr = (pdata->COLOR_Gr >> 22) & 0x3FF;
+			Color_B = (pdata->COLOR_B >> 22) & 0x3FF;
+			Color_Gb = (pdata->COLOR_Gb >> 22) & 0x3FF;
+			write_cmos_sensor_8(0x0602, (Color_R >> 8) & 0x3);
+			write_cmos_sensor_8(0x0603, Color_R & 0xFF);
+			write_cmos_sensor_8(0x0604, (Color_Gr >> 8) & 0x3);
+			write_cmos_sensor_8(0x0605, Color_Gr & 0xFF);
+			write_cmos_sensor_8(0x0606, (Color_B >> 8) & 0x3);
+			write_cmos_sensor_8(0x0607, Color_B & 0xFF);
+			write_cmos_sensor_8(0x0608, (Color_Gb >> 8) & 0x3);
+			write_cmos_sensor_8(0x0609, Color_Gb & 0xFF);
+		}
+	} else
+		write_cmos_sensor_8(0x0601, 0x00); /*No pattern*/
 	spin_lock(&imgsensor_drv_lock);
-	imgsensor.test_pattern = enable;
+	imgsensor.test_pattern = modes;
 	spin_unlock(&imgsensor_drv_lock);
 	return ERROR_NONE;
 }
@@ -2413,7 +2421,6 @@ static void imx576_set_lsc_reg_setting(
 	#endif
 	write_cmos_sensor_8(0x0B00, 0x00); /*lsc disable*/
 
-
 }
 
 static void set_imx576_ATR(
@@ -2479,12 +2486,31 @@ static kal_uint32 imx576_awb_gain(struct SET_SENSOR_AWB_GAIN *pSetSensorAWB)
 	return ERROR_NONE;
 }
 
+static void check_stream_is_on(void)
+{
+	int i = 0;
+	UINT32 framecnt;
+	int timeout = (10000/imgsensor.current_fps)+1;
+
+	for (i = 0; i < timeout; i++) {
+
+		framecnt = read_cmos_sensor_8(0x0005);
+		if (framecnt != 0xFF) {
+			pr_debug("IMX576 stream is on, %d \\n", framecnt);
+			break;
+		}
+		pr_debug("IMX576 stream is not on %d \\n", framecnt);
+		mdelay(1);
+	}
+}
+
 static kal_uint32 streaming_control(kal_bool enable)
 {
 	LOG_INF("streaming_enable(0=Sw Standby,1=streaming): %d\n", enable);
-	if (enable)
+	if (enable) {
 		write_cmos_sensor_8(0x0100, 0x01);
-	else
+		check_stream_is_on();
+	} else
 		write_cmos_sensor_8(0x0100, 0x00);
 	return ERROR_NONE;
 }
@@ -2496,7 +2522,7 @@ static kal_uint32 get_sensor_temperature(void)
 
 	temperature = read_cmos_sensor_8(0x013a);
 
-	if (temperature >= 0x0 && temperature <= 0x4F)
+	if (temperature <= 0x4F)
 		temperature_convert = temperature;
 	else if (temperature >= 0x50 && temperature <= 0x7F)
 		temperature_convert = 80;
@@ -2581,6 +2607,11 @@ static kal_uint32 feature_control(MSDK_SENSOR_FEATURE_ENUM feature_id,
 			break;
 		}
 		break;
+#if defined(IMGSENSOR_MT6885) || defined(IMGSENSOR_MT6877) || defined(IMGSENSOR_MT6873)
+	case SENSOR_FEATURE_GET_OFFSET_TO_START_OF_EXPOSURE:
+		*(MUINT32 *)(uintptr_t)(*(feature_data + 1)) = 1500000;
+		break;
+#endif
 	case SENSOR_FEATURE_GET_PERIOD_BY_SCENARIO:
 		switch (*feature_data) {
 		case MSDK_SCENARIO_ID_CAMERA_CAPTURE_JPEG:
@@ -2694,7 +2725,8 @@ static kal_uint32 feature_control(MSDK_SENSOR_FEATURE_ENUM feature_id,
 		LOG_INF("SENSOR_FEATURE_GET_PDAF_DATA. No support\n");
 		break;
 	case SENSOR_FEATURE_SET_TEST_PATTERN:
-		set_test_pattern_mode((BOOL)*feature_data);
+		set_test_pattern_mode((UINT32)*feature_data,
+		(struct SET_SENSOR_PATTERN_SOLID_COLOR *)(uintptr_t)(*(feature_data + 1)));
 		break;
 	case SENSOR_FEATURE_GET_TEST_PATTERN_CHECKSUM_VALUE:
 		/* for factory mode auto testing */
@@ -2837,6 +2869,15 @@ static kal_uint32 feature_control(MSDK_SENSOR_FEATURE_ENUM feature_id,
 		imx576_set_lsc_reg_setting(index, feature_data_16,
 					  (*feature_para_len)/sizeof(UINT16));
 		}
+		break;
+	case SENSOR_FEATURE_GET_FRAME_CTRL_INFO_BY_SCENARIO:
+		/*
+		 * 1, if driver support new sw frame sync
+		 * set_shutter_frame_length() support third para auto_extend_en
+		 */
+		*(feature_data + 1) = 1;
+		/* margin info by scenario */
+		*(feature_data + 2) = imgsensor_info.margin;
 		break;
 	case SENSOR_FEATURE_GET_SENSOR_HDR_CAPACITY:
 		/*

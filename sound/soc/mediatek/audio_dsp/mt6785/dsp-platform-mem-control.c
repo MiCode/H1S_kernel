@@ -18,10 +18,10 @@
 #endif
 
 #include "dsp-platform-mem-control.h"
-#include "../mtk-dsp-mem-control.h"
+#include "../v2/mtk-dsp-mem-control.h"
 #include "mt6785-afe-common.h"
-#include "../mtk-base-dsp.h"
-#include "../mtk-dsp-common.h"
+#include "../v2/mtk-base-dsp.h"
+#include "../v2/mtk-dsp-common.h"
 #include "audio_ipi_platform.h"
 #include "adsp_platform.h"
 

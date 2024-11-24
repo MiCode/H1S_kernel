@@ -16,6 +16,7 @@
 #define __CODA_H__
 
 #include <linux/debugfs.h>
+#include <linux/idr.h>
 #include <linux/irqreturn.h>
 #include <linux/mutex.h>
 #include <linux/kfifo.h>
@@ -28,7 +29,7 @@
 
 #include "coda_regs.h"
 
-#define CODA_MAX_FRAMEBUFFERS	17
+#define CODA_MAX_FRAMEBUFFERS	19
 #define FMO_SLICE_SAVE_BUF_SIZE	(32)
 
 enum {
@@ -43,6 +44,7 @@ enum coda_inst_type {
 
 enum coda_product {
 	CODA_DX6 = 0xf001,
+	CODA_HX4 = 0xf00a,
 	CODA_7541 = 0xf012,
 	CODA_960 = 0xf020,
 };
@@ -94,7 +96,7 @@ struct coda_dev {
 	struct workqueue_struct	*workqueue;
 	struct v4l2_m2m_dev	*m2m_dev;
 	struct list_head	instances;
-	unsigned long		instance_mask;
+	struct ida		ida;
 	struct dentry		*debugfs_root;
 };
 
@@ -213,6 +215,8 @@ struct coda_ctx {
 	enum v4l2_quantization		quantization;
 	struct coda_params		params;
 	struct v4l2_ctrl_handler	ctrls;
+	struct v4l2_ctrl		*h264_profile_ctrl;
+	struct v4l2_ctrl		*h264_level_ctrl;
 	struct v4l2_fh			fh;
 	int				gopcounter;
 	int				runcounter;
@@ -302,6 +306,8 @@ int coda_h264_padding(int size, char *p);
 int coda_h264_profile(int profile_idc);
 int coda_h264_level(int level_idc);
 int coda_sps_parse_profile(struct coda_ctx *ctx, struct vb2_buffer *vb);
+int coda_h264_sps_fixup(struct coda_ctx *ctx, int width, int height, char *buf,
+			int *size, int max_size);
 
 bool coda_jpeg_check_buffer(struct coda_ctx *ctx, struct vb2_buffer *vb);
 int coda_jpeg_write_tables(struct coda_ctx *ctx);

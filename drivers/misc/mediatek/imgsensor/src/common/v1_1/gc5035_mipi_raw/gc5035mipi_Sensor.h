@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * copyright (c) 2018 mediatek inc.
- *
- * this program is free software: you can redistribute it and/or modify
- * it under the terms of the gnu general public license version 2 as
- * published by the free software foundation.
- *
- * this program is distributed in the hope that it will be useful,
- * but without any warranty; without even the implied warranty of
- * merchantability or fitness for a particular purpose. see the
- * gnu general public license for more details.
- ***************************************************************************/
+ * Copyright (c) 2019 MediaTek Inc.
+ */
 
 /*****************************************************************************
  *

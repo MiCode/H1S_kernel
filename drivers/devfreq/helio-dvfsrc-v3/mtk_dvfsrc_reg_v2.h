@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C)2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTK_DVFSRC_REG_V2_H
 #define __MTK_DVFSRC_REG_V2_H
@@ -78,6 +70,7 @@
 #define DVFSRC_MD_TURBO                  (0xDC)
 #define DVFSRC_PCIE_VCORE_REQ            (0xE0)
 #define DVFSRC_VCORE_USER_REQ            (0xE4)
+#define DVFSRC_BW_USER_REQ               (0xE8)
 #define DVFSRC_DEBOUNCE_FOUR             (0xF0)
 #define DVFSRC_DEBOUNCE_RISE_FALL        (0xF4)
 #define DVFSRC_TIMEOUT_NEXTREQ           (0xF8)
@@ -130,6 +123,7 @@
 #define DVFSRC_BASIC_CONTROL_3           (0x310)
 #define DVFSRC_DEBOUNCE_TIME             (0x314)
 #define DVFSRC_LEVEL_MASK                (0x318)
+#define DVFSRC_DEFAULT_OPP               (0x31C)
 #define DVFSRC_95MD_SCEN_EMI0            (0x500)
 #define DVFSRC_95MD_SCEN_EMI1            (0x504)
 #define DVFSRC_95MD_SCEN_EMI2            (0x508)
@@ -162,6 +156,7 @@
 #define DVFSRC_DEBUG_STA_3               (0x70C)
 #define DVFSRC_DEBUG_STA_4               (0x710)
 #define DVFSRC_DEBUG_STA_5               (0x714)
+#define DVFSRC_DEBUG_STA_6               (0x718)
 #define DVFSRC_EMI_REQUEST7              (0x800)
 #define DVFSRC_EMI_HRT_1                 (0x804)
 #define DVFSRC_EMI_HRT2_1                (0x808)

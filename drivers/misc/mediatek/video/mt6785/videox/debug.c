@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/string.h>
 #include <linux/time.h>
@@ -74,7 +66,11 @@
 #include "ddp_clkmgr.h"
 
 #include "ddp_misc.h"
+#ifdef CONFIG_MTK_MT6382_BDG
+#include "ddp_disp_bdg.h"
+#endif
 
+#include "../../../base/power/include/clkbuf_v1/mt6785/mtk_clkbuf_hw.h"
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 static struct dentry *mtkfb_dbgfs;
 #endif
@@ -90,6 +86,7 @@ int layer_layout_allow_non_continuous;
 
 /* Boundary of enter screen idle */
 unsigned long long idle_check_interval = 50;
+int hrt_show_flag;
 
 /*********************** layer information statistic *********************/
 #define STATISTIC_MAX_LAYERS 20
@@ -369,7 +366,6 @@ static int alloc_buffer_from_dma(size_t size, struct test_buf_info *buf_info)
 	unsigned long size_align;
 	unsigned int mva = 0;
 
-#ifndef CONFIG_MTK_IOMMU_V2
 	size_align = round_up(size, PAGE_SIZE);
 
 	buf_info->buf_va = dma_alloc_coherent(disp_get_device(), size,
@@ -407,31 +403,7 @@ static int alloc_buffer_from_dma(size_t size, struct test_buf_info *buf_info)
 			DISP_PR_INFO("m4u_alloc_mva returns fail: %d\n", ret);
 #endif
 	}
-#else /* !CONFIG_MTK_IOMMU */
-	struct ion_client *ion_display_client = NULL;
-	struct ion_handle *ion_display_handle = NULL;
 
-	size_align = round_up(size, PAGE_SIZE);
-	ion_display_client = disp_ion_create("disp_cap_ovl");
-	if (ion_display_client == NULL) {
-		DISP_PR_INFO("primary capture:Fail to create ion\n");
-		ret = -1;
-		goto out;
-	}
-
-	ion_display_handle = disp_ion_alloc(ion_display_client,
-					    ION_HEAP_MULTIMEDIA_PA2MVA_MASK,
-					    buf_info->buf_pa, size_align);
-	if (ret != 0) {
-		DISP_PR_INFO("primary capture:Fail to allocate buffer\n");
-		ret = -1;
-		goto out;
-	}
-	disp_ion_get_mva(ion_display_client, ion_display_handle,
-			 (unsigned int *)&mva, 0, DISP_M4U_PORT_DISP_WDMA0);
-
-out:
-#endif /* CONFIG_MTK_IOMMU */
 	buf_info->buf_mva = mva;
 	DISPMSG("%s MVA is 0x%x PA is 0x%pa\n",
 		__func__, mva, &buf_info->buf_pa);
@@ -746,6 +718,11 @@ static void process_dbg_opt(const char *opt)
 		int repaint_type;
 
 		ret = sscanf(opt, "repaint:%d\n", &repaint_type);
+		if (ret != 1) {
+			DISP_LOG_E("[%s %d]:sscanf err:%d. str:%s",
+				   __func__, __LINE__, ret, opt);
+			return;
+		}
 		trigger_repaint(repaint_type);
 
 		return;
@@ -805,6 +782,334 @@ static void process_dbg_opt(const char *opt)
 			primary_display_manual_unlock();
 			return;
 		}
+#ifdef CONFIG_MTK_MT6382_BDG
+	} else if (strncmp(opt, "set_data_rate:", 14) == 0) {
+		unsigned int data_rate = 0;
+		int ret = -1;
+
+		ret = sscanf(opt, "set_data_rate:%d\n",
+			&data_rate);
+		if (ret != 1) {
+			DISP_PR_INFO("%d error to parse set_data_rate cmd %s\n",
+				__LINE__, opt);
+			return;
+		}
+
+		set_bdg_data_rate(data_rate);
+
+	} else if (strncmp(opt, "6382_rst_test_0:", 16) == 0) {
+		bdg_tx_set_6382_reset_pin(0);
+	} else if (strncmp(opt, "6382_rst_test_1:", 16) == 0) {
+		bdg_tx_set_6382_reset_pin(1);
+	} else if (strncmp(opt, "dsi_enable:", 11) == 0) {
+		struct LCM_PARAMS *lcm_param = NULL;
+		struct disp_ddp_path_config *data_config;
+		unsigned int dsi_on = 0;
+		int ret = -1;
+
+		ret = sscanf(opt, "dsi_enable:%d\n",
+			&dsi_on);
+		if (ret != 1) {
+			DISP_PR_INFO("%d error to parse dsi_enable cmd %s\n",
+				__LINE__, opt);
+			return;
+		}
+
+		lcm_param = disp_lcm_get_params(pgc->plcm);
+
+		if (!lcm_param) {
+			DISPMSG("lcm_param is null\n");
+			return;
+		}
+
+		data_config = dpmgr_path_get_last_config(pgc->dpmgr_handle);
+		memcpy(&(data_config->dispif_config), lcm_param,
+		       sizeof(struct LCM_PARAMS));
+
+		if (dsi_on) {
+			bdg_tx_init(DISP_BDG_DSI0, data_config, NULL);
+			bdg_tx_bist_pattern(DISP_BDG_DSI0, NULL, TRUE, 0, 0x3ff, 0, 0);
+//			dsi_set_cksm(module, NULL, TRUE);
+			bdg_tx_start(DISP_BDG_DSI0, NULL);
+//			mdelay(2000);
+//			dsi_get_cksm(module);
+		} else {
+			bdg_tx_stop(DISP_BDG_DSI0, NULL);
+			bdg_tx_wait_for_idle(DISP_BDG_DSI0);
+			bdg_tx_bist_pattern(DISP_BDG_DSI0, NULL, FALSE, 0, 0, 0, 0);
+			bdg_tx_deinit(DISP_BDG_DSI0, NULL);
+		}
+
+	} else if (strncmp(opt, "ck_buf_on", 9) == 0) {
+
+		clk_buf_disp_ctrl(true);
+
+	} else if (strncmp(opt, "ck_buf_off", 10) == 0) {
+
+		clk_buf_disp_ctrl(false);
+
+	} else if (strncmp(opt, "disp_ext", 8) == 0) {
+		struct cmdqRecStruct *cmdq;
+
+		cmdqRecCreate(CMDQ_SCENARIO_PRIMARY_DISP, &cmdq);
+		cmdqRecReset(cmdq);
+
+		DSI_set_cmdq_V2(DISP_MODULE_DSI0, cmdq, 0x20, 0, 0, 1);
+
+		cmdqRecFlush(cmdq);
+		cmdqRecDestroy(cmdq);
+
+//		DSI_DumpRegisters(DISP_MODULE_DSI0, 1);
+
+	} else if (strncmp(opt, "disp_inv", 8) == 0) {
+		struct cmdqRecStruct *cmdq;
+
+		cmdqRecCreate(CMDQ_SCENARIO_PRIMARY_DISP, &cmdq);
+		cmdqRecReset(cmdq);
+		DSI_set_cmdq_V2(DISP_MODULE_DSI0, cmdq, 0x21, 0, 0, 1);
+
+		cmdqRecFlush(cmdq);
+		cmdqRecDestroy(cmdq);
+
+//		DSI_DumpRegisters(DISP_MODULE_DSI0, 1);
+
+	} else if (strncmp(opt, "disp_off", 8) == 0) {
+		DSI_set_cmdq_V2(DISP_MODULE_DSI0, NULL, 0x28, 0, 0, 1);
+
+//		DSI_DumpRegisters(DISP_MODULE_DSI0, 1);
+
+	} else if (strncmp(opt, "disp_on", 7) == 0) {
+		DSI_set_cmdq_V2(DISP_MODULE_DSI0, NULL, 0x29, 0, 0, 1);
+
+//		DSI_DumpRegisters(DISP_MODULE_DSI0, 1);
+
+	} else if (strncmp(opt, "send_2", 6) == 0) {
+		char para[7] = {0x10, 0x02, 0x00, 0x07, 0x00, 0x00, 0x00};
+
+		DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, NULL, 0x24, 7, para, 1);
+
+		DSI_DumpRegisters(DISP_MODULE_DSI0, 1);
+
+	} else if (strncmp(opt, "send_1", 6) == 0) {
+		char para[7] = {0x10, 0x02, 0x00, 0x05, 0x00, 0x00, 0x00};
+
+		DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, NULL, 0x20, 7, para, 1);
+
+		DSI_DumpRegisters(DISP_MODULE_DSI0, 1);
+
+	} else if (strncmp(opt, "send_:", 6) == 0) {
+		int ret = -1;
+		int cmd;
+		char para[7] = {0};
+//		char para[7] = {0x10, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00};
+
+
+		ret = sscanf(opt, "send_:addr=0x%x_%x_%x_%x,data=0x%x_%x_%x_%x\n",
+				&para[2], &para[1], &para[0], &cmd,
+				&para[6], &para[5], &para[4], &para[3]);
+
+		DISPMSG("ret=%d, addr:0x%x%x%x%x, data:0x%x%x%x%x\n",
+				ret, para[2], para[1], para[0], cmd,
+				para[6], para[5], para[4], para[3]);
+
+		DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, NULL, cmd, 7, para, 1);
+
+		DSI_DumpRegisters(DISP_MODULE_DSI0, 1);
+
+	} else if (strncmp(opt, "stop_dsi", 8) == 0) {
+
+		dpmgr_path_stop(primary_get_dpmgr_handle(), CMDQ_DISABLE);
+		primary_display_diagnose(__func__, __LINE__);
+
+	} else if (strncmp(opt, "stop_6382", 9) == 0) {
+		char para[7] = {0x10, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00};
+		char para1[7] = {0x10, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00};
+
+		DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, NULL, 0x00, 7, para, 1);
+
+		if (polling_status() != 0)
+			DISPMSG("ERROR!ERROR!!!\n");
+		mdelay(100);
+
+		DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, NULL, 0x10, 7, para1, 1);
+		DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, NULL, 0x10, 7, para, 1);
+	} else if (strncmp(opt, "_stop_dsi", 9) == 0) {
+		/* by mt6382 spi */
+
+		dpmgr_path_stop(primary_get_dpmgr_handle(), CMDQ_DISABLE);
+		primary_display_diagnose(__func__, __LINE__);
+
+		bdg_tx_stop(DISP_BDG_DSI0, NULL);
+
+		if (polling_status() != 0)
+			DISPMSG("ERROR!ERROR!!!\n");
+
+		bdg_tx_reset(DISP_BDG_DSI0, NULL);
+
+	} else if (strncmp(opt, "_start_dsi", 10) == 0) {
+		/* by mt6382 spi */
+
+		bdg_tx_start(DISP_BDG_DSI0, NULL);
+
+		dpmgr_path_start(primary_get_dpmgr_handle(), CMDQ_DISABLE);
+		dpmgr_path_trigger(primary_get_dpmgr_handle(), NULL,
+				   CMDQ_DISABLE);
+
+	} else if (strncmp(opt, "start_dsi", 9) == 0) {
+		char para[7] = {0x10, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00};
+		char para1[7] = {0x10, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00};
+
+		DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, NULL, 0x00, 7, para, 1);
+		DSI_send_cmdq_to_bdg(DISP_MODULE_DSI0, NULL, 0x00, 7, para1, 1);
+
+		dpmgr_path_start(primary_get_dpmgr_handle(), CMDQ_DISABLE);
+		dpmgr_path_trigger(primary_get_dpmgr_handle(), NULL,
+				   CMDQ_DISABLE);
+	} else if (strncmp(opt, "read_cmd", 8) == 0) {
+		char para[1] = {0x00};
+
+		bdg_tx_set_mode(DISP_BDG_DSI0, NULL, CMD_MODE);
+		bdg_set_dcs_read_cmd(true, NULL);
+
+		DSI_dcs_read_lcm_reg_via_bdg(DISP_MODULE_DSI0, NULL, 0x0a, para, 2);
+
+		bdg_set_dcs_read_cmd(false, NULL);
+		bdg_tx_set_mode(DISP_BDG_DSI0, NULL, SYNC_PULSE_VDO_MODE);
+	} else if (strncmp(opt, "dump", 4) == 0) {
+
+		DSI_DumpRegisters(DISP_MODULE_DSI0, 1);
+
+	} else if (strncmp(opt, "xdump", 5) == 0) {
+
+		bdg_dsi_dump_reg(DISP_BDG_DSI0, 1);
+#ifdef CONFIG_MTK_MT6382_BDG
+	} else if (strncmp(opt, "mipi_hopping:on", 15) == 0) {
+		if (pgc->state == DISP_SLEPT) {
+			DISPDBG("primary display is already slept\n");
+			return;
+		}
+		primary_display_idlemgr_kick(__func__, 1);
+		if (dpmgr_path_is_busy(pgc->dpmgr_handle))
+			dpmgr_wait_event_timeout(pgc->dpmgr_handle,
+				DISP_PATH_EVENT_FRAME_DONE, HZ * 1);
+		if (get_bdg_tx_mode() != CMD_MODE)
+			DSI_Stop(DISP_MODULE_DSI0, NULL);
+		bdg_mipi_clk_change(1, 1);
+//		if (get_bdg_tx_mode() == CMD_MODE)
+//			primary_display_ccci_mipi_callback(1, 0);
+		if (get_bdg_tx_mode() != CMD_MODE)
+			DSI_Start(DISP_MODULE_DSI0, NULL);
+	} else if (strncmp(opt, "mipi_hopping:off", 16) == 0) {
+		if (pgc->state == DISP_SLEPT) {
+			DISPDBG("primary display is already slept\n");
+			return;
+		}
+		primary_display_idlemgr_kick(__func__, 1);
+		if (dpmgr_path_is_busy(pgc->dpmgr_handle))
+			dpmgr_wait_event_timeout(pgc->dpmgr_handle,
+				DISP_PATH_EVENT_FRAME_DONE, HZ * 1);
+		if (get_bdg_tx_mode() != CMD_MODE)
+			DSI_Stop(DISP_MODULE_DSI0, NULL);
+		bdg_mipi_clk_change(1, 0);
+//		if (get_bdg_tx_mode() == CMD_MODE)
+//			primary_display_ccci_mipi_callback(0, 0);
+		if (get_bdg_tx_mode() != CMD_MODE)
+			DSI_Start(DISP_MODULE_DSI0, NULL);
+#endif
+	} else if (strncmp(opt, "bdg_int", 7) == 0) {
+		struct LCM_PARAMS *lcm_param = NULL;
+		struct disp_ddp_path_config *data_config;
+
+		lcm_param = disp_lcm_get_params(pgc->plcm);
+
+		if (!lcm_param)
+			DISPMSG("lcm_param is null\n");
+
+		data_config = dpmgr_path_get_last_config(pgc->dpmgr_handle);
+		memcpy(&(data_config->dispif_config), lcm_param,
+		       sizeof(struct LCM_PARAMS));
+
+		bdg_common_init(DISP_BDG_DSI0, data_config, NULL);
+		mipi_dsi_rx_mac_init(DISP_BDG_DSI0, data_config, NULL);
+	} else if (strncmp(opt, "xbdg_int", 8) == 0) {
+		struct LCM_PARAMS *lcm_param = NULL;
+		struct disp_ddp_path_config *data_config;
+
+		lcm_param = disp_lcm_get_params(pgc->plcm);
+
+		if (!lcm_param)
+			DISPMSG("lcm_param is null\n");
+
+		data_config = dpmgr_path_get_last_config(pgc->dpmgr_handle);
+		memcpy(&(data_config->dispif_config), lcm_param,
+		       sizeof(struct LCM_PARAMS));
+
+		bdg_common_init_for_rx_pat(DISP_BDG_DSI0, data_config, NULL);
+
+	} else if (!strncmp(opt, "set_mask_spi:", 13)) {
+		unsigned int addr = 0, val = 0, mask = 0;
+		int ret = -1;
+
+		ret = sscanf(opt, "set_mask_spi:addr=0x%x,mask=0x%x,val=0x%x\n",
+			&addr, &mask, &val);
+		if (ret != 3) {
+			DISP_PR_INFO("%d error to parse set_mt6382_spi cmd %s\n",
+				__LINE__, opt);
+			return;
+		}
+
+		ret = mtk_spi_mask_write(addr, mask, val);
+		if (ret < 0) {
+			DISP_PR_INFO("write mt6382 fail,addr:0x%x, val:0x%x\n",
+				addr, val);
+			return;
+		}
+		DISPMSG("mt6382 set_mask addr:0x%08x, mask:0x08x, val:0x%08x\n", addr, mask, val);
+	} else if (!strncmp(opt, "set_mt6382_spi:", 15)) {
+		unsigned int addr = 0, val = 0;
+		int ret = -1;
+
+		ret = sscanf(opt, "set_mt6382_spi:addr=0x%x,val=0x%x\n",
+			&addr, &val);
+		if (ret != 2) {
+			DISP_PR_INFO("%d error to parse set_mt6382_spi cmd %s\n",
+				__LINE__, opt);
+			return;
+		}
+
+		ret = mtk_spi_write(addr, val);
+//		ret = dsp_spi_write_ex(addr, &val, 4, speed);
+		if (ret < 0) {
+			DISP_PR_INFO("write mt6382 fail,addr:0x%x, val:0x%x\n",
+				addr, val);
+			return;
+		}
+
+	} else if (!strncmp(opt, "read_mt6382_spi:", 16)) {
+		unsigned int addr = 0, val = 0;
+
+		ret = sscanf(opt, "read_mt6382_spi:addr=0x%x\n", &addr);
+		if (ret != 1) {
+			DISP_PR_INFO("%d error to parse read_mt6382_spi cmd %s\n",
+				__LINE__, opt);
+			return;
+		}
+
+		val = mtk_spi_read(addr);
+//		ret = dsp_spi_read_ex(addr, &val, 4, speed);
+//		if (ret < 0) {
+//			DISP_PR_INFO("read mt6382 fail,addr:0x%x\n",
+//				addr);
+//			return;
+//		}
+		DISPMSG("mt6382 read addr:0x%08x, val:0x%08x\n", addr, val);
+
+	} else if (strncmp(opt, "check", 5) == 0) {
+		if (check_stopstate(NULL) == 0)
+			bdg_tx_start(DISP_BDG_DSI0, NULL);
+		mdelay(100);
+		return;
+#endif
 	} else if (strncmp(opt, "mobile:", 7) == 0) {
 		if (strncmp(opt + 7, "on", 2) == 0)
 			g_mobilelog = 1;

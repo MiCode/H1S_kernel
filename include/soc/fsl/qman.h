@@ -1160,6 +1160,15 @@ int qman_delete_cgr(struct qman_cgr *cgr);
 void qman_delete_cgr_safe(struct qman_cgr *cgr);
 
 /**
+ * qman_update_cgr_safe - Modifies a congestion group object from any CPU
+ * @cgr: the 'cgr' object to modify
+ * @opts: state of the CGR settings
+ *
+ * This will select the proper CPU and modify the CGR settings.
+ */
+int qman_update_cgr_safe(struct qman_cgr *cgr, struct qm_mcc_initcgr *opts);
+
+/**
  * qman_query_cgr_congested - Queries CGR's congestion status
  * @cgr: the 'cgr' object to query
  * @result: returns 'cgr's congestion status, 1 (true) if congested
@@ -1185,5 +1194,13 @@ int qman_alloc_cgrid_range(u32 *result, u32 count);
  * Returns 0 on success, or a negative error code.
  */
 int qman_release_cgrid(u32 id);
+
+/**
+ * qman_is_probed - Check if qman is probed
+ *
+ * Returns 1 if the qman driver successfully probed, -1 if the qman driver
+ * failed to probe or 0 if the qman driver did not probed yet.
+ */
+int qman_is_probed(void);
 
 #endif	/* __FSL_QMAN_H */

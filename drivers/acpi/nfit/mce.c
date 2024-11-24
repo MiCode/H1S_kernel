@@ -25,8 +25,12 @@ static int nfit_handle_mce(struct notifier_block *nb, unsigned long val,
 	struct acpi_nfit_desc *acpi_desc;
 	struct nfit_spa *nfit_spa;
 
-	/* We only care about memory errors */
-	if (!mce_is_memory_error(mce))
+	/* We only care about uncorrectable memory errors */
+	if (!mce_is_memory_error(mce) || mce_is_correctable(mce))
+		return NOTIFY_DONE;
+
+	/* Verify the address reported in the MCE is valid. */
+	if (!mce_usable_address(mce))
 		return NOTIFY_DONE;
 
 	/*
@@ -51,9 +55,8 @@ static int nfit_handle_mce(struct notifier_block *nb, unsigned long val,
 			if ((spa->address + spa->length - 1) < mce->addr)
 				continue;
 			found_match = 1;
-			dev_dbg(dev, "%s: addr in SPA %d (0x%llx, 0x%llx)\n",
-				__func__, spa->range_index, spa->address,
-				spa->length);
+			dev_dbg(dev, "addr in SPA %d (0x%llx, 0x%llx)\n",
+				spa->range_index, spa->address, spa->length);
 			/*
 			 * We can break at the first match because we're going
 			 * to rescan all the SPA ranges. There shouldn't be any
@@ -67,7 +70,7 @@ static int nfit_handle_mce(struct notifier_block *nb, unsigned long val,
 			continue;
 
 		/* If this fails due to an -ENOMEM, there is little we can do */
-		nvdimm_bus_add_poison(acpi_desc->nvdimm_bus,
+		nvdimm_bus_add_badrange(acpi_desc->nvdimm_bus,
 				ALIGN(mce->addr, L1_CACHE_BYTES),
 				L1_CACHE_BYTES);
 		nvdimm_region_notify(nfit_spa->nd_region,

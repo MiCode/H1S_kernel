@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __CCIF_HIF_PLATFORM_H__
 #define __CCIF_HIF_PLATFORM_H__
@@ -91,5 +83,7 @@ do { \
 
 /* peer */
 #define AP_MD_PEER_WAKEUP	(RINGQ_EXP_BASE+5)
+#define MD_PCORE_PCCIF_BASE 0x20510000
+#define CCIF_SRAM_SIZE 512
 
 #endif /*__CCIF_HIF_PLATFORM_H__*/

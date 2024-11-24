@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2016 MediaTek Inc.
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -25,6 +17,9 @@
 #include <linux/spinlock.h>
 #include <linux/iommu.h>
 #include <linux/sched.h>
+#include <linux/firmware.h>
+#include <crypto/hash.h>
+#include <crypto/akcipher.h>
 
 #include "mtk_ion.h"
 #include "ion_priv.h"
@@ -42,16 +37,20 @@
 
 #include "ccu_inc.h"
 #include "ccu_hw.h"
+#include "ccu_fw_pubk.h"
 #include "ccu_reg.h"
 #include "ccu_cmn.h"
 #include "ccu_kd_mailbox.h"
 #include "ccu_i2c.h"
+
+#include "ccu_platform_def.h"
 
 #include "kd_camera_feature.h"/*for sensorType in ccu_set_sensor_info*/
 
 static uint64_t camsys_base;
 static uint64_t bin_base;
 static uint64_t dmem_base;
+static uint64_t pmem_base;
 
 static struct ccu_device_s *ccu_dev;
 static struct task_struct *enque_task;
@@ -74,6 +73,7 @@ struct ccu_mailbox_t *pMailBox[MAX_MAILBOX_NUM];
 static struct ccu_msg_t receivedCcuCmd;
 static struct ccu_msg_t CcuAckCmd;
 static uint32_t i2c_buffer_mva;
+static DEFINE_MUTEX(ccu_i2c_mutex);
 
 /*isr work management*/
 struct ap_task_manage_t {
@@ -82,14 +82,17 @@ struct ap_task_manage_t {
 	struct list_head ApTskWorkList;
 };
 
+struct sdesc {
+	struct shash_desc shash;
+	char ctx[];
+};
+
 struct ap_task_manage_t ap_task_manage;
 
 
 static struct CCU_INFO_STRUCT ccuInfo;
-static  bool bWaitCond;
-static bool AFbWaitCond[2];
+static bool bWaitCond;
 static unsigned int g_LogBufIdx = 1;
-static unsigned int AFg_LogBufIdx[2] = {1, 1};
 static struct ccu_cmd_s *_fast_cmd_ack;
 
 static int _ccu_powerdown(void);
@@ -97,13 +100,16 @@ static int _ccu_allocate_mva(uint32_t *mva, void *va,
 	struct ion_handle **handle);
 static int _ccu_deallocate_mva(struct ion_client **client,
 	struct ion_handle **handle);
+static int ccu_load_segments(const struct firmware *fw);
+static int ccu_sanity_check(const struct firmware *fw);
+static int ccu_cert_check(const struct firmware *fw);
 
 static int _ccu_config_m4u_port(void)
 {
 	int ret = 0;
 
 #if defined(CONFIG_MTK_M4U)
-	struct M4U_PORT_STRUCT port;
+	struct m4u_port_config_struct port;
 
 	port.ePortID = CCUG_OF_M4U_PORT;
 	port.Virtuality = 1;
@@ -115,58 +121,6 @@ static int _ccu_config_m4u_port(void)
 	ret = m4u_config_port(&port);
 #endif
 	return ret;
-}
-
-static struct ion_handle *_ccu_ion_alloc(struct ion_client *client,
-		unsigned int heap_id_mask, size_t align, unsigned int size)
-{
-	struct ion_handle *disp_handle = NULL;
-
-	disp_handle = ion_alloc(client, size, align, heap_id_mask, 0);
-	if (IS_ERR(disp_handle)) {
-		LOG_ERR("disp_ion_alloc 1error %p\n", disp_handle);
-		return NULL;
-	}
-
-	LOG_DBG("disp_ion_alloc 1 %p\n", disp_handle);
-
-	return disp_handle;
-
-}
-
-static int _ccu_ion_get_mva(struct ion_client *client,
-	struct ion_handle *handle, unsigned int *mva, int port)
-{
-	struct ion_mm_data mm_data;
-	size_t mva_size;
-	ion_phys_addr_t phy_addr = 0;
-
-	mm_data.mm_cmd = ION_MM_CONFIG_BUFFER_EXT;
-	mm_data.config_buffer_param.kernel_handle = handle;
-	mm_data.config_buffer_param.module_id   = port;
-	mm_data.config_buffer_param.security    = 0;
-	mm_data.config_buffer_param.coherent    = 1;
-	mm_data.config_buffer_param.reserve_iova_start  = 0x10000000;
-	mm_data.config_buffer_param.reserve_iova_end    = 0xFFFFFFFF;
-
-	if (ion_kernel_ioctl(client, ION_CMD_MULTIMEDIA,
-		(unsigned long)&mm_data) < 0) {
-		LOG_ERR("disp_ion_get_mva: config buffer failed.%p -%p\n",
-			client, handle);
-
-		ion_free(client, handle);
-		return -1;
-	}
-	*mva = 0;
-	*mva = (port<<24) | ION_FLAG_GET_FIXED_PHYS;
-	mva_size = ION_FLAG_GET_FIXED_PHYS;
-
-	phy_addr = *mva;
-	ion_phys(client, handle, &phy_addr, &mva_size);
-	*mva = (unsigned int)phy_addr;
-	LOG_DBG_MUST("alloc mmu addr hnd=0x%p,mva=0x%08x\n",
-		handle, (unsigned int)*mva);
-	return 0;
 }
 
 static void _ccu_ion_free_handle(struct ion_client *client,
@@ -214,7 +168,6 @@ static int _ccu_allocate_mva(uint32_t *mva, void *va,
 	struct ion_handle **handle)
 {
 	int ret = 0;
-	int buffer_size = 4096;
 
 	if (!ccu_ion_client && g_ion_device)
 		ccu_ion_client = ion_client_create(g_ion_device, "ccu");
@@ -234,31 +187,6 @@ static int _ccu_allocate_mva(uint32_t *mva, void *va,
 		_ccu_ion_destroy(ccu_ion_client);
 		return ret;
 	}
-
-	*handle = _ccu_ion_alloc(ccu_ion_client,
-		ION_HEAP_MULTIMEDIA_MAP_MVA_MASK,
-		(unsigned long)va, buffer_size);
-
-	/*i2c dma buffer is PAGE_SIZE(4096B)*/
-
-	if (!(*handle)) {
-		LOG_ERR("Fatal Error, ion_alloc for size %d failed\n", 4096);
-		if (ccu_ion_client != NULL)
-			_ccu_deallocate_mva(&ccu_ion_client, handle);
-
-		return -1;
-	}
-
-	ret = _ccu_ion_get_mva(ccu_ion_client, *handle, mva, CCUG_OF_M4U_PORT);
-
-	if (ret) {
-		LOG_ERR("ccu ion_get_mva failed\n");
-
-		if (ccu_ion_client != NULL)
-			_ccu_deallocate_mva(&ccu_ion_client, handle);
-		return -1;
-	}
-
 	return ret;
 }
 
@@ -378,38 +306,6 @@ irqreturn_t ccu_isr_handler(int irq, void *dev_id)
 					(receivedCcuCmd.in_data_ptr == 0xDD))
 					ccu_i2c_dump_errr();
 				LOG_ERR("wakeup ccuInfo.WaitQueueHead done\n");
-				break;
-			}
-		case MSG_TO_APMCU_CAM_A_AFO_i:
-			{
-				LOG_DBG
-					("AFWaitQueueHead:%d\n",
-					receivedCcuCmd.in_data_ptr);
-				LOG_DBG
-					("======AFO_A_done_from_CCU =====\n");
-				AFbWaitCond[0] = true;
-				AFg_LogBufIdx[0] = 3;
-
-				wake_up_interruptible
-					(&ccuInfo.AFWaitQueueHead[0]);
-				LOG_DBG("wakeup %s done\n",
-					"ccuInfo.AFWaitQueueHead");
-				break;
-			}
-		case MSG_TO_APMCU_CAM_B_AFO_i:
-			{
-				LOG_DBG
-				    ("AFBWaitQueueHead:%d\n",
-					receivedCcuCmd.in_data_ptr);
-				LOG_DBG
-				    ("===== AFO_B_done_from_CCU ======n");
-				AFbWaitCond[1] = true;
-				AFg_LogBufIdx[1] = 4;
-
-				wake_up_interruptible(
-					&ccuInfo.AFWaitQueueHead[1]);
-				LOG_DBG("wakeup %s done\n",
-					"ccuInfo.AFBWaitQueueHead");
 				break;
 			}
 
@@ -590,8 +486,6 @@ int ccu_init_hw(struct ccu_device_s *device)
 	/* init waitqueue */
 	init_waitqueue_head(&cmd_wait);
 	init_waitqueue_head(&ccuInfo.WaitQueueHead);
-	init_waitqueue_head(&ccuInfo.AFWaitQueueHead[0]);
-	init_waitqueue_head(&ccuInfo.AFWaitQueueHead[1]);
 	/* init atomic task counter */
 	/*ccuInfo.taskCount = ATOMIC_INIT(0);*/
 
@@ -614,6 +508,7 @@ int ccu_init_hw(struct ccu_device_s *device)
 	camsys_base = device->camsys_base;
 	bin_base = device->bin_base;
 	dmem_base = device->dmem_base;
+	pmem_base = device->pmem_base;
 
 	ccu_dev = device;
 
@@ -646,8 +541,11 @@ out:
 
 int ccu_uninit_hw(struct ccu_device_s *device)
 {
-	if (ccu_ion_client != NULL)
+	if (ccu_ion_client != NULL) {
+		mutex_lock(&ccu_i2c_mutex);
 		_ccu_deallocate_mva(&ccu_ion_client, &i2c_buffer_handle);
+		mutex_unlock(&ccu_i2c_mutex);
+	}
 
 	if (enque_task) {
 		kthread_stop(enque_task);
@@ -671,10 +569,13 @@ int ccu_get_i2c_dma_buf_addr(uint32_t *mva,
 	int ret = 0;
 	void *va;
 
+	mutex_lock(&ccu_i2c_mutex);
 	ret = i2c_get_dma_buffer_addr(&va, pa_h, pa_l, i2c_id);
 	LOG_DBG_MUST("got i2c buf pa: %d, %d\n", *pa_l, *pa_h);
-	if (ret != 0)
+	if (ret != 0) {
+		mutex_unlock(&ccu_i2c_mutex);
 		return ret;
+	}
 
 	/*If there is existing i2c buffer mva allocated, deallocate it first*/
 	_ccu_deallocate_mva(&ccu_ion_client, &i2c_buffer_handle);
@@ -685,6 +586,7 @@ int ccu_get_i2c_dma_buf_addr(uint32_t *mva,
 	 */
 	i2c_buffer_mva = *mva;
 
+	mutex_unlock(&ccu_i2c_mutex);
 	return ret;
 }
 
@@ -800,6 +702,7 @@ int ccu_power(struct ccu_power_s *power)
 		/*ccu_write_reg_bit(ccu_base, RESET, CCU_HW_RST, 1);*/
 
 		/*1. Enable CCU CAMSYS_CG_CON bit12 CCU_CGPDN=0*/
+
 		LOG_DBG("CG released\n");
 		/*mdelay(1);*/
 		/**/
@@ -827,7 +730,8 @@ int ccu_power(struct ccu_power_s *power)
 		ccuInfo.IsCcuPoweredOn = 1;
 	} else if (power->bON == 0) {
 		/*CCU Power off*/
-		ret = _ccu_powerdown();
+		if (ccuInfo.IsCcuPoweredOn == 1)
+			ret = _ccu_powerdown();
 	} else if (power->bON == 2) {
 		/*Restart CCU, no need to release CG*/
 
@@ -870,14 +774,18 @@ int ccu_power(struct ccu_power_s *power)
 
 		ccuInfo.IsCcuPoweredOn = 0;
 
-	if (ccu_ion_client != NULL)
-		_ccu_deallocate_mva(&ccu_ion_client, &i2c_buffer_handle);
+		if (ccu_ion_client != NULL) {
+			mutex_lock(&ccu_i2c_mutex);
+			_ccu_deallocate_mva(&ccu_ion_client,
+				&i2c_buffer_handle);
+			mutex_unlock(&ccu_i2c_mutex);
+		}
 	} else if (power->bON == 4) {
 		/*CCU boot fail, just enable CG*/
-
-		ccu_clock_disable();
-		ccuInfo.IsCcuPoweredOn = 0;
-
+		if (ccuInfo.IsCcuPoweredOn == 1) {
+			ccu_clock_disable();
+			ccuInfo.IsCcuPoweredOn = 0;
+		}
 	} else {
 	}
 
@@ -992,10 +900,342 @@ static int _ccu_powerdown(void)
 	ccuInfo.IsI2cPowerDisabling = 0;
 	ccuInfo.IsCcuPoweredOn = 0;
 
-	if (ccu_ion_client != NULL)
+	if (ccu_ion_client != NULL) {
+		mutex_lock(&ccu_i2c_mutex);
 		_ccu_deallocate_mva(&ccu_ion_client, &i2c_buffer_handle);
+		mutex_unlock(&ccu_i2c_mutex);
+	}
 
 	return 0;
+}
+
+int ccu_load_bin(struct ccu_device_s *device)
+{
+	const struct firmware *firmware_p;
+	int ret = 0;
+
+	ret = request_firmware(&firmware_p, "lib3a.ccu", device->dev);
+	if (ret < 0) {
+		LOG_ERR("request_firmware failed: %d\n", ret);
+		goto EXIT;
+	}
+
+	ret = ccu_sanity_check(firmware_p);
+	if (ret < 0) {
+		LOG_ERR("sanity check failed: %d\n", ret);
+		goto EXIT;
+	}
+
+	ret = ccu_cert_check(firmware_p);
+	if (ret < 0) {
+		LOG_ERR("cert check failed: %d\n", ret);
+		goto EXIT;
+	}
+
+	ret = ccu_load_segments(firmware_p);
+	if (ret < 0)
+		LOG_ERR("load segments failed: %d\n", ret);
+EXIT:
+	release_firmware(firmware_p);
+	return ret;
+}
+struct tcrypt_result {
+	struct completion completion;
+	int err;
+};
+
+static void tcrypt_complete(struct crypto_async_request *req, int err)
+{
+	struct tcrypt_result *res = (struct tcrypt_result *) req->data;
+
+	if (err == -EINPROGRESS)
+		return;
+
+	res->err = err;
+	complete(&res->completion);
+}
+
+static int wait_async_op(struct tcrypt_result *tr, int ret)
+{
+	if (ret == -EINPROGRESS || ret == -EBUSY) {
+		wait_for_completion(&tr->completion);
+		reinit_completion(&tr->completion);
+		ret = tr->err;
+	}
+
+	return ret;
+}
+
+CCU_FW_PUBK;
+
+int ccu_cert_check(const struct firmware *fw)
+{
+	uint8_t hash[32];
+	uint8_t *cert = NULL;
+	uint8_t *sign = NULL;
+	uint8_t *digest = NULL;
+	int cert_len = 0x110;
+	int block_len = 0x100;
+	struct crypto_shash *alg = NULL;
+	struct crypto_akcipher *rsa_alg = NULL;
+	struct akcipher_request *req = NULL;
+	struct tcrypt_result result;
+	struct sdesc *sdesc = NULL;
+	struct scatterlist sg_in;
+	struct scatterlist sg_out;
+	uint32_t firmware_size, size;
+	int ret, i;
+
+	LOG_DBG_MUST("%s+\n", __func__);
+	if (fw->size < cert_len) {
+		LOG_ERR("firmware size small than cert\n");
+		return -EINVAL;
+	}
+
+	cert = (uint8_t *)fw->data + fw->size - cert_len;
+
+	alg = crypto_alloc_shash("sha256", 0, 0);
+	if (IS_ERR(alg)) {
+		LOG_ERR("can't alloc alg sha256\n");
+		ret = -EINVAL;
+		goto free_req;
+	}
+	size = sizeof(struct shash_desc) + crypto_shash_descsize(alg);
+	sdesc = kmalloc(size, GFP_KERNEL);
+	if (!sdesc) {
+		LOG_ERR("can't alloc sdesc\n");
+		ret = -ENOMEM;
+		goto free_req;
+	}
+	digest = kmalloc(block_len, GFP_KERNEL);
+	if (!digest) {
+		LOG_ERR("can't alloc sdesc\n");
+		ret = -ENOMEM;
+		goto free_req;
+	}
+	sign = kmalloc(block_len, GFP_KERNEL);
+	if (!sign) {
+		LOG_ERR("can't alloc sdesc\n");
+		ret = -ENOMEM;
+		goto free_req;
+	}
+
+	firmware_size = *(uint32_t *)(cert);
+	sdesc->shash.tfm = alg;
+	ret = crypto_shash_digest(&sdesc->shash, fw->data, firmware_size, hash);
+
+	memcpy(sign, cert + 0x10, block_len);
+	rsa_alg = crypto_alloc_akcipher("rsa", 0, 0);
+	if (IS_ERR(rsa_alg)) {
+		LOG_ERR("can't alloc alg %ld\n", PTR_ERR(rsa_alg));
+		goto free_req;
+	}
+
+	req = akcipher_request_alloc(rsa_alg, GFP_KERNEL);
+	if (!req) {
+		LOG_ERR("can't request alg rsa\n");
+		goto free_req;
+	}
+
+	ret = crypto_akcipher_set_pub_key(rsa_alg, g_ccu_pubk, CCU_FW_PUBK_SZ);
+	if (ret) {
+		LOG_ERR("set pubkey err %d %d\n", ret, CCU_FW_PUBK_SZ);
+		goto free_req;
+	}
+
+	sg_init_one(&sg_in, sign, block_len);
+	sg_init_one(&sg_out, digest, block_len);
+
+	akcipher_request_set_crypt(req, &sg_in, &sg_out, block_len, block_len);
+	init_completion(&result.completion);
+
+	akcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
+		tcrypt_complete, &result);
+	ret = wait_async_op(&result, crypto_akcipher_verify(req));
+	if (ret) {
+		LOG_ERR("verify err %d\n", ret);
+		goto free_req;
+	}
+
+	if (memcmp(digest + 0xE0, hash, 0x20)) {
+		LOG_ERR("firmware is corrupted\n");
+		LOG_ERR("digest:\n");
+		for (i = 0xE0; i < 0x100; i += 8) {
+			LOG_ERR("%02x%02x%02x%02x%02x%02x%02x%02x\n",
+			digest[i], digest[i+1], digest[i+2], digest[i+3],
+			digest[i+4], digest[i+5], digest[i+6], digest[i+7]);
+		}
+		LOG_ERR("hash:\n");
+		for (i = 0; i < 32; i += 8) {
+			LOG_INF_MUST("%02x%02x%02x%02x%02x%02x%02x%02x\n",
+			hash[i], hash[i+1], hash[i+2], hash[i+3],
+			hash[i+4], hash[i+5], hash[i+6], hash[i+7]);
+		}
+		ret = -EINVAL;
+	}
+
+free_req:
+	if (rsa_alg)
+		crypto_free_akcipher(rsa_alg);
+	if (req)
+		akcipher_request_free(req);
+	if (alg)
+		crypto_free_shash(alg);
+	kfree(sdesc);
+	kfree(digest);
+	kfree(sign);
+	LOG_DBG_MUST("%s-\n", __func__);
+	return ret;
+}
+
+int ccu_sanity_check(const struct firmware *fw)
+{
+	// const char *name = rproc->firmware;
+	struct elf32_hdr *ehdr;
+	uint32_t phdr_offset;
+	char class;
+
+	if (!fw) {
+		LOG_ERR("failed to load ccu_bin\n");
+		return -EINVAL;
+	}
+
+	if (fw->size < sizeof(struct elf32_hdr)) {
+		LOG_ERR("Image is too small\n");
+		return -EINVAL;
+	}
+
+	ehdr = (struct elf32_hdr *)fw->data;
+
+	/* We only support ELF32 at this point */
+	class = ehdr->e_ident[EI_CLASS];
+	if (class != ELFCLASS32) {
+		LOG_ERR("Unsupported class: %d\n", class);
+		return -EINVAL;
+	}
+
+	/* We assume the firmware has the same endianness as the host */
+# ifdef __LITTLE_ENDIAN
+	if (ehdr->e_ident[EI_DATA] != ELFDATA2LSB) {
+# else /* BIG ENDIAN */
+	if (ehdr->e_ident[EI_DATA] != ELFDATA2MSB) {
+# endif
+		LOG_ERR("Unsupported firmware endianness\n");
+		return -EINVAL;
+	}
+
+	if (fw->size < ehdr->e_shoff + sizeof(struct elf32_shdr)) {
+		LOG_ERR("Image is too small\n");
+		return -EINVAL;
+	}
+
+	if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG)) {
+		LOG_ERR("Image is corrupted (bad magic)\n");
+		return -EINVAL;
+	}
+
+	if ((ehdr->e_phnum == 0) || (ehdr->e_phnum > CCU_HEADER_NUM)) {
+		LOG_ERR("loadable segments is invalid: %x\n", ehdr->e_phnum);
+		return -EINVAL;
+	}
+
+	phdr_offset = ehdr->e_phoff + sizeof(struct elf32_phdr) * ehdr->e_phnum;
+	if (phdr_offset > fw->size) {
+		LOG_ERR("Firmware size is too small\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static void ccu_load_memcpy(void *dst, const void *src, uint32_t len)
+{
+	int i, copy_len;
+	uint32_t data = 0;
+	uint32_t align_data = 0;
+
+	for (i = 0; i < len/4; ++i)
+		writel(*((uint32_t *)src+i), (uint32_t *)dst+i);
+
+	if ((len % 4) != 0) {
+		copy_len = len & ~(0x3);
+		for (i = 0; i < 4; ++i) {
+			if (i < (len%4)) {
+				data = *((char *)src + copy_len + i);
+				align_data += data << (8 * i);
+			}
+		}
+		writel(align_data, (uint32_t *)dst + len/4);
+	}
+}
+
+int ccu_load_segments(const struct firmware *fw)
+{
+	struct elf32_hdr *ehdr;
+	// struct elf32_phdr *phdr;
+	struct elf32_shdr *shdr;
+	int i, ret = 0;
+	const u8 *elf_data = fw->data;
+
+	LOG_DBG("(0x%llx),(0x%llx),(0x%llx),(0x%llx)\n",
+	ccu_base, camsys_base, dmem_base, pmem_base);
+
+
+	/*0. Set CCU_A_RESET. CCU_HW_RST=1*/
+	ehdr = (struct elf32_hdr *)elf_data;
+	// phdr = (struct elf32_phdr *)(elf_data + ehdr->e_phoff);
+	shdr = (struct elf32_shdr *)(elf_data + ehdr->e_shoff);
+	// dev_info(dev, "ehdr->e_phnum %d\n", ehdr->e_phnum);
+	LOG_DBG("ehdr->e_shnum %d\n", ehdr->e_shnum);
+	/* go through the available ELF segments */
+	for (i = 0; i < ehdr->e_shnum; i++, shdr++) {
+		u32 da = shdr->sh_addr;
+		u32 size = shdr->sh_size;
+		u32 offset = shdr->sh_offset;
+		void *ptr = NULL;
+
+		if ((shdr->sh_type & SHT_PROGBITS) == 0)
+			continue;
+
+		LOG_DBG("shdr:type %d flag %d da 0x%x size 0x%x\n",
+			shdr->sh_type, shdr->sh_flags, da, size);
+
+		if (offset + size > fw->size) {
+			LOG_ERR("truncated fw: need 0x%x avail 0x%zx\n",
+				offset + size, fw->size);
+			ret = -EINVAL;
+			break;
+		}
+
+		/* grab the kernel address for this device address */
+		if (shdr->sh_flags & SHF_EXECINSTR)
+			ptr = (void *)(pmem_base+da);
+		else
+			ptr = (void *)(dmem_base+da);
+		if (!ptr) {
+			LOG_ERR("bad phdr da 0x%x size 0x%x\n", da, size);
+			// ret = -EINVAL;
+			continue;
+		}
+
+		/* put the segment where the remote processor expects it */
+		if (size) {
+			ccu_load_memcpy(ptr,
+				(void *)elf_data + offset, size);
+		}
+
+		/*
+		 * Zero out remaining memory for this segment.
+		 *
+		 * This isn't strictly required since dma_alloc_coherent already
+		 * did this for us. albeit harmless, we may consider removing
+		 * this.
+		 */
+		// if (memsz > filesz)
+		// ccu_load_memclr(ptr + filesz, memsz - filesz);
+	}
+
+	return ret;
 }
 
 int ccu_run(void)
@@ -1010,6 +1250,8 @@ int ccu_run(void)
 	/*LOG_DBG("cache flushed 2\n");*/
 	/*3. Set CCU_A_RESET. CCU_HW_RST=0*/
 	ccu_write_reg(ccu_base, CCU_INFO23, 0x900d);
+	/*add mb to avoid write hw rst before spare reg*/
+	mb();
 	ccu_write_reg_bit(ccu_base, RESET, CCU_HW_RST, 0);
 
 	LOG_DBG("released CCU reset, wait for initial done, %x\n",
@@ -1100,7 +1342,8 @@ int ccu_run(void)
 
 int ccu_waitirq(struct CCU_WAIT_IRQ_STRUCT *WaitIrq)
 {
-	signed int ret = 0, Timeout = WaitIrq->EventInfo.Timeout;
+	signed int ret = 0;
+	long Timeout = WaitIrq->EventInfo.Timeout;
 
 	LOG_DBG("Clear(%d),bWaitCond(%d),Timeout(%d)\n",
 		WaitIrq->EventInfo.Clear, bWaitCond, Timeout);
@@ -1140,64 +1383,9 @@ int ccu_waitirq(struct CCU_WAIT_IRQ_STRUCT *WaitIrq)
 	}
 
 	if (Timeout > 0) {
-		LOG_DBG("remain timeout:%d, task: %d\n", Timeout, g_LogBufIdx);
+		LOG_DBG("remain timeout:%ld, task: %d\n", Timeout, g_LogBufIdx);
 		/*send to user if not timeout*/
 		WaitIrq->EventInfo.TimeInfo.passedbySigcnt = (int)g_LogBufIdx;
-	}
-	/*EXIT:*/
-
-	return ret;
-}
-
-int ccu_AFwaitirq(struct CCU_WAIT_IRQ_STRUCT *WaitIrq, int tg_num)
-{
-	signed int ret = 0, Timeout = WaitIrq->EventInfo.Timeout;
-
-	LOG_DBG("Clear(%d),AFbWaitCond(%d),Timeout(%d)\n",
-		WaitIrq->EventInfo.Clear, AFbWaitCond[tg_num-1], Timeout);
-	LOG_DBG("arg is struct CCU_WAIT_IRQ_STRUCT, size:%zu\n",
-		sizeof(struct CCU_WAIT_IRQ_STRUCT));
-
-	if (Timeout != 0) {
-		/* 2. start to wait signal */
-		LOG_DBG("+:wait_event_interruptible_timeout\n");
-	AFbWaitCond[tg_num-1] = false;
-		Timeout = wait_event_interruptible_timeout(
-				ccuInfo.AFWaitQueueHead[tg_num-1],
-				AFbWaitCond[tg_num-1],
-				CCU_MsToJiffies(WaitIrq->EventInfo.
-					Timeout));
-
-		LOG_DBG("-:wait_event_interruptible_timeout\n");
-	} else {
-		LOG_DBG("+:ccu wait_event_interruptible\n");
-		/*task_count_temp = atomic_read(&(ccuInfo.taskCount))*/
-		/*if(task_count_temp == 0)*/
-		/*{*/
-
-		mutex_unlock(&ap_task_manage.ApTaskMutex);
-		LOG_DBG("unlock ApTaskMutex\n");
-		wait_event_interruptible(ccuInfo.AFWaitQueueHead[tg_num-1],
-			AFbWaitCond[tg_num-1]);
-		LOG_DBG("accuiring ApTaskMutex\n");
-		mutex_lock(&ap_task_manage.ApTaskMutex);
-		LOG_DBG("got ApTaskMutex\n");
-		/*}*/
-		/*else*/
-		/*{*/
-		/*LOG_DBG("ccuInfo.taskCount is not zero: %d\n",*/
-		/*	task_count_temp);*/
-		/*}*/
-		AFbWaitCond[tg_num-1] = false;
-		LOG_DBG("-:ccu wait_event_interruptible\n");
-	}
-
-	if (Timeout > 0) {
-		LOG_DBG("remain timeout:%d, task: %d\n",
-			Timeout, AFg_LogBufIdx[tg_num-1]);
-		/*send to user if not timeout*/
-		WaitIrq->EventInfo.TimeInfo.passedbySigcnt =
-			(int)AFg_LogBufIdx[tg_num-1];
 	}
 	/*EXIT:*/
 
@@ -1232,22 +1420,6 @@ int ccu_i2c_ctrl(unsigned char i2c_write_id, int transfer_len)
 	return 0;
 }
 
-int ccu_read_info_reg(int regNo)
-{
-	int *offset;
-
-	if ((regNo < 0) || (regNo > 32)) {
-		LOG_ERR("Invalid regNo : %d\n", regNo);
-		return 0;
-	}
-
-	offset = (int *)(uintptr_t)(ccu_base + 0x60 + regNo * 4);
-
-	LOG_DBG("ccu_read_info_reg: %x\n", (unsigned int)(*offset));
-
-	return *offset;
-}
-
 void ccu_set_sensor_info(int32_t sensorType, struct ccu_sensor_info *info)
 {
 	if (sensorType == IMGSENSOR_SENSOR_IDX_NONE) {
@@ -1275,28 +1447,85 @@ void ccu_set_sensor_info(int32_t sensorType, struct ccu_sensor_info *info)
 	}
 }
 
-void ccu_get_sensor_i2c_slave_addr(int32_t *sensorI2cSlaveAddr)
+void ccu_get_sensor_i2c_info(struct ccu_i2c_info *sensor_info)
 {
-	sensorI2cSlaveAddr[0] =
-		g_ccu_sensor_info[IMGSENSOR_SENSOR_IDX_MAIN].slave_addr;
-	sensorI2cSlaveAddr[1] =
-		g_ccu_sensor_info[IMGSENSOR_SENSOR_IDX_SUB].slave_addr;
-	sensorI2cSlaveAddr[2] =
-		g_ccu_sensor_info[IMGSENSOR_SENSOR_IDX_MAIN2].slave_addr;
-	sensorI2cSlaveAddr[3] =
-		g_ccu_sensor_info[IMGSENSOR_SENSOR_IDX_MAIN3].slave_addr;
+	int32_t i;
+
+	for (i = IMGSENSOR_SENSOR_IDX_MIN_NUM;
+		i < IMGSENSOR_SENSOR_IDX_MAX_NUM; ++i) {
+		sensor_info[i].slave_addr =
+		g_ccu_sensor_info[i].slave_addr;
+		sensor_info[i].i2c_id =
+		g_ccu_sensor_info[i].i2c_id;
+	}
 }
 
 void ccu_get_sensor_name(char **sensor_name)
 {
-	sensor_name[0] =
-	g_ccu_sensor_info[IMGSENSOR_SENSOR_IDX_MAIN].sensor_name_string;
-	sensor_name[1] =
-	g_ccu_sensor_info[IMGSENSOR_SENSOR_IDX_SUB].sensor_name_string;
-	sensor_name[2] =
-	g_ccu_sensor_info[IMGSENSOR_SENSOR_IDX_MAIN2].sensor_name_string;
-	sensor_name[3] =
-	g_ccu_sensor_info[IMGSENSOR_SENSOR_IDX_MAIN3].sensor_name_string;
+	int32_t i;
+
+	for (i = IMGSENSOR_SENSOR_IDX_MIN_NUM;
+		i < IMGSENSOR_SENSOR_IDX_MAX_NUM; ++i) {
+		sensor_name[i] =
+		g_ccu_sensor_info[i].sensor_name_string;
+	}
+}
+
+void ccu_print_reg(uint32_t *Reg)
+{
+	int i;
+	uint32_t offset = 0;
+	uint32_t *ccuCtrlPtr = Reg;
+	uint32_t *ccuDmPtr = Reg + (CCU_HW_DUMP_SIZE>>2);
+	uint32_t *ccuPmPtr = Reg + (CCU_HW_DUMP_SIZE>>2) + (CCU_DMEM_SIZE>>2);
+
+	for (i = 0 ; i < CCU_HW_DUMP_SIZE ; i += 16) {
+		*(ccuCtrlPtr+offset) = *(uint32_t *)(ccu_base + i);
+		*(ccuCtrlPtr+offset + 1) = *(uint32_t *)(ccu_base + i + 4);
+		*(ccuCtrlPtr+offset + 2) = *(uint32_t *)(ccu_base + i + 8);
+		*(ccuCtrlPtr+offset + 3) = *(uint32_t *)(ccu_base + i + 12);
+		offset += 4;
+	}
+	offset = 0;
+	for (i = 0 ; i < CCU_DMEM_SIZE ; i += 16) {
+		*(ccuDmPtr+offset) = *(uint32_t *)(dmem_base + i);
+		*(ccuDmPtr+offset + 1) = *(uint32_t *)(dmem_base + i + 4);
+		*(ccuDmPtr+offset + 2) = *(uint32_t *)(dmem_base + i + 8);
+		*(ccuDmPtr+offset + 3) = *(uint32_t *)(dmem_base + i + 12);
+		offset += 4;
+	}
+	offset = 0;
+	for (i = 0 ; i < CCU_PMEM_SIZE ; i += 16) {
+		*(ccuPmPtr+offset) = *(uint32_t *)(pmem_base + i);
+		*(ccuPmPtr+offset + 1) = *(uint32_t *)(pmem_base + i + 4);
+		*(ccuPmPtr+offset + 2) = *(uint32_t *)(pmem_base + i + 8);
+		*(ccuPmPtr+offset + 3) = *(uint32_t *)(pmem_base + i + 12);
+		offset += 4;
+	}
+}
+
+void ccu_print_sram_log(char *sram_log)
+{
+	int i;
+	char *ccuLogPtr_1 = (char *)dmem_base + CCU_LOG_BASE;
+	char *ccuLogPtr_2 = (char *)dmem_base + CCU_LOG_BASE + CCU_LOG_SIZE;
+	char *isrLogPtr = (char *)dmem_base + CCU_ISR_LOG_BASE;
+
+	MUINT32 *from_sram;
+	MUINT32 *to_dram;
+
+	from_sram = (MUINT32 *)ccuLogPtr_1;
+	to_dram = (MUINT32 *)sram_log;
+	for (i = 0; i < CCU_LOG_SIZE/4-1; i++)
+		*(to_dram+i) = *(from_sram+i);
+	from_sram = (MUINT32 *)ccuLogPtr_2;
+	to_dram = (MUINT32 *)(sram_log + CCU_LOG_SIZE);
+	for (i = 0; i < CCU_LOG_SIZE/4-1; i++)
+		*(to_dram+i) = *(from_sram+i);
+	from_sram = (MUINT32 *)isrLogPtr;
+	to_dram = (MUINT32 *)(sram_log + (CCU_LOG_SIZE * 2));
+	for (i = 0; i < CCU_ISR_LOG_SIZE/4-1; i++)
+		*(to_dram+i) = *(from_sram+i);
 }
 
 int ccu_query_power_status(void)

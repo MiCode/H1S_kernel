@@ -1,23 +1,14 @@
-/* SCP sensor hub driver
- *
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2019 MediaTek Inc.
  */
-
 
 #ifndef SCP_SENSOR_HUB_H
 #define SCP_SENSOR_HUB_H
 
 #include <linux/ioctl.h>
 #include <linux/atomic.h>
+#include <linux/init.h>
 
 #if defined(CONFIG_MTK_SCP_SENSORHUB_V1)
 #error CONFIG_MTK_SCP_SENSORHUB_V1 should not configed
@@ -555,5 +546,6 @@ int sensor_flush_to_hub(uint8_t sensorType);
 int sensor_cfg_to_hub(uint8_t sensorType, uint8_t *data, uint8_t count);
 int sensor_calibration_to_hub(uint8_t sensorType);
 int sensor_selftest_to_hub(uint8_t sensorType);
+
 #endif
 #endif

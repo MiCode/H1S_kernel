@@ -276,7 +276,7 @@ minstrel_tx_status(void *priv, struct ieee80211_supported_band *sband,
 	success = !!(info->flags & IEEE80211_TX_STAT_ACK);
 
 	for (i = 0; i < IEEE80211_TX_MAX_RATES; i++) {
-		if (ar[i].idx < 0)
+		if (ar[i].idx < 0 || !ar[i].count)
 			break;
 
 		ndx = rix_to_ndx(mi, ar[i].idx);
@@ -288,12 +288,6 @@ minstrel_tx_status(void *priv, struct ieee80211_supported_band *sband,
 		if ((i != IEEE80211_TX_MAX_RATES - 1) && (ar[i + 1].idx < 0))
 			mi->r[ndx].stats.success += success;
 	}
-
-	if ((info->flags & IEEE80211_TX_CTL_RATE_CTRL_PROBE) && (i >= 0))
-		mi->sample_packets++;
-
-	if (mi->sample_deferred > 0)
-		mi->sample_deferred--;
 
 	if (time_after(jiffies, mi->last_stats_update +
 				(mp->update_interval * HZ) / 1000))
@@ -373,7 +367,7 @@ minstrel_get_rate(void *priv, struct ieee80211_sta *sta,
 		return;
 
 	delta = (mi->total_packets * sampling_ratio / 100) -
-			(mi->sample_packets + mi->sample_deferred / 2);
+			mi->sample_packets;
 
 	/* delta < 0: no sampling required */
 	prev_sample = mi->prev_sample;
@@ -382,7 +376,6 @@ minstrel_get_rate(void *priv, struct ieee80211_sta *sta,
 		return;
 
 	if (mi->total_packets >= 10000) {
-		mi->sample_deferred = 0;
 		mi->sample_packets = 0;
 		mi->total_packets = 0;
 	} else if (delta > mi->n_rates * 2) {
@@ -407,19 +400,8 @@ minstrel_get_rate(void *priv, struct ieee80211_sta *sta,
 	 * rate sampling method should be used.
 	 * Respect such rates that are not sampled for 20 interations.
 	 */
-	if (mrr_capable &&
-	    msr->perfect_tx_time > mr->perfect_tx_time &&
-	    msr->stats.sample_skipped < 20) {
-		/* Only use IEEE80211_TX_CTL_RATE_CTRL_PROBE to mark
-		 * packets that have the sampling rate deferred to the
-		 * second MRR stage. Increase the sample counter only
-		 * if the deferred sample rate was actually used.
-		 * Use the sample_deferred counter to make sure that
-		 * the sampling is not done in large bursts */
-		info->flags |= IEEE80211_TX_CTL_RATE_CTRL_PROBE;
-		rate++;
-		mi->sample_deferred++;
-	} else {
+	if (msr->perfect_tx_time < mr->perfect_tx_time ||
+	    msr->stats.sample_skipped >= 20) {
 		if (!msr->sample_limit)
 			return;
 
@@ -439,6 +421,7 @@ minstrel_get_rate(void *priv, struct ieee80211_sta *sta,
 
 	rate->idx = mi->r[ndx].rix;
 	rate->count = minstrel_get_retry_count(&mi->r[ndx], info);
+	info->flags |= IEEE80211_TX_CTL_RATE_CTRL_PROBE;
 }
 
 
@@ -592,11 +575,11 @@ minstrel_alloc_sta(void *priv, struct ieee80211_sta *sta, gfp_t gfp)
 			max_rates = sband->n_bitrates;
 	}
 
-	mi->r = kzalloc(sizeof(struct minstrel_rate) * max_rates, gfp);
+	mi->r = kcalloc(max_rates, sizeof(struct minstrel_rate), gfp);
 	if (!mi->r)
 		goto error;
 
-	mi->sample_table = kmalloc(SAMPLE_COLUMNS * max_rates, gfp);
+	mi->sample_table = kmalloc_array(max_rates, SAMPLE_COLUMNS, gfp);
 	if (!mi->sample_table)
 		goto error1;
 
@@ -690,7 +673,7 @@ minstrel_alloc(struct ieee80211_hw *hw, struct dentry *debugfsdir)
 #ifdef CONFIG_MAC80211_DEBUGFS
 	mp->fixed_rate_idx = (u32) -1;
 	mp->dbg_fixed_rate = debugfs_create_u32("fixed_rate_idx",
-			S_IRUGO | S_IWUGO, debugfsdir, &mp->fixed_rate_idx);
+			0666, debugfsdir, &mp->fixed_rate_idx);
 #endif
 
 	minstrel_init_cck_rates(mp);
@@ -751,4 +734,3 @@ rc80211_minstrel_exit(void)
 {
 	ieee80211_rate_control_unregister(&mac80211_minstrel);
 }
-

@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 /*
  * This file is generated.
@@ -18,7 +11,7 @@
  * Date 2018-11-14 13:02:08.887000
  */
 enum MD_REG_ID {
-	MD_REG_AP_MDSRC_REQ = 0,
+	MD_REG_AP_MDSRC_REQ_NO_USE = 0,
 	MD_REG_PC_MONITOR,
 	MD_REG_PLL_REG,
 	MD_REG_BUS,

@@ -37,13 +37,15 @@ static const struct nla_policy nat_policy[TCA_NAT_MAX + 1] = {
 };
 
 static int tcf_nat_init(struct net *net, struct nlattr *nla, struct nlattr *est,
-			struct tc_action **a, int ovr, int bind)
+			struct tc_action **a, int ovr, int bind,
+			bool rtnl_held, struct netlink_ext_ack *extack)
 {
 	struct tc_action_net *tn = net_generic(net, nat_net_id);
 	struct nlattr *tb[TCA_NAT_MAX + 1];
 	struct tc_nat *parm;
 	int ret = 0, err;
 	struct tcf_nat *p;
+	u32 index;
 
 	if (nla == NULL)
 		return -EINVAL;
@@ -55,19 +57,25 @@ static int tcf_nat_init(struct net *net, struct nlattr *nla, struct nlattr *est,
 	if (tb[TCA_NAT_PARMS] == NULL)
 		return -EINVAL;
 	parm = nla_data(tb[TCA_NAT_PARMS]);
-
-	if (!tcf_idr_check(tn, parm->index, a, bind)) {
-		ret = tcf_idr_create(tn, parm->index, est, a,
+	index = parm->index;
+	err = tcf_idr_check_alloc(tn, &index, a, bind);
+	if (!err) {
+		ret = tcf_idr_create(tn, index, est, a,
 				     &act_nat_ops, bind, false);
-		if (ret)
+		if (ret) {
+			tcf_idr_cleanup(tn, index);
 			return ret;
+		}
 		ret = ACT_P_CREATED;
-	} else {
+	} else if (err > 0) {
 		if (bind)
 			return 0;
-		tcf_idr_release(*a, bind);
-		if (!ovr)
+		if (!ovr) {
+			tcf_idr_release(*a, bind);
 			return -EEXIST;
+		}
+	} else {
+		return err;
 	}
 	p = to_tcf_nat(*a);
 
@@ -86,8 +94,8 @@ static int tcf_nat_init(struct net *net, struct nlattr *nla, struct nlattr *est,
 	return ret;
 }
 
-static int tcf_nat(struct sk_buff *skb, const struct tc_action *a,
-		   struct tcf_result *res)
+static int tcf_nat_act(struct sk_buff *skb, const struct tc_action *a,
+		       struct tcf_result *res)
 {
 	struct tcf_nat *p = to_tcf_nat(a);
 	struct iphdr *iph;
@@ -256,8 +264,8 @@ static int tcf_nat_dump(struct sk_buff *skb, struct tc_action *a,
 
 		.index    = p->tcf_index,
 		.action   = p->tcf_action,
-		.refcnt   = p->tcf_refcnt - ref,
-		.bindcnt  = p->tcf_bindcnt - bind,
+		.refcnt   = refcount_read(&p->tcf_refcnt) - ref,
+		.bindcnt  = atomic_read(&p->tcf_bindcnt) - bind,
 	};
 	struct tcf_t t;
 
@@ -277,14 +285,16 @@ nla_put_failure:
 
 static int tcf_nat_walker(struct net *net, struct sk_buff *skb,
 			  struct netlink_callback *cb, int type,
-			  const struct tc_action_ops *ops)
+			  const struct tc_action_ops *ops,
+			  struct netlink_ext_ack *extack)
 {
 	struct tc_action_net *tn = net_generic(net, nat_net_id);
 
-	return tcf_generic_walker(tn, skb, cb, type, ops);
+	return tcf_generic_walker(tn, skb, cb, type, ops, extack);
 }
 
-static int tcf_nat_search(struct net *net, struct tc_action **a, u32 index)
+static int tcf_nat_search(struct net *net, struct tc_action **a, u32 index,
+			  struct netlink_ext_ack *extack)
 {
 	struct tc_action_net *tn = net_generic(net, nat_net_id);
 
@@ -295,7 +305,7 @@ static struct tc_action_ops act_nat_ops = {
 	.kind		=	"nat",
 	.type		=	TCA_ACT_NAT,
 	.owner		=	THIS_MODULE,
-	.act		=	tcf_nat,
+	.act		=	tcf_nat_act,
 	.dump		=	tcf_nat_dump,
 	.init		=	tcf_nat_init,
 	.walk		=	tcf_nat_walker,
@@ -310,16 +320,14 @@ static __net_init int nat_init_net(struct net *net)
 	return tc_action_net_init(net, tn, &act_nat_ops);
 }
 
-static void __net_exit nat_exit_net(struct net *net)
+static void __net_exit nat_exit_net(struct list_head *net_list)
 {
-	struct tc_action_net *tn = net_generic(net, nat_net_id);
-
-	tc_action_net_exit(tn);
+	tc_action_net_exit(net_list, nat_net_id);
 }
 
 static struct pernet_operations nat_net_ops = {
 	.init = nat_init_net,
-	.exit = nat_exit_net,
+	.exit_batch = nat_exit_net,
 	.id   = &nat_net_id,
 	.size = sizeof(struct tc_action_net),
 };

@@ -60,7 +60,7 @@ static void clk_apmu_disable(struct clk_hw *hw)
 		spin_unlock_irqrestore(apmu->lock, flags);
 }
 
-static struct clk_ops clk_apmu_ops = {
+static const struct clk_ops clk_apmu_ops = {
 	.enable = clk_apmu_enable,
 	.disable = clk_apmu_disable,
 };
@@ -70,7 +70,7 @@ struct clk *mmp_clk_register_apmu(const char *name, const char *parent_name,
 {
 	struct clk_apmu *apmu;
 	struct clk *clk;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 
 	apmu = kzalloc(sizeof(*apmu), GFP_KERNEL);
 	if (!apmu)

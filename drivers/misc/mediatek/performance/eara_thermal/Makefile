@@ -27,6 +27,9 @@ ccflags-y += -I$(MTK_TOP)/base/power/$(MTK_PLATFORM)/
 ccflags-y += -I$(MTK_TOP)/base/power/include/
 ccflags-y += -I$(MTK_TOP)/base/power/ppm_v3/src/mach/$(MTK_PLATFORM)/
 ccflags-y += -I$(MTK_TOP)/base/power/ppm_v3/inc/
+ccflags-y += -I$(srctree)/kernel/
+ccflags-y += -I$(srctree)/drivers/gpu/mediatek/gpufreq/include/
+
 ccflags-y += -I$(FPSGO_TOP)/
 ccflags-y += -I$(EARA_THRM_TOP)/platform/$(MTK_PLATFORM)/
 

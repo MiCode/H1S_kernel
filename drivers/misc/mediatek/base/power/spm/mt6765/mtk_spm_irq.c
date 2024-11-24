@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/init.h>
@@ -26,11 +18,7 @@
 #include <mtk_spm.h>
 #include <mtk_spm_irq.h>
 #include <mtk_spm_internal.h>
-#include <mt-plat/mtk_cirq.h>
 
-#if 0 //FIXME
-#include <mtk_spm_vcore_dvfs.h>
-#endif
 
 #if defined(CONFIG_MTK_SYS_CIRQ)
 #include <mt-plat/mtk_cirq.h>
@@ -46,27 +34,27 @@ char __attribute__((weak)) *spm_vcorefs_dump_dvfs_regs(char *p)
 
 void __attribute__((weak)) mt_cirq_clone_gic(void)
 {
-	pr_info("[SPM] NO %s !!!\n", __func__);
+	printk_deferred("[name:spm&][SPM] NO %s !!!\n", __func__);
 }
 
 void __attribute__((weak)) mt_cirq_enable(void)
 {
-	pr_info("[SPM] NO %s !!!\n", __func__);
+	printk_deferred("[name:spm&][SPM] NO %s !!!\n", __func__);
 }
 
 void __attribute__((weak)) mt_cirq_flush(void)
 {
-	pr_info("[SPM] NO %s !!!\n", __func__);
+	printk_deferred("[name:spm&][SPM] NO %s !!!\n", __func__);
 }
 
 void __attribute__((weak)) mt_cirq_disable(void)
 {
-	pr_info("[SPM] NO %s !!!\n", __func__);
+	printk_deferred("[name:spm&][SPM] NO %s !!!\n", __func__);
 }
 
 void __attribute__((weak)) set_wakeup_sources(u32 *list, u32 num_events)
 {
-	pr_info("NO %s !!!\n", __func__);
+	printk_deferred("[name:spm&]NO %s !!!\n", __func__);
 }
 
 /***************************************************
@@ -147,7 +135,6 @@ static int cpu_pm_callback_wakeup_src_restore(
 static struct notifier_block mtk_spm_cpu_pm_notifier_block = {
 	.notifier_call = cpu_pm_callback_wakeup_src_restore,
 };
-
 #endif
 
 static unsigned int spm_irq_0;
@@ -205,6 +192,7 @@ static irqreturn_t spm_irq0_handler(int irq, void *dev_id)
 	spin_lock_irqsave(&__spm_lock, flags);
 	/* get ISR status */
 	isr = spm_read(SPM_IRQ_STA);
+
 	if (isr & ISRS_TWAM) {
 		twamsig.byte[0].id = spm_read(SPM_TWAM_LAST_STA0);
 		twamsig.byte[1].id = spm_read(SPM_TWAM_LAST_STA1);
@@ -222,8 +210,11 @@ static irqreturn_t spm_irq0_handler(int irq, void *dev_id)
 		twam_sel.id[3] = ((twam_idle_con & 0xF8000000) >> 27);
 		udelay(40); /* delay 1T @ 32K */
 	}
+
 	/* clean ISR status */
+
 	SMC_CALL(IRQ0_HANDLER, isr, 0, 0);
+
 	spin_unlock_irqrestore(&__spm_lock, flags);
 
 	if (isr & (ISRS_SW_INT1)) {

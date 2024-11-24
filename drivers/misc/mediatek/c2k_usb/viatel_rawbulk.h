@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __RAWBULK_H__
@@ -76,14 +68,14 @@ struct rawbulk_function {
 
 	/* Controls */
 	spinlock_t lock;
-	int enable:1;
-	int activated:1;	/* set when usb enabled */
+	unsigned int enable:1;
+	unsigned int activated:1;	/* set when usb enabled */
 	int tty_opened:1;
 
-	int initialized:1;	/* init-flag for activator worker */
+	unsigned int initialized:1;	/* init-flag for activator worker */
 	struct work_struct activator;	/* asynic transaction starter */
 
-	struct wakeup_source keep_awake;
+	struct wakeup_source *keep_awake;
 
 	/* USB Gadget related */
 	struct usb_function function;

@@ -38,8 +38,6 @@
 #include <linux/ppp-ioctl.h>
 #include <linux/if_pppox.h>
 #include <linux/mtio.h>
-#include <linux/auto_fs.h>
-#include <linux/auto_fs4.h>
 #include <linux/tty.h>
 #include <linux/vt_kern.h>
 #include <linux/fb.h>
@@ -54,8 +52,6 @@
 #include <linux/if_tun.h>
 #include <linux/ctype.h>
 #include <linux/syscalls.h>
-#include <linux/i2c.h>
-#include <linux/i2c-dev.h>
 #include <linux/atalk.h>
 #include <linux/gfp.h>
 #include <linux/cec.h>
@@ -137,22 +133,6 @@ static int do_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	return vfs_ioctl(file, cmd, arg);
 }
 
-static int w_long(struct file *file,
-		unsigned int cmd, compat_ulong_t __user *argp)
-{
-	int err;
-	unsigned long __user *valp = compat_alloc_user_space(sizeof(*valp));
-
-	if (valp == NULL)
-		return -EFAULT;
-	err = do_ioctl(file, cmd, (unsigned long)valp);
-	if (err)
-		return err;
-	if (convert_in_user(valp, argp))
-		return -EFAULT;
-	return 0;
-}
-
 struct compat_video_event {
 	int32_t		type;
 	compat_time_t	timestamp;
@@ -216,34 +196,6 @@ static int do_video_stillpicture(struct file *file,
 		return -EFAULT;
 
 	err = do_ioctl(file, VIDEO_STILLPICTURE, (unsigned long) up_native);
-
-	return err;
-}
-
-struct compat_video_spu_palette {
-	int length;
-	compat_uptr_t palette;
-};
-
-static int do_video_set_spu_palette(struct file *file,
-		unsigned int cmd, struct compat_video_spu_palette __user *up)
-{
-	struct video_spu_palette __user *up_native;
-	compat_uptr_t palp;
-	int length, err;
-
-	err  = get_user(palp, &up->palette);
-	err |= get_user(length, &up->length);
-	if (err)
-		return -EFAULT;
-
-	up_native = compat_alloc_user_space(sizeof(struct video_spu_palette));
-	err  = put_user(compat_ptr(palp), &up_native->palette);
-	err |= put_user(length, &up_native->length);
-	if (err)
-		return -EFAULT;
-
-	err = do_ioctl(file, cmd, (unsigned long) up_native);
 
 	return err;
 }
@@ -671,96 +623,6 @@ static int serial_struct_ioctl(struct file *file,
 			return -EFAULT;
         }
         return err;
-}
-
-/*
- * I2C layer ioctls
- */
-
-struct i2c_msg32 {
-	u16 addr;
-	u16 flags;
-	u16 len;
-	compat_caddr_t buf;
-};
-
-struct i2c_rdwr_ioctl_data32 {
-	compat_caddr_t msgs; /* struct i2c_msg __user *msgs */
-	u32 nmsgs;
-};
-
-struct i2c_smbus_ioctl_data32 {
-	u8 read_write;
-	u8 command;
-	u32 size;
-	compat_caddr_t data; /* union i2c_smbus_data *data */
-};
-
-struct i2c_rdwr_aligned {
-	struct i2c_rdwr_ioctl_data cmd;
-	struct i2c_msg msgs[0];
-};
-
-static int do_i2c_rdwr_ioctl(struct file *file,
-	unsigned int cmd, struct i2c_rdwr_ioctl_data32 __user *udata)
-{
-	struct i2c_rdwr_aligned		__user *tdata;
-	struct i2c_msg			__user *tmsgs;
-	struct i2c_msg32		__user *umsgs;
-	compat_caddr_t			datap;
-	u32				nmsgs;
-	int				i;
-
-	if (get_user(nmsgs, &udata->nmsgs))
-		return -EFAULT;
-	if (nmsgs > I2C_RDWR_IOCTL_MAX_MSGS)
-		return -EINVAL;
-
-	if (get_user(datap, &udata->msgs))
-		return -EFAULT;
-	umsgs = compat_ptr(datap);
-
-	tdata = compat_alloc_user_space(sizeof(*tdata) +
-				      nmsgs * sizeof(struct i2c_msg));
-	tmsgs = &tdata->msgs[0];
-
-	if (put_user(nmsgs, &tdata->cmd.nmsgs) ||
-	    put_user(tmsgs, &tdata->cmd.msgs))
-		return -EFAULT;
-
-	for (i = 0; i < nmsgs; i++) {
-		if (copy_in_user(&tmsgs[i].addr, &umsgs[i].addr, 3*sizeof(u16)))
-			return -EFAULT;
-		if (get_user(datap, &umsgs[i].buf) ||
-		    put_user(compat_ptr(datap), &tmsgs[i].buf))
-			return -EFAULT;
-	}
-	return do_ioctl(file, cmd, (unsigned long)tdata);
-}
-
-static int do_i2c_smbus_ioctl(struct file *file,
-		unsigned int cmd, struct i2c_smbus_ioctl_data32   __user *udata)
-{
-	struct i2c_smbus_ioctl_data	__user *tdata;
-	union {
-		/* beginnings of those have identical layouts */
-		struct i2c_smbus_ioctl_data32	data32;
-		struct i2c_smbus_ioctl_data	data;
-	} v;
-
-	tdata = compat_alloc_user_space(sizeof(*tdata));
-	if (tdata == NULL)
-		return -ENOMEM;
-
-	memset(&v, 0, sizeof(v));
-	if (copy_from_user(&v.data32, udata, sizeof(v.data32)))
-		return -EFAULT;
-	v.data.data = compat_ptr(v.data32.data);
-
-	if (copy_to_user(tdata, &v.data, sizeof(v.data)))
-		return -EFAULT;
-
-	return do_ioctl(file, cmd, (unsigned long)tdata);
 }
 
 #define RTC_IRQP_READ32		_IOR('p', 0x0b, compat_ulong_t)
@@ -1282,13 +1144,6 @@ COMPATIBLE_IOCTL(PCIIOC_CONTROLLER)
 COMPATIBLE_IOCTL(PCIIOC_MMAP_IS_IO)
 COMPATIBLE_IOCTL(PCIIOC_MMAP_IS_MEM)
 COMPATIBLE_IOCTL(PCIIOC_WRITE_COMBINE)
-/* i2c */
-COMPATIBLE_IOCTL(I2C_SLAVE)
-COMPATIBLE_IOCTL(I2C_SLAVE_FORCE)
-COMPATIBLE_IOCTL(I2C_TENBIT)
-COMPATIBLE_IOCTL(I2C_PEC)
-COMPATIBLE_IOCTL(I2C_RETRIES)
-COMPATIBLE_IOCTL(I2C_TIMEOUT)
 /* hiddev */
 COMPATIBLE_IOCTL(HIDIOCGVERSION)
 COMPATIBLE_IOCTL(HIDIOCAPPLICATION)
@@ -1322,9 +1177,6 @@ COMPATIBLE_IOCTL(AUDIO_CLEAR_BUFFER)
 COMPATIBLE_IOCTL(AUDIO_SET_ID)
 COMPATIBLE_IOCTL(AUDIO_SET_MIXER)
 COMPATIBLE_IOCTL(AUDIO_SET_STREAMTYPE)
-COMPATIBLE_IOCTL(AUDIO_SET_EXT_ID)
-COMPATIBLE_IOCTL(AUDIO_SET_ATTRIBUTES)
-COMPATIBLE_IOCTL(AUDIO_SET_KARAOKE)
 COMPATIBLE_IOCTL(DMX_START)
 COMPATIBLE_IOCTL(DMX_STOP)
 COMPATIBLE_IOCTL(DMX_SET_FILTER)
@@ -1332,23 +1184,11 @@ COMPATIBLE_IOCTL(DMX_SET_PES_FILTER)
 COMPATIBLE_IOCTL(DMX_SET_BUFFER_SIZE)
 COMPATIBLE_IOCTL(DMX_GET_PES_PIDS)
 COMPATIBLE_IOCTL(DMX_GET_STC)
-COMPATIBLE_IOCTL(FE_GET_INFO)
-COMPATIBLE_IOCTL(FE_DISEQC_RESET_OVERLOAD)
-COMPATIBLE_IOCTL(FE_DISEQC_SEND_MASTER_CMD)
-COMPATIBLE_IOCTL(FE_DISEQC_RECV_SLAVE_REPLY)
-COMPATIBLE_IOCTL(FE_DISEQC_SEND_BURST)
-COMPATIBLE_IOCTL(FE_SET_TONE)
-COMPATIBLE_IOCTL(FE_SET_VOLTAGE)
-COMPATIBLE_IOCTL(FE_ENABLE_HIGH_LNB_VOLTAGE)
-COMPATIBLE_IOCTL(FE_READ_STATUS)
-COMPATIBLE_IOCTL(FE_READ_BER)
-COMPATIBLE_IOCTL(FE_READ_SIGNAL_STRENGTH)
-COMPATIBLE_IOCTL(FE_READ_SNR)
-COMPATIBLE_IOCTL(FE_READ_UNCORRECTED_BLOCKS)
-COMPATIBLE_IOCTL(FE_SET_FRONTEND)
-COMPATIBLE_IOCTL(FE_GET_FRONTEND)
-COMPATIBLE_IOCTL(FE_GET_EVENT)
-COMPATIBLE_IOCTL(FE_DISHNETWORK_SEND_LEGACY_CMD)
+COMPATIBLE_IOCTL(DMX_REQBUFS)
+COMPATIBLE_IOCTL(DMX_QUERYBUF)
+COMPATIBLE_IOCTL(DMX_EXPBUF)
+COMPATIBLE_IOCTL(DMX_QBUF)
+COMPATIBLE_IOCTL(DMX_DQBUF)
 COMPATIBLE_IOCTL(VIDEO_STOP)
 COMPATIBLE_IOCTL(VIDEO_PLAY)
 COMPATIBLE_IOCTL(VIDEO_FREEZE)
@@ -1361,16 +1201,9 @@ COMPATIBLE_IOCTL(VIDEO_FAST_FORWARD)
 COMPATIBLE_IOCTL(VIDEO_SLOWMOTION)
 COMPATIBLE_IOCTL(VIDEO_GET_CAPABILITIES)
 COMPATIBLE_IOCTL(VIDEO_CLEAR_BUFFER)
-COMPATIBLE_IOCTL(VIDEO_SET_ID)
 COMPATIBLE_IOCTL(VIDEO_SET_STREAMTYPE)
 COMPATIBLE_IOCTL(VIDEO_SET_FORMAT)
-COMPATIBLE_IOCTL(VIDEO_SET_SYSTEM)
-COMPATIBLE_IOCTL(VIDEO_SET_HIGHLIGHT)
-COMPATIBLE_IOCTL(VIDEO_SET_SPU)
-COMPATIBLE_IOCTL(VIDEO_GET_NAVI)
-COMPATIBLE_IOCTL(VIDEO_SET_ATTRIBUTES)
 COMPATIBLE_IOCTL(VIDEO_GET_SIZE)
-COMPATIBLE_IOCTL(VIDEO_GET_FRAME_RATE)
 /* cec */
 COMPATIBLE_IOCTL(CEC_ADAP_G_CAPS)
 COMPATIBLE_IOCTL(CEC_ADAP_G_LOG_ADDRS)
@@ -1463,13 +1296,6 @@ static long do_ioctl_trans(unsigned int cmd,
 	case TIOCGSERIAL:
 	case TIOCSSERIAL:
 		return serial_struct_ioctl(file, cmd, argp);
-	/* i2c */
-	case I2C_FUNCS:
-		return w_long(file, cmd, argp);
-	case I2C_RDWR:
-		return do_i2c_rdwr_ioctl(file, cmd, argp);
-	case I2C_SMBUS:
-		return do_i2c_smbus_ioctl(file, cmd, argp);
 	/* Not implemented in the native kernel */
 	case RTC_IRQP_READ32:
 	case RTC_IRQP_SET32:
@@ -1482,8 +1308,6 @@ static long do_ioctl_trans(unsigned int cmd,
 		return do_video_get_event(file, cmd, argp);
 	case VIDEO_STILLPICTURE32:
 		return do_video_stillpicture(file, cmd, argp);
-	case VIDEO_SET_SPU_PALETTE:
-		return do_video_set_spu_palette(file, cmd, argp);
 	}
 
 	/*
@@ -1546,8 +1370,7 @@ COMPAT_SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd,
 	if (!f.file)
 		goto out;
 
-	/* RED-PEN how should LSM module know it's handling 32bit? */
-	error = security_file_ioctl(f.file, cmd, arg);
+	error = security_file_ioctl_compat(f.file, cmd, arg);
 	if (error)
 		goto out_fput;
 
@@ -1580,6 +1403,7 @@ COMPAT_SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd,
 		goto do_ioctl;
 	case FICLONERANGE:
 	case FIDEDUPERANGE:
+	case FS_IOC_FIEMAP:
 		goto found_handler;
 
 	case FIBMAP:

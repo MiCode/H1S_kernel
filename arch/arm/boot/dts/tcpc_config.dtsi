@@ -1,22 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
- * Copyright (c) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
+
 / {
 	rt1711_typec: rt1711_type_c_port0 {
-		tcpc-dual,supported_modes = <0>; /* 0: dfp/ufp, */
-						 /* 1: dfp, 2: ufp */
 		rt-tcpc,name = "type_c_port0"; /* tcpc_device's name */
-		rt-tcpc,role_def = <4>; /* 0: SNK Only, 1: SRC Only, 2: DRP, */
-					/* 3: Try.SRC, 4: Try.SNK */
+		rt-tcpc,role_def = <5>; /* 0: Unknown, 1: SNK, 2: SRC */
+					/* 3: DRP, 4: Try.SRC, 5: Try.SNK */
 		rt-tcpc,rp_level = <0>; /* 0: Default, 1: 1.5, 2: 3.0 */
 		rt-tcpc,vconn_supply  = <1>;  /* 0: Never, 1: Always, */
 					      /* 2: EMarkOnly, 3: StartOnly */
@@ -62,15 +53,18 @@
 
 			/*
 			 * No DP, host + device
-			 *	pd,id-vdo-size = <3>;
-			 *	pd,id-vdo-data = <0xd10029cf 0x0 0x17110000>;
+			 *	pd,id-vdo-size = <6>;
+			 *	pd,id-vdo-data = <0xd14029cf 0x0 0x17110000
+						  0x41800000 0x0 0x21800000>;
 			 * With DP
-			 *	pd,id-vdo-size = <3>;
-			 *	pd,id-vdo-data = <0xd60029cf 0x0 0x17110000
+			 *	pd,id-vdo-size = <6>;
+			 *	pd,id-vdo-data = <0xd54029cf 0x0 0x17110000
+						  0x41800000 0x0 0x21800000>;
 			 */
 
-			pd,id-vdo-size = <3>;
-			pd,id-vdo-data = <0xd10029cf 0x0 0x17110000>;
+			pd,id-vdo-size = <6>;
+			pd,id-vdo-data = <0xd14029cf 0x0 0x17110000
+					  0x41800000 0x0 0x21800000>;
 
 			bat,nr = <1>;
 			pd,country_nr = <0>;
@@ -135,7 +129,7 @@
 			2nd_connection = "dfp_d";
 			signal,dp_v13;
 			//signal,dp_gen2;
-			usbr20_not_used;
+			//usbr20_not_used;
 			typec,receptacle;
 			ufp_d {
 				//pin_assignment,mode_a;
@@ -145,15 +139,13 @@
 				//pin_assignment,mode_e;
 			};
 			dfp_d {
-				/* Only support mode C & D */
 				//pin_assignment,mode_a;
 				//pin_assignment,mode_b;
 				pin_assignment,mode_c;
 				pin_assignment,mode_d;
 				pin_assignment,mode_e;
-				pin_assignment,mode_f;
+				//pin_assignment,mode_f;
 			};
 		};
 	};
 };
-

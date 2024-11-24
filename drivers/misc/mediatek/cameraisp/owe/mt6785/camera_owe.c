@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/types.h>
@@ -59,27 +52,6 @@
 #include <linux/met_drv.h>
 #include <linux/mtk_ftrace.h>
 #endif
-#if 0
-/* Another Performance Measure Usage */
-#include <linux/kallsyms.h>
-#include <linux/ftrace_event.h>
-static unsigned long __read_mostly tracing_mark_write_addr;
-#define _kernel_trace_begin(name) {\
-	tracing_mark_write_addr =\
-		kallsyms_lookup_name("tracing_mark_write");\
-	event_trace_printk(tracing_mark_write_addr,\
-		"B|%d|%s\n", current->tgid, name);\
-}
-#define _kernel_trace_end() {\
-	event_trace_printk(tracing_mark_write_addr,  "E\n");\
-}
-/* How to Use */
-/* char strName[128]; */
-/* sprintf(strName, "TAG_K_WAKEUP (%d)",sof_count[_PASS1]); */
-/* _kernel_trace_begin(strName); */
-/* _kernel_trace_end(); */
-#endif
-
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -122,7 +94,7 @@ struct OWE_CLK_STRUCT owe_clk;
 /* #define OWE_WAITIRQ_LOG  */
 #define OWE_USE_GCE
 /* #define OWE_DEBUG_USE */
-/* #define OWE_MULTIPROCESS_TIMEING_ISSUE  */
+/* #define OWE_MULTIPROCESS_TIMING_ISSUE  */
 /*I can' test the situation in FPGA, because the velocity of FPGA is so slow. */
 #define MyTag "[OWE]"
 #define IRQTag "KEEPER"
@@ -232,7 +204,7 @@ static struct Tasklet_table OWE_tasklet[OWE_IRQ_TYPE_AMOUNT] = {
 	{ISP_TaskletFunc_OWE, &Owetkt[OWE_IRQ_TYPE_INT_OWE_ST]},
 };
 
-struct wakeup_source OWE_wake_lock;
+//struct wakeup_source OWE_wake_lock;
 
 static DEFINE_MUTEX(gOweOccMutex);
 static DEFINE_MUTEX(gOweOccDequeMutex);
@@ -436,7 +408,6 @@ static struct SV_LOG_STR gSvLog[OWE_IRQ_TYPE_AMOUNT];
 /*    each log must shorter than 512 bytes */
 /*    total log length in each irq/logtype can't over 1024 bytes */
 
-#if 1
 #define IRQ_LOG_KEEPER(irq, ppb, logT, fmt, ...) do {\
 	char *ptr; \
 	char *pDes;\
@@ -539,9 +510,7 @@ static struct SV_LOG_STR gSvLog[OWE_IRQ_TYPE_AMOUNT];
 		} \
 	} \
 } while (0)
-#endif
 
-#if 1
 #define IRQ_LOG_PRINTER(irq, ppb_in, logT_in) do {\
 	struct SV_LOG_STR *pSrc = &gSvLog[irq];\
 	char *ptr;\
@@ -600,11 +569,6 @@ static struct SV_LOG_STR gSvLog[OWE_IRQ_TYPE_AMOUNT];
 		pSrc->_cnt[ppb][logT] = 0;\
 	} \
 } while (0)
-
-
-#else
-#define IRQ_LOG_PRINTER(irq, ppb, logT)
-#endif
 
 
 /* OWE registers */
@@ -869,7 +833,7 @@ static inline unsigned int OWE_GetIRQState(
 	/*  */
 	spin_lock_irqsave(&(OWEInfo.SpinLockIrq[type]), flags);
 
-#ifdef OWE_MULTIPROCESS_TIMEING_ISSUE
+#ifdef OWE_MULTIPROCESS_TIMING_ISSUE
 	if (stus & OWE_OCC_INT_ST) {
 		ret = ((OWEInfo.IrqInfo.OccIrqCnt > 0)
 		       && (OWEInfo.ProcessID[OWEInfo.ReadReqIdx] == ProcessID));
@@ -984,19 +948,6 @@ static int cmdq_engine_secured(struct cmdqRecStruct *handle,
 }
 
 /*TODO : M4U_PORT */
-#if 0
-static int cmdq_sec_base(struct cmdqRecStruct *handle, unsigned int dma_sec,
-			unsigned int reg, unsigned int val, unsigned int size)
-{
-	if (dma_sec != 0)
-		cmdqRecWriteSecure(handle, reg, CMDQ_SAM_H_2_MVA, val, 0, size,
-							M4U_PORT_OWE_RDMA);
-	else
-		cmdqRecWrite(handle, reg, val, CMDQ_REG_MASK);
-
-	return 0;
-}
-#endif
 signed int CmdqOCCHW(struct frame *frame)
 {
 	struct OWE_OCCConfig *pOccConfig;
@@ -2071,7 +2022,7 @@ static signed int OWE_WaitIrq(struct OWE_WAIT_IRQ_STRUCT *WaitIrq)
 			spin_lock_irqsave(
 				&(OWEInfo.SpinLockIrq[WaitIrq->Type]), flags);
 
-#ifdef OWE_MULTIPROCESS_TIMEING_ISSUE
+#ifdef OWE_MULTIPROCESS_TIMING_ISSUE
 			OWEInfo.ReadReqIdx = (OWEInfo.ReadReqIdx + 1) %
 						_SUPPORT_MAX_OWE_FRAME_REQUEST_;
 			/* actually, it doesn't happen the timging issue!! */
@@ -2221,8 +2172,7 @@ static long OWE_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 			if (copy_from_user(&IrqInfo, (void *)Param,
 				sizeof(struct OWE_WAIT_IRQ_STRUCT)) == 0) {
 				/*  */
-				if ((IrqInfo.Type >= OWE_IRQ_TYPE_AMOUNT) ||
-					(IrqInfo.Type < 0)) {
+				if (IrqInfo.Type >= OWE_IRQ_TYPE_AMOUNT) {
 					Ret = -EFAULT;
 					LOG_ERR("invalid type(%d)",
 						IrqInfo.Type);
@@ -2267,8 +2217,7 @@ static long OWE_ioctl(struct file *pFile, unsigned int Cmd, unsigned long Param)
 				LOG_DBG("OWE_CLEAR_IRQ Type(%d)",
 					ClearIrq.Type);
 
-				if ((ClearIrq.Type >= OWE_IRQ_TYPE_AMOUNT) ||
-					(ClearIrq.Type < 0)) {
+				if (ClearIrq.Type >= OWE_IRQ_TYPE_AMOUNT) {
 					Ret = -EFAULT;
 					LOG_ERR("invalid type(%d)",
 						ClearIrq.Type);
@@ -3083,46 +3032,6 @@ EXIT:
 /******************************************************************************
  *
  ******************************************************************************/
-/*
-static signed int OWE_mmap(struct file *pFile, struct vm_area_struct *pVma)
-{
-	unsigned long length = 0;
-	unsigned int pfn = 0x0;
-
-	length = pVma->vm_end - pVma->vm_start;
-	pVma->vm_page_prot = pgprot_noncached(pVma->vm_page_prot);
-	pfn = pVma->vm_pgoff << PAGE_SHIFT;
-
-
-	LOG_INF("mmap: pVma->vm_pgoff(0x%lx)", pVma->vm_pgoff);
-	LOG_INF("mmap: pfn(0x%x),phy(0x%lx)", pfn,
-		pVma->vm_pgoff << PAGE_SHIFT);
-	LOG_INF("pVmapVma->vm_start(0x%lx)", pVma->vm_start);
-	LOG_INF("pVma->vm_end(0x%lx),length(0x%lx)", pVma->vm_end, length);
-
-	switch (pfn) {
-	case OWE_BASE_HW:
-		if (length > OWE_REG_RANGE) {
-			LOG_ERR(
-				"mmap range error :module:0x%x length(0x%lx),OWE_REG_RANGE(0x%x)!",
-				pfn, length, OWE_REG_RANGE);
-			return -EAGAIN;
-		}
-		break;
-	default:
-		LOG_ERR("Illegal starting HW addr for mmap!");
-		return -EAGAIN;
-	}
-	if (remap_pfn_range(
-		pVma, pVma->vm_start, pVma->vm_pgoff,
-		pVma->vm_end - pVma->vm_start,
-		pVma->vm_page_prot)) {
-		return -EAGAIN;
-	}
-
-	return 0;
-}
-*/
 /******************************************************************************
  *
  ******************************************************************************/
@@ -3366,7 +3275,7 @@ static signed int OWE_probe(struct platform_device *pDev)
 		if (!OWEInfo.wkqueue)
 			LOG_ERR("NULL WMFE-CMDQ-WQ\n");
 
-		wakeup_source_init(&OWE_wake_lock, "owe_lock_wakelock");
+		//wakeup_source_init(&OWE_wake_lock, "owe_lock_wakelock");
 
 		for (i = 0; i < OWE_IRQ_TYPE_AMOUNT; i++)
 			tasklet_init(
@@ -3419,38 +3328,6 @@ static signed int OWE_remove(struct platform_device *pDev)
 	/* kill tasklet */
 	for (i = 0; i < OWE_IRQ_TYPE_AMOUNT; i++)
 		tasklet_kill(OWE_tasklet[i].pOWE_tkt);
-#if 0
-	/* free all registered irq(child nodes) */
-	OWE_UnRegister_AllregIrq();
-	/* free father nodes of irq user list */
-	struct my_list_head *head;
-	struct my_list_head *father;
-
-	head = ((struct my_list_head *)(&SupIrqUserListHead.list));
-	while (1) {
-		father = head;
-		if (father->nextirq != father) {
-			father = father->nextirq;
-			REG_IRQ_NODE *accessNode;
-
-			typeof(((REG_IRQ_NODE *) 0)->list) * __mptr = (father);
-			accessNode =
-			    ((REG_IRQ_NODE *) (
-			    (char *)__mptr -
-			    offsetof(REG_IRQ_NODE, list)));
-			LOG_INF("free father,reg_T(%d)\n", accessNode->reg_T);
-			if (father->nextirq != father) {
-				head->nextirq = father->nextirq;
-				father->nextirq = father;
-			} else {	/* last father node */
-				head->nextirq = head;
-				LOG_INF("break\n");
-				break;
-			}
-			kfree(accessNode);
-		}
-	}
-#endif
 	/*  */
 	device_destroy(pOWEClass, OWEDevNo);
 	/*  */
@@ -3763,7 +3640,7 @@ static ssize_t owe_reg_write(struct file *file,
 	char valSzBuf[24];
 	char *pszTmp;
 	int addr = 0, val = 0;
-	long int tempval;
+	long tempval;
 
 	if (OWEInfo.UserCount <= 0)
 		return 0;
@@ -3778,7 +3655,7 @@ static ssize_t owe_reg_write(struct file *file,
 		pszTmp = strstr(addrSzBuf, "0x");
 		if (pszTmp == NULL) {
 			if (kstrtol(addrSzBuf, 10,
-			    (long int *)&tempval) != 0)
+			    (long *)&tempval) != 0)
 				LOG_ERR(
 				"scan decimal addr is wrong !!:%s",
 				addrSzBuf);
@@ -3795,7 +3672,7 @@ static ssize_t owe_reg_write(struct file *file,
 
 		pszTmp = strstr(valSzBuf, "0x");
 		if (pszTmp == NULL) {
-			if (kstrtol(valSzBuf, 10, (long int *)&tempval) != 0)
+			if (kstrtol(valSzBuf, 10, (long *)&tempval) != 0)
 				LOG_ERR("scan decimal value is wrong !!:%s",
 					valSzBuf);
 		} else {
@@ -3824,7 +3701,7 @@ static ssize_t owe_reg_write(struct file *file,
 	} else if (sscanf(desc, "%23s", addrSzBuf) == 1) {
 		pszTmp = strstr(addrSzBuf, "0x");
 		if (pszTmp == NULL) {
-			if (kstrtol(addrSzBuf, 10, (long int *)&tempval) != 0)
+			if (kstrtol(addrSzBuf, 10, (long *)&tempval) != 0)
 				LOG_ERR("scan decimal addr is wrong !!:%s",
 					addrSzBuf);
 			else
@@ -3929,22 +3806,6 @@ static signed int __init OWE_Init(void)
 		LOG_ERR("platform_driver_register fail");
 		return Ret;
 	}
-
-#if 0
-	struct device_node *node = NULL;
-
-	node = of_find_compatible_node(NULL, NULL, "mediatek,OWE");
-	if (!node) {
-		LOG_ERR("find mediatek,OWE node failed!!!\n");
-		return -ENODEV;
-	}
-	ISP_OWE_BASE = of_iomap(node, 0);
-	if (!ISP_OWE_BASE) {
-		LOG_ERR("unable to map ISP_OWE_BASE registers!!!\n");
-		return -ENODEV;
-	}
-	LOG_DBG("ISP_OWE_BASE: %lx\n", ISP_OWE_BASE);
-#endif
 
 
 #ifdef OWE_PROCFS
@@ -4101,7 +3962,7 @@ static irqreturn_t ISP_Irq_OWE(signed int Irq, void *DeviceId)
 			OWEInfo.WriteReqIdx =
 			    (OWEInfo.WriteReqIdx + 1) %
 			    _SUPPORT_MAX_OWE_FRAME_REQUEST_;
-#ifdef OWE_MULTIPROCESS_TIMEING_ISSUE
+#ifdef OWE_MULTIPROCESS_TIMING_ISSUE
 			/* check the write value is equal to read value ? */
 			/* actually, it doesn't happen!! */
 			if (OWEInfo.WriteReqIdx == OWEInfo.ReadReqIdx) {
@@ -4144,7 +4005,7 @@ static irqreturn_t ISP_Irq_OWE(signed int Irq, void *DeviceId)
 			OWEInfo.WriteReqIdx =
 			    (OWEInfo.WriteReqIdx + 1) %
 			    _SUPPORT_MAX_OWE_FRAME_REQUEST_;
-#ifdef OWE_MULTIPROCESS_TIMEING_ISSUE
+#ifdef OWE_MULTIPROCESS_TIMING_ISSUE
 			/* check the write value is equal to read value ? */
 			/* actually, it doesn't happen!! */
 			if (OWEInfo.WriteReqIdx == OWEInfo.ReadReqIdx) {

@@ -1,25 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 #include <linux/workqueue.h>
 #include <linux/unistd.h>
 #include <linux/module.h>
 #include <linux/sched.h>
+#include <linux/cpufreq.h>
+#include <linux/topology.h>
 
-
-#include "fpsgo_common.h"
+#include "mt-plat/fpsgo_common.h"
 #include "fpsgo_base.h"
 #include "fpsgo_sysfs.h"
 #include "fpsgo_usedext.h"
@@ -27,17 +17,15 @@
 #include "fstb.h"
 #include "fps_composer.h"
 #include "xgf.h"
-#include "eara_job.h"
-#include "syslimiter.h"
 
 #ifdef CONFIG_DRM_MEDIATEK
 #include "mtk_drm_arr.h"
-#else
-#include "disp_arr.h"
 #endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/fpsgo.h>
+
+#define API_READY 0
 
 #define TARGET_UNLIMITED_FPS 240
 
@@ -73,9 +61,6 @@ struct FPSGO_NOTIFIER_PUSH_TAG {
 
 	int dfrc_fps;
 
-	int nn_pid;
-	int nn_tid;
-	unsigned long long nn_mid;
 	int num_step;
 	__s32 *device;
 	__s32 *boost;
@@ -139,39 +124,6 @@ static void fpsgo_notifier_wq_cb_connect(int pid,
 		fpsgo_ctrl2comp_disconnect_api(pid, connectedAPI, id);
 	else
 		fpsgo_ctrl2comp_connect_api(pid, connectedAPI, id);
-}
-
-static void fpsgo_notifier_wq_cb_nn_job_begin(unsigned int tid,
-	unsigned long long mid)
-{
-	FPSGO_LOGI(
-		"[FPSGO_CB] nn_job_begin: tid %d, mid %llu\n",
-		tid, mid);
-
-	if (!fpsgo_is_enable())
-		return;
-
-	fpsgo_ctrl2xgf_nn_job_begin(tid, mid);
-}
-
-static void fpsgo_notifier_wq_cb_nn_job_end(int pid, int tid,
-	unsigned long long mid, int num_step,
-	__s32 *boost, __s32 *device, __u64 *exec_time)
-{
-	int hw_type = BACKGROUND;
-
-	FPSGO_LOGI(
-		"[FPSGO_CB] nn_job_begin: tid %d, mid %llu\n",
-		tid, mid);
-
-	if (!fpsgo_is_enable())
-		return;
-
-	hw_type = fpsgo_ctrl2xgf_nn_job_end(tid, mid);
-
-	if (boost && device && exec_time)
-		fpsgo_ctrl2eara_nn_job_collect(pid, tid, mid,
-			hw_type, num_step, boost, device, exec_time);
 }
 
 static void fpsgo_notifier_wq_cb_bqid(int pid, unsigned long long bufID,
@@ -268,8 +220,6 @@ static void fpsgo_notifier_wq_cb_enable(int enable)
 	FPSGO_LOGI("[FPSGO_CB] fpsgo_enable %d\n",
 			fpsgo_enable);
 	mutex_unlock(&notify_lock);
-
-	syslimiter_update_fpsgo_state(enable);
 }
 
 static void fpsgo_notifier_wq_cb(struct work_struct *psWork)
@@ -308,15 +258,6 @@ static void fpsgo_notifier_wq_cb(struct work_struct *psWork)
 		break;
 	case FPSGO_NOTIFIER_GPU_BLOCK:
 		fpsgo_notifier_wq_cb_gblock(vpPush->tid, vpPush->start);
-		break;
-	case FPSGO_NOTIFIER_NN_JOB_BEGIN:
-		fpsgo_notifier_wq_cb_nn_job_begin(vpPush->nn_tid,
-			vpPush->nn_mid);
-		break;
-	case FPSGO_NOTIFIER_NN_JOB_END:
-		fpsgo_notifier_wq_cb_nn_job_end(vpPush->nn_pid, vpPush->nn_tid,
-			vpPush->nn_mid, vpPush->num_step, vpPush->boost,
-			vpPush->device, vpPush->exec_time);
 		break;
 	case FPSGO_NOTIFIER_VSYNC:
 		fpsgo_notifier_wq_cb_vsync(vpPush->cur_ts);
@@ -369,92 +310,6 @@ void fpsgo_notify_qudeq(int qudeq,
 	INIT_WORK(&vpPush->sWork, fpsgo_notifier_wq_cb);
 	queue_work(g_psNotifyWorkQueue, &vpPush->sWork);
 }
-void fpsgo_notify_nn_job_begin(unsigned int tid, unsigned long long mid)
-{
-	struct FPSGO_NOTIFIER_PUSH_TAG *vpPush;
-
-	FPSGO_LOGI(
-		"[FPSGO_CTRL] nn_job_begin: tid %d, mid %llu\n",
-		tid, mid);
-
-	if (!fpsgo_is_enable())
-		return;
-
-	vpPush =
-		(struct FPSGO_NOTIFIER_PUSH_TAG *)
-		fpsgo_alloc_atomic(sizeof(struct FPSGO_NOTIFIER_PUSH_TAG));
-
-	if (!vpPush) {
-		FPSGO_LOGE("[FPSGO_CTRL] OOM\n");
-		return;
-	}
-
-	if (!g_psNotifyWorkQueue) {
-		FPSGO_LOGE("[FPSGO_CTRL] NULL WorkQueue\n");
-		fpsgo_free(vpPush, sizeof(struct FPSGO_NOTIFIER_PUSH_TAG));
-		return;
-	}
-
-	vpPush->ePushType = FPSGO_NOTIFIER_NN_JOB_BEGIN;
-	vpPush->nn_tid = tid;
-	vpPush->nn_mid = mid;
-
-#if 1
-	INIT_WORK(&vpPush->sWork, fpsgo_notifier_wq_cb);
-	queue_work(g_psNotifyWorkQueue, &vpPush->sWork);
-#endif
-}
-
-int fpsgo_get_nn_priority(unsigned int pid, unsigned long long mid)
-{
-	return fpsgo_ctrl2eara_get_nn_priority(pid, mid);
-}
-
-void fpsgo_get_nn_ttime(unsigned int pid, unsigned long long mid,
-	int num_step, __u64 *time)
-{
-	fpsgo_ctrl2eara_get_nn_ttime(pid, mid, num_step, time);
-}
-
-void fpsgo_notify_nn_job_end(int pid, int tid, unsigned long long mid,
-	int num_step, __s32 *boost, __s32 *device, __u64 *exec_time)
-{
-	struct FPSGO_NOTIFIER_PUSH_TAG *vpPush;
-	int size;
-
-	if (!fpsgo_is_enable())
-		return;
-
-	vpPush =
-		(struct FPSGO_NOTIFIER_PUSH_TAG *)
-		fpsgo_alloc_atomic(sizeof(struct FPSGO_NOTIFIER_PUSH_TAG));
-
-	if (!vpPush) {
-		FPSGO_LOGE("[FPSGO_CTRL] OOM\n");
-		return;
-	}
-
-	if (!g_psNotifyWorkQueue) {
-		FPSGO_LOGE("[FPSGO_CTRL] NULL WorkQueue\n");
-		fpsgo_free(vpPush, sizeof(struct FPSGO_NOTIFIER_PUSH_TAG));
-		return;
-	}
-
-	size = num_step * MAX_DEVICE;
-	vpPush->ePushType = FPSGO_NOTIFIER_NN_JOB_END;
-	vpPush->nn_pid = pid;
-	vpPush->nn_tid = tid;
-	vpPush->nn_mid = mid;
-	vpPush->num_step = num_step;
-	vpPush->boost = boost;
-	vpPush->device = device;
-	vpPush->exec_time = exec_time;
-
-	INIT_WORK(&vpPush->sWork, fpsgo_notifier_wq_cb);
-	queue_work(g_psNotifyWorkQueue, &vpPush->sWork);
-}
-
-
 void fpsgo_notify_connect(int pid,
 		int connectedAPI, unsigned long long id)
 {
@@ -635,6 +490,17 @@ void fpsgo_notify_vsync(void)
 	queue_work(g_psNotifyWorkQueue, &vpPush->sWork);
 }
 
+void fpsgo_get_fps(int *pid, int *fps)
+{
+	//int pid = -1, fps = -1;
+
+	fpsgo_ctrl2fstb_get_fps(pid, fps);
+
+	FPSGO_LOGE("[FPSGO_CTRL] get_fps %d %d\n", *pid, *fps);
+
+	//return fps;
+}
+
 
 void fpsgo_notify_cpufreq(int cid, unsigned long freq)
 {
@@ -653,6 +519,9 @@ void dfrc_fps_limit_cb(unsigned int fps_limit)
 {
 	unsigned int vTmp = TARGET_UNLIMITED_FPS;
 	struct FPSGO_NOTIFIER_PUSH_TAG *vpPush;
+
+	if (!fpsgo_is_enable())
+		return;
 
 	if (fps_limit > 0 && fps_limit <= TARGET_UNLIMITED_FPS)
 		vTmp = fps_limit;
@@ -787,9 +656,7 @@ static void __exit fpsgo_exit(void)
 		destroy_workqueue(g_psNotifyWorkQueue);
 		g_psNotifyWorkQueue = NULL;
 	}
-#if defined(CONFIG_DRM_MEDIATEK)
-	drm_unregister_fps_chg_callback(dfrc_fps_limit_cb);
-#elif defined(CONFIG_MTK_HIGH_FRAME_RATE)
+#if API_READY
 	disp_unregister_fps_chg_callback(dfrc_fps_limit_cb);
 #endif
 	fbt_cpu_exit();
@@ -821,25 +688,21 @@ static int __init fpsgo_init(void)
 
 	fpsgo_switch_enable(1);
 
-#ifdef CONFIG_CPU_FREQ_GOV_SCHEDUTIL
 	cpufreq_notifier_fp = fpsgo_notify_cpufreq;
-#endif
 
 	fpsgo_notify_vsync_fp = fpsgo_notify_vsync;
+	fpsgo_get_fps_fp = fpsgo_get_fps;
 
 	fpsgo_notify_qudeq_fp = fpsgo_notify_qudeq;
 	fpsgo_notify_connect_fp = fpsgo_notify_connect;
 	fpsgo_notify_bqid_fp = fpsgo_notify_bqid;
 
-	fpsgo_notify_nn_job_begin_fp = fpsgo_notify_nn_job_begin;
-	fpsgo_notify_nn_job_end_fp = fpsgo_notify_nn_job_end;
-	fpsgo_get_nn_priority_fp = fpsgo_get_nn_priority;
-	fpsgo_get_nn_ttime_fp = fpsgo_get_nn_ttime;
-
-#if defined(CONFIG_DRM_MEDIATEK)
+#ifdef CONFIG_DRM_MEDIATEK
 	drm_register_fps_chg_callback(dfrc_fps_limit_cb);
-#elif defined(CONFIG_MTK_HIGH_FRAME_RATE)
+#else
+#if API_READY
 	disp_register_fps_chg_callback(dfrc_fps_limit_cb);
+#endif
 #endif
 
 	return 0;

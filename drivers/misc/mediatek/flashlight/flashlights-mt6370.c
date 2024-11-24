@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": %s: " fmt, __func__
@@ -25,9 +17,10 @@
 #include <linux/of.h>
 #include <linux/list.h>
 #include <linux/delay.h>
+#include <linux/power_supply.h>
 
 #include "richtek/rt-flashlight.h"
-#include "mtk_charger.h"
+#include "v1/mtk_charger.h"
 
 #include "flashlight-core.h"
 #include "flashlight-dt.h"
@@ -75,10 +68,11 @@ static struct flashlight_device *flashlight_dev_ch2;
 #define RT_FLED_DEVICE_CH1  "mt-flash-led1"
 #define RT_FLED_DEVICE_CH2  "mt-flash-led2"
 
+#if defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6781)
 /* define charger consumer */
 static struct charger_consumer *flashlight_charger_consumer;
 #define CHARGER_SUPPLY_NAME "charger_port1"
-
+#endif
 /* is decrease voltage */
 static int is_decrease_voltage;
 
@@ -88,6 +82,32 @@ struct mt6370_platform_data {
 	struct flashlight_device_id *dev_id;
 };
 
+#if !defined(CONFIG_MACH_MT6768) && !defined(CONFIG_MACH_MT6781)
+/******************************************************************************
+ * Charger power supply class
+ *****************************************************************************/
+static int mt6370_high_voltage_supply(int enable)
+{
+	union power_supply_propval prop;
+	static struct power_supply *chg_psy;
+	int ret;
+
+	if (chg_psy == NULL)
+		chg_psy = power_supply_get_by_name("mtk-master-charger");
+	if (chg_psy == NULL || IS_ERR(chg_psy)) {
+		pr_notice("%s Couldn't get chg_psy\n", __func__);
+		ret = -1;
+	} else {
+		prop.intval = enable;
+		ret = power_supply_set_property(chg_psy,
+			 POWER_SUPPLY_PROP_VOLTAGE_MAX, &prop);
+		pr_notice("%s enable_hv:%d\n", __func__, prop.intval);
+		power_supply_changed(chg_psy);
+	}
+
+	return ret;
+}
+#endif
 
 /******************************************************************************
  * mt6370 operations
@@ -134,19 +154,6 @@ static int mt6370_is_torch(int level)
 	return 0;
 }
 
-#if 0
-static int mt6370_is_torch_by_timeout(int timeout)
-{
-	if (!timeout)
-		return 0;
-
-	if (timeout >= MT6370_WDT_TIMEOUT)
-		return 0;
-
-	return -1;
-}
-#endif
-
 static int mt6370_verify_level(int level)
 {
 	if (level < 0)
@@ -164,7 +171,7 @@ static int mt6370_enable(void)
 	enum flashlight_mode mode = FLASHLIGHT_MODE_TORCH;
 
 	if (!flashlight_dev_ch1 || !flashlight_dev_ch2) {
-		pr_err("Failed to enable since no flashlight device.\n");
+		pr_info("Failed to enable since no flashlight device.\n");
 		return -1;
 	}
 
@@ -203,7 +210,7 @@ static int mt6370_enable(void)
 	}
 
 	if (ret < 0)
-		pr_err("Failed to enable.\n");
+		pr_info("Failed to enable.\n");
 
 	return ret;
 }
@@ -292,9 +299,12 @@ static int mt6370_set_level_ch1(int level)
 	mt6370_level_ch1 = level;
 
 	if (!flashlight_dev_ch1) {
-		pr_err("Failed to set ht level since no flashlight device.\n");
+		pr_info("Failed to set ht level since no flashlight device.\n");
 		return -1;
 	}
+
+	if (level < 0)
+		return -1;
 
 	/* set brightness level */
 	if (!mt6370_is_torch(level))
@@ -312,9 +322,12 @@ static int mt6370_set_level_ch2(int level)
 	mt6370_level_ch2 = level;
 
 	if (!flashlight_dev_ch2) {
-		pr_err("Failed to set lt level since no flashlight device.\n");
+		pr_info("Failed to set lt level since no flashlight device.\n");
 		return -1;
 	}
+
+	if (level < 0)
+		return -1;
 
 	/* set brightness level */
 	if (!mt6370_is_torch(level))
@@ -333,7 +346,7 @@ static int mt6370_set_level(int channel, int level)
 	else if (channel == MT6370_CHANNEL_CH2)
 		mt6370_set_level_ch2(level);
 	else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -346,24 +359,27 @@ static int mt6370_set_scenario(int scenario)
 	mt6370_decouple_mode = scenario & FLASHLIGHT_SCENARIO_DECOUPLE_MASK;
 
 	/* notify charger to increase or decrease voltage */
-	if (!flashlight_charger_consumer) {
-		pr_err("Failed with no charger consumer handler.\n");
-		return -1;
-	}
-
 	mutex_lock(&mt6370_mutex);
 	if (scenario & FLASHLIGHT_SCENARIO_CAMERA_MASK) {
 		if (!is_decrease_voltage) {
 			pr_info("Decrease voltage level.\n");
+#if defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6781)
 			charger_manager_enable_high_voltage_charging(
-					flashlight_charger_consumer, false);
+				flashlight_charger_consumer, false);
+#else
+			mt6370_high_voltage_supply(0);
+#endif
 			is_decrease_voltage = 1;
 		}
 	} else {
 		if (is_decrease_voltage) {
 			pr_info("Increase voltage level.\n");
+#if defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6781)
 			charger_manager_enable_high_voltage_charging(
-					flashlight_charger_consumer, true);
+				flashlight_charger_consumer, true);
+#else
+			mt6370_high_voltage_supply(1);
+#endif
 			is_decrease_voltage = 0;
 		}
 	}
@@ -443,7 +459,7 @@ static int mt6370_timer_start(int channel, ktime_t ktime)
 	else if (channel == MT6370_CHANNEL_CH2)
 		hrtimer_start(&mt6370_timer_ch2, ktime, HRTIMER_MODE_REL);
 	else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -457,7 +473,7 @@ static int mt6370_timer_cancel(int channel)
 	else if (channel == MT6370_CHANNEL_CH2)
 		hrtimer_cancel(&mt6370_timer_ch2);
 	else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -485,7 +501,7 @@ static int mt6370_operate(int channel, int enable)
 			if (mt6370_is_torch(mt6370_level_ch2))
 				mt6370_en_ch2 = MT6370_ENABLE_FLASH;
 	} else {
-		pr_err("Error channel\n");
+		pr_info("Error channel\n");
 		return -1;
 	}
 
@@ -563,7 +579,7 @@ static int mt6370_ioctl(unsigned int cmd, unsigned long arg)
 
 	/* verify channel */
 	if (channel < 0 || channel >= MT6370_CHANNEL_NUM) {
-		pr_err("Failed with error channel\n");
+		pr_info("Failed with error channel\n");
 		return -EINVAL;
 	}
 
@@ -646,10 +662,12 @@ static int mt6370_release(void)
 	pr_debug("close driver: %d\n", fd_use_count);
 	/* If camera NE, we need to enable pe by ourselves*/
 	if (fd_use_count == 0 && is_decrease_voltage) {
-#ifdef CONFIG_MTK_CHARGER
 		pr_info("Increase voltage level.\n");
+#if defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6781)
 		charger_manager_enable_high_voltage_charging(
-				flashlight_charger_consumer, true);
+			flashlight_charger_consumer, true);
+#else
+		mt6370_high_voltage_supply(1);
 #endif
 		is_decrease_voltage = 0;
 	}
@@ -822,28 +840,29 @@ static int mt6370_probe(struct platform_device *pdev)
 	/* get RTK flashlight handler */
 	flashlight_dev_ch1 = find_flashlight_by_name(RT_FLED_DEVICE_CH1);
 	if (!flashlight_dev_ch1) {
-		pr_err("Failed to get ht flashlight device.\n");
+		pr_info("Failed to get ht flashlight device.\n");
 		return -EFAULT;
 	}
 	flashlight_dev_ch2 = find_flashlight_by_name(RT_FLED_DEVICE_CH2);
 	if (!flashlight_dev_ch2) {
-		pr_err("Failed to get lt flashlight device.\n");
+		pr_info("Failed to get lt flashlight device.\n");
 		return -EFAULT;
 	}
 
 	/* setup strobe mode timeout */
 	if (flashlight_set_strobe_timeout(flashlight_dev_ch1,
 				MT6370_HW_TIMEOUT, MT6370_HW_TIMEOUT + 200) < 0)
-		pr_err("Failed to set strobe timeout.\n");
+		pr_info("Failed to set strobe timeout.\n");
 
 	/* get charger consumer manager */
+#if defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6781)
 	flashlight_charger_consumer = charger_manager_get_by_name(
 			&flashlight_dev_ch1->dev, CHARGER_SUPPLY_NAME);
 	if (!flashlight_charger_consumer) {
-		pr_err("Failed to get charger manager.\n");
+		pr_info("Failed to get charger manager.\n");
 		return -EFAULT;
 	}
-
+#endif
 	/* register flashlight device */
 	if (pdata->channel_num) {
 		for (i = 0; i < pdata->channel_num; i++)
@@ -930,14 +949,14 @@ static int __init flashlight_mt6370_init(void)
 #ifndef CONFIG_OF
 	ret = platform_device_register(&mt6370_platform_device);
 	if (ret) {
-		pr_err("Failed to register platform device\n");
+		pr_info("Failed to register platform device\n");
 		return ret;
 	}
 #endif
 
 	ret = platform_driver_register(&mt6370_platform_driver);
 	if (ret) {
-		pr_err("Failed to register platform driver\n");
+		pr_info("Failed to register platform driver\n");
 		return ret;
 	}
 

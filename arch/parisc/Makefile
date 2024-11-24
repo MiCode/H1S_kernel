@@ -17,7 +17,12 @@
 # Mike Shaver, Helge Deller and Martin K. Petersen
 #
 
+ifdef CONFIG_PARISC_SELF_EXTRACT
+boot := arch/parisc/boot
+KBUILD_IMAGE := $(boot)/bzImage
+else
 KBUILD_IMAGE := vmlinuz
+endif
 
 KBUILD_DEFCONFIG := default_defconfig
 
@@ -28,7 +33,7 @@ export LIBGCC
 
 ifdef CONFIG_64BIT
 UTS_MACHINE	:= parisc64
-CHECKFLAGS	+= -D__LP64__=1 -m64
+CHECKFLAGS	+= -D__LP64__=1
 CC_ARCHES	= hppa64
 LD_BFD		:= elf64-hppa-linux
 else # 32-bit
@@ -65,14 +70,17 @@ endif
 # kernel.
 cflags-y	+= -mdisable-fpregs
 
-# Without this, "ld -r" results in .text sections that are too big
-# (> 0x40000) for branches to reach stubs.
-cflags-y	+= -ffunction-sections
-
 # Use long jumps instead of long branches (needed if your linker fails to
 # link a too big vmlinux executable). Not enabled for building modules.
 ifdef CONFIG_MLONGCALLS
 KBUILD_CFLAGS_KERNEL += -mlong-calls
+endif
+
+# Without this, "ld -r" results in .text sections that are too big (> 0x40000)
+# for branches to reach stubs. And multiple .text sections trigger a warning
+# when creating the sysfs module information section.
+ifndef CONFIG_64BIT
+KBUILD_CFLAGS_MODULE += -ffunction-sections
 endif
 
 # select which processor to optimise for
@@ -122,6 +130,9 @@ BOOT_TARGETS    = zImage Image palo lifimage
 INSTALL_TARGETS = zinstall install
 
 PHONY += bzImage $(BOOT_TARGETS) $(INSTALL_TARGETS)
+
+# Default kernel to build
+all: bzImage
 
 zImage: vmlinuz
 Image: vmlinux

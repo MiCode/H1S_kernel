@@ -436,14 +436,14 @@ static ssize_t joydev_read(struct file *file, char __user *buf,
 }
 
 /* No kernel lock - fine */
-static unsigned int joydev_poll(struct file *file, poll_table *wait)
+static __poll_t joydev_poll(struct file *file, poll_table *wait)
 {
 	struct joydev_client *client = file->private_data;
 	struct joydev *joydev = client->joydev;
 
 	poll_wait(file, &joydev->wait, wait);
-	return (joydev_data_pending(client) ? (POLLIN | POLLRDNORM) : 0) |
-		(joydev->exist ?  0 : (POLLHUP | POLLERR));
+	return (joydev_data_pending(client) ? (EPOLLIN | EPOLLRDNORM) : 0) |
+		(joydev->exist ?  0 : (EPOLLHUP | EPOLLERR));
 }
 
 static int joydev_handle_JSIOCSAXMAP(struct joydev *joydev,
@@ -460,7 +460,7 @@ static int joydev_handle_JSIOCSAXMAP(struct joydev *joydev,
 	if (IS_ERR(abspam))
 		return PTR_ERR(abspam);
 
-	for (i = 0; i < joydev->nabs; i++) {
+	for (i = 0; i < len && i < joydev->nabs; i++) {
 		if (abspam[i] > ABS_MAX) {
 			retval = -EINVAL;
 			goto out;
@@ -484,6 +484,9 @@ static int joydev_handle_JSIOCSBTNMAP(struct joydev *joydev,
 	int i;
 	int retval = 0;
 
+	if (len % sizeof(*keypam))
+		return -EINVAL;
+
 	len = min(len, sizeof(joydev->keypam));
 
 	/* Validate the map. */
@@ -491,7 +494,7 @@ static int joydev_handle_JSIOCSBTNMAP(struct joydev *joydev,
 	if (IS_ERR(keypam))
 		return PTR_ERR(keypam);
 
-	for (i = 0; i < joydev->nkey; i++) {
+	for (i = 0; i < (len / 2) && i < joydev->nkey; i++) {
 		if (keypam[i] > KEY_MAX || keypam[i] < BTN_MISC) {
 			retval = -EINVAL;
 			goto out;
@@ -501,7 +504,7 @@ static int joydev_handle_JSIOCSBTNMAP(struct joydev *joydev,
 	memcpy(joydev->keypam, keypam, len);
 
 	for (i = 0; i < joydev->nkey; i++)
-		joydev->keymap[keypam[i] - BTN_MISC] = i;
+		joydev->keymap[joydev->keypam[i] - BTN_MISC] = i;
 
  out:
 	kfree(keypam);

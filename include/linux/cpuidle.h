@@ -33,6 +33,10 @@ struct cpuidle_state_usage {
 	unsigned long long	disable;
 	unsigned long long	usage;
 	unsigned long long	time; /* in US */
+#ifdef CONFIG_SUSPEND
+	unsigned long long	s2idle_usage;
+	unsigned long long	s2idle_time; /* in US */
+#endif
 };
 
 struct cpuidle_state {
@@ -77,6 +81,7 @@ struct cpuidle_device {
 	unsigned int		registered:1;
 	unsigned int		enabled:1;
 	unsigned int		use_deepest_state:1;
+	unsigned int		poll_time_limit:1;
 	unsigned int		cpu;
 
 	int			last_residency;
@@ -254,27 +259,36 @@ struct cpuidle_governor {
 
 #ifdef CONFIG_CPU_IDLE
 extern int cpuidle_register_governor(struct cpuidle_governor *gov);
+extern int cpuidle_governor_latency_req(unsigned int cpu);
 #else
 static inline int cpuidle_register_governor(struct cpuidle_governor *gov)
 {return 0;}
 #endif
 
-#define CPU_PM_CPU_IDLE_ENTER(low_level_idle_enter, idx)	\
-({								\
-	int __ret;						\
-								\
-	if (!idx) {						\
-		cpu_do_idle();					\
-		return idx;					\
-	}							\
-								\
-	__ret = cpu_pm_enter();					\
-	if (!__ret) {						\
-		__ret = low_level_idle_enter(idx);		\
-		cpu_pm_exit();					\
-	}							\
-								\
-	__ret ? -1 : idx;					\
+#define __CPU_PM_CPU_IDLE_ENTER(low_level_idle_enter, idx, is_retention) \
+({									\
+	int __ret = 0;							\
+									\
+	if (!idx) {							\
+		cpu_do_idle();						\
+		return idx;						\
+	}								\
+									\
+	if (!is_retention)						\
+		__ret =  cpu_pm_enter();				\
+	if (!__ret) {							\
+		__ret = low_level_idle_enter(idx);			\
+		if (!is_retention)					\
+			cpu_pm_exit();					\
+	}								\
+									\
+	__ret ? -1 : idx;						\
 })
+
+#define CPU_PM_CPU_IDLE_ENTER(low_level_idle_enter, idx)	\
+	__CPU_PM_CPU_IDLE_ENTER(low_level_idle_enter, idx, 0)
+
+#define CPU_PM_CPU_IDLE_ENTER_RETENTION(low_level_idle_enter, idx)	\
+	__CPU_PM_CPU_IDLE_ENTER(low_level_idle_enter, idx, 1)
 
 #endif /* _LINUX_CPUIDLE_H */

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/version.h>
 #include <linux/kernel.h>
@@ -497,21 +489,30 @@ static struct BTSNRPA_TEMPERATURE BTSNRPA_Temperature_Table7[] = {
 
 
 /* convert register to temperature  */
-static __s16 mtkts_btsnrpa_thermistor_conver_temp(__s32 Res)
+static __s32 mtkts_btsnrpa_thermistor_conver_temp(__s32 Res)
 {
 	int i = 0;
 	int asize = 0;
 	__s32 RES1 = 0, RES2 = 0;
 	__s32 TAP_Value = -200, TMP1 = 0, TMP2 = 0;
 
+#ifdef APPLY_PRECISE_BTS_TEMP
+	TAP_Value = TAP_Value * 1000;
+#endif
 	asize = (ntc_tbl_size / sizeof(struct BTSNRPA_TEMPERATURE));
 	/* mtkts_btsnrpa_dprintk("%s() :
 	 * asize = %d, Res = %d\n", __func__,asize,Res);
 	 */
 	if (Res >= BTSNRPA_Temperature_Table[0].TemperatureR) {
 		TAP_Value = -40;	/* min */
+#ifdef APPLY_PRECISE_BTS_TEMP
+		TAP_Value = TAP_Value * 1000;
+#endif
 	} else if (Res <= BTSNRPA_Temperature_Table[asize - 1].TemperatureR) {
 		TAP_Value = 125;	/* max */
+#ifdef APPLY_PRECISE_BTS_TEMP
+		TAP_Value = TAP_Value * 1000;
+#endif
 	} else {
 		RES1 = BTSNRPA_Temperature_Table[0].TemperatureR;
 		TMP1 = BTSNRPA_Temperature_Table[0].BTSNRPA_Temp;
@@ -537,9 +538,13 @@ static __s16 mtkts_btsnrpa_thermistor_conver_temp(__s32 Res)
 			 * TMP1 = %d\n",__LINE__,i,RES1,TMP1);
 			 */
 		}
-
+#ifdef APPLY_PRECISE_BTS_TEMP
+		TAP_Value = mult_frac((((Res - RES2) * TMP1) +
+			((RES1 - Res) * TMP2)), 1000, (RES1 - RES2));
+#else
 		TAP_Value = (((Res - RES2) * TMP1) + ((RES1 - Res) * TMP2))
 								/ (RES1 - RES2);
+#endif
 	}
 
 #if 0
@@ -568,7 +573,7 @@ static __s16 mtkts_btsnrpa_thermistor_conver_temp(__s32 Res)
 
 /* convert ADC_AP_temp_volt to register */
 /*Volt to Temp formula same with 6589*/
-static __s16 mtk_ts_btsnrpa_volt_to_temp(__u32 dwVolt)
+static __s32 mtk_ts_btsnrpa_volt_to_temp(__u32 dwVolt)
 {
 	__s32 TRes;
 	__u64 dwVCriAP = 0;
@@ -588,6 +593,16 @@ static __s16 mtk_ts_btsnrpa_volt_to_temp(__u32 dwVolt)
 	do_div(dwVCriAP, dwVCriAP2);
 
 
+#ifdef APPLY_PRECISE_BTS_TEMP
+	if ((dwVolt / 100) > ((__u32)dwVCriAP)) {
+		TRes = g_TAP_over_critical_low;
+	} else {
+		/* TRes = (39000*dwVolt) / (1800-dwVolt); */
+		/* TRes = (RAP_PULL_UP_R*dwVolt) / (RAP_PULL_UP_VOLT-dwVolt); */
+		TRes = ((long long)g_RAP_pull_up_R * dwVolt) /
+					(g_RAP_pull_up_voltage * 100 - dwVolt);
+	}
+#else
 	if (dwVolt > ((__u32)dwVCriAP)) {
 		TRes = g_TAP_over_critical_low;
 	} else {
@@ -597,6 +612,7 @@ static __s16 mtk_ts_btsnrpa_volt_to_temp(__u32 dwVolt)
 		TRes = (g_RAP_pull_up_R * dwVolt)
 				/ (g_RAP_pull_up_voltage - dwVolt);
 	}
+#endif
 	/* ------------------------------------------------------------------ */
 
 	g_btsnrpa_TemperatureR = TRes;
@@ -617,8 +633,17 @@ static int get_hw_btsnrpa_temp(void)
 	int times = 1, Channel = g_RAP_ADC_channel;
 	static int valid_temp;
 #endif
-
+#if defined (CONFIG_MACH_MT6833)
+	if (IS_ERR_OR_NULL(thermistor_ch2)) {
+		mtkts_btsnrpa_printk("invalid thermistor_ch2:0x%px\n", thermistor_ch2);
+		return ret;
+	}
+#endif
 #if defined(CONFIG_MEDIATEK_MT6577_AUXADC)
+	if (IS_ERR_OR_NULL(thermistor_ch2)) {
+		mtkts_btsnrpa_printk("invalid thermistor_ch2:0x%px\n", thermistor_ch2);
+		return ret;
+	}
 	ret = iio_read_channel_processed(thermistor_ch2, &val);
 	mtkts_btsnrpa_dprintk("%s val=%d\n", __func__, val);
 
@@ -627,8 +652,11 @@ static int get_hw_btsnrpa_temp(void)
 		return ret;
 	}
 
-	/*val * 1500 / 4096*/
-	ret = (val * 1500) >> 12;
+#ifdef APPLY_PRECISE_BTS_TEMP
+	ret = val * 100;
+#else
+	ret = val;
+#endif
 #else
 
 #if defined(APPLY_AUXADC_CALI_DATA)
@@ -692,7 +720,11 @@ static int get_hw_btsnrpa_temp(void)
 	/* #define AUXADC_PRECISE      4096 // 12 bits */
 #if defined(APPLY_AUXADC_CALI_DATA)
 #else
+#ifdef APPLY_PRECISE_BTS_TEMP
+	ret = (val * 9375) >>  8;
+#else
 	ret = ret * 1500 / 4096;
+#endif
 #endif
 #endif /*CONFIG_MEDIATEK_MT6577_AUXADC*/
 
@@ -718,7 +750,9 @@ int mtkts_btsnrpa_get_hw_temp(void)
 	/* get HW AP temp (TSAP) */
 	/* cat /sys/class/power_supply/AP/AP_temp */
 	t_ret = get_hw_btsnrpa_temp();
+#ifndef APPLY_PRECISE_BTS_TEMP
 	t_ret = t_ret * 1000;
+#endif
 
 #if MTKTS_BTSNRPA_SW_FILTER
 	if ((t_ret > 100000) || (t_ret < -30000)) {

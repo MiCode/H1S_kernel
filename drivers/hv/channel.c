@@ -29,11 +29,25 @@
 #include <linux/hyperv.h>
 #include <linux/uio.h>
 #include <linux/interrupt.h>
+#include <asm/page.h>
 
 #include "hyperv_vmbus.h"
 
 #define NUM_PAGES_SPANNED(addr, len) \
 ((PAGE_ALIGN(addr + len) >> PAGE_SHIFT) - (addr >> PAGE_SHIFT))
+
+static unsigned long virt_to_hvpfn(void *addr)
+{
+	phys_addr_t paddr;
+
+	if (is_vmalloc_addr(addr))
+		paddr = page_to_phys(vmalloc_to_page(addr)) +
+					 offset_in_page(addr);
+	else
+		paddr = __pa(addr);
+
+	return  paddr >> PAGE_SHIFT;
+}
 
 /*
  * vmbus_setevent- Trigger an event notification on the specified
@@ -42,6 +56,8 @@
 void vmbus_setevent(struct vmbus_channel *channel)
 {
 	struct hv_monitor_page *monitorpage;
+
+	trace_vmbus_setevent(channel);
 
 	/*
 	 * For channels marked as in "low latency" mode
@@ -75,10 +91,13 @@ int vmbus_open(struct vmbus_channel *newchannel, u32 send_ringbuffer_size,
 	unsigned long flags;
 	int ret, err = 0;
 	struct page *page;
+	unsigned int order;
 
 	if (send_ringbuffer_size % PAGE_SIZE ||
 	    recv_ringbuffer_size % PAGE_SIZE)
 		return -EINVAL;
+
+	order = get_order(send_ringbuffer_size + recv_ringbuffer_size);
 
 	spin_lock_irqsave(&newchannel->lock, flags);
 	if (newchannel->state == CHANNEL_OPEN_STATE) {
@@ -94,21 +113,17 @@ int vmbus_open(struct vmbus_channel *newchannel, u32 send_ringbuffer_size,
 
 	/* Allocate the ring buffer */
 	page = alloc_pages_node(cpu_to_node(newchannel->target_cpu),
-				GFP_KERNEL|__GFP_ZERO,
-				get_order(send_ringbuffer_size +
-				recv_ringbuffer_size));
+				GFP_KERNEL|__GFP_ZERO, order);
 
 	if (!page)
-		page = alloc_pages(GFP_KERNEL|__GFP_ZERO,
-				   get_order(send_ringbuffer_size +
-					     recv_ringbuffer_size));
+		page = alloc_pages(GFP_KERNEL|__GFP_ZERO, order);
 
 	if (!page) {
 		err = -ENOMEM;
 		goto error_set_chnstate;
 	}
 
-	newchannel->ringbuffer_pages = page_address(page);
+	newchannel->ringbuffer_page = page;
 	newchannel->ringbuffer_pagecount = (send_ringbuffer_size +
 					   recv_ringbuffer_size) >> PAGE_SHIFT;
 
@@ -185,6 +200,8 @@ int vmbus_open(struct vmbus_channel *newchannel, u32 send_ringbuffer_size,
 	ret = vmbus_post_msg(open_msg,
 			     sizeof(struct vmbus_channel_open_channel), true);
 
+	trace_vmbus_open(open_msg, ret);
+
 	if (ret != 0) {
 		err = ret;
 		goto error_clean_msglist;
@@ -221,8 +238,7 @@ error_free_gpadl:
 error_free_pages:
 	hv_ringbuffer_cleanup(&newchannel->outbound);
 	hv_ringbuffer_cleanup(&newchannel->inbound);
-	__free_pages(page,
-		     get_order(send_ringbuffer_size + recv_ringbuffer_size));
+	__free_pages(page, order);
 error_set_chnstate:
 	newchannel->state = CHANNEL_OPEN_STATE;
 	return err;
@@ -234,13 +250,18 @@ int vmbus_send_tl_connect_request(const uuid_le *shv_guest_servie_id,
 				  const uuid_le *shv_host_servie_id)
 {
 	struct vmbus_channel_tl_connect_request conn_msg;
+	int ret;
 
 	memset(&conn_msg, 0, sizeof(conn_msg));
 	conn_msg.header.msgtype = CHANNELMSG_TL_CONNECT_REQUEST;
 	conn_msg.guest_endpoint_id = *shv_guest_servie_id;
 	conn_msg.host_service_id = *shv_host_servie_id;
 
-	return vmbus_post_msg(&conn_msg, sizeof(conn_msg), true);
+	ret = vmbus_post_msg(&conn_msg, sizeof(conn_msg), true);
+
+	trace_vmbus_send_tl_connect_request(&conn_msg, ret);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(vmbus_send_tl_connect_request);
 
@@ -289,8 +310,8 @@ static int create_gpadl_header(void *kbuffer, u32 size,
 		gpadl_header->range[0].byte_offset = 0;
 		gpadl_header->range[0].byte_count = size;
 		for (i = 0; i < pfncount; i++)
-			gpadl_header->range[0].pfn_array[i] = slow_virt_to_phys(
-				kbuffer + PAGE_SIZE * i) >> PAGE_SHIFT;
+			gpadl_header->range[0].pfn_array[i] = virt_to_hvpfn(
+				kbuffer + PAGE_SIZE * i);
 		*msginfo = msgheader;
 
 		pfnsum = pfncount;
@@ -341,9 +362,8 @@ static int create_gpadl_header(void *kbuffer, u32 size,
 			 * so the hypervisor guarantees that this is ok.
 			 */
 			for (i = 0; i < pfncurr; i++)
-				gpadl_body->pfn[i] = slow_virt_to_phys(
-					kbuffer + PAGE_SIZE * (pfnsum + i)) >>
-					PAGE_SHIFT;
+				gpadl_body->pfn[i] = virt_to_hvpfn(
+					kbuffer + PAGE_SIZE * (pfnsum + i));
 
 			/* add to msg header */
 			list_add_tail(&msgbody->msglistentry,
@@ -371,8 +391,8 @@ static int create_gpadl_header(void *kbuffer, u32 size,
 		gpadl_header->range[0].byte_offset = 0;
 		gpadl_header->range[0].byte_count = size;
 		for (i = 0; i < pagecount; i++)
-			gpadl_header->range[0].pfn_array[i] = slow_virt_to_phys(
-				kbuffer + PAGE_SIZE * i) >> PAGE_SHIFT;
+			gpadl_header->range[0].pfn_array[i] = virt_to_hvpfn(
+				kbuffer + PAGE_SIZE * i);
 
 		*msginfo = msgheader;
 	}
@@ -433,6 +453,9 @@ int vmbus_establish_gpadl(struct vmbus_channel *channel, void *kbuffer,
 
 	ret = vmbus_post_msg(gpadlmsg, msginfo->msgsize -
 			     sizeof(*msginfo), true);
+
+	trace_vmbus_establish_gpadl_header(gpadlmsg, ret);
+
 	if (ret != 0)
 		goto cleanup;
 
@@ -448,6 +471,9 @@ int vmbus_establish_gpadl(struct vmbus_channel *channel, void *kbuffer,
 		ret = vmbus_post_msg(gpadl_body,
 				     submsginfo->msgsize - sizeof(*submsginfo),
 				     true);
+
+		trace_vmbus_establish_gpadl_body(gpadl_body, ret);
+
 		if (ret != 0)
 			goto cleanup;
 
@@ -518,6 +544,8 @@ int vmbus_teardown_gpadl(struct vmbus_channel *channel, u32 gpadl_handle)
 
 	ret = vmbus_post_msg(msg, sizeof(struct vmbus_channel_gpadl_teardown),
 			     true);
+
+	trace_vmbus_teardown_gpadl(msg, ret);
 
 	if (ret)
 		goto post_msg_err;
@@ -607,6 +635,8 @@ static int vmbus_close_internal(struct vmbus_channel *channel)
 	ret = vmbus_post_msg(msg, sizeof(struct vmbus_channel_close_channel),
 			     true);
 
+	trace_vmbus_close_internal(msg, ret);
+
 	if (ret) {
 		pr_err("Close failed: close post msg return is %d\n", ret);
 		/*
@@ -634,8 +664,8 @@ static int vmbus_close_internal(struct vmbus_channel *channel)
 	hv_ringbuffer_cleanup(&channel->outbound);
 	hv_ringbuffer_cleanup(&channel->inbound);
 
-	free_pages((unsigned long)channel->ringbuffer_pages,
-		get_order(channel->ringbuffer_pagecount * PAGE_SIZE));
+	__free_pages(channel->ringbuffer_page,
+		     get_order(channel->ringbuffer_pagecount << PAGE_SHIFT));
 
 out:
 	return ret;
@@ -767,6 +797,7 @@ int vmbus_sendpacket_pagebuffer(struct vmbus_channel *channel,
 	desc.dataoffset8 = descsize >> 3; /* in 8-bytes granularity */
 	desc.length8 = (u16)(packetlen_aligned >> 3);
 	desc.transactionid = requestid;
+	desc.reserved = 0;
 	desc.rangecount = pagecount;
 
 	for (i = 0; i < pagecount; i++) {
@@ -810,6 +841,7 @@ int vmbus_sendpacket_mpb_desc(struct vmbus_channel *channel,
 	desc->dataoffset8 = desc_size >> 3; /* in 8-bytes granularity */
 	desc->length8 = (u16)(packetlen_aligned >> 3);
 	desc->transactionid = requestid;
+	desc->reserved = 0;
 	desc->rangecount = 1;
 
 	bufferlist[0].iov_base = desc;

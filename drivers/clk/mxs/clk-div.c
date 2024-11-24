@@ -67,7 +67,7 @@ static int clk_div_set_rate(struct clk_hw *hw, unsigned long rate,
 	return ret;
 }
 
-static struct clk_ops clk_div_ops = {
+static const struct clk_ops clk_div_ops = {
 	.recalc_rate = clk_div_recalc_rate,
 	.round_rate = clk_div_round_rate,
 	.set_rate = clk_div_set_rate,
@@ -78,7 +78,7 @@ struct clk *mxs_clk_div(const char *name, const char *parent_name,
 {
 	struct clk_div *div;
 	struct clk *clk;
-	struct clk_init_data init;
+	struct clk_init_data init = {};
 
 	div = kzalloc(sizeof(*div), GFP_KERNEL);
 	if (!div)

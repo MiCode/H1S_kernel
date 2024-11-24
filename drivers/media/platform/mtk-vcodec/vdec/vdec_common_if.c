@@ -1,15 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2016 MediaTek Inc.
- * Author: PC Chen <pc.chen@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -39,7 +30,7 @@ static void put_fb_to_free(struct vdec_inst *inst, struct vdec_fb *fb)
 						 fb->fb_base[0].va,
 						 (u64)fb->fb_base[1].dma_addr);
 
-		list->fb_list[list->write_idx].vdec_fb_va = (u64)(uintptr_t)fb;
+		list->fb_list[list->write_idx].vdec_fb_va = (u64)(fb->index + 1);
 		list->write_idx = (list->write_idx == DEC_MAX_FB_NUM - 1U) ?
 						  0U : list->write_idx + 1U;
 		list->count++;
@@ -125,12 +116,6 @@ static int vdec_init(struct mtk_vcodec_ctx *ctx, unsigned long *h_vdec)
 	case V4L2_PIX_FMT_H263:
 		inst->vcu.id = IPI_VDEC_H263;
 		break;
-	case V4L2_PIX_FMT_S263:
-		inst->vcu.id = IPI_VDEC_S263;
-		break;
-	case V4L2_PIX_FMT_XVID:
-		inst->vcu.id = IPI_VDEC_XVID;
-		break;
 	case V4L2_PIX_FMT_MPEG1:
 	case V4L2_PIX_FMT_MPEG2:
 		inst->vcu.id = IPI_VDEC_MPEG12;
@@ -164,6 +149,9 @@ static int vdec_init(struct mtk_vcodec_ctx *ctx, unsigned long *h_vdec)
 
 	inst->vcu.ctx = ctx;
 	inst->vcu.handler = vcu_dec_ipi_handler;
+	*h_vdec = (unsigned long)inst;
+
+	mtk_vcodec_add_ctx_list(ctx);
 
 	err = vcu_dec_init(&inst->vcu);
 	if (err != 0) {
@@ -176,10 +164,11 @@ static int vdec_init(struct mtk_vcodec_ctx *ctx, unsigned long *h_vdec)
 
 	mtk_vcodec_debug(inst, "Decoder Instance >> %p", inst);
 
-	*h_vdec = (unsigned long)inst;
 	return 0;
 
 error_free_inst:
+	if (ctx)
+		mtk_vcodec_del_ctx_list(ctx);
 	kfree(inst);
 	*h_vdec = (unsigned long)NULL;
 
@@ -194,6 +183,8 @@ static void vdec_deinit(unsigned long h_vdec)
 
 	vcu_dec_deinit(&inst->vcu);
 
+	mtk_vcodec_del_ctx_list(inst->ctx);
+
 	kfree(inst);
 }
 
@@ -204,7 +195,6 @@ static int vdec_decode(unsigned long h_vdec, struct mtk_vcodec_mem *bs,
 	struct vdec_vcu_inst *vcu = &inst->vcu;
 	int ret = 0;
 	unsigned int data[3];
-	uint64_t vdec_fb_va;
 	uint64_t fb_dma[VIDEO_MAX_PLANES] = { 0 };
 	uint32_t num_planes;
 	unsigned int i = 0;
@@ -216,8 +206,6 @@ static int vdec_decode(unsigned long h_vdec, struct mtk_vcodec_mem *bs,
 
 	for (i = 0; i < num_planes; i++)
 		fb_dma[i] = (u64)fb->fb_base[i].dma_addr;
-
-	vdec_fb_va = (u64)(uintptr_t)fb;
 
 	mtk_vcodec_debug(inst, "+ [%d] FB y_dma=%llx c_dma=%llx va=%p num_planes %d",
 		inst->num_nalu, fb_dma[0], fb_dma[1], fb, num_planes);
@@ -231,7 +219,7 @@ static int vdec_decode(unsigned long h_vdec, struct mtk_vcodec_mem *bs,
 		(bs_fourcc >> 8) & 0xFF, (bs_fourcc >> 16) & 0xFF,
 		(bs_fourcc >> 24) & 0xFF);
 
-	inst->vsi->dec.vdec_bs_va = (u64)(uintptr_t)bs;
+	inst->vsi->dec.vdec_bs_va = (u64)(bs->index + 1);
 	inst->vsi->dec.bs_dma = (uint64_t)bs->dma_addr;
 
 	for (i = 0; i < num_planes; i++)
@@ -239,9 +227,9 @@ static int vdec_decode(unsigned long h_vdec, struct mtk_vcodec_mem *bs,
 
 	inst->vsi->dec.bs_fd = (uint64_t)get_mapped_fd(bs->dmabuf);
 
-	inst->vsi->dec.vdec_fb_va = (u64)(uintptr_t)NULL;
+	inst->vsi->dec.vdec_fb_va = (u64)0;
 	if (fb != NULL) {
-		inst->vsi->dec.vdec_fb_va = vdec_fb_va;
+		inst->vsi->dec.vdec_fb_va = (u64)(fb->index + 1);
 		inst->vsi->dec.index = fb->index;
 		for (i = 0; i < num_planes; i++) {
 			inst->vsi->dec.fb_fd[i] =
@@ -326,6 +314,7 @@ static void vdec_get_bs(struct vdec_inst *inst,
 						struct ring_bs_list *list,
 						struct mtk_vcodec_mem **out_bs)
 {
+	u64 bs_index;
 	unsigned long vdec_bs_va;
 	struct mtk_vcodec_mem *bs;
 
@@ -335,11 +324,12 @@ static void vdec_get_bs(struct vdec_inst *inst,
 		return;
 	}
 
-	vdec_bs_va = (unsigned long)list->vdec_bs_va_list[list->read_idx];
+	bs_index = list->vdec_bs_va_list[list->read_idx];
+	vdec_bs_va = (unsigned long)inst->ctx->bs_list[bs_index];
 	bs = (struct mtk_vcodec_mem *)vdec_bs_va;
 
 	*out_bs = bs;
-	mtk_vcodec_debug(inst, "[BS] get free bs %lx", vdec_bs_va);
+	mtk_vcodec_debug(inst, "[BS] get free bs %lld %lx", bs_index, vdec_bs_va);
 
 	list->read_idx = (list->read_idx == DEC_MAX_BS_NUM - 1) ?
 					 0 : list->read_idx + 1;
@@ -350,6 +340,7 @@ static void vdec_get_fb(struct vdec_inst *inst,
 	struct ring_fb_list *list,
 	bool disp_list, struct vdec_fb **out_fb)
 {
+	u64 fb_index;
 	unsigned long vdec_fb_va;
 	struct vdec_fb *fb;
 
@@ -360,7 +351,8 @@ static void vdec_get_fb(struct vdec_inst *inst,
 		return;
 	}
 
-	vdec_fb_va = (unsigned long)list->fb_list[list->read_idx].vdec_fb_va;
+	fb_index = (u64)list->fb_list[list->read_idx].vdec_fb_va;
+	vdec_fb_va = (unsigned long)inst->ctx->fb_list[fb_index];
 	fb = (struct vdec_fb *)vdec_fb_va;
 	if (fb == NULL)
 		return;
@@ -372,11 +364,11 @@ static void vdec_get_fb(struct vdec_inst *inst,
 		fb->status |= FB_ST_FREE;
 
 	*out_fb = fb;
-	mtk_vcodec_debug(inst, "[FB] get %s fb st=%d poc=%d ts=%llu %llx gbuf fd %d dma %p",
+	mtk_vcodec_debug(inst, "[FB] get %s fb st=%d poc=%d ts=%llu %lld %lx gbuf fd %d dma %p",
 		disp_list ? "disp" : "free",
 		fb->status, list->fb_list[list->read_idx].poc,
 		list->fb_list[list->read_idx].timestamp,
-		list->fb_list[list->read_idx].vdec_fb_va,
+		list->fb_list[list->read_idx].vdec_fb_va, vdec_fb_va,
 		fb->general_buf_fd, fb->dma_general_buf);
 
 	list->read_idx = (list->read_idx == DEC_MAX_FB_NUM - 1U) ?
@@ -601,7 +593,13 @@ static int vdec_get_param(unsigned long h_vdec,
 	case GET_PARAM_INPUT_DRIVEN:
 		get_input_driven(inst, out);
 		break;
-
+	case GET_PARAM_DEC_LOG:
+		if (out == NULL) {
+			pr_info("%s, out is null", __func__);
+			return -EINVAL;
+		}
+		ret = vcu_get_log(out, LOG_PROPERTY_SIZE);
+		break;
 	default:
 		mtk_vcodec_err(inst, "invalid get parameter type=%d", type);
 		ret = -EINVAL;
@@ -651,6 +649,13 @@ static int vdec_set_param(unsigned long h_vdec,
 		if (inst->vsi == NULL)
 			return -EINVAL;
 		inst->vsi->dec.fb_num_planes = *(unsigned int *)in;
+		break;
+	case SET_PARAM_DEC_LOG:
+		if (in == NULL) {
+			pr_info("%s, in is null", __func__);
+			return -EINVAL;
+		}
+		ret = vcu_set_log((char *) in);
 		break;
 	default:
 		mtk_vcodec_err(inst, "invalid set parameter type=%d\n", type);

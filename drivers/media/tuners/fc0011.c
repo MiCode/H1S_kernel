@@ -472,10 +472,10 @@ static int fc0011_get_bandwidth(struct dvb_frontend *fe, u32 *bandwidth)
 
 static const struct dvb_tuner_ops fc0011_tuner_ops = {
 	.info = {
-		.name		= "Fitipower FC0011",
+		.name		  = "Fitipower FC0011",
 
-		.frequency_min	= 45000000,
-		.frequency_max	= 1000000000,
+		.frequency_min_hz =   45 * MHz,
+		.frequency_max_hz = 1000 * MHz,
 	},
 
 	.release		= fc0011_release,
@@ -508,7 +508,7 @@ struct dvb_frontend *fc0011_attach(struct dvb_frontend *fe,
 
 	return fe;
 }
-EXPORT_SYMBOL(fc0011_attach);
+EXPORT_SYMBOL_GPL(fc0011_attach);
 
 MODULE_DESCRIPTION("Fitipower FC0011 silicon tuner driver");
 MODULE_AUTHOR("Michael Buesch <m@bues.ch>");

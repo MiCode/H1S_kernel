@@ -93,7 +93,6 @@ static int dwmac1000_validate_ucast_entries(int ucast_entries)
 /**
  * stmmac_axi_setup - parse DT parameters for programming the AXI register
  * @pdev: platform device
- * @priv: driver private struct.
  * Description:
  * if required, from device-tree the AXI internal register can be tuned
  * by using platform parameters.
@@ -115,10 +114,10 @@ static struct stmmac_axi *stmmac_axi_setup(struct platform_device *pdev)
 
 	axi->axi_lpi_en = of_property_read_bool(np, "snps,lpi_en");
 	axi->axi_xit_frm = of_property_read_bool(np, "snps,xit_frm");
-	axi->axi_kbbe = of_property_read_bool(np, "snps,axi_kbbe");
-	axi->axi_fb = of_property_read_bool(np, "snps,axi_fb");
-	axi->axi_mb = of_property_read_bool(np, "snps,axi_mb");
-	axi->axi_rb =  of_property_read_bool(np, "snps,axi_rb");
+	axi->axi_kbbe = of_property_read_bool(np, "snps,kbbe");
+	axi->axi_fb = of_property_read_bool(np, "snps,fb");
+	axi->axi_mb = of_property_read_bool(np, "snps,mb");
+	axi->axi_rb =  of_property_read_bool(np, "snps,rb");
 
 	if (of_property_read_u32(np, "snps,wr_osr_lmt", &axi->axi_wr_osr_lmt))
 		axi->axi_wr_osr_lmt = 1;
@@ -134,13 +133,14 @@ static struct stmmac_axi *stmmac_axi_setup(struct platform_device *pdev)
  * stmmac_mtl_setup - parse DT parameters for multiple queues configuration
  * @pdev: platform device
  */
-static void stmmac_mtl_setup(struct platform_device *pdev,
-			     struct plat_stmmacenet_data *plat)
+static int stmmac_mtl_setup(struct platform_device *pdev,
+			    struct plat_stmmacenet_data *plat)
 {
 	struct device_node *q_node;
 	struct device_node *rx_node;
 	struct device_node *tx_node;
 	u8 queue = 0;
+	int ret = 0;
 
 	/* For backwards-compatibility with device trees that don't have any
 	 * snps,mtl-rx-config or snps,mtl-tx-config properties, we fall back
@@ -158,12 +158,12 @@ static void stmmac_mtl_setup(struct platform_device *pdev,
 
 	rx_node = of_parse_phandle(pdev->dev.of_node, "snps,mtl-rx-config", 0);
 	if (!rx_node)
-		return;
+		return ret;
 
 	tx_node = of_parse_phandle(pdev->dev.of_node, "snps,mtl-tx-config", 0);
 	if (!tx_node) {
 		of_node_put(rx_node);
-		return;
+		return ret;
 	}
 
 	/* Processing RX queues common config */
@@ -218,6 +218,11 @@ static void stmmac_mtl_setup(struct platform_device *pdev,
 			plat->rx_queues_cfg[queue].pkt_route = 0x0;
 
 		queue++;
+	}
+	if (queue != plat->rx_queues_to_use) {
+		ret = -EINVAL;
+		dev_err(&pdev->dev, "Not all RX queues were configured\n");
+		goto out;
 	}
 
 	/* Processing TX queues common config */
@@ -280,10 +285,18 @@ static void stmmac_mtl_setup(struct platform_device *pdev,
 
 		queue++;
 	}
+	if (queue != plat->tx_queues_to_use) {
+		ret = -EINVAL;
+		dev_err(&pdev->dev, "Not all TX queues were configured\n");
+		goto out;
+	}
 
+out:
 	of_node_put(rx_node);
 	of_node_put(tx_node);
 	of_node_put(q_node);
+
+	return ret;
 }
 
 /**
@@ -317,10 +330,6 @@ static int stmmac_dt_phy(struct plat_stmmacenet_data *plat,
 	bool mdio = true;
 	static const struct of_device_id need_mdio_ids[] = {
 		{ .compatible = "snps,dwc-qos-ethernet-4.10" },
-		{ .compatible = "allwinner,sun8i-a83t-emac" },
-		{ .compatible = "allwinner,sun8i-h3-emac" },
-		{ .compatible = "allwinner,sun8i-v3s-emac" },
-		{ .compatible = "allwinner,sun50i-a64-emac" },
 		{},
 	};
 
@@ -379,6 +388,7 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
 	struct device_node *np = pdev->dev.of_node;
 	struct plat_stmmacenet_data *plat;
 	struct stmmac_dma_cfg *dma_cfg;
+	int rc;
 
 	plat = devm_kzalloc(&pdev->dev, sizeof(*plat), GFP_KERNEL);
 	if (!plat)
@@ -388,8 +398,7 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
 	plat->interface = of_get_phy_mode(np);
 
 	/* Get max speed of operation from device tree */
-	if (of_property_read_u32(np, "max-speed", &plat->max_speed))
-		plat->max_speed = -1;
+	of_property_read_u32(np, "max-speed", &plat->max_speed);
 
 	plat->bus_id = of_alias_get_id(np, "ethernet");
 	if (plat->bus_id < 0)
@@ -398,6 +407,12 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
 	/* Default to phy auto-detection */
 	plat->phy_addr = -1;
 
+	/* Default to get clk_csr from stmmac_clk_crs_set(),
+	 * or get clk_csr from device tree.
+	 */
+	plat->clk_csr = -1;
+	of_property_read_u32(np, "clk_csr", &plat->clk_csr);
+
 	/* "snps,phy-addr" is not a standard property. Mark it as deprecated
 	 * and warn of its use. Remove this when phy node support is added.
 	 */
@@ -405,8 +420,9 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
 		dev_warn(&pdev->dev, "snps,phy-addr property is deprecated\n");
 
 	/* To Configure PHY by using all device-tree supported properties */
-	if (stmmac_dt_phy(plat, np, &pdev->dev))
-		return ERR_PTR(-ENODEV);
+	rc = stmmac_dt_phy(plat, np, &pdev->dev);
+	if (rc)
+		return ERR_PTR(rc);
 
 	of_property_read_u32(np, "tx-fifo-depth", &plat->tx_fifo_size);
 
@@ -458,8 +474,17 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
 		plat->pmt = 1;
 	}
 
+	if (of_device_is_compatible(np, "snps,dwmac-3.40a")) {
+		plat->has_gmac = 1;
+		plat->enh_desc = 1;
+		plat->tx_coe = 1;
+		plat->bugged_jumbo = 1;
+		plat->pmt = 1;
+	}
+
 	if (of_device_is_compatible(np, "snps,dwmac-4.00") ||
-	    of_device_is_compatible(np, "snps,dwmac-4.10a")) {
+	    of_device_is_compatible(np, "snps,dwmac-4.10a") ||
+	    of_device_is_compatible(np, "snps,dwmac-4.20a")) {
 		plat->has_gmac4 = 1;
 		plat->has_gmac = 0;
 		plat->pmt = 1;
@@ -471,6 +496,12 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
 		plat->enh_desc = 1;
 		plat->bugged_jumbo = 1;
 		plat->force_sf_dma_mode = 1;
+	}
+
+	if (of_device_is_compatible(np, "snps,dwxgmac")) {
+		plat->has_xgmac = 1;
+		plat->pmt = 1;
+		plat->tso_en = of_property_read_bool(np, "snps,tso");
 	}
 
 	dma_cfg = devm_kzalloc(&pdev->dev, sizeof(*dma_cfg),
@@ -493,7 +524,7 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
 	dma_cfg->mixed_burst = of_property_read_bool(np, "snps,mixed-burst");
 
 	plat->force_thresh_dma_mode = of_property_read_bool(np, "snps,force_thresh_dma_mode");
-	if (plat->force_thresh_dma_mode) {
+	if (plat->force_thresh_dma_mode && plat->force_sf_dma_mode) {
 		plat->force_sf_dma_mode = 0;
 		pr_warn("force_sf_dma_mode is ignored if force_thresh_dma_mode is set.");
 	}
@@ -502,7 +533,11 @@ stmmac_probe_config_dt(struct platform_device *pdev, const char **mac)
 
 	plat->axi = stmmac_axi_setup(pdev);
 
-	stmmac_mtl_setup(pdev, plat);
+	rc = stmmac_mtl_setup(pdev, plat);
+	if (rc) {
+		stmmac_remove_config_dt(pdev, plat);
+		return ERR_PTR(rc);
+	}
 
 	/* clock setup */
 	plat->stmmac_clk = devm_clk_get(&pdev->dev,

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef MTK_DRM_DRV_H
 #define MTK_DRM_DRV_H
@@ -32,10 +24,38 @@
 #define MTK_DRM_ESD_SUPPORT
 #define MTK_FB_MMDVFS_SUPPORT
 #endif
+
 #define MTK_DRM_FENCE_SUPPORT
 #define MTK_DRM_CMDQ_ASYNC
 #define CONFIG_MTK_DISPLAY_CMDQ
 #define MTK_FILL_MIPI_IMPEDANCE
+
+#if (defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6873)\
+	|| defined(CONFIG_MACH_MT6893) ||\
+	defined(CONFIG_MACH_MT6853) || \
+	defined(CONFIG_MACH_MT6833) || \
+	defined(CONFIG_MACH_MT6781)) &&\
+	defined(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT)
+#define MTK_DRM_DELAY_PRESENT_FENCE
+/* Delay present fence would cause config merge */
+#endif
+
+#if defined(CONFIG_MACH_MT6877) || defined(CONFIG_MACH_MT6781)
+/*
+ * MTK_DRM_DELAY_PRESENT_FENCE can not be defined,
+ * but SF present fence must be enabled in platform dts
+ */
+#define MTK_DRM_DELAY_PRESENT_FENCE_SOF
+#endif
+
+#if defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6853)\
+	|| defined(CONFIG_MACH_MT6877)
+#define CONFIG_MTK_DYN_SWITCH_BY_CMD
+#endif
+
+#ifdef CONFIG_MTK_IOMMU_V2
+#define CONFIG_MTK_DISPLAY_M4U
+#endif
 
 struct device;
 struct device_node;
@@ -44,7 +64,7 @@ struct drm_device;
 struct drm_property;
 struct regmap;
 struct mm_qos_request;
-struct pm_qos_request;
+struct mtk_pm_qos_request;
 
 struct mtk_atomic_state {
 	struct drm_atomic_state base;
@@ -134,6 +154,7 @@ struct mtk_drm_private {
 	struct drm_property *crtc_property[MAX_CRTC][CRTC_PROP_MAX];
 
 	struct drm_fb_helper fb_helper;
+	struct kref kref_fb_buf;
 	struct drm_gem_object *fbdev_bo;
 	struct list_head lyeblob_head;
 	struct mutex lyeblob_list_mutex;
@@ -161,8 +182,8 @@ struct mtk_drm_private {
 #ifdef MTK_FB_MMDVFS_SUPPORT
 	struct plist_head bw_request_list;
 	struct plist_head hrt_request_list;
-	struct pm_qos_request ddr_opp_request;
-	struct pm_qos_request mm_freq_request;
+	struct mtk_pm_qos_request ddr_opp_request;
+	struct mtk_pm_qos_request mm_freq_request;
 	struct mm_qos_request hrt_bw_request;
 #endif
 	struct pinctrl *pctrl;
@@ -176,6 +197,9 @@ struct mtk_drm_private {
 	int vds_path_switch_done;
 	int need_vds_path_switch_back;
 	int vds_path_enable;
+
+	bool need_cwb_path_disconnect;
+	bool cwb_is_preempted;
 
 	/* Due to 2nd display share 1 secure gce client, need store here */
 	struct cmdq_client *ext_sec_client;
@@ -241,8 +265,6 @@ extern struct platform_driver mtk_dp_tx_driver;
 extern struct platform_driver mtk_dp_intf_driver;
 #endif
 
-void mtk_atomic_state_get(struct drm_atomic_state *state);
-void mtk_atomic_state_put(struct drm_atomic_state *state);
 void mtk_atomic_state_put_queue(struct drm_atomic_state *state);
 void mtk_drm_fence_update(unsigned int fence_idx, unsigned int index);
 void drm_trigger_repaint(enum DRM_REPAINT_TYPE type,
@@ -264,5 +286,6 @@ int lcm_fps_ctx_init(struct drm_crtc *crtc);
 int lcm_fps_ctx_reset(struct drm_crtc *crtc);
 int lcm_fps_ctx_update(unsigned long long cur_ns,
 		unsigned int crtc_id, unsigned int mode);
-
+int mtk_mipi_clk_change(struct drm_crtc *crtc, unsigned int data_rate);
+void disp_drm_debug(const char *opt);
 #endif /* MTK_DRM_DRV_H */

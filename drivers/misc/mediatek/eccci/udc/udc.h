@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __UDC_H__
@@ -34,11 +26,12 @@ enum UDC_FUNC_ID {
 	ID_udc_GetCmpLen,
 };
 
-typedef int (*deflateInit2_cb_func_t) (struct z_stream_s *,
-	int, int, int, int, int, const char*, int);
 
-typedef int (*deflateSetDict_cb_func_t) (struct z_stream_s *,
-	const unsigned char*, unsigned int);
+typedef int (*deflateInit2_cb_func_t)(struct z_stream_s *,
+		int, int, int, int, int, const char*, int);
+
+typedef int (*deflateSetDict_cb_func_t)(struct z_stream_s *,
+		const unsigned char*, unsigned int);
 
 typedef int (*deflate_cb_func_t)(struct z_stream_s *, int);
 
@@ -77,7 +70,7 @@ struct udc_private_data {
 int udc_init(struct z_stream_s *zcpr, struct udc_private_data *my_param);
 void udc_deinit(struct z_stream_s *zcpr);
 
-int deflateInit2_cb(struct z_stream_s *strm, int level, int method,
+int deflateInit2_cb(struct z_stream_s *strm, int level, int  method,
 			int windowBits, int memLevel, int strategy);
 int deflateSetDictionary_cb(struct z_stream_s *strm, const char *dictionary,
 				unsigned int dictLength);

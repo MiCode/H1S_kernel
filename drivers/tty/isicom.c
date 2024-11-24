@@ -1,9 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; either version
- *	2 of the License, or (at your option) any later version.
- *
  *	Original driver code supplied by Multi-Tech
  *
  *	Changes
@@ -174,10 +170,10 @@ static struct pci_driver isicom_driver = {
 static int prev_card = 3;	/*	start servicing isi_card[0]	*/
 static struct tty_driver *isicom_normal;
 
-static void isicom_tx(unsigned long _data);
+static void isicom_tx(struct timer_list *unused);
 static void isicom_start(struct tty_struct *tty);
 
-static DEFINE_TIMER(tx, isicom_tx, 0, 0);
+static DEFINE_TIMER(tx, isicom_tx);
 
 /*   baud index mappings from linux defns to isi */
 
@@ -223,13 +219,9 @@ static struct isi_port  isi_ports[PORT_COUNT];
 static int WaitTillCardIsFree(unsigned long base)
 {
 	unsigned int count = 0;
-	unsigned int a = in_atomic(); /* do we run under spinlock? */
 
 	while (!(inw(base + 0xe) & 0x1) && count++ < 100)
-		if (a)
-			mdelay(1);
-		else
-			msleep(1);
+		mdelay(1);
 
 	return !(inw(base + 0xe) & 0x1);
 }
@@ -398,7 +390,7 @@ static inline int __isicom_paranoia_check(struct isi_port const *port,
  *	will do the rest of the work for us.
  */
 
-static void isicom_tx(unsigned long _data)
+static void isicom_tx(struct timer_list *unused)
 {
 	unsigned long flags, base;
 	unsigned int retries;
@@ -1485,7 +1477,7 @@ static int load_firmware(struct pci_dev *pdev,
 			goto errrelfw;
 		}
 
-		data = kmalloc(word_count * 2, GFP_KERNEL);
+		data = kmalloc_array(word_count, 2, GFP_KERNEL);
 		if (data == NULL) {
 			dev_err(&pdev->dev, "Card%d, firmware upload "
 				"failed, not enough memory\n", index + 1);
@@ -1545,7 +1537,7 @@ static unsigned int card_count;
 static int isicom_probe(struct pci_dev *pdev,
 	const struct pci_device_id *ent)
 {
-	unsigned int uninitialized_var(signature), index;
+	unsigned int signature, index;
 	int retval = -EPERM;
 	struct isi_board *board = NULL;
 

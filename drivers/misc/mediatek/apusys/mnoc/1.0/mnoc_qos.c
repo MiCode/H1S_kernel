@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 /*
@@ -25,6 +17,8 @@
 #include <linux/delay.h>
 #include <linux/workqueue.h>
 #include <linux/platform_device.h>
+#include <linux/soc/mediatek/mtk-pm-qos.h>
+#include <linux/seq_file.h>
 
 #include "mnoc_drv.h"
 #include "mnoc_hw.h"
@@ -132,7 +126,7 @@ struct qos_counter {
 };
 
 struct engine_pm_qos_counter {
-	struct pm_qos_request qos_req;
+	struct mtk_pm_qos_request qos_req;
 
 	int32_t last_report_bw;
 	unsigned int last_idx;
@@ -167,7 +161,7 @@ static bool qos_timer_exist;
 bool apu_qos_boost_flag;
 static bool apusys_on_flag;
 static unsigned int apu_qos_boost_ddr_opp;
-static struct pm_qos_request apu_qos_ddr_req;
+static struct mtk_pm_qos_request apu_qos_ddr_req;
 static struct pm_qos_request apu_qos_cpu_dma_req;
 struct mutex apu_qos_boost_mtx;
 #endif
@@ -204,33 +198,33 @@ static inline void enque_qos_wq(struct work_struct *work)
 	schedule_work(work);
 }
 
-static int add_qos_request(struct pm_qos_request *req)
+static int add_qos_request(struct mtk_pm_qos_request *req)
 {
 #ifndef APU_QOS_DVFSRC
-	pm_qos_add_request(req, PM_QOS_APU_MEMORY_BANDWIDTH,
+	mtk_pm_qos_add_request(req, PM_QOS_APU_MEMORY_BANDWIDTH,
 		PM_QOS_DEFAULT_VALUE);
 #endif
 	return 0;
 }
 
-static void update_qos_request(struct pm_qos_request *req, uint32_t val)
+static void update_qos_request(struct mtk_pm_qos_request *req, uint32_t val)
 {
 	LOG_DEBUG("bw = %d\n", val);
 #ifndef APU_QOS_DVFSRC
-	pm_qos_update_request(req, val);
+	mtk_pm_qos_update_request(req, val);
 #endif
 }
 
-static int destroy_qos_request(struct pm_qos_request *req)
+static int destroy_qos_request(struct mtk_pm_qos_request *req)
 {
 #ifndef APU_QOS_DVFSRC
-	pm_qos_update_request(req, PM_QOS_APU_MEMORY_BANDWIDTH_DEFAULT_VALUE);
-	pm_qos_remove_request(req);
+	mtk_pm_qos_update_request(req, PM_QOS_APU_MEMORY_BANDWIDTH_DEFAULT_VALUE);
+	mtk_pm_qos_remove_request(req);
 #endif
 	return 0;
 }
 
-static void qos_timer_func(unsigned long arg)
+static void qos_timer_func(struct timer_list *t)
 {
 	struct qos_counter *counter = &qos_counter;
 
@@ -270,14 +264,11 @@ static void apu_qos_timer_start(void)
 	}
 
 	/* setup timer */
-	init_timer(&counter->qos_timer);
-	counter->qos_timer.function = &qos_timer_func;
-	counter->qos_timer.data = 0;
-	counter->qos_timer.expires =
-		jiffies + msecs_to_jiffies(DEFAUTL_QOS_POLLING_TIME);
+	timer_setup(&counter->qos_timer, &qos_timer_func, 0);
+
 	/* record wait time in counter */
 	counter->wait_ms = DEFAUTL_QOS_POLLING_TIME;
-	add_timer(&counter->qos_timer);
+	mod_timer(&counter->qos_timer, jiffies + msecs_to_jiffies(DEFAUTL_QOS_POLLING_TIME));
 
 	qos_timer_exist = true;
 
@@ -1012,6 +1003,15 @@ int apu_cmd_qos_end(uint64_t cmd_id, uint64_t sub_cmd_id,
 			update_qos_request(&(engine_pm_qos_counter[i].qos_req),
 				PM_QOS_APU_MEMORY_BANDWIDTH_DEFAULT_VALUE);
 		}
+#if MNOC_QOS_BOOST_ENABLE
+		mutex_lock(&apu_qos_boost_mtx);
+		if (apu_qos_boost_flag == false) {
+			apu_bw_vcore_opp = NR_APU_VCORE_OPP - 1;
+			apu_qos_set_vcore(vcore_opp_map[apu_bw_vcore_opp]);
+		}
+		mutex_unlock(&apu_qos_boost_mtx);
+#endif
+
 	}
 #endif
 
@@ -1040,9 +1040,9 @@ void apu_qos_boost_start(void)
 /* 6885: ~16G, 6873/6853: ~8G */
 	if (apu_qos_boost_flag == true && apusys_on_flag == true &&
 		apu_qos_boost_ddr_opp ==
-		PM_QOS_DDR_OPP_DEFAULT_VALUE) {
+		MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE) {
 		apu_qos_boost_ddr_opp = 0;
-		pm_qos_update_request(&apu_qos_ddr_req, 1);
+		mtk_pm_qos_update_request(&apu_qos_ddr_req, 1);
 		pm_qos_update_request(&apu_qos_cpu_dma_req, 2);
 #ifdef APU_QOS_IPUIF_ADJUST
 		apu_bw_vcore_opp = 2;
@@ -1063,9 +1063,9 @@ void apu_qos_boost_end(void)
 		apu_qos_set_vcore(vcore_opp_map[apu_bw_vcore_opp]);
 #endif
 		apu_qos_boost_ddr_opp =
-			PM_QOS_DDR_OPP_DEFAULT_VALUE;
-		pm_qos_update_request(&apu_qos_ddr_req,
-			PM_QOS_DDR_OPP_DEFAULT_VALUE);
+			MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE;
+		mtk_pm_qos_update_request(&apu_qos_ddr_req,
+			MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE);
 		pm_qos_update_request(&apu_qos_cpu_dma_req,
 			PM_QOS_CPU_DMA_LAT_DEFAULT_VALUE);
 	}
@@ -1109,11 +1109,11 @@ void apu_qos_counter_init(struct device *dev)
 	apu_qos_boost_flag = false;
 	apusys_on_flag = false;
 	mutex_init(&apu_qos_boost_mtx);
-	pm_qos_add_request(&apu_qos_ddr_req, PM_QOS_DDR_OPP,
-		PM_QOS_DDR_OPP_DEFAULT_VALUE);
+	mtk_pm_qos_add_request(&apu_qos_ddr_req, MTK_PM_QOS_DDR_OPP,
+		MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE);
 	pm_qos_add_request(&apu_qos_cpu_dma_req, PM_QOS_CPU_DMA_LATENCY,
 		PM_QOS_CPU_DMA_LAT_DEFAULT_VALUE);
-	apu_qos_boost_ddr_opp = PM_QOS_DDR_OPP_DEFAULT_VALUE;
+	apu_qos_boost_ddr_opp = MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE;
 #endif
 
 #ifdef APU_QOS_IPUIF_ADJUST
@@ -1169,9 +1169,9 @@ void apu_qos_counter_destroy(struct device *dev)
 		destroy_qos_request(&counter->qos_req);
 	}
 #if MNOC_QOS_BOOST_ENABLE
-	pm_qos_update_request(&apu_qos_ddr_req,
-		PM_QOS_DDR_OPP_DEFAULT_VALUE);
-	pm_qos_remove_request(&apu_qos_ddr_req);
+	mtk_pm_qos_update_request(&apu_qos_ddr_req,
+		MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE);
+	mtk_pm_qos_remove_request(&apu_qos_ddr_req);
 	pm_qos_update_request(&apu_qos_cpu_dma_req,
 		PM_QOS_CPU_DMA_LAT_DEFAULT_VALUE);
 	pm_qos_remove_request(&apu_qos_cpu_dma_req);
@@ -1237,11 +1237,11 @@ int apu_cmd_qos_end(uint64_t cmd_id, uint64_t sub_cmd_id)
 }
 EXPORT_SYMBOL(apu_cmd_qos_end);
 
-void apu_qos_counter_init(void)
+void apu_qos_counter_init(struct device *dev)
 {
 }
 
-void apu_qos_counter_destroy(void)
+void apu_qos_counter_destroy(struct device *dev)
 {
 }
 

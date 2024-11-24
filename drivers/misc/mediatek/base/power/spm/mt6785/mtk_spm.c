@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -131,7 +123,7 @@ void __iomem *spm_base;
 void __iomem *sleep_reg_md_base;
 
 static struct platform_device *pspmdev;
-static struct wakeup_source spm_wakelock;
+static struct wakeup_source *spm_wakelock;
 
 
 /* FIXME: should not used externally !!! */
@@ -146,7 +138,7 @@ EXPORT_SYMBOL(mt_spm_base_get);
 
 void spm_pm_stay_awake(int sec)
 {
-	__pm_wakeup_event(&spm_wakelock, HZ * sec);
+	__pm_wakeup_event(spm_wakelock, jiffies_to_msecs(HZ * sec));
 }
 
 static void spm_register_init(unsigned int *spm_irq_0_ptr)
@@ -349,7 +341,11 @@ static int spm_module_init(void)
 	struct mtk_idle_sysfs_handle pParent2ND;
 	struct mtk_idle_sysfs_handle *pParent = NULL;
 
-	wakeup_source_init(&spm_wakelock, "spm");
+	spm_wakelock = wakeup_source_register(NULL, "spm");
+	if (spm_wakelock == NULL) {
+		pr_debug("fail to request spm_wakelock\n");
+		return ret;
+	}
 
 	spm_register_init(&spm_irq_0);
 
@@ -362,7 +358,7 @@ static int spm_module_init(void)
 #endif
 
 	/* implemented in mtk_spm_dram.c */
-	spm_do_dram_config_check();
+	//spm_do_dram_config_check();
 
 	ret = platform_driver_register(&spm_dev_drv);
 	if (ret) {
@@ -412,7 +408,7 @@ static int spm_module_init(void)
 	}
 #endif /* CONFIG_PM */
 #endif /* CONFIG_FPGA_EARLY_PORTING */
-#if MTK_FEATURE_EANABLE_KICK_SPMFW
+#if MTK_FEATURE_ENABLE_KICK_SPMFW
 	SMC_CALL(ARGS, SPM_ARGS_SPMFW_IDX_KICK, spm_get_spmfw_idx(),
 		dram_steps_freq(0));
 #endif

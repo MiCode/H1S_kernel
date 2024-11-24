@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 
@@ -209,6 +201,9 @@ void init_ddp_mmp_events(void)
 	DDP_MMP_Events.primary_pm_qos =
 		mmprofile_register_event(DDP_MMP_Events.primary_Parent,
 		"primary_pm_qos");
+	DDP_MMP_Events.primary_hrt_bw =
+		mmprofile_register_event(DDP_MMP_Events.primary_Parent,
+		"primary_hrt_bw");
 
 #ifdef CONFIG_MTK_HDMI_SUPPORT
 	DDP_MMP_Events.Extd_Parent =
@@ -544,8 +539,8 @@ void ddp_mmp_ovl_layer(struct OVL_CONFIG_STRUCT *pLayer,
 	unsigned int down_sample_y,
 	unsigned int session /*1:primary, 2:external, 3:memory */)
 {
-	struct mmp_metadata_bitmap_t Bitmap = { 0 };
-	struct mmp_metadata_t meta = { 0 };
+	struct mmp_metadata_bitmap_t Bitmap;
+	struct mmp_metadata_t meta;
 	int raw = 0;
 	int yuv = 0;
 	enum DISP_MODULE_ENUM module = DISP_MODULE_OVL0;
@@ -564,6 +559,7 @@ void ddp_mmp_ovl_layer(struct OVL_CONFIG_STRUCT *pLayer,
 		goto end;
 
 	memset(&Bitmap, 0, sizeof(struct mmp_metadata_bitmap_t));
+	memset(&meta, 0, sizeof(struct mmp_metadata_t));
 	Bitmap.data1 = pLayer->vaddr;
 	Bitmap.width = pLayer->dst_w;
 	Bitmap.height = pLayer->dst_h;
@@ -722,8 +718,8 @@ void ddp_mmp_wdma_layer(struct WDMA_CONFIG_STRUCT *wdma_layer,
 	unsigned int wdma_num, unsigned int down_sample_x,
 	unsigned int down_sample_y)
 {
-	struct mmp_metadata_bitmap_t Bitmap = { 0 };
-	struct mmp_metadata_t meta = { 0 };
+	struct mmp_metadata_bitmap_t Bitmap;
+	struct mmp_metadata_t meta;
 	int raw = 0;
 
 	if (wdma_num > 1) {
@@ -733,6 +729,7 @@ void ddp_mmp_wdma_layer(struct WDMA_CONFIG_STRUCT *wdma_layer,
 	}
 
 	memset(&Bitmap, 0, sizeof(struct mmp_metadata_bitmap_t));
+	memset(&meta, 0, sizeof(struct mmp_metadata_t));
 	Bitmap.data1 = wdma_layer->dstAddress;
 	Bitmap.width = wdma_layer->srcWidth;
 	Bitmap.height = wdma_layer->srcHeight;
@@ -824,8 +821,8 @@ void ddp_mmp_rdma_layer(struct RDMA_CONFIG_STRUCT *rdma_layer,
 	unsigned int rdma_num, unsigned int down_sample_x,
 	unsigned int down_sample_y)
 {
-	struct mmp_metadata_bitmap_t Bitmap = { 0 };
-	struct mmp_metadata_t meta = { 0 };
+	struct mmp_metadata_bitmap_t Bitmap;
+	struct mmp_metadata_t meta;
 	int raw = 0;
 	enum DISP_MODULE_ENUM module = DISP_MODULE_RDMA0;
 
@@ -837,6 +834,7 @@ void ddp_mmp_rdma_layer(struct RDMA_CONFIG_STRUCT *rdma_layer,
 	}
 
 	memset(&Bitmap, 0, sizeof(struct mmp_metadata_bitmap_t));
+	memset(&meta, 0, sizeof(struct mmp_metadata_t));
 	Bitmap.data1 = rdma_layer->address;
 	Bitmap.width = rdma_layer->width;
 	Bitmap.height = rdma_layer->height;

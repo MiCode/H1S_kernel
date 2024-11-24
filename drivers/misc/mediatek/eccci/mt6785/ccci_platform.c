@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 #include <linux/platform_device.h>
 #include <linux/device.h>
@@ -37,8 +30,6 @@ int Is_MD_EMI_voilation(void)
 {
 	return 1;
 }
-
-unsigned long infra_ao_base;
 
 /*
  * when MD attached its codeviser for debuging, this bit will be set.
@@ -126,9 +117,9 @@ static void ccci_md_battery_percent_cb(BATTERY_PERCENT_LEVEL level)
 #define PCCIF_ACK (0x14)
 #define PCCIF_CHDATA (0x100)
 #define PCCIF_SRAM_SIZE (512)
-
+#if 0
 void ccci_reset_ccif_hw(unsigned char md_id,
-			int ccif_id, void __iomem *baseA, void __iomem *baseB)
+			int ccif_id, void __iomem *baseA, void __iomem *baseB, struct md_ccif_ctrl *md_ctrl)
 {
 	int i;
 	struct ccci_smem_region *region;
@@ -177,19 +168,21 @@ void ccci_reset_ccif_hw(unsigned char md_id,
 		PCCIF_CHDATA + PCCIF_SRAM_SIZE - sizeof(u32),
 		region->size);
 }
-
+#endif
 int ccci_platform_init(struct ccci_modem *md)
 {
 	struct device_node *node;
 	/* Get infra cfg ao base */
-	node = of_find_compatible_node(NULL, NULL, "mediatek,infracfg_ao");
-	infra_ao_base = (unsigned long)of_iomap(node, 0);
-	if (!infra_ao_base) {
+	node = of_find_compatible_node(NULL, NULL,
+		"mediatek,infracfg_ao");
+	md_cd_plat_val_ptr.infra_ao_base = of_iomap(node, 0);
+	if (!md_cd_plat_val_ptr.infra_ao_base) {
 		CCCI_ERROR_LOG(md->index, TAG,
 			"%s: infra_ao_base of_iomap failed\n", node->full_name);
 		return -1;
 	}
-	CCCI_INIT_LOG(-1, TAG, "infra_ao_base:0x%p\n", (void *)infra_ao_base);
+	CCCI_INIT_LOG(-1, TAG, "infra_ao_base:0x%p\n",
+		(void *)md_cd_plat_val_ptr.infra_ao_base);
 #ifdef FEATURE_LOW_BATTERY_SUPPORT
 	register_low_battery_notify(
 		&ccci_md_low_battery_cb, LOW_BATTERY_PRIO_MD);
@@ -198,101 +191,4 @@ int ccci_platform_init(struct ccci_modem *md)
 #endif
 	return 0;
 }
-
-#define DUMMY_PAGE_SIZE (128)
-#define DUMMY_PADDING_CNT (5)
-
-#define CTRL_PAGE_SIZE (1024)
-#define CTRL_PAGE_NUM (32)
-
-#define MD_EX_PAGE_SIZE (20*1024)
-#define MD_EX_PAGE_NUM  (6)
-
-
-/*
- *  Note : Moidy this size will affect dhl frame size in this page
- *  Minimum : 352B to reserve 256B for header frame
- */
-#define MD_HW_PAGE_SIZE (512)
-
-/* replace with HW page */
-#define MD_BUF1_PAGE_SIZE (MD_HW_PAGE_SIZE)
-#define MD_BUF1_PAGE_NUM  (72)
-#define AP_BUF1_PAGE_SIZE (1024)
-#define AP_BUF1_PAGE_NUM  (32)
-
-#define MD_BUF2_0_PAGE_SIZE (MD_HW_PAGE_SIZE)
-#define MD_BUF2_1_PAGE_SIZE (MD_HW_PAGE_SIZE)
-#define MD_BUF2_2_PAGE_SIZE (MD_HW_PAGE_SIZE)
-
-#define MD_BUF2_0_PAGE_NUM (64)
-#define MD_BUF2_1_PAGE_NUM (64)
-#define MD_BUF2_2_PAGE_NUM (256)
-
-#define MD_MDM_PAGE_SIZE (MD_HW_PAGE_SIZE)
-#define MD_MDM_PAGE_NUM  (32)
-
-#define AP_MDM_PAGE_SIZE (1024)
-#define AP_MDM_PAGE_NUM  (16)
-
-#define MD_META_PAGE_SIZE (65*1024)
-#define MD_META_PAGE_NUM (8)
-
-#define AP_META_PAGE_SIZE (63*1024)
-#define AP_META_PAGE_NUM (8)
-
-struct ccci_ccb_config ccb_configs[] = {
-	{SMEM_USER_CCB_DHL, P_CORE, CTRL_PAGE_SIZE,
-			CTRL_PAGE_SIZE, CTRL_PAGE_SIZE*CTRL_PAGE_NUM,
-			CTRL_PAGE_SIZE*CTRL_PAGE_NUM}, /* Ctrl */
-	{SMEM_USER_CCB_DHL, P_CORE, MD_EX_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, MD_EX_PAGE_SIZE*MD_EX_PAGE_NUM,
-			DUMMY_PAGE_SIZE},			/* exception */
-	{SMEM_USER_CCB_DHL, P_CORE, MD_BUF1_PAGE_SIZE,
-	 AP_BUF1_PAGE_SIZE, (MD_BUF1_PAGE_SIZE*MD_BUF1_PAGE_NUM),
-			AP_BUF1_PAGE_SIZE*AP_BUF1_PAGE_NUM},/* PS */
-	{SMEM_USER_CCB_DHL, P_CORE, MD_BUF2_0_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, MD_BUF2_0_PAGE_SIZE*MD_BUF2_0_PAGE_NUM,
-			DUMMY_PAGE_SIZE},     /* HWLOGGER1 */
-	{SMEM_USER_CCB_DHL, P_CORE, MD_BUF2_1_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, MD_BUF2_1_PAGE_SIZE*MD_BUF2_1_PAGE_NUM,
-			DUMMY_PAGE_SIZE},     /* HWLOGGER2  */
-	{SMEM_USER_CCB_DHL, P_CORE, MD_BUF2_2_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, MD_BUF2_2_PAGE_SIZE*MD_BUF2_2_PAGE_NUM,
-			DUMMY_PAGE_SIZE},     /* HWLOGGER3 */
-	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
-	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
-	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
-	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
-	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
-	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
-	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
-	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
-	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
-	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
-	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE},
-	{SMEM_USER_CCB_DHL, P_CORE, DUMMY_PAGE_SIZE,
-		 DUMMY_PAGE_SIZE, DUMMY_PAGE_SIZE*DUMMY_PADDING_CNT,
-		DUMMY_PAGE_SIZE},
-	{SMEM_USER_CCB_MD_MONITOR, P_CORE, MD_MDM_PAGE_SIZE,
-		 AP_MDM_PAGE_SIZE, MD_MDM_PAGE_SIZE*MD_MDM_PAGE_NUM,
-		AP_MDM_PAGE_SIZE*AP_MDM_PAGE_NUM},     /* MDM */
-	{SMEM_USER_CCB_META, P_CORE, MD_META_PAGE_SIZE,
-		AP_META_PAGE_SIZE, MD_META_PAGE_SIZE*MD_META_PAGE_NUM,
-		AP_META_PAGE_SIZE*AP_META_PAGE_NUM},   /* META */
-};
-unsigned int ccb_configs_len =
-			sizeof(ccb_configs)/sizeof(struct ccci_ccb_config);
-
 

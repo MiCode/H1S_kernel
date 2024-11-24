@@ -1,19 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
-
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 #ifndef _MT_PMIC_UPMU_HW_MT6359_H_
 #define _MT_PMIC_UPMU_HW_MT6359_H_
 
+#if defined(CONFIG_MACH_MT6781)
+#include "../../../mt6781/include/mach/upmu_hw.h"
+#else
 #define PMU_FLAG_TABLE_ENTRY struct pmu_flag_table_entry_t
 #define PMU_FLAGS_LIST_ENUM enum PMU_FLAGS_LIST
 
@@ -39352,4 +39348,5 @@ struct pmu_flag_table_entry_t {
 	unsigned char shift;
 };
 
+#endif		/* CONFIG_MACH_MT6781 */
 #endif		/* _MT_PMIC_UPMU_HW_MT6359_H_ */

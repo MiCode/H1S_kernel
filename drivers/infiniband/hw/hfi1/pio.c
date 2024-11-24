@@ -1,5 +1,5 @@
 /*
- * Copyright(c) 2015-2017 Intel Corporation.
+ * Copyright(c) 2015-2018 Intel Corporation.
  *
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
@@ -231,7 +231,7 @@ static const char *sc_type_name(int index)
 int init_sc_pools_and_sizes(struct hfi1_devdata *dd)
 {
 	struct mem_pool_info mem_pool_info[NUM_SC_POOLS] = { { 0 } };
-	int total_blocks = (dd->chip_pio_mem_size / PIO_BLOCK_SIZE) - 1;
+	int total_blocks = (chip_pio_mem_size(dd) / PIO_BLOCK_SIZE) - 1;
 	int total_contexts = 0;
 	int fixed_blocks;
 	int pool_blocks;
@@ -348,8 +348,8 @@ int init_sc_pools_and_sizes(struct hfi1_devdata *dd)
 				sc_type_name(i), count);
 			return -EINVAL;
 		}
-		if (total_contexts + count > dd->chip_send_contexts)
-			count = dd->chip_send_contexts - total_contexts;
+		if (total_contexts + count > chip_send_contexts(dd))
+			count = chip_send_contexts(dd) - total_contexts;
 
 		total_contexts += count;
 
@@ -458,8 +458,8 @@ int init_send_contexts(struct hfi1_devdata *dd)
 	dd->hw_to_sw = kmalloc_array(TXE_NUM_CONTEXTS, sizeof(u8),
 					GFP_KERNEL);
 	dd->send_contexts = kcalloc(dd->num_send_contexts,
-					sizeof(struct send_context_info),
-					GFP_KERNEL);
+				    sizeof(struct send_context_info),
+				    GFP_KERNEL);
 	if (!dd->send_contexts || !dd->hw_to_sw) {
 		kfree(dd->hw_to_sw);
 		kfree(dd->send_contexts);
@@ -512,7 +512,7 @@ static int sc_hw_alloc(struct hfi1_devdata *dd, int type, u32 *sw_index,
 		if (sci->type == type && sci->allocated == 0) {
 			sci->allocated = 1;
 			/* use a 1:1 mapping, but make them non-equal */
-			context = dd->chip_send_contexts - index - 1;
+			context = chip_send_contexts(dd) - index - 1;
 			dd->hw_to_sw[context] = index;
 			*sw_index = index;
 			*hw_context = context;
@@ -706,7 +706,6 @@ struct send_context *sc_alloc(struct hfi1_devdata *dd, int type,
 {
 	struct send_context_info *sci;
 	struct send_context *sc = NULL;
-	int req_type = type;
 	dma_addr_t dma;
 	unsigned long flags;
 	u64 reg;
@@ -733,13 +732,6 @@ struct send_context *sc_alloc(struct hfi1_devdata *dd, int type,
 		return NULL;
 	}
 
-	/*
-	 * VNIC contexts are dynamically allocated.
-	 * Hence, pick a user context for VNIC.
-	 */
-	if (type == SC_VNIC)
-		type = SC_USER;
-
 	spin_lock_irqsave(&dd->sc_lock, flags);
 	ret = sc_hw_alloc(dd, type, &sw_index, &hw_context);
 	if (ret) {
@@ -747,15 +739,6 @@ struct send_context *sc_alloc(struct hfi1_devdata *dd, int type,
 		free_percpu(sc->buffers_allocated);
 		kfree(sc);
 		return NULL;
-	}
-
-	/*
-	 * VNIC contexts are used by kernel driver.
-	 * Hence, mark them as kernel contexts.
-	 */
-	if (req_type == SC_VNIC) {
-		dd->send_contexts[sw_index].type = SC_KERNEL;
-		type = SC_KERNEL;
 	}
 
 	sci = &dd->send_contexts[sw_index];
@@ -876,8 +859,9 @@ struct send_context *sc_alloc(struct hfi1_devdata *dd, int type,
 		 * so head == tail can mean empty.
 		 */
 		sc->sr_size = sci->credits + 1;
-		sc->sr = kzalloc_node(sizeof(union pio_shadow_ring) *
-				sc->sr_size, GFP_KERNEL, numa);
+		sc->sr = kcalloc_node(sc->sr_size,
+				      sizeof(union pio_shadow_ring),
+				      GFP_KERNEL, numa);
 		if (!sc->sr) {
 			sc_free(sc);
 			return NULL;
@@ -1450,7 +1434,8 @@ void sc_stop(struct send_context *sc, int flag)
  * @cb: optional callback to call when the buffer is finished sending
  * @arg: argument for cb
  *
- * Return a pointer to a PIO buffer if successful, NULL if not enough room.
+ * Return a pointer to a PIO buffer, NULL if not enough room, -ECOMM
+ * when link is down.
  */
 struct pio_buf *sc_buffer_alloc(struct send_context *sc, u32 dw_len,
 				pio_release_cb cb, void *arg)
@@ -1466,7 +1451,7 @@ struct pio_buf *sc_buffer_alloc(struct send_context *sc, u32 dw_len,
 	spin_lock_irqsave(&sc->alloc_lock, flags);
 	if (!(sc->flags & SCF_ENABLED)) {
 		spin_unlock_irqrestore(&sc->alloc_lock, flags);
-		goto done;
+		return ERR_PTR(-ECOMM);
 	}
 
 retry:
@@ -1478,14 +1463,14 @@ retry:
 			goto done;
 		}
 		/* copy from receiver cache line and recalculate */
-		sc->alloc_free = ACCESS_ONCE(sc->free);
+		sc->alloc_free = READ_ONCE(sc->free);
 		avail =
 			(unsigned long)sc->credits -
 			(sc->fill - sc->alloc_free);
 		if (blocks > avail) {
 			/* still no room, actively update */
 			sc_release_update(sc);
-			sc->alloc_free = ACCESS_ONCE(sc->free);
+			sc->alloc_free = READ_ONCE(sc->free);
 			trycount++;
 			goto retry;
 		}
@@ -1665,11 +1650,11 @@ static void sc_piobufavail(struct send_context *sc)
 	/* Wake up the most starved one first */
 	if (n)
 		hfi1_qp_wakeup(qps[max_idx],
-			       RVT_S_WAIT_PIO | RVT_S_WAIT_PIO_DRAIN);
+			       RVT_S_WAIT_PIO | HFI1_S_WAIT_PIO_DRAIN);
 	for (i = 0; i < n; i++)
 		if (i != max_idx)
 			hfi1_qp_wakeup(qps[i],
-				       RVT_S_WAIT_PIO | RVT_S_WAIT_PIO_DRAIN);
+				       RVT_S_WAIT_PIO | HFI1_S_WAIT_PIO_DRAIN);
 }
 
 /* translate a send credit update to a bit code of reasons */
@@ -1722,7 +1707,7 @@ void sc_release_update(struct send_context *sc)
 
 	/* call sent buffer callbacks */
 	code = -1;				/* code not yet set */
-	head = ACCESS_ONCE(sc->sr_head);	/* snapshot the head */
+	head = READ_ONCE(sc->sr_head);	/* snapshot the head */
 	tail = sc->sr_tail;
 	while (head != tail) {
 		pbuf = &sc->sr[tail].pbuf;
@@ -2030,9 +2015,9 @@ int init_pervl_scs(struct hfi1_devdata *dd)
 	hfi1_init_ctxt(dd->vld[15].sc);
 	dd->vld[15].mtu = enum_to_mtu(OPA_MTU_2048);
 
-	dd->kernel_send_context = kzalloc_node(dd->num_send_contexts *
-					sizeof(struct send_context *),
-					GFP_KERNEL, dd->node);
+	dd->kernel_send_context = kcalloc_node(dd->num_send_contexts,
+					       sizeof(struct send_context *),
+					       GFP_KERNEL, dd->node);
 	if (!dd->kernel_send_context)
 		goto freesc15;
 
@@ -2133,7 +2118,7 @@ int init_credit_return(struct hfi1_devdata *dd)
 				   "Unable to allocate credit return DMA range for NUMA %d\n",
 				   i);
 			ret = -ENOMEM;
-			goto done;
+			goto free_cr_base;
 		}
 	}
 	set_dev_node(&dd->pcidev->dev, dd->node);
@@ -2141,6 +2126,10 @@ int init_credit_return(struct hfi1_devdata *dd)
 	ret = 0;
 done:
 	return ret;
+
+free_cr_base:
+	free_credit_return(dd);
+	goto done;
 }
 
 void free_credit_return(struct hfi1_devdata *dd)

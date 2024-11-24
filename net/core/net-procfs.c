@@ -175,20 +175,6 @@ static const struct seq_operations dev_seq_ops = {
 	.show  = dev_seq_show,
 };
 
-static int dev_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open_net(inode, file, &dev_seq_ops,
-			    sizeof(struct seq_net_private));
-}
-
-static const struct file_operations dev_seq_fops = {
-	.owner	 = THIS_MODULE,
-	.open    = dev_seq_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release_net,
-};
-
 static const struct seq_operations softnet_seq_ops = {
 	.start = softnet_seq_start,
 	.next  = softnet_seq_next,
@@ -196,24 +182,22 @@ static const struct seq_operations softnet_seq_ops = {
 	.show  = softnet_seq_show,
 };
 
-static int softnet_seq_open(struct inode *inode, struct file *file)
+static void *ptype_get_idx(struct seq_file *seq, loff_t pos)
 {
-	return seq_open(file, &softnet_seq_ops);
-}
-
-static const struct file_operations softnet_seq_fops = {
-	.owner	 = THIS_MODULE,
-	.open    = softnet_seq_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release,
-};
-
-static void *ptype_get_idx(loff_t pos)
-{
+	struct list_head *ptype_list = NULL;
 	struct packet_type *pt = NULL;
+	struct net_device *dev;
 	loff_t i = 0;
 	int t;
+
+	for_each_netdev_rcu(seq_file_net(seq), dev) {
+		ptype_list = &dev->ptype_all;
+		list_for_each_entry_rcu(pt, ptype_list, list) {
+			if (i == pos)
+				return pt;
+			++i;
+		}
+	}
 
 	list_for_each_entry_rcu(pt, &ptype_all, list) {
 		if (i == pos)
@@ -235,22 +219,40 @@ static void *ptype_seq_start(struct seq_file *seq, loff_t *pos)
 	__acquires(RCU)
 {
 	rcu_read_lock();
-	return *pos ? ptype_get_idx(*pos - 1) : SEQ_START_TOKEN;
+	return *pos ? ptype_get_idx(seq, *pos - 1) : SEQ_START_TOKEN;
 }
 
 static void *ptype_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 {
+	struct net_device *dev;
 	struct packet_type *pt;
 	struct list_head *nxt;
 	int hash;
 
 	++*pos;
 	if (v == SEQ_START_TOKEN)
-		return ptype_get_idx(0);
+		return ptype_get_idx(seq, 0);
 
 	pt = v;
 	nxt = pt->list.next;
+	if (pt->dev) {
+		if (nxt != &pt->dev->ptype_all)
+			goto found;
+
+		dev = pt->dev;
+		for_each_netdev_continue_rcu(seq_file_net(seq), dev) {
+			if (!list_empty(&dev->ptype_all)) {
+				nxt = dev->ptype_all.next;
+				goto found;
+			}
+		}
+
+		nxt = ptype_all.next;
+		goto ptype_all;
+	}
+
 	if (pt->type == htons(ETH_P_ALL)) {
+ptype_all:
 		if (nxt != &ptype_all)
 			goto found;
 		hash = 0;
@@ -279,7 +281,8 @@ static int ptype_seq_show(struct seq_file *seq, void *v)
 
 	if (v == SEQ_START_TOKEN)
 		seq_puts(seq, "Type Device      Function\n");
-	else if (pt->dev == NULL || dev_net(pt->dev) == seq_file_net(seq)) {
+	else if ((!pt->af_packet_net || net_eq(pt->af_packet_net, seq_file_net(seq))) &&
+		 (!pt->dev || net_eq(dev_net(pt->dev), seq_file_net(seq)))) {
 		if (pt->type == htons(ETH_P_ALL))
 			seq_puts(seq, "ALL ");
 		else
@@ -299,31 +302,18 @@ static const struct seq_operations ptype_seq_ops = {
 	.show  = ptype_seq_show,
 };
 
-static int ptype_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open_net(inode, file, &ptype_seq_ops,
-			sizeof(struct seq_net_private));
-}
-
-static const struct file_operations ptype_seq_fops = {
-	.owner	 = THIS_MODULE,
-	.open    = ptype_seq_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release_net,
-};
-
-
 static int __net_init dev_proc_net_init(struct net *net)
 {
 	int rc = -ENOMEM;
 
-	if (!proc_create("dev", S_IRUGO, net->proc_net, &dev_seq_fops))
+	if (!proc_create_net("dev", 0444, net->proc_net, &dev_seq_ops,
+			sizeof(struct seq_net_private)))
 		goto out;
-	if (!proc_create("softnet_stat", S_IRUGO, net->proc_net,
-			 &softnet_seq_fops))
+	if (!proc_create_seq("softnet_stat", 0444, net->proc_net,
+			 &softnet_seq_ops))
 		goto out_dev;
-	if (!proc_create("ptype", S_IRUGO, net->proc_net, &ptype_seq_fops))
+	if (!proc_create_net("ptype", 0444, net->proc_net, &ptype_seq_ops,
+			sizeof(struct seq_net_private)))
 		goto out_softnet;
 
 	if (wext_proc_init(net))
@@ -380,23 +370,10 @@ static const struct seq_operations dev_mc_seq_ops = {
 	.show  = dev_mc_seq_show,
 };
 
-static int dev_mc_seq_open(struct inode *inode, struct file *file)
-{
-	return seq_open_net(inode, file, &dev_mc_seq_ops,
-			    sizeof(struct seq_net_private));
-}
-
-static const struct file_operations dev_mc_seq_fops = {
-	.owner	 = THIS_MODULE,
-	.open    = dev_mc_seq_open,
-	.read    = seq_read,
-	.llseek  = seq_lseek,
-	.release = seq_release_net,
-};
-
 static int __net_init dev_mc_net_init(struct net *net)
 {
-	if (!proc_create("dev_mcast", 0, net->proc_net, &dev_mc_seq_fops))
+	if (!proc_create_net("dev_mcast", 0, net->proc_net, &dev_mc_seq_ops,
+			sizeof(struct seq_net_private)))
 		return -ENOMEM;
 	return 0;
 }

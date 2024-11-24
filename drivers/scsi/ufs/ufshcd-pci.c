@@ -44,7 +44,7 @@ static int ufs_intel_disable_lcc(struct ufs_hba *hba)
 
 	ufshcd_dme_get(hba, attr, &lcc_enable);
 	if (lcc_enable)
-		ufshcd_dme_set(hba, attr, 0);
+		ufshcd_disable_host_tx_lcc(hba);
 
 	return 0;
 }
@@ -75,8 +75,7 @@ static struct ufs_hba_variant_ops ufs_intel_cnl_hba_vops = {
 #ifdef CONFIG_PM_SLEEP
 /**
  * ufshcd_pci_suspend - suspend power management function
- * @pdev: pointer to PCI device handle
- * @state: power state
+ * @dev: pointer to PCI device handle
  *
  * Returns 0 if successful
  * Returns non-zero otherwise
@@ -88,7 +87,7 @@ static int ufshcd_pci_suspend(struct device *dev)
 
 /**
  * ufshcd_pci_resume - resume power management function
- * @pdev: pointer to PCI device handle
+ * @dev: pointer to PCI device handle
  *
  * Returns 0 if successful
  * Returns non-zero otherwise
@@ -97,6 +96,30 @@ static int ufshcd_pci_resume(struct device *dev)
 {
 	return ufshcd_system_resume(dev_get_drvdata(dev));
 }
+
+/**
+ * ufshcd_pci_poweroff - suspend-to-disk poweroff function
+ * @dev: pointer to PCI device handle
+ *
+ * Returns 0 if successful
+ * Returns non-zero otherwise
+ */
+static int ufshcd_pci_poweroff(struct device *dev)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	int spm_lvl = hba->spm_lvl;
+	int ret;
+
+	/*
+	 * For poweroff we need to set the UFS device to PowerDown mode.
+	 * Force spm_lvl to ensure that.
+	 */
+	hba->spm_lvl = 5;
+	ret = ufshcd_system_suspend(hba);
+	hba->spm_lvl = spm_lvl;
+	return ret;
+}
+
 #endif /* !CONFIG_PM_SLEEP */
 
 #ifdef CONFIG_PM
@@ -126,7 +149,7 @@ static void ufshcd_pci_shutdown(struct pci_dev *pdev)
 /**
  * ufshcd_pci_remove - de-allocate PCI/SCSI host and host memory space
  *		data structure memory
- * @pdev - pointer to PCI handle
+ * @pdev: pointer to PCI handle
  */
 static void ufshcd_pci_remove(struct pci_dev *pdev)
 {
@@ -191,8 +214,14 @@ ufshcd_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 }
 
 static const struct dev_pm_ops ufshcd_pci_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(ufshcd_pci_suspend,
-				ufshcd_pci_resume)
+#ifdef CONFIG_PM_SLEEP
+	.suspend	= ufshcd_pci_suspend,
+	.resume		= ufshcd_pci_resume,
+	.freeze		= ufshcd_pci_suspend,
+	.thaw		= ufshcd_pci_resume,
+	.poweroff	= ufshcd_pci_poweroff,
+	.restore	= ufshcd_pci_resume,
+#endif
 	SET_RUNTIME_PM_OPS(ufshcd_pci_runtime_suspend,
 			   ufshcd_pci_runtime_resume,
 			   ufshcd_pci_runtime_idle)

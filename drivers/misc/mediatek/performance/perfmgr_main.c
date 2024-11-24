@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/proc_fs.h>
@@ -24,8 +16,7 @@
 #include "uload_ind.h"
 #include "syslimiter.h"
 
-
-int clstr_num;
+#define API_READY 0
 
 static int perfmgr_probe(struct platform_device *dev)
 {
@@ -51,13 +42,12 @@ static int perfmgr_resume(struct device *dev)
 }
 static int perfmgr_remove(struct platform_device *dev)
 {
-
-	/*TODO: workaround for k414
-	 * topo_ctrl_exit();
-	 */
-	cpu_ctrl_exit();
-	syslimiter_exit();
-
+		/*TODO: workaround for k414
+		 * topo_ctrl_exit();
+		 */
+#if API_READY
+		cpu_ctrl_exit();
+#endif
 	return 0;
 }
 static struct platform_driver perfmgr_driver = {
@@ -71,15 +61,6 @@ static struct platform_driver perfmgr_driver = {
 		},
 	},
 };
-
-static int perfmgr_main_data_init(void)
-{
-
-	/* get cluster number from topo_ctrl */
-	clstr_num = topo_ctrl_get_nr_clusters();
-
-	return 0;
-}
 
 /*--------------------INIT------------------------*/
 
@@ -95,17 +76,13 @@ static int __init init_perfmgr(void)
 	if (ret)
 		return ret;
 
-	perfmgr_main_data_init();
-
 	perfmgr_root = proc_mkdir("perfmgr", NULL);
 	pr_debug("MTK_TOUCH_BOOST function init_perfmgr_touch\n");
 
-#ifdef CONFIG_MTK_BASE_POWER
-	init_tchbst(perfmgr_root);
 	init_boostctrl(perfmgr_root);
-	syslimiter_init(perfmgr_root);
-#endif
+	init_tchbst(perfmgr_root);
 	init_perfctl(perfmgr_root);
+	syslimiter_init(perfmgr_root);
 
 #ifdef CONFIG_MTK_LOAD_TRACKER
 	init_uload_ind(NULL);

@@ -56,6 +56,8 @@ int gfs2_trans_begin(struct gfs2_sbd *sdp, unsigned int blocks,
 						   sizeof(u64));
 	INIT_LIST_HEAD(&tr->tr_databuf);
 	INIT_LIST_HEAD(&tr->tr_buf);
+	INIT_LIST_HEAD(&tr->tr_ail1_list);
+	INIT_LIST_HEAD(&tr->tr_ail2_list);
 
 	sb_start_intwrite(sdp->sd_vfs);
 
@@ -92,7 +94,6 @@ void gfs2_trans_end(struct gfs2_sbd *sdp)
 	s64 nbuf;
 	int alloced = test_bit(TR_ALLOCED, &tr->tr_flags);
 
-	BUG_ON(!tr);
 	current->journal_info = NULL;
 
 	if (!test_bit(TR_TOUCHED, &tr->tr_flags)) {
@@ -117,8 +118,9 @@ void gfs2_trans_end(struct gfs2_sbd *sdp)
 		kfree(tr);
 	up_read(&sdp->sd_log_flush_lock);
 
-	if (sdp->sd_vfs->s_flags & MS_SYNCHRONOUS)
-		gfs2_log_flush(sdp, NULL, NORMAL_FLUSH);
+	if (sdp->sd_vfs->s_flags & SB_SYNCHRONOUS)
+		gfs2_log_flush(sdp, NULL, GFS2_LOG_HEAD_FLUSH_NORMAL |
+			       GFS2_LFC_TRANS_END);
 	if (alloced)
 		sb_end_intwrite(sdp->sd_vfs);
 }
@@ -143,31 +145,20 @@ static struct gfs2_bufdata *gfs2_alloc_bufdata(struct gfs2_glock *gl,
  * @gl: The inode glock associated with the buffer
  * @bh: The buffer to add
  *
- * This is used in two distinct cases:
- * i) In ordered write mode
- *    We put the data buffer on a list so that we can ensure that its
- *    synced to disk at the right time
- * ii) In journaled data mode
- *    We need to journal the data block in the same way as metadata in
- *    the functions above. The difference is that here we have a tag
- *    which is two __be64's being the block number (as per meta data)
- *    and a flag which says whether the data block needs escaping or
- *    not. This means we need a new log entry for each 251 or so data
- *    blocks, which isn't an enormous overhead but twice as much as
- *    for normal metadata blocks.
+ * This is used in journaled data mode.
+ * We need to journal the data block in the same way as metadata in
+ * the functions above. The difference is that here we have a tag
+ * which is two __be64's being the block number (as per meta data)
+ * and a flag which says whether the data block needs escaping or
+ * not. This means we need a new log entry for each 251 or so data
+ * blocks, which isn't an enormous overhead but twice as much as
+ * for normal metadata blocks.
  */
 void gfs2_trans_add_data(struct gfs2_glock *gl, struct buffer_head *bh)
 {
 	struct gfs2_trans *tr = current->journal_info;
 	struct gfs2_sbd *sdp = gl->gl_name.ln_sbd;
-	struct address_space *mapping = bh->b_page->mapping;
-	struct gfs2_inode *ip = GFS2_I(mapping->host);
 	struct gfs2_bufdata *bd;
-
-	if (!gfs2_is_jdata(ip)) {
-		gfs2_ordered_add_inode(ip);
-		return;
-	}
 
 	lock_buffer(bh);
 	if (buffer_pinned(bh)) {

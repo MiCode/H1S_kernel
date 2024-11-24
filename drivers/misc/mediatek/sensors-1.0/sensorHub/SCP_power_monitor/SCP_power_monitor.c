@@ -1,26 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2011-2014 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify it
- *under the terms of the
- * GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY;
- * without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 #include <linux/module.h>
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include "SCP_power_monitor.h"
-#include "scp_helper.h"
+
 static LIST_HEAD(power_monitor_list);
 static DEFINE_SPINLOCK(pm_lock);
 static atomic_t power_status = ATOMIC_INIT(SENSOR_POWER_DOWN);
@@ -65,6 +52,7 @@ int scp_power_monitor_register(struct scp_power_monitor *monitor)
 			goto out;
 		}
 	}
+
 	list_add_tail(&monitor->list, &power_monitor_list);
 	if (atomic_read(&power_status) == SENSOR_POWER_UP) {
 		pr_debug("scp_power_monitor_notify, module name:%s notify\n",

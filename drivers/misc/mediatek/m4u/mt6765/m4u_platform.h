@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __M4U_PORT_PRIV_H__
@@ -16,14 +8,15 @@
 
 #ifdef CONFIG_MACH_MT6765
 static const char *const gM4U_SMILARB[] = {
-	"mediatek,smi_larb0", "mediatek,smi_larb1", "mediatek,smi_larb2", "mediatek,smi_larb3"
+	"mediatek,smi_larb0", "mediatek,smi_larb1",
+	"mediatek,smi_larb2", "mediatek,smi_larb3"
 };
 
 #define M4U0_PORT_INIT(name, slave, larb, port)  {\
 		name, 0, slave, larb, port, (((larb)<<7)|((port)<<2)), 1\
 }
 
-struct m4u_port_t gM4uPort[] = {
+struct m4u_port_hw_struct gM4uPort[] = {
 	/*Larb0 */
 	M4U0_PORT_INIT("DISP_OVL0", 0, 0, 0),
 	M4U0_PORT_INIT("DISP_2L_OVL0_LARB0", 0, 0, 1),
@@ -92,7 +85,7 @@ static const char *const gM4U_SMILARB[] = {
 		name, 0, slave, larb, port, (((larb)<<7)|((port)<<2)), 1\
 }
 
-m4u_port_t gM4uPort[] = {
+struct m4u_port_hw_struct gM4uPort[] = {
 	/*Larb0 */
 	M4U0_PORT_INIT("DISP_OVL0", 0, 0, 0),
 	M4U0_PORT_INIT("DISP_2L_OVL0_LARB0", 0, 0, 1),

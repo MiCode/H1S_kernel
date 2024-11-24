@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __CMDQ_SEC_IWC_COMMON_H__
 #define __CMDQ_SEC_IWC_COMMON_H__
@@ -158,6 +150,9 @@ struct iwcCmdqAddrMetadata_t {
 	uint32_t offset;	/* [IN]_b, buffser offset to secure handle */
 	uint32_t size;		/* buffer size */
 	uint32_t port;		/* hw port id (i.e. M4U port id)*/
+	uint32_t sec_id;
+	uint32_t useSecIdinMeta;
+	int32_t ionFd;
 };
 
 struct iwcCmdqDebugConfig_t {
@@ -278,6 +273,7 @@ struct iwcCmdqCommand_t {
 	uint32_t mdp_extension;
 	struct readback_engine readback_engs[CMDQ_MAX_READBACK_ENG];
 	uint32_t readback_cnt;
+	int32_t sec_id;
 
 };
 

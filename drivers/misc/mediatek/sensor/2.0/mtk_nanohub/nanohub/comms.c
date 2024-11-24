@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (C) 2020 MediaTek Inc.
  */
+
 
 #include <linux/kernel.h>
 #include <linux/slab.h>
@@ -310,7 +302,6 @@ int nanohub_comms_rx_retrans_boottime(struct nanohub_data *data,
 	int delay = 0;
 	int ret;
 	u32 seq;
-	struct timespec ts;
 	s64 boottime;
 
 	if (!pad)
@@ -321,8 +312,7 @@ int nanohub_comms_rx_retrans_boottime(struct nanohub_data *data,
 
 	do {
 		data->comms.open(data);
-		get_monotonic_boottime(&ts);
-		boottime = timespec_to_ns(&ts);
+		boottime = ktime_get_boot_ns();
 		packet_size =
 		    packet_create(&pad->packet, seq, cmd, sizeof(boottime),
 				  (u8 *)&boottime, false);

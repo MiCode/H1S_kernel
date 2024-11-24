@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include "ddp_m4u.h"
 #include "ddp_dump.h"
@@ -108,7 +100,7 @@ int config_display_m4u_port(void)
 {
 	int ret = 0;
 #if defined(CONFIG_MTK_IOMMU_V2) || defined(CONFIG_MTK_M4U)
-	struct M4U_PORT_STRUCT sPort;
+	struct m4u_port_config_struct sPort;
 	unsigned int i;
 	enum DISP_MODULE_ENUM module;
 	char *m4u_usage = disp_helper_get_option(DISP_OPT_USE_M4U) ?

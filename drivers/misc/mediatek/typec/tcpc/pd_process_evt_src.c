@@ -1,16 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * Power Delivery Process Event For SRC
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "inc/pd_core.h"
@@ -97,7 +87,8 @@ static inline bool pd_process_ctrl_msg_get_sink_cap(
 	}
 #endif	/* CONFIG_USB_PD_PR_SWAP */
 
-	pd_send_sop_ctrl_msg(pd_port, PD_CTRL_REJECT);
+	pd_port->curr_unsupported_msg = true;
+
 	return false;
 }
 
@@ -106,6 +97,8 @@ static inline bool pd_process_ctrl_msg(
 
 {
 #ifdef CONFIG_USB_PD_PARTNER_CTRL_MSG_FIRST
+	struct tcpc_device __maybe_unused *tcpc = pd_port->tcpc;
+
 	switch (pd_port->pe_state_curr) {
 	case PE_SRC_GET_SINK_CAP:
 
@@ -114,7 +107,7 @@ static inline bool pd_process_ctrl_msg(
 #endif	/* CONFIG_USB_PD_PR_SWAP */
 		if (pd_event->msg >= PD_CTRL_GET_SOURCE_CAP &&
 			pd_event->msg <= PD_CTRL_VCONN_SWAP) {
-			PE_DBG("Port Partner Request First\r\n");
+			PE_DBG("Port Partner Request First\n");
 			pd_port->pe_state_curr = PE_SRC_READY;
 			pd_disable_timer(
 				pd_port, PD_TIMER_SENDER_RESPONSE);
@@ -240,13 +233,13 @@ static inline bool pd_process_ext_msg(
 {
 	switch (pd_event->msg) {
 
-#ifdef CONFIG_USB_PD_REV30_SRC_CAP_EXT_LOCAL
+#ifdef CONFIG_USB_PD_REV30_SRC_CAP_EXT_REMOTE
 	case PD_EXT_SOURCE_CAP_EXT:
 		if (PE_MAKE_STATE_TRANSIT_SINGLE(
 			PE_DR_SRC_GET_SOURCE_CAP_EXT, PE_SRC_READY))
 			return true;
 		break;
-#endif	/* CONFIG_USB_PD_REV30_SRC_CAP_EXT_LOCAL */
+#endif	/* CONFIG_USB_PD_REV30_SRC_CAP_EXT_REMOTE */
 
 #ifdef CONFIG_USB_PD_REV30_STATUS_LOCAL
 	case PD_EXT_STATUS:
@@ -314,14 +307,10 @@ static inline bool pd_process_hw_msg_tx_failed(
 	struct pd_port *pd_port, struct pd_event *pd_event)
 {
 	struct pe_data *pe_data = &pd_port->pe_data;
+	struct tcpc_device __maybe_unused *tcpc = pd_port->tcpc;
 
 	if (pd_port->pe_state_curr == PE_SRC_SEND_CAPABILITIES) {
-		if (pe_data->pd_connected) {
-			if (!pe_data->explicit_contract) {
-				PE_DBG("PR_SWAP NoResp\r\n");
-				return false;
-			}
-		} else {
+		if (!pe_data->pd_connected || !pe_data->explicit_contract) {
 			PE_TRANSIT_STATE(pd_port, PE_SRC_DISCOVERY);
 			return true;
 		}
@@ -334,7 +323,7 @@ static inline bool pd_process_hw_msg_tx_failed(
 	}
 #endif	/*  CONFIG_PD_SRC_RESET_CABLE */
 
-	return pd_process_tx_failed_discard(pd_port, pd_event->msg);
+	return pd_process_tx_failed(pd_port);
 }
 
 static inline bool pd_process_hw_msg(
@@ -353,8 +342,6 @@ static inline bool pd_process_hw_msg(
 			PE_SRC_TRANSITION_SUPPLY, PE_SRC_TRANSITION_SUPPLY2);
 
 	case PD_HW_TX_FAILED:
-	/* fallthrough */
-	case PD_HW_TX_DISCARD:
 		return pd_process_hw_msg_tx_failed(pd_port, pd_event);
 
 	default:
@@ -498,9 +485,9 @@ static inline bool pd_process_timer_msg(
 
 		break;
 #endif	/* CONFIG_USB_PD_REV30_COLLISION_AVOID */
-
+		/* fall through */
 #ifdef CONFIG_USB_PD_REV30
-	case PD_TIMER_CK_NO_SUPPORT:
+	case PD_TIMER_CK_NOT_SUPPORTED:
 		return PE_MAKE_STATE_TRANSIT_SINGLE(
 			PE_SRC_CHUNK_RECEIVED, PE_SRC_SEND_NOT_SUPPORTED);
 #endif	/* CONFIG_USB_PD_REV30 */

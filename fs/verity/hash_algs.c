@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * fs/verity/hash_algs.c: fs-verity hash algorithms
+ * fs-verity hash algorithms
  *
  * Copyright 2019 Google LLC
  */
@@ -87,13 +87,11 @@ struct fsverity_hash_alg *fsverity_get_hash_alg(const struct inode *inode,
 	if (WARN_ON(alg->block_size != crypto_ahash_blocksize(tfm)))
 		goto err_free_tfm;
 
-	alg->req_pool = mempool_create_kmalloc_pool(1,
+	err = mempool_init_kmalloc_pool(&alg->req_pool, 1,
 					sizeof(struct ahash_request) +
 					crypto_ahash_reqsize(tfm));
-	if (!alg->req_pool) {
-		err = -ENOMEM;
+	if (err)
 		goto err_free_tfm;
-	}
 
 	pr_info("%s using implementation \"%s\"\n",
 		alg->name, crypto_ahash_driver_name(tfm));
@@ -125,7 +123,7 @@ out_unlock:
 struct ahash_request *fsverity_alloc_hash_request(struct fsverity_hash_alg *alg,
 						  gfp_t gfp_flags)
 {
-	struct ahash_request *req = mempool_alloc(alg->req_pool, gfp_flags);
+	struct ahash_request *req = mempool_alloc(&alg->req_pool, gfp_flags);
 
 	if (req)
 		ahash_request_set_tfm(req, alg->tfm);
@@ -142,7 +140,7 @@ void fsverity_free_hash_request(struct fsverity_hash_alg *alg,
 {
 	if (req) {
 		ahash_request_zero(req);
-		mempool_free(req, alg->req_pool);
+		mempool_free(req, &alg->req_pool);
 	}
 }
 

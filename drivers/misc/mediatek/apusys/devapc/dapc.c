@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -621,6 +613,7 @@ static const struct of_device_id apusys_devapc_of_match[] = {
 	{ .compatible = "mediatek,mt6873-apusys_devapc", &dapc_cfg_mt6873 },
 	{ .compatible = "mediatek,mt6853-apusys_devapc", &dapc_cfg_mt6853 },
 	{ .compatible = "mediatek,mt6893-apusys_devapc", &dapc_cfg_mt6885 },
+	{ .compatible = "mediatek,mt6877-apusys_devapc", &dapc_cfg_mt6877 },
 	{},
 };
 

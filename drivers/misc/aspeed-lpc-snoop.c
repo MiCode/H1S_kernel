@@ -15,13 +15,17 @@
  */
 
 #include <linux/bitops.h>
+#include <linux/clk.h>
 #include <linux/interrupt.h>
+#include <linux/fs.h>
 #include <linux/kfifo.h>
 #include <linux/mfd/syscon.h>
+#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/poll.h>
 #include <linux/regmap.h>
 
 #define DEVICE_NAME	"aspeed-lpc-snoop"
@@ -59,20 +63,73 @@ struct aspeed_lpc_snoop_model_data {
 	unsigned int has_hicrb_ensnp;
 };
 
+struct aspeed_lpc_snoop_channel {
+	struct kfifo		fifo;
+	wait_queue_head_t	wq;
+	struct miscdevice	miscdev;
+};
+
 struct aspeed_lpc_snoop {
 	struct regmap		*regmap;
 	int			irq;
-	struct kfifo		snoop_fifo[NUM_SNOOP_CHANNELS];
+	struct clk		*clk;
+	struct aspeed_lpc_snoop_channel chan[NUM_SNOOP_CHANNELS];
+};
+
+static struct aspeed_lpc_snoop_channel *snoop_file_to_chan(struct file *file)
+{
+	return container_of(file->private_data,
+			    struct aspeed_lpc_snoop_channel,
+			    miscdev);
+}
+
+static ssize_t snoop_file_read(struct file *file, char __user *buffer,
+				size_t count, loff_t *ppos)
+{
+	struct aspeed_lpc_snoop_channel *chan = snoop_file_to_chan(file);
+	unsigned int copied;
+	int ret = 0;
+
+	if (kfifo_is_empty(&chan->fifo)) {
+		if (file->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+		ret = wait_event_interruptible(chan->wq,
+				!kfifo_is_empty(&chan->fifo));
+		if (ret == -ERESTARTSYS)
+			return -EINTR;
+	}
+	ret = kfifo_to_user(&chan->fifo, buffer, count, &copied);
+	if (ret)
+		return ret;
+
+	return copied;
+}
+
+static __poll_t snoop_file_poll(struct file *file,
+				    struct poll_table_struct *pt)
+{
+	struct aspeed_lpc_snoop_channel *chan = snoop_file_to_chan(file);
+
+	poll_wait(file, &chan->wq, pt);
+	return !kfifo_is_empty(&chan->fifo) ? EPOLLIN : 0;
+}
+
+static const struct file_operations snoop_fops = {
+	.owner  = THIS_MODULE,
+	.read   = snoop_file_read,
+	.poll   = snoop_file_poll,
+	.llseek = noop_llseek,
 };
 
 /* Save a byte to a FIFO and discard the oldest byte if FIFO is full */
-static void put_fifo_with_discard(struct kfifo *fifo, u8 val)
+static void put_fifo_with_discard(struct aspeed_lpc_snoop_channel *chan, u8 val)
 {
-	if (!kfifo_initialized(fifo))
+	if (!kfifo_initialized(&chan->fifo))
 		return;
-	if (kfifo_is_full(fifo))
-		kfifo_skip(fifo);
-	kfifo_put(fifo, val);
+	if (kfifo_is_full(&chan->fifo))
+		kfifo_skip(&chan->fifo);
+	kfifo_put(&chan->fifo, val);
+	wake_up_interruptible(&chan->wq);
 }
 
 static irqreturn_t aspeed_lpc_snoop_irq(int irq, void *arg)
@@ -97,12 +154,12 @@ static irqreturn_t aspeed_lpc_snoop_irq(int irq, void *arg)
 	if (reg & HICR6_STR_SNP0W) {
 		u8 val = (data & SNPWDR_CH0_MASK) >> SNPWDR_CH0_SHIFT;
 
-		put_fifo_with_discard(&lpc_snoop->snoop_fifo[0], val);
+		put_fifo_with_discard(&lpc_snoop->chan[0], val);
 	}
 	if (reg & HICR6_STR_SNP1W) {
 		u8 val = (data & SNPWDR_CH1_MASK) >> SNPWDR_CH1_SHIFT;
 
-		put_fifo_with_discard(&lpc_snoop->snoop_fifo[1], val);
+		put_fifo_with_discard(&lpc_snoop->chan[1], val);
 	}
 
 	return IRQ_HANDLED;
@@ -139,9 +196,19 @@ static int aspeed_lpc_enable_snoop(struct aspeed_lpc_snoop *lpc_snoop,
 	const struct aspeed_lpc_snoop_model_data *model_data =
 		of_device_get_match_data(dev);
 
+	init_waitqueue_head(&lpc_snoop->chan[channel].wq);
 	/* Create FIFO datastructure */
-	rc = kfifo_alloc(&lpc_snoop->snoop_fifo[channel],
+	rc = kfifo_alloc(&lpc_snoop->chan[channel].fifo,
 			 SNOOP_FIFO_SIZE, GFP_KERNEL);
+	if (rc)
+		return rc;
+
+	lpc_snoop->chan[channel].miscdev.minor = MISC_DYNAMIC_MINOR;
+	lpc_snoop->chan[channel].miscdev.name =
+		devm_kasprintf(dev, GFP_KERNEL, "%s%d", DEVICE_NAME, channel);
+	lpc_snoop->chan[channel].miscdev.fops = &snoop_fops;
+	lpc_snoop->chan[channel].miscdev.parent = dev;
+	rc = misc_register(&lpc_snoop->chan[channel].miscdev);
 	if (rc)
 		return rc;
 
@@ -191,7 +258,8 @@ static void aspeed_lpc_disable_snoop(struct aspeed_lpc_snoop *lpc_snoop,
 		return;
 	}
 
-	kfifo_free(&lpc_snoop->snoop_fifo[channel]);
+	kfifo_free(&lpc_snoop->chan[channel].fifo);
+	misc_deregister(&lpc_snoop->chan[channel].miscdev);
 }
 
 static int aspeed_lpc_snoop_probe(struct platform_device *pdev)
@@ -222,21 +290,41 @@ static int aspeed_lpc_snoop_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
+	lpc_snoop->clk = devm_clk_get(dev, NULL);
+	if (IS_ERR(lpc_snoop->clk)) {
+		rc = PTR_ERR(lpc_snoop->clk);
+		if (rc != -EPROBE_DEFER)
+			dev_err(dev, "couldn't get clock\n");
+		return rc;
+	}
+	rc = clk_prepare_enable(lpc_snoop->clk);
+	if (rc) {
+		dev_err(dev, "couldn't enable clock\n");
+		return rc;
+	}
+
 	rc = aspeed_lpc_snoop_config_irq(lpc_snoop, pdev);
 	if (rc)
-		return rc;
+		goto err;
 
 	rc = aspeed_lpc_enable_snoop(lpc_snoop, dev, 0, port);
 	if (rc)
-		return rc;
+		goto err;
 
 	/* Configuration of 2nd snoop channel port is optional */
 	if (of_property_read_u32_index(dev->of_node, "snoop-ports",
 				       1, &port) == 0) {
 		rc = aspeed_lpc_enable_snoop(lpc_snoop, dev, 1, port);
-		if (rc)
+		if (rc) {
 			aspeed_lpc_disable_snoop(lpc_snoop, 0);
+			goto err;
+		}
 	}
+
+	return 0;
+
+err:
+	clk_disable_unprepare(lpc_snoop->clk);
 
 	return rc;
 }
@@ -248,6 +336,8 @@ static int aspeed_lpc_snoop_remove(struct platform_device *pdev)
 	/* Disable both snoop channels */
 	aspeed_lpc_disable_snoop(lpc_snoop, 0);
 	aspeed_lpc_disable_snoop(lpc_snoop, 1);
+
+	clk_disable_unprepare(lpc_snoop->clk);
 
 	return 0;
 }

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/version.h>
@@ -31,15 +23,8 @@
 #include <tscpu_settings.h>
 #include <ap_thermal_limit.h>
 
-#if defined(ATM_USES_PPM)
-#include "mtk_ppm_api.h"
-#else
-#ifndef CONFIG_MACH_MT8168
-#include "mtk_cpufreq.h"
-#endif
-#endif
-
 #include <linux/uidgid.h>
+
 #if defined(THERMAL_VPU_SUPPORT)
 #if defined(CONFIG_MTK_APUSYS_SUPPORT)
 #include "apu_power_table.h"
@@ -54,7 +39,6 @@
 #include "mdla_dvfs.h"
 #endif
 #endif
-
 /*=============================================================
  *Local variable definition
  *=============================================================
@@ -96,21 +80,7 @@ static void set_static_gpu_power_limit(unsigned int limit);
  *Weak functions
  *=============================================================
  */
-#if 0
-#if defined(ATM_USES_PPM)
-void __attribute__ ((weak))
-mt_ppm_cpu_thermal_protect(unsigned int limited_power)
-{
-	pr_notice("E_WF: %s doesn't exist\n", __func__);
-}
-#else
-void __attribute__ ((weak))
-mt_cpufreq_thermal_protect(unsigned int limited_power)
-{
-	pr_notice("E_WF: %s doesn't exist\n", __func__);
-}
-#endif
-#endif
+
 /*=============================================================
  */
 static void set_static_cpu_power_limit(unsigned int limit)
@@ -489,7 +459,7 @@ static void thermal_mdla_init(void)
 /* Init local structure for AP coolers */
 static int init_cooler(void)
 {
-	int i;
+	int i, ret = -ENOMEM;
 	int num = CPU_COOLER_NUM;	/* 700~4000, 92 */
 
 	cl_dev_state = kzalloc((num) * sizeof(unsigned int), GFP_KERNEL);
@@ -500,19 +470,32 @@ static int init_cooler(void)
 								GFP_KERNEL);
 
 	if (cl_dev == NULL)
-		return -ENOMEM;
+		goto free_cl_dev_state;
 
 	cooler_name = kzalloc((num) * sizeof(char) * 20, GFP_KERNEL);
 	if (cooler_name == NULL)
-		return -ENOMEM;
+		goto free_cl_dev;
 
 	for (i = 0; i < num; i++) {
 		/* using index=>0=700,1=800 ~ 33=4000 */
-		sprintf(cooler_name + (i * 20), "cpu%02d", i);
+		ret = sprintf(cooler_name + (i * 20), "cpu%02d", i);
+		if (ret != 5) {
+			ret = -EIO;
+			goto free_cooler_name;
+		}
 	}
 
 	Num_of_OPP = num;	/* CPU COOLER COUNT, not CPU OPP count */
 	return 0;
+
+free_cooler_name:
+	kfree(cooler_name);
+free_cl_dev:
+	kfree(cl_dev);
+free_cl_dev_state:
+	kfree(cl_dev_state);
+
+	return ret;
 }
 
 static int __init mtk_cooler_dtm_init(void)

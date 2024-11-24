@@ -206,6 +206,19 @@ static void garp_attr_destroy(struct garp_applicant *app, struct garp_attr *attr
 	kfree(attr);
 }
 
+static void garp_attr_destroy_all(struct garp_applicant *app)
+{
+	struct rb_node *node, *next;
+	struct garp_attr *attr;
+
+	for (node = rb_first(&app->gid);
+	     next = node ? rb_next(node) : NULL, node != NULL;
+	     node = next) {
+		attr = rb_entry(node, struct garp_attr, node);
+		garp_attr_destroy(app, attr);
+	}
+}
+
 static int garp_pdu_init(struct garp_applicant *app)
 {
 	struct sk_buff *skb;
@@ -401,9 +414,9 @@ static void garp_join_timer_arm(struct garp_applicant *app)
 	mod_timer(&app->join_timer, jiffies + delay);
 }
 
-static void garp_join_timer(unsigned long data)
+static void garp_join_timer(struct timer_list *t)
 {
-	struct garp_applicant *app = (struct garp_applicant *)data;
+	struct garp_applicant *app = from_timer(app, t, join_timer);
 
 	spin_lock(&app->lock);
 	garp_gid_event(app, GARP_EVENT_TRANSMIT_PDU);
@@ -584,7 +597,7 @@ int garp_init_applicant(struct net_device *dev, struct garp_application *appl)
 	spin_lock_init(&app->lock);
 	skb_queue_head_init(&app->queue);
 	rcu_assign_pointer(dev->garp_port->applicants[appl->type], app);
-	setup_timer(&app->join_timer, garp_join_timer, (unsigned long)app);
+	timer_setup(&app->join_timer, garp_join_timer, 0);
 	garp_join_timer_arm(app);
 	return 0;
 
@@ -612,6 +625,7 @@ void garp_uninit_applicant(struct net_device *dev, struct garp_application *appl
 
 	spin_lock_bh(&app->lock);
 	garp_gid_event(app, GARP_EVENT_TRANSMIT_PDU);
+	garp_attr_destroy_all(app);
 	garp_pdu_queue(app);
 	spin_unlock_bh(&app->lock);
 

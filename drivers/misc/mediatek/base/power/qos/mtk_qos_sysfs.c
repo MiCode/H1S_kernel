@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2018 MediaTek Inc.
  */
 
 #include <linux/device.h>
@@ -38,8 +30,7 @@ static ssize_t qos_prefetch_enable_store(struct device *dev,
 
 	return count;
 }
-static DEVICE_ATTR(qos_prefetch_enable, 0644,
-		qos_prefetch_enable_show, qos_prefetch_enable_store);
+static DEVICE_ATTR_RW(qos_prefetch_enable);
 
 static ssize_t qos_prefetch_force_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -58,8 +49,7 @@ static ssize_t qos_prefetch_force_store(struct device *dev,
 
 	return count;
 }
-static DEVICE_ATTR(qos_prefetch_force, 0644,
-		qos_prefetch_force_show, qos_prefetch_force_store);
+static DEVICE_ATTR_RW(qos_prefetch_force);
 
 static ssize_t qos_prefetch_setting_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -72,8 +62,7 @@ static ssize_t qos_prefetch_setting_store(struct device *dev,
 	return qos_prefetch_setting_set(buf, count);
 }
 
-static DEVICE_ATTR(qos_prefetch_setting, 0644,
-		qos_prefetch_setting_show, qos_prefetch_setting_store);
+static DEVICE_ATTR_RW(qos_prefetch_setting);
 
 static ssize_t qos_prefetch_log_enable_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -92,8 +81,7 @@ static ssize_t qos_prefetch_log_enable_store(struct device *dev,
 
 	return count;
 }
-static DEVICE_ATTR(qos_prefetch_log_enable, 0644,
-		qos_prefetch_log_enable_show, qos_prefetch_log_enable_store);
+static DEVICE_ATTR_RW(qos_prefetch_log_enable);
 
 static ssize_t qos_prefetch_status_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -105,16 +93,15 @@ static ssize_t qos_prefetch_status_show(struct device *dev,
 			qos_prefetch_count, qos_prefetch_buf[0],
 			qos_prefetch_buf[1], qos_prefetch_buf[2]);
 }
-static DEVICE_ATTR(qos_prefetch_status, 0444,
-		qos_prefetch_status_show, NULL);
+static DEVICE_ATTR_RO(qos_prefetch_status);
 
 static ssize_t qos_prefetch_val_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
 	return sprintf(buf, "prefetch_val: 0x%x\n", prefetch_val);
 }
-static DEVICE_ATTR(qos_prefetch_val, 0444,
-		qos_prefetch_val_show, NULL);
+static DEVICE_ATTR_RO(qos_prefetch_val);
+
 #endif /* QOS_PREFETCH_SUPPORT */
 
 static ssize_t qos_bound_enable_show(struct device *dev,
@@ -134,8 +121,7 @@ static ssize_t qos_bound_enable_store(struct device *dev,
 
 	return count;
 }
-static DEVICE_ATTR(qos_bound_enable, 0644,
-		qos_bound_enable_show, qos_bound_enable_store);
+static DEVICE_ATTR_RW(qos_bound_enable);
 
 static ssize_t qos_bound_stress_enable_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -154,8 +140,7 @@ static ssize_t qos_bound_stress_enable_store(struct device *dev,
 
 	return count;
 }
-static DEVICE_ATTR(qos_bound_stress_enable, 0644,
-		qos_bound_stress_enable_show, qos_bound_stress_enable_store);
+static DEVICE_ATTR_RW(qos_bound_stress_enable);
 
 static ssize_t qos_bound_log_enable_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -174,8 +159,7 @@ static ssize_t qos_bound_log_enable_store(struct device *dev,
 
 	return count;
 }
-static DEVICE_ATTR(qos_bound_log_enable, 0644,
-		qos_bound_log_enable_show, qos_bound_log_enable_store);
+static DEVICE_ATTR_RW(qos_bound_log_enable);
 
 static ssize_t qos_bound_status_show(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -187,8 +171,7 @@ static ssize_t qos_bound_status_show(struct device *dev,
 			qos_bound_count, qos_bound_buf[0],
 			qos_bound_buf[1], qos_bound_buf[2]);
 }
-static DEVICE_ATTR(qos_bound_status, 0444,
-		qos_bound_status_show, NULL);
+static DEVICE_ATTR_RO(qos_bound_status);
 
 static struct attribute *qos_attrs[] = {
 	&dev_attr_qos_bound_enable.attr,

@@ -27,8 +27,8 @@
 #include "elliptic_data_io.h"
 #include "elliptic_device.h"
 #include "elliptic_mixer_controls.h"
-#include "scp_helper.h"
-#include "scp_ipi.h"
+#include "../../../scp/cm4/scp_helper.h"
+#include "../../../scp/cm4/scp_ipi.h"
 //#include "scp_ipi_wrapper.h"
 // #define USND_IPI_SEND_BUFFER_LENGTH 128
 // #define USND_IPI_RECEIVE_LENGTH 128
@@ -124,7 +124,7 @@ void elliptic_data_io_ipi_handler(
 
     void *payload = NULL;
 
-//pr_info( "[ELUS] current_ipi_counter: %u, target_ipi_message_count:%u",current_ipi_counter,target_ipi_message_count );
+//pr_info( "[ELUS]ï¿½current_ipi_counter:ï¿½%u,ï¿½target_ipi_message_count:%u",current_ipi_counter,target_ipi_message_count );
 //    if (target_ipi_message_count - current_ipi_counter > ELLIPTIC_DRAM_PAYLOAD_MAX_OFFSET)
       if ( (uint16_t) (target_ipi_message_count - current_ipi_counter) > ELLIPTIC_DRAM_PAYLOAD_MAX_OFFSET)
     {
@@ -287,6 +287,5 @@ int elliptic_data_io_cleanup(void)
     pr_info("[ELUS] Unimplemented");
     return 0;
 }
-
 
 

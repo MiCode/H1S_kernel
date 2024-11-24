@@ -18,6 +18,7 @@
 #include <linux/string.h>
 #include <linux/ptrace.h>
 #include <linux/errno.h>
+#include <linux/crc32.h>
 #include <linux/ioport.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
@@ -97,7 +98,7 @@ static int do_pd_setup(struct fs_enet_private *fep)
 		return -EINVAL;
 
 	fep->fec.fecp = of_iomap(ofdev->dev.of_node, 0);
-	if (!fep->fcc.fccp)
+	if (!fep->fec.fecp)
 		return -EINVAL;
 
 	return 0;
@@ -176,21 +177,10 @@ static void set_multicast_start(struct net_device *dev)
 static void set_multicast_one(struct net_device *dev, const u8 *mac)
 {
 	struct fs_enet_private *fep = netdev_priv(dev);
-	int temp, hash_index, i, j;
+	int temp, hash_index;
 	u32 crc, csrVal;
-	u8 byte, msb;
 
-	crc = 0xffffffff;
-	for (i = 0; i < 6; i++) {
-		byte = mac[i];
-		for (j = 0; j < 8; j++) {
-			msb = crc >> 31;
-			crc <<= 1;
-			if (msb ^ (byte & 0x1))
-				crc ^= FEC_CRC_POLY;
-			byte >>= 1;
-		}
-	}
+	crc = ether_crc(6, mac);
 
 	temp = (crc & 0x3f) >> 1;
 	hash_index = ((temp & 0x01) << 4) |

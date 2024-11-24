@@ -44,6 +44,12 @@
 
 static struct workqueue_struct *irqfd_cleanup_wq;
 
+bool __attribute__((weak))
+kvm_arch_irqfd_allowed(struct kvm *kvm, struct kvm_irqfd *args)
+{
+	return true;
+}
+
 static void
 irqfd_inject(struct work_struct *work)
 {
@@ -192,13 +198,13 @@ irqfd_wakeup(wait_queue_entry_t *wait, unsigned mode, int sync, void *key)
 {
 	struct kvm_kernel_irqfd *irqfd =
 		container_of(wait, struct kvm_kernel_irqfd, wait);
-	unsigned long flags = (unsigned long)key;
+	__poll_t flags = key_to_poll(key);
 	struct kvm_kernel_irq_routing_entry irq;
 	struct kvm *kvm = irqfd->kvm;
 	unsigned seq;
 	int idx;
 
-	if (flags & POLLIN) {
+	if (flags & EPOLLIN) {
 		idx = srcu_read_lock(&kvm->irq_srcu);
 		do {
 			seq = read_seqcount_begin(&irqfd->irq_entry_sc);
@@ -212,7 +218,7 @@ irqfd_wakeup(wait_queue_entry_t *wait, unsigned mode, int sync, void *key)
 		srcu_read_unlock(&kvm->irq_srcu, idx);
 	}
 
-	if (flags & POLLHUP) {
+	if (flags & EPOLLHUP) {
 		/* The eventfd is closing, detach from KVM */
 		unsigned long flags;
 
@@ -291,11 +297,14 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 	struct fd f;
 	struct eventfd_ctx *eventfd = NULL, *resamplefd = NULL;
 	int ret;
-	unsigned int events;
+	__poll_t events;
 	int idx;
 
 	if (!kvm_arch_intc_initialized(kvm))
 		return -EAGAIN;
+
+	if (!kvm_arch_irqfd_allowed(kvm, args))
+		return -EINVAL;
 
 	irqfd = kzalloc(sizeof(*irqfd), GFP_KERNEL);
 	if (!irqfd)
@@ -400,9 +409,9 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 	 * Check if there was an event already pending on the eventfd
 	 * before we registered, and trigger it as if we didn't miss it.
 	 */
-	events = f.file->f_op->poll(f.file, &irqfd->pt);
+	events = vfs_poll(f.file, &irqfd->pt);
 
-	if (events & POLLIN)
+	if (events & EPOLLIN)
 		schedule_work(&irqfd->inject);
 
 #ifdef CONFIG_HAVE_KVM_IRQ_BYPASS
@@ -423,7 +432,7 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 
 	/*
 	 * do not drop the file until the irqfd is fully initialized, otherwise
-	 * we might race against the POLLHUP
+	 * we might race against the EPOLLHUP
 	 */
 	fdput(f);
 	return 0;

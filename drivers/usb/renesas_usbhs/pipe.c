@@ -1,18 +1,9 @@
+// SPDX-License-Identifier: GPL-1.0+
 /*
  * Renesas USB driver
  *
  * Copyright (C) 2011 Renesas Solutions Corp.
  * Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- *
  */
 #include <linux/delay.h>
 #include <linux/slab.h>
@@ -614,10 +605,22 @@ void usbhs_pipe_clear(struct usbhs_pipe *pipe)
 	}
 }
 
-void usbhs_pipe_config_change_bfre(struct usbhs_pipe *pipe, int enable)
+/* Should call usbhsp_pipe_select() before */
+void usbhs_pipe_clear_without_sequence(struct usbhs_pipe *pipe,
+				       int needs_bfre, int bfre_enable)
 {
 	int sequence;
 
+	usbhsp_pipe_select(pipe);
+	sequence = usbhs_pipe_get_data_sequence(pipe);
+	if (needs_bfre)
+		usbhsp_pipe_cfg_set(pipe, BFRE, bfre_enable ? BFRE : 0);
+	usbhs_pipe_clear(pipe);
+	usbhs_pipe_data_sequence(pipe, sequence);
+}
+
+void usbhs_pipe_config_change_bfre(struct usbhs_pipe *pipe, int enable)
+{
 	if (usbhs_pipe_is_dcp(pipe))
 		return;
 
@@ -626,10 +629,7 @@ void usbhs_pipe_config_change_bfre(struct usbhs_pipe *pipe, int enable)
 	if (!(enable ^ !!(usbhsp_pipe_cfg_get(pipe) & BFRE)))
 		return;
 
-	sequence = usbhs_pipe_get_data_sequence(pipe);
-	usbhsp_pipe_cfg_set(pipe, BFRE, enable ? BFRE : 0);
-	usbhs_pipe_clear(pipe);
-	usbhs_pipe_data_sequence(pipe, sequence);
+	usbhs_pipe_clear_without_sequence(pipe, 1, enable);
 }
 
 static struct usbhs_pipe *usbhsp_get_pipe(struct usbhs_priv *priv, u32 type)
@@ -746,6 +746,8 @@ struct usbhs_pipe *usbhs_pipe_malloc(struct usbhs_priv *priv,
 
 void usbhs_pipe_free(struct usbhs_pipe *pipe)
 {
+	usbhsp_pipe_select(pipe);
+	usbhsp_pipe_cfg_set(pipe, 0xFFFF, 0);
 	usbhsp_put_pipe(pipe);
 }
 
@@ -818,7 +820,8 @@ int usbhs_pipe_probe(struct usbhs_priv *priv)
 		return -EINVAL;
 	}
 
-	info->pipe = kzalloc(sizeof(struct usbhs_pipe) * pipe_size, GFP_KERNEL);
+	info->pipe = kcalloc(pipe_size, sizeof(struct usbhs_pipe),
+			     GFP_KERNEL);
 	if (!info->pipe)
 		return -ENOMEM;
 

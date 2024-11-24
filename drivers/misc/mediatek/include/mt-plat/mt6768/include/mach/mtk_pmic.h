@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _CUST_PMIC_H_
 #define _CUST_PMIC_H_
@@ -42,6 +34,10 @@
 #define POWER_INT0_VOLT 3400
 #define POWER_INT1_VOLT 3250
 #define POWER_INT2_VOLT 3100
+
+#define POWER_INT0_VOLT_EXT 3700
+#define POWER_INT1_VOLT_EXT 3550
+#define POWER_INT2_VOLT_EXT 1000
 
 #define POWER_BAT_OC_CURRENT_H    4670
 #define POWER_BAT_OC_CURRENT_L    5500

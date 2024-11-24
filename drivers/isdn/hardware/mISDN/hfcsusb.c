@@ -337,20 +337,24 @@ hfcusb_l2l1D(struct mISDNchannel *ch, struct sk_buff *skb)
 		test_and_clear_bit(FLG_L2_ACTIVATED, &dch->Flags);
 
 		if (hw->protocol == ISDN_P_NT_S0) {
+			struct sk_buff_head free_queue;
+
+			__skb_queue_head_init(&free_queue);
 			hfcsusb_ph_command(hw, HFC_L1_DEACTIVATE_NT);
 			spin_lock_irqsave(&hw->lock, flags);
-			skb_queue_purge(&dch->squeue);
+			skb_queue_splice_init(&dch->squeue, &free_queue);
 			if (dch->tx_skb) {
-				dev_kfree_skb(dch->tx_skb);
+				__skb_queue_tail(&free_queue, dch->tx_skb);
 				dch->tx_skb = NULL;
 			}
 			dch->tx_idx = 0;
 			if (dch->rx_skb) {
-				dev_kfree_skb(dch->rx_skb);
+				__skb_queue_tail(&free_queue, dch->rx_skb);
 				dch->rx_skb = NULL;
 			}
 			test_and_clear_bit(FLG_TX_BUSY, &dch->Flags);
 			spin_unlock_irqrestore(&hw->lock, flags);
+			__skb_queue_purge(&free_queue);
 #ifdef FIXME
 			if (test_and_clear_bit(FLG_L1_BUSY, &dch->Flags))
 				dchannel_sched_event(&hc->dch, D_CLEARBUSY);
@@ -819,6 +823,7 @@ hfcsusb_rx_frame(struct usb_fifo *fifo, __u8 *data, unsigned int len,
 	int		fifon = fifo->fifonum;
 	int		i;
 	int		hdlc = 0;
+	unsigned long	flags;
 
 	if (debug & DBG_HFC_CALL_TRACE)
 		printk(KERN_DEBUG "%s: %s: fifo(%i) len(%i) "
@@ -835,7 +840,7 @@ hfcsusb_rx_frame(struct usb_fifo *fifo, __u8 *data, unsigned int len,
 		return;
 	}
 
-	spin_lock(&hw->lock);
+	spin_lock_irqsave(&hw->lock, flags);
 	if (fifo->dch) {
 		rx_skb = fifo->dch->rx_skb;
 		maxlen = fifo->dch->maxlen;
@@ -844,7 +849,7 @@ hfcsusb_rx_frame(struct usb_fifo *fifo, __u8 *data, unsigned int len,
 	if (fifo->bch) {
 		if (test_bit(FLG_RX_OFF, &fifo->bch->Flags)) {
 			fifo->bch->dropcnt += len;
-			spin_unlock(&hw->lock);
+			spin_unlock_irqrestore(&hw->lock, flags);
 			return;
 		}
 		maxlen = bchannel_get_rxbuf(fifo->bch, len);
@@ -854,7 +859,7 @@ hfcsusb_rx_frame(struct usb_fifo *fifo, __u8 *data, unsigned int len,
 				skb_trim(rx_skb, 0);
 			pr_warning("%s.B%d: No bufferspace for %d bytes\n",
 				   hw->name, fifo->bch->nr, len);
-			spin_unlock(&hw->lock);
+			spin_unlock_irqrestore(&hw->lock, flags);
 			return;
 		}
 		maxlen = fifo->bch->maxlen;
@@ -878,7 +883,7 @@ hfcsusb_rx_frame(struct usb_fifo *fifo, __u8 *data, unsigned int len,
 			} else {
 				printk(KERN_DEBUG "%s: %s: No mem for rx_skb\n",
 				       hw->name, __func__);
-				spin_unlock(&hw->lock);
+				spin_unlock_irqrestore(&hw->lock, flags);
 				return;
 			}
 		}
@@ -888,7 +893,7 @@ hfcsusb_rx_frame(struct usb_fifo *fifo, __u8 *data, unsigned int len,
 			       "for fifo(%d) HFCUSB_D_RX\n",
 			       hw->name, __func__, fifon);
 			skb_trim(rx_skb, 0);
-			spin_unlock(&hw->lock);
+			spin_unlock_irqrestore(&hw->lock, flags);
 			return;
 		}
 	}
@@ -942,7 +947,7 @@ hfcsusb_rx_frame(struct usb_fifo *fifo, __u8 *data, unsigned int len,
 		/* deliver transparent data to layer2 */
 		recv_Bchannel(fifo->bch, MISDN_ID_ANY, false);
 	}
-	spin_unlock(&hw->lock);
+	spin_unlock_irqrestore(&hw->lock, flags);
 }
 
 static void
@@ -979,18 +984,19 @@ rx_iso_complete(struct urb *urb)
 	__u8 *buf;
 	static __u8 eof[8];
 	__u8 s0_state;
+	unsigned long flags;
 
 	fifon = fifo->fifonum;
 	status = urb->status;
 
-	spin_lock(&hw->lock);
+	spin_lock_irqsave(&hw->lock, flags);
 	if (fifo->stop_gracefull) {
 		fifo->stop_gracefull = 0;
 		fifo->active = 0;
-		spin_unlock(&hw->lock);
+		spin_unlock_irqrestore(&hw->lock, flags);
 		return;
 	}
-	spin_unlock(&hw->lock);
+	spin_unlock_irqrestore(&hw->lock, flags);
 
 	/*
 	 * ISO transfer only partially completed,
@@ -1096,15 +1102,16 @@ rx_int_complete(struct urb *urb)
 	struct usb_fifo *fifo = (struct usb_fifo *) urb->context;
 	struct hfcsusb *hw = fifo->hw;
 	static __u8 eof[8];
+	unsigned long flags;
 
-	spin_lock(&hw->lock);
+	spin_lock_irqsave(&hw->lock, flags);
 	if (fifo->stop_gracefull) {
 		fifo->stop_gracefull = 0;
 		fifo->active = 0;
-		spin_unlock(&hw->lock);
+		spin_unlock_irqrestore(&hw->lock, flags);
 		return;
 	}
-	spin_unlock(&hw->lock);
+	spin_unlock_irqrestore(&hw->lock, flags);
 
 	fifon = fifo->fifonum;
 	if ((!fifo->active) || (urb->status)) {
@@ -1172,12 +1179,13 @@ tx_iso_complete(struct urb *urb)
 	int *tx_idx;
 	int frame_complete, fifon, status, fillempty = 0;
 	__u8 threshbit, *p;
+	unsigned long flags;
 
-	spin_lock(&hw->lock);
+	spin_lock_irqsave(&hw->lock, flags);
 	if (fifo->stop_gracefull) {
 		fifo->stop_gracefull = 0;
 		fifo->active = 0;
-		spin_unlock(&hw->lock);
+		spin_unlock_irqrestore(&hw->lock, flags);
 		return;
 	}
 
@@ -1195,7 +1203,7 @@ tx_iso_complete(struct urb *urb)
 	} else {
 		printk(KERN_DEBUG "%s: %s: neither BCH nor DCH\n",
 		       hw->name, __func__);
-		spin_unlock(&hw->lock);
+		spin_unlock_irqrestore(&hw->lock, flags);
 		return;
 	}
 
@@ -1340,7 +1348,7 @@ tx_iso_complete(struct urb *urb)
 					printk("\n");
 				}
 
-				dev_kfree_skb(tx_skb);
+				dev_consume_skb_irq(tx_skb);
 				tx_skb = NULL;
 				if (fifo->dch && get_next_dframe(fifo->dch))
 					tx_skb = fifo->dch->tx_skb;
@@ -1375,7 +1383,7 @@ tx_iso_complete(struct urb *urb)
 			       hw->name, __func__,
 			       symbolic(urb_errlist, status), status, fifon);
 	}
-	spin_unlock(&hw->lock);
+	spin_unlock_irqrestore(&hw->lock, flags);
 }
 
 /*

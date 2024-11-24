@@ -53,7 +53,7 @@ config GCOV_PROFILE_ALL
 choice
 	prompt "Specify GCOV format"
 	depends on GCOV_KERNEL
-	default GCOV_FORMAT_CLANG
+	depends on CC_IS_GCC
 	---help---
 	The gcov format is usually determined by the GCC version, and the
 	default is chosen according to your GCC version. However, there are
@@ -71,11 +71,6 @@ config GCOV_FORMAT_4_7
 	bool "GCC 4.7 format"
 	---help---
 	Select this option to use the format defined by GCC 4.7.
-
-config GCOV_FORMAT_CLANG
-	bool "Clang format"
-	---help---
-	Select this option to use the format defined by Clang.
 
 endchoice
 

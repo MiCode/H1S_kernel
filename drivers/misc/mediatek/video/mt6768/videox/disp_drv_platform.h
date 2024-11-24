@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __DISP_DRV_PLATFORM_H__
 #define __DISP_DRV_PLATFORM_H__
@@ -50,11 +42,21 @@
 /* #define HW_OVERLAY_COUNT                  (4) */
 
 #ifdef CONFIG_MTK_ROUND_CORNER_SUPPORT
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+/* phy(4+1) + ext(3+2) */
+#define PRIMARY_SESSION_INPUT_LAYER_COUNT (5)
+#else
 /* phy(4+1) + ext(3+2) */
 #define PRIMARY_SESSION_INPUT_LAYER_COUNT (10)
+#endif
+#else
+#ifdef CONFIG_MTK_DX_HDCP_DDP_SUPPORT
+/* phy(4+2) + ext(3+3) */
+#define PRIMARY_SESSION_INPUT_LAYER_COUNT (7)
 #else
 /* phy(4+2) + ext(3+3) */
 #define PRIMARY_SESSION_INPUT_LAYER_COUNT (12)
+#endif
 #endif
 /* 2 is enough, no need ext layer */
 #define EXTERNAL_SESSION_INPUT_LAYER_COUNT (2)
@@ -84,6 +86,6 @@ enum DISP_SESSION_ENUM {
 /* #define DISP_PLATFORM_HAS_SHADOW_REG */
 
 /* define MET ready to use*/
-#define CONFIG_MTK_MET
+//#define CONFIG_MTK_MET
 
 #endif				/* __DISP_DRV_PLATFORM_H__ */

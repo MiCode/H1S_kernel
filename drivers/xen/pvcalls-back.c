@@ -75,6 +75,7 @@ struct sock_mapping {
 	atomic_t write;
 	atomic_t io;
 	atomic_t release;
+	atomic_t eoi;
 	void (*saved_data_ready)(struct sock *sk);
 	struct pvcalls_ioworker ioworker;
 };
@@ -96,7 +97,7 @@ static int pvcalls_back_release_active(struct xenbus_device *dev,
 				       struct pvcalls_fedata *fedata,
 				       struct sock_mapping *map);
 
-static void pvcalls_conn_back_read(void *opaque)
+static bool pvcalls_conn_back_read(void *opaque)
 {
 	struct sock_mapping *map = (struct sock_mapping *)opaque;
 	struct msghdr msg;
@@ -116,17 +117,17 @@ static void pvcalls_conn_back_read(void *opaque)
 	virt_mb();
 
 	if (error)
-		return;
+		return false;
 
 	size = pvcalls_queued(prod, cons, array_size);
 	if (size >= array_size)
-		return;
+		return false;
 	spin_lock_irqsave(&map->sock->sk->sk_receive_queue.lock, flags);
 	if (skb_queue_empty(&map->sock->sk->sk_receive_queue)) {
 		atomic_set(&map->read, 0);
 		spin_unlock_irqrestore(&map->sock->sk->sk_receive_queue.lock,
 				flags);
-		return;
+		return true;
 	}
 	spin_unlock_irqrestore(&map->sock->sk->sk_receive_queue.lock, flags);
 	wanted = array_size - size;
@@ -134,27 +135,23 @@ static void pvcalls_conn_back_read(void *opaque)
 	masked_cons = pvcalls_mask(cons, array_size);
 
 	memset(&msg, 0, sizeof(msg));
-	msg.msg_iter.type = ITER_KVEC|WRITE;
-	msg.msg_iter.count = wanted;
 	if (masked_prod < masked_cons) {
 		vec[0].iov_base = data->in + masked_prod;
 		vec[0].iov_len = wanted;
-		msg.msg_iter.kvec = vec;
-		msg.msg_iter.nr_segs = 1;
+		iov_iter_kvec(&msg.msg_iter, ITER_KVEC|WRITE, vec, 1, wanted);
 	} else {
 		vec[0].iov_base = data->in + masked_prod;
 		vec[0].iov_len = array_size - masked_prod;
 		vec[1].iov_base = data->in;
 		vec[1].iov_len = wanted - vec[0].iov_len;
-		msg.msg_iter.kvec = vec;
-		msg.msg_iter.nr_segs = 2;
+		iov_iter_kvec(&msg.msg_iter, ITER_KVEC|WRITE, vec, 2, wanted);
 	}
 
 	atomic_set(&map->read, 0);
 	ret = inet_recvmsg(map->sock, &msg, wanted, MSG_DONTWAIT);
 	WARN_ON(ret > wanted);
 	if (ret == -EAGAIN) /* shouldn't happen */
-		return;
+		return true;
 	if (!ret)
 		ret = -ENOTCONN;
 	spin_lock_irqsave(&map->sock->sk->sk_receive_queue.lock, flags);
@@ -173,10 +170,10 @@ static void pvcalls_conn_back_read(void *opaque)
 	virt_wmb();
 	notify_remote_via_irq(map->irq);
 
-	return;
+	return true;
 }
 
-static void pvcalls_conn_back_write(struct sock_mapping *map)
+static bool pvcalls_conn_back_write(struct sock_mapping *map)
 {
 	struct pvcalls_data_intf *intf = map->ring;
 	struct pvcalls_data *data = &map->data;
@@ -193,34 +190,29 @@ static void pvcalls_conn_back_write(struct sock_mapping *map)
 	array_size = XEN_FLEX_RING_SIZE(map->ring_order);
 	size = pvcalls_queued(prod, cons, array_size);
 	if (size == 0)
-		return;
+		return false;
 
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_flags |= MSG_DONTWAIT;
-	msg.msg_iter.type = ITER_KVEC|READ;
-	msg.msg_iter.count = size;
 	if (pvcalls_mask(prod, array_size) > pvcalls_mask(cons, array_size)) {
 		vec[0].iov_base = data->out + pvcalls_mask(cons, array_size);
 		vec[0].iov_len = size;
-		msg.msg_iter.kvec = vec;
-		msg.msg_iter.nr_segs = 1;
+		iov_iter_kvec(&msg.msg_iter, ITER_KVEC|READ, vec, 1, size);
 	} else {
 		vec[0].iov_base = data->out + pvcalls_mask(cons, array_size);
 		vec[0].iov_len = array_size - pvcalls_mask(cons, array_size);
 		vec[1].iov_base = data->out;
 		vec[1].iov_len = size - vec[0].iov_len;
-		msg.msg_iter.kvec = vec;
-		msg.msg_iter.nr_segs = 2;
+		iov_iter_kvec(&msg.msg_iter, ITER_KVEC|READ, vec, 2, size);
 	}
 
 	atomic_set(&map->write, 0);
 	ret = inet_sendmsg(map->sock, &msg, size);
-	if (ret == -EAGAIN || (ret >= 0 && ret < size)) {
+	if (ret == -EAGAIN) {
 		atomic_inc(&map->write);
 		atomic_inc(&map->io);
+		return true;
 	}
-	if (ret == -EAGAIN)
-		return;
 
 	/* write the data, then update the indexes */
 	virt_wmb();
@@ -233,9 +225,13 @@ static void pvcalls_conn_back_write(struct sock_mapping *map)
 	}
 	/* update the indexes, then notify the other end */
 	virt_wmb();
-	if (prod != cons + ret)
+	if (prod != cons + ret) {
 		atomic_inc(&map->write);
+		atomic_inc(&map->io);
+	}
 	notify_remote_via_irq(map->irq);
+
+	return true;
 }
 
 static void pvcalls_back_ioworker(struct work_struct *work)
@@ -244,6 +240,7 @@ static void pvcalls_back_ioworker(struct work_struct *work)
 		struct pvcalls_ioworker, register_work);
 	struct sock_mapping *map = container_of(ioworker, struct sock_mapping,
 		ioworker);
+	unsigned int eoi_flags = XEN_EOI_FLAG_SPURIOUS;
 
 	while (atomic_read(&map->io) > 0) {
 		if (atomic_read(&map->release) > 0) {
@@ -251,10 +248,18 @@ static void pvcalls_back_ioworker(struct work_struct *work)
 			return;
 		}
 
-		if (atomic_read(&map->read) > 0)
-			pvcalls_conn_back_read(map);
-		if (atomic_read(&map->write) > 0)
-			pvcalls_conn_back_write(map);
+		if (atomic_read(&map->read) > 0 &&
+		    pvcalls_conn_back_read(map))
+			eoi_flags = 0;
+		if (atomic_read(&map->write) > 0 &&
+		    pvcalls_conn_back_write(map))
+			eoi_flags = 0;
+
+		if (atomic_read(&map->eoi) > 0 && !atomic_read(&map->write)) {
+			atomic_set(&map->eoi, 0);
+			xen_irq_lateeoi(map->irq, eoi_flags);
+			eoi_flags = XEN_EOI_FLAG_SPURIOUS;
+		}
 
 		atomic_dec(&map->io);
 	}
@@ -325,8 +330,10 @@ static struct sock_mapping *pvcalls_new_active_socket(
 	void *page;
 
 	map = kzalloc(sizeof(*map), GFP_KERNEL);
-	if (map == NULL)
+	if (map == NULL) {
+		sock_release(sock);
 		return NULL;
+	}
 
 	map->fedata = fedata;
 	map->sock = sock;
@@ -351,12 +358,9 @@ static struct sock_mapping *pvcalls_new_active_socket(
 		goto out;
 	map->bytes = page;
 
-	ret = bind_interdomain_evtchn_to_irqhandler(fedata->dev->otherend_id,
-						    evtchn,
-						    pvcalls_back_conn_event,
-						    0,
-						    "pvcalls-backend",
-						    map);
+	ret = bind_interdomain_evtchn_to_irqhandler_lateeoi(
+			fedata->dev->otherend_id, evtchn,
+			pvcalls_back_conn_event, 0, "pvcalls-backend", map);
 	if (ret < 0)
 		goto out;
 	map->irq = ret;
@@ -421,10 +425,8 @@ static int pvcalls_back_connect(struct xenbus_device *dev,
 					req->u.connect.ref,
 					req->u.connect.evtchn,
 					sock);
-	if (!map) {
+	if (!map)
 		ret = -EFAULT;
-		sock_release(sock);
-	}
 
 out:
 	rsp = RING_GET_RESPONSE(&fedata->ring, fedata->ring.rsp_prod_pvt++);
@@ -555,7 +557,7 @@ static void __pvcalls_back_accept(struct work_struct *work)
 	ret = inet_accept(mappass->sock, sock, O_NONBLOCK, true);
 	if (ret == -EAGAIN) {
 		sock_release(sock);
-		goto out_error;
+		return;
 	}
 
 	map = pvcalls_new_active_socket(fedata,
@@ -565,7 +567,6 @@ static void __pvcalls_back_accept(struct work_struct *work)
 					sock);
 	if (!map) {
 		ret = -EFAULT;
-		sock_release(sock);
 		goto out_error;
 	}
 
@@ -890,15 +891,18 @@ static irqreturn_t pvcalls_back_event(int irq, void *dev_id)
 {
 	struct xenbus_device *dev = dev_id;
 	struct pvcalls_fedata *fedata = NULL;
+	unsigned int eoi_flags = XEN_EOI_FLAG_SPURIOUS;
 
-	if (dev == NULL)
-		return IRQ_HANDLED;
+	if (dev) {
+		fedata = dev_get_drvdata(&dev->dev);
+		if (fedata) {
+			pvcalls_back_work(fedata);
+			eoi_flags = 0;
+		}
+	}
 
-	fedata = dev_get_drvdata(&dev->dev);
-	if (fedata == NULL)
-		return IRQ_HANDLED;
+	xen_irq_lateeoi(irq, eoi_flags);
 
-	pvcalls_back_work(fedata);
 	return IRQ_HANDLED;
 }
 
@@ -908,12 +912,15 @@ static irqreturn_t pvcalls_back_conn_event(int irq, void *sock_map)
 	struct pvcalls_ioworker *iow;
 
 	if (map == NULL || map->sock == NULL || map->sock->sk == NULL ||
-		map->sock->sk->sk_user_data != map)
+		map->sock->sk->sk_user_data != map) {
+		xen_irq_lateeoi(irq, 0);
 		return IRQ_HANDLED;
+	}
 
 	iow = &map->ioworker;
 
 	atomic_inc(&map->write);
+	atomic_inc(&map->eoi);
 	atomic_inc(&map->io);
 	queue_work(iow->wq, &iow->register_work);
 
@@ -948,7 +955,7 @@ static int backend_connect(struct xenbus_device *dev)
 		goto error;
 	}
 
-	err = bind_interdomain_evtchn_to_irq(dev->otherend_id, evtchn);
+	err = bind_interdomain_evtchn_to_irq_lateeoi(dev->otherend_id, evtchn);
 	if (err < 0)
 		goto error;
 	fedata->irq = err;
@@ -1238,3 +1245,7 @@ static void __exit pvcalls_back_fin(void)
 }
 
 module_exit(pvcalls_back_fin);
+
+MODULE_DESCRIPTION("Xen PV Calls backend driver");
+MODULE_AUTHOR("Stefano Stabellini <sstabellini@kernel.org>");
+MODULE_LICENSE("GPL");

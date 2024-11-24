@@ -5,7 +5,6 @@
 #include <linux/rbtree.h>
 #include <linux/ceph/types.h>
 #include <linux/ceph/decode.h>
-#include <linux/ceph/ceph_fs.h>
 #include <linux/crush/crush.h>
 
 /*
@@ -38,6 +37,9 @@ int ceph_spg_compare(const struct ceph_spg *lhs, const struct ceph_spg *rhs);
 #define CEPH_POOL_FLAG_HASHPSPOOL	(1ULL << 0) /* hash pg seed and pool id
 						       together */
 #define CEPH_POOL_FLAG_FULL		(1ULL << 1) /* pool is full */
+#define CEPH_POOL_FLAG_FULL_QUOTA	(1ULL << 10) /* pool ran out of quota,
+							will set FULL too */
+#define CEPH_POOL_FLAG_NEARFULL		(1ULL << 11) /* pool is nearfull */
 
 struct ceph_pg_pool_info {
 	struct rb_node node;
@@ -280,15 +282,10 @@ bool ceph_osds_changed(const struct ceph_osds *old_acting,
 		       const struct ceph_osds *new_acting,
 		       bool any_change);
 
-/* calculate mapping of a file extent to an object */
-extern int ceph_calc_file_object_mapping(struct ceph_file_layout *layout,
-					 u64 off, u64 len,
-					 u64 *bno, u64 *oxoff, u64 *oxlen);
-
-int __ceph_object_locator_to_pg(struct ceph_pg_pool_info *pi,
-				const struct ceph_object_id *oid,
-				const struct ceph_object_locator *oloc,
-				struct ceph_pg *raw_pgid);
+void __ceph_object_locator_to_pg(struct ceph_pg_pool_info *pi,
+				 const struct ceph_object_id *oid,
+				 const struct ceph_object_locator *oloc,
+				 struct ceph_pg *raw_pgid);
 int ceph_object_locator_to_pg(struct ceph_osdmap *osdmap,
 			      const struct ceph_object_id *oid,
 			      const struct ceph_object_locator *oloc,
@@ -311,5 +308,6 @@ extern struct ceph_pg_pool_info *ceph_pg_pool_by_id(struct ceph_osdmap *map,
 
 extern const char *ceph_pg_pool_name_by_id(struct ceph_osdmap *map, u64 id);
 extern int ceph_pg_poolid_by_name(struct ceph_osdmap *map, const char *name);
+u64 ceph_pg_pool_flags(struct ceph_osdmap *map, u64 id);
 
 #endif

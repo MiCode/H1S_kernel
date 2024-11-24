@@ -88,7 +88,7 @@ static int go7007_load_encoder(struct go7007 *go)
 	const struct firmware *fw_entry;
 	char fw_name[] = "go7007/go7007fw.bin";
 	void *bounce;
-	int fw_len, rv = 0;
+	int fw_len;
 	u16 intr_val, intr_data;
 
 	if (go->boot_fw == NULL) {
@@ -117,9 +117,11 @@ static int go7007_load_encoder(struct go7007 *go)
 	    go7007_read_interrupt(go, &intr_val, &intr_data) < 0 ||
 			(intr_val & ~0x1) != 0x5a5a) {
 		v4l2_err(go, "error transferring firmware\n");
-		rv = -1;
+		kfree(go->boot_fw);
+		go->boot_fw = NULL;
+		return -1;
 	}
-	return rv;
+	return 0;
 }
 
 MODULE_FIRMWARE("go7007/go7007fw.bin");
@@ -448,13 +450,14 @@ static struct go7007_buffer *frame_boundary(struct go7007 *go, struct go7007_buf
 {
 	u32 *bytesused;
 	struct go7007_buffer *vb_tmp = NULL;
+	unsigned long flags;
 
 	if (vb == NULL) {
-		spin_lock(&go->spinlock);
+		spin_lock_irqsave(&go->spinlock, flags);
 		if (!list_empty(&go->vidq_active))
 			vb = go->active_buf =
 				list_first_entry(&go->vidq_active, struct go7007_buffer, list);
-		spin_unlock(&go->spinlock);
+		spin_unlock_irqrestore(&go->spinlock, flags);
 		go->next_seq++;
 		return vb;
 	}
@@ -468,7 +471,7 @@ static struct go7007_buffer *frame_boundary(struct go7007 *go, struct go7007_buf
 
 	vb->vb.vb2_buf.timestamp = ktime_get_ns();
 	vb_tmp = vb;
-	spin_lock(&go->spinlock);
+	spin_lock_irqsave(&go->spinlock, flags);
 	list_del(&vb->list);
 	if (list_empty(&go->vidq_active))
 		vb = NULL;
@@ -476,7 +479,7 @@ static struct go7007_buffer *frame_boundary(struct go7007 *go, struct go7007_buf
 		vb = list_first_entry(&go->vidq_active,
 				struct go7007_buffer, list);
 	go->active_buf = vb;
-	spin_unlock(&go->spinlock);
+	spin_unlock_irqrestore(&go->spinlock, flags);
 	vb2_buffer_done(&vb_tmp->vb.vb2_buf, VB2_BUF_STATE_DONE);
 	return vb;
 }
@@ -698,49 +701,23 @@ struct go7007 *go7007_alloc(const struct go7007_board_info *board,
 						struct device *dev)
 {
 	struct go7007 *go;
-	int i;
 
 	go = kzalloc(sizeof(struct go7007), GFP_KERNEL);
 	if (go == NULL)
 		return NULL;
 	go->dev = dev;
 	go->board_info = board;
-	go->board_id = 0;
 	go->tuner_type = -1;
-	go->channel_number = 0;
-	go->name[0] = 0;
 	mutex_init(&go->hw_lock);
 	init_waitqueue_head(&go->frame_waitq);
 	spin_lock_init(&go->spinlock);
 	go->status = STATUS_INIT;
-	memset(&go->i2c_adapter, 0, sizeof(go->i2c_adapter));
-	go->i2c_adapter_online = 0;
-	go->interrupt_available = 0;
 	init_waitqueue_head(&go->interrupt_waitq);
-	go->input = 0;
 	go7007_update_board(go);
-	go->encoder_h_halve = 0;
-	go->encoder_v_halve = 0;
-	go->encoder_subsample = 0;
 	go->format = V4L2_PIX_FMT_MJPEG;
 	go->bitrate = 1500000;
 	go->fps_scale = 1;
-	go->pali = 0;
 	go->aspect_ratio = GO7007_RATIO_1_1;
-	go->gop_size = 0;
-	go->ipb = 0;
-	go->closed_gop = 0;
-	go->repeat_seqhead = 0;
-	go->seq_header_enable = 0;
-	go->gop_header_enable = 0;
-	go->dvd_mode = 0;
-	go->interlace_coding = 0;
-	for (i = 0; i < 4; ++i)
-		go->modet[i].enable = 0;
-	for (i = 0; i < 1624; ++i)
-		go->modet_map[i] = 0;
-	go->audio_deliver = NULL;
-	go->audio_enabled = 0;
 
 	return go;
 }

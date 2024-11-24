@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *  KOBIL USB Smart Card Terminal Driver
  *
@@ -9,11 +10,6 @@
  *  This program is largely derived from work by the linux-usb group
  *  and associated source files.  Please see the usb/serial files for
  *  individual credits and copyrights.
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
  *
  *  Thanks to Greg Kroah-Hartman (greg@kroah.com) for his help and
  *  patience.
@@ -194,8 +190,10 @@ static int kobil_open(struct tty_struct *tty, struct usb_serial_port *port)
 			  KOBIL_TIMEOUT
 	);
 	dev_dbg(dev, "%s - Send get_HW_version URB returns: %i\n", __func__, result);
-	dev_dbg(dev, "Hardware version: %i.%i.%i\n", transfer_buffer[0],
-		transfer_buffer[1], transfer_buffer[2]);
+	if (result >= 3) {
+		dev_dbg(dev, "Hardware version: %i.%i.%i\n", transfer_buffer[0],
+				transfer_buffer[1], transfer_buffer[2]);
+	}
 
 	/* get firmware version */
 	result = usb_control_msg(port->serial->dev,
@@ -209,8 +207,10 @@ static int kobil_open(struct tty_struct *tty, struct usb_serial_port *port)
 			  KOBIL_TIMEOUT
 	);
 	dev_dbg(dev, "%s - Send get_FW_version URB returns: %i\n", __func__, result);
-	dev_dbg(dev, "Firmware version: %i.%i.%i\n", transfer_buffer[0],
-		transfer_buffer[1], transfer_buffer[2]);
+	if (result >= 3) {
+		dev_dbg(dev, "Firmware version: %i.%i.%i\n", transfer_buffer[0],
+				transfer_buffer[1], transfer_buffer[2]);
+	}
 
 	if (priv->device_type == KOBIL_ADAPTER_B_PRODUCT_ID ||
 			priv->device_type == KOBIL_ADAPTER_K_PRODUCT_ID) {
@@ -499,6 +499,7 @@ static void kobil_set_termios(struct tty_struct *tty,
 		break;
 	default:
 		speed = 9600;
+		/* fall through */
 	case 9600:
 		urb_val = SUSBCR_SBR_9600;
 		break;

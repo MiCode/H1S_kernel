@@ -1,19 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * OF NUMA Parsing support.
  *
  * Copyright (C) 2015 - 2016 Cavium Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #define pr_fmt(fmt) "OF: NUMA: " fmt
@@ -179,8 +168,8 @@ int of_node_to_nid(struct device_node *device)
 		np = of_get_next_parent(np);
 	}
 	if (np && r)
-		pr_warn("Invalid \"numa-node-id\" property in node %s\n",
-			np->name);
+		pr_warn("Invalid \"numa-node-id\" property in node %pOFn\n",
+			np);
 	of_node_put(np);
 
 	/*
@@ -193,7 +182,6 @@ int of_node_to_nid(struct device_node *device)
 
 	return NUMA_NO_NODE;
 }
-EXPORT_SYMBOL(of_node_to_nid);
 
 int __init of_numa_init(void)
 {

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __APUSYS_MDW_USR_H__
@@ -18,6 +10,7 @@
 #include "apusys_device.h"
 #include "mdw_cmd.h"
 #include <linux/kref.h>
+#include <linux/idr.h>
 
 struct mdw_usr_mgr {
 	struct list_head list;
@@ -37,7 +30,7 @@ struct mdw_usr {
 	struct mutex mtx;
 	struct kref	kref;
 
-	struct list_head cmd_list; // for cmd
+	struct idr cmds_idr;
 	struct list_head mem_list; // for mem
 	struct list_head sdev_list; // for sec dev
 };
@@ -68,5 +61,5 @@ void mdw_usr_exit(void);
 
 
 void mdw_usr_print_mem_usage(void);
-void mdw_usr_aee_mem(void *s_file);
+void mdw_usr_sys_aee_mem(char *buf, int *n);
 #endif

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/atomic.h>
@@ -29,6 +21,12 @@ enum IMGSENSOR_HW_PIN {
 	IMGSENSOR_HW_PIN_PDN,
 	IMGSENSOR_HW_PIN_RST,
 	IMGSENSOR_HW_PIN_AVDD,
+#ifdef CONFIG_REGULATOR_RT5133
+	IMGSENSOR_HW_PIN_AVDD1,
+#endif
+#if defined(IMGSENSOR_MT6781) || defined(IMGSENSOR_MT6877)
+	IMGSENSOR_HW_PIN_AFVDD,
+#endif
 	IMGSENSOR_HW_PIN_DVDD,
 	IMGSENSOR_HW_PIN_DOVDD,
 #ifdef MIPI_SWITCH
@@ -63,12 +61,19 @@ enum IMGSENSOR_HW_PIN_STATE {
 #define PDN         IMGSENSOR_HW_PIN_PDN
 #define RST         IMGSENSOR_HW_PIN_RST
 #define AVDD        IMGSENSOR_HW_PIN_AVDD
+#ifdef CONFIG_REGULATOR_RT5133
+#define AVDD1        IMGSENSOR_HW_PIN_AVDD1
+#endif
 #define DVDD        IMGSENSOR_HW_PIN_DVDD
 #define DOVDD       IMGSENSOR_HW_PIN_DOVDD
 #define VDD_None    IMGSENSOR_HW_PIN_NONE
 
 	/* For backward compatible */
+#if defined(IMGSENSOR_MT6781) || defined(IMGSENSOR_MT6877)
+#define AFVDD       IMGSENSOR_HW_PIN_AFVDD
+#else
 #define AFVDD       IMGSENSOR_HW_PIN_UNDEF
+#endif
 
 
 /* Voltage */

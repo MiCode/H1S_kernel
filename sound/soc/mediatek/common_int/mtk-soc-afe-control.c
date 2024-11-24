@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -64,13 +53,19 @@
 #include <sound/jack.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
-
+#if defined(CONFIG_MTK_AUDIO_SCP_SPKPROTECT_SUPPORT)
+#include "mtk-auddrv-scp-spkprotect-common.h"
+#endif
 /*
  * #include <mt-plat/mt_boot.h>
  * #include <mt-plat/mt_boot_common.h>
  * #include <mt-plat/mt_lpae.h>
  */
 
+#ifdef CONFIG_MTK_AUXADC_INTF
+#include <mach/mtk_pmic.h>
+#include <mt-plat/mtk_auxadc_intf.h>
+#endif
 
 #include <linux/ftrace.h>
 
@@ -114,9 +109,8 @@ static struct audio_mrg_if *mAudioMrg;
 static struct audio_digital_dai_bt *AudioDaiBt;
 
 static struct afe_mem_control_t
-	*afe_mem_ctrl[Soc_Aud_Digital_Block_NUM_OF_MEM_INTERFACE] = {
-	NULL
-};
+	*AFE_Mem_Control_context[Soc_Aud_Digital_Block_NUM_OF_MEM_INTERFACE] = {
+		NULL};
 static struct snd_dma_buffer
 	*Audio_dma_buf[Soc_Aud_Digital_Block_NUM_OF_MEM_INTERFACE] = {NULL};
 
@@ -174,8 +168,10 @@ static unsigned int MDSampleRateTransform(unsigned int sampleRate);
 
 static bool CheckSize(unsigned int size)
 {
-	if (size == 0)
+	if (size == 0) {
+		pr_debug("%s(), size = 0\n", __func__);
 		return true;
+	}
 
 	return false;
 }
@@ -327,6 +323,8 @@ int InitAfeControl(struct device *pDev)
 	int i = 0;
 	int ret = 0;
 
+	pr_debug("%s()\n", __func__);
+
 	/* first time to init , reg init. */
 	AfeGlobalVarInit();
 	Auddrv_Reg_map(pDev);
@@ -381,18 +379,26 @@ int InitAfeControl(struct device *pDev)
 				devm_kzalloc(pDev,
 					sizeof(struct audio_memif_attribute),
 					GFP_KERNEL);
-			if (!mAudioMEMIF[i])
+			if (!mAudioMEMIF[i]) {
+				/* pr_debug("Failed to
+				 * allocate private data\n");
+				 */
 				ret = -ENOMEM;
+			}
 		}
 		for (i = 0; i < Soc_Aud_Digital_Block_NUM_OF_MEM_INTERFACE;
 		     i++) {
-			afe_mem_ctrl[i] = devm_kzalloc(pDev,
+			AFE_Mem_Control_context[i] = devm_kzalloc(pDev,
 				sizeof(struct afe_mem_control_t), GFP_KERNEL);
-			if (!afe_mem_ctrl[i])
+			if (!AFE_Mem_Control_context[i]) {
+				/* pr_debug("Failed to
+				 * allocate private data\n");
+				 */
 				ret = -ENOMEM;
-			afe_mem_ctrl[i]->substreamL = NULL;
+			}
+			AFE_Mem_Control_context[i]->substreamL = NULL;
 			spin_lock_init(
-				&afe_mem_ctrl[i]->substream_lock);
+				&AFE_Mem_Control_context[i]->substream_lock);
 		}
 
 		for (i = 0; i < Soc_Aud_Digital_Block_NUM_OF_MEM_INTERFACE;
@@ -400,8 +406,12 @@ int InitAfeControl(struct device *pDev)
 			Audio_dma_buf[i] =
 				devm_kzalloc(pDev,
 					     sizeof(Audio_dma_buf), GFP_KERNEL);
-			if (!Audio_dma_buf[i])
+			if (!Audio_dma_buf[i]) {
+				/* pr_debug("Failed to
+				 * allocate private data\n");
+				 */
 				ret = -ENOMEM;
+			}
 		}
 		memset((void *)&AFE_dL_Abnormal_context, 0,
 		       sizeof(struct afe_dl_abnormal_control_t));
@@ -440,7 +450,7 @@ bool ResetAfeControl(void)
 		       sizeof(struct audio_memif_attribute));
 
 	for (i = 0; i < Soc_Aud_Digital_Block_NUM_OF_MEM_INTERFACE; i++)
-		memset((void *)(afe_mem_ctrl[i]), 0,
+		memset((void *)(AFE_Mem_Control_context[i]), 0,
 		       sizeof(struct afe_mem_control_t));
 
 	AfeControlMutexUnLock();
@@ -516,7 +526,7 @@ irqreturn_t AudDrv_IRQ_handler(int irq, void *dev_id)
 	unsigned int irqIndex = 0;
 	unsigned int mcu_mask = get_mcu_irq_mask();
 	const struct Aud_RegBitsInfo *irqOnReg, *irqEnReg, *irqStatusReg,
-		      *irqMcuEnReg, *irqScpEnReg;
+		*irqMcuEnReg, *irqScpEnReg;
 
 	u4RegValue = Afe_Get_Reg(AFE_IRQ_MCU_STATUS) & mcu_mask;
 	irqMcuEnReg = GetIRQPurposeReg(Soc_Aud_IRQ_MCU);
@@ -641,12 +651,12 @@ static bool CheckMemIfEnable(void)
 
 	for (i = 0; i < Soc_Aud_Digital_Block_NUM_OF_DIGITAL_BLOCK; i++) {
 		if ((mAudioMEMIF[i]->mState) == true) {
-			/* printk("CheckMemIfEnable == true\n"); */
+			/* pr_debug("CheckMemIfEnable == true\n"); */
 			return true;
 		}
 	}
 
-	/* printk("CheckMemIfEnable == false\n"); */
+	/* pr_debug("CheckMemIfEnable == false\n"); */
 	return false;
 }
 
@@ -856,7 +866,7 @@ unsigned int MDSampleRateTransform(unsigned int sampleRate)
 		return Soc_Aud_PCM_MODE_PCM_MODE_48K;
 	default:
 		pr_warn("%s(), rate %u not support, use 16k\n", __func__,
-			sampleRate);
+		       sampleRate);
 		return Soc_Aud_PCM_MODE_PCM_MODE_16K;
 	}
 }
@@ -1114,8 +1124,8 @@ int setConnsysI2SInEnable(bool enable)
 
 int setConnsysI2SAsrc(bool bIsUseASRC, unsigned int dToSampleRate)
 {
-	unsigned int rate = SampleRateTransform(dToSampleRate,
-				    Soc_Aud_Digital_Block_I2S_IN_CONNSYS);
+	unsigned int rate = SampleRateTransform(
+		dToSampleRate, Soc_Aud_Digital_Block_I2S_IN_CONNSYS);
 
 	pr_debug("+%s() bIsUseASRC [%d] dToSampleRate [%d]\n", __func__,
 		 bIsUseASRC, dToSampleRate);
@@ -1856,7 +1866,8 @@ int AudDrv_Allocate_DL1_Buffer(struct device *pDev, kal_uint32 Afe_Buf_Length,
 {
 	struct afe_block_t *pblock;
 
-	pblock = &(afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_DL1]->rBlock);
+	pblock = &(
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_DL1]->rBlock);
 	pblock->u4BufferSize = Afe_Buf_Length;
 
 	if (Afe_Buf_Length > AFE_INTERNAL_SRAM_SIZE) {
@@ -1875,8 +1886,8 @@ int AudDrv_Allocate_DL1_Buffer(struct device *pDev, kal_uint32 Afe_Buf_Length,
 
 	/* check 32 bytes align */
 	if ((pblock->pucPhysBufAddr & 0x1f) != 0) {
-		pr_info("[Auddrv] %s() is not aligned (0x%x)\n",
-			__func__, pblock->pucPhysBufAddr);
+		pr_info("[Auddrv] buffer is not aligned (0x%x)\n",
+			pblock->pucPhysBufAddr);
 	}
 
 	pblock->u4SampleNumMask = 0x001f; /* 32 byte align */
@@ -1939,7 +1950,7 @@ struct afe_mem_control_t *Get_Mem_ControlT(enum soc_aud_digital_block MemBlock)
 {
 	if (MemBlock >= 0 &&
 	    MemBlock < Soc_Aud_Digital_Block_NUM_OF_MEM_INTERFACE)
-		return afe_mem_ctrl[MemBlock];
+		return AFE_Mem_Control_context[MemBlock];
 
 	pr_debug("%s error\n", __func__);
 	return NULL;
@@ -1959,14 +1970,14 @@ bool SetMemifSubStream(enum soc_aud_digital_block MemBlock,
 	/* pr_debug("%s MemBlock = %d substream = %p\n",
 	 * __func__, MemBlock, substream);
 	 */
-	spin_lock_irqsave(&afe_mem_ctrl[MemBlock]->substream_lock,
+	spin_lock_irqsave(&AFE_Mem_Control_context[MemBlock]->substream_lock,
 			  flags);
-	head = afe_mem_ctrl[MemBlock]->substreamL;
+	head = AFE_Mem_Control_context[MemBlock]->substreamL;
 	if (head == NULL) { /* frst item is NULL */
 		/* pr_debug("%s head == NULL\n ", __func__); */
 		temp->substream = substream;
 		temp->next = NULL;
-		afe_mem_ctrl[MemBlock]->substreamL = temp;
+		AFE_Mem_Control_context[MemBlock]->substreamL = temp;
 	} else { /* find out Null pointer */
 		while (head->next != NULL)
 			head = head->next;
@@ -1977,9 +1988,9 @@ bool SetMemifSubStream(enum soc_aud_digital_block MemBlock,
 		head->next = temp;
 	}
 
-	afe_mem_ctrl[MemBlock]->MemIfNum++;
+	AFE_Mem_Control_context[MemBlock]->MemIfNum++;
 	spin_unlock_irqrestore(
-		&afe_mem_ctrl[MemBlock]->substream_lock, flags);
+		&AFE_Mem_Control_context[MemBlock]->substream_lock, flags);
 	/* DumpMemifSubStream(); */
 	return true;
 }
@@ -1989,7 +2000,7 @@ bool ClearMemBlock(enum soc_aud_digital_block MemBlock)
 	if (MemBlock >= 0 &&
 	    MemBlock < Soc_Aud_Digital_Block_NUM_OF_MEM_INTERFACE) {
 		struct afe_block_t *pBlock =
-				&afe_mem_ctrl[MemBlock]->rBlock;
+			&AFE_Mem_Control_context[MemBlock]->rBlock;
 
 		pBlock->u4WriteIdx = 0;
 		pBlock->u4DMAReadIdx = 0;
@@ -2013,11 +2024,11 @@ bool RemoveMemifSubStream(enum soc_aud_digital_block MemBlock,
 	unsigned long flags;
 	int i;
 
-	spin_lock_irqsave(&afe_mem_ctrl[MemBlock]->substream_lock,
+	spin_lock_irqsave(&AFE_Mem_Control_context[MemBlock]->substream_lock,
 			  flags);
 
 	for (i = 0; i < MEM_TIMEOUT_CNT; i++) {
-		if (afe_mem_ctrl[MemBlock]->mWaitForIRQ == true) {
+		if (AFE_Mem_Control_context[MemBlock]->mWaitForIRQ == true) {
 			pr_debug("%s: enter udelay.\n", __func__);
 			mdelay(5);
 		} else {
@@ -2025,26 +2036,26 @@ bool RemoveMemifSubStream(enum soc_aud_digital_block MemBlock,
 		}
 	}
 
-	if (afe_mem_ctrl[MemBlock]->MemIfNum == 0)
-		pr_debug("%s afe_mem_ctrl[%d]->MemIfNum == 0\n ",
-			 __func__, MemBlock);
+	if (AFE_Mem_Control_context[MemBlock]->MemIfNum == 0)
+		pr_debug("%s AFE_Mem_Control_context[%d]->MemIfNum == 0\n ",
+			__func__, MemBlock);
 	else
-		afe_mem_ctrl[MemBlock]->MemIfNum--;
+		AFE_Mem_Control_context[MemBlock]->MemIfNum--;
 
-	head = afe_mem_ctrl[MemBlock]->substreamL;
+	head = AFE_Mem_Control_context[MemBlock]->substreamL;
 	/* pr_debug("+ %s MemBlock = %d substream = %p\n ",
 	 * __func__, MemBlock, substream);
 	 */
 
 	if (head == NULL) { /* no object */
-		/* do nothing */
+			    /* do nothing */
 	} else {
 		/* condition for first item hit */
 		if (head->substream == substream) {
 			/* pr_debug("%s head->substream = %p\n ", __func__,
 			 * head->substream);
 			 */
-			afe_mem_ctrl[MemBlock]->substreamL =
+			AFE_Mem_Control_context[MemBlock]->substreamL =
 				head->next;
 			head->substream = NULL;
 			kfree(head);
@@ -2068,14 +2079,14 @@ bool RemoveMemifSubStream(enum soc_aud_digital_block MemBlock,
 	}
 
 	/* DumpMemifSubStream(); */
-	if (afe_mem_ctrl[MemBlock]->substreamL == NULL)
+	if (AFE_Mem_Control_context[MemBlock]->substreamL == NULL)
 		ClearMemBlock(MemBlock);
 	else
 		pr_debug("%s substreram is not NULL MemBlock = %d\n", __func__,
 			 MemBlock);
 
 	spin_unlock_irqrestore(
-		&afe_mem_ctrl[MemBlock]->substream_lock, flags);
+		&AFE_Mem_Control_context[MemBlock]->substream_lock, flags);
 	/* pr_debug("- %s MemBlock = %d\n ", __func__, MemBlock); */
 
 	return true;
@@ -2108,14 +2119,14 @@ void Auddrv_HDMI_Interrupt_Handler(void)
 #ifdef CONFIG_MTK_HDMI_TDM
 
 	struct afe_mem_control_t *Mem_Block =
-			afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_HDMI];
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_HDMI];
 	kal_int32 Afe_consumed_bytes = 0;
 	kal_int32 HW_memory_index = 0;
 	kal_int32 HW_Cur_ReadIdx = 0;
 	unsigned long flags;
 	struct afe_block_t *Afe_Block =
-		&(afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_HDMI]
-		  ->rBlock);
+		&(AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_HDMI]
+			  ->rBlock);
 
 	if (Mem_Block == NULL) {
 		pr_warn("-%s()Mem_Block == NULL\n", __func__);
@@ -2162,8 +2173,8 @@ void Auddrv_HDMI_Interrupt_Handler(void)
 		Afe_Block->u4DMAReadIdx += Afe_consumed_bytes;
 		Afe_Block->u4DMAReadIdx %= Afe_Block->u4BufferSize;
 	}
-	afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_HDMI]
-	->interruptTrigger = 1;
+	AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_HDMI]
+		->interruptTrigger = 1;
 
 	if (Mem_Block->substreamL != NULL) {
 		if (Mem_Block->substreamL->substream != NULL) {
@@ -2181,7 +2192,7 @@ void Auddrv_HDMI_Interrupt_Handler(void)
 void Auddrv_AWB_Interrupt_Handler(void)
 {
 	struct afe_mem_control_t *Mem_Block =
-			afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_AWB];
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_AWB];
 	kal_uint32 HW_Cur_ReadIdx = 0;
 	kal_uint32 MaxCopySize = 0;
 	kal_int32 Hw_Get_bytes = 0;
@@ -2198,7 +2209,7 @@ void Auddrv_AWB_Interrupt_Handler(void)
 	spin_lock_irqsave(&Mem_Block->substream_lock, flags);
 
 	if (GetMemoryPathEnable(Soc_Aud_Digital_Block_MEM_AWB) == false) {
-		/* printk("%s(),
+		/* pr_debug("%s(),
 		 * GetMemoryPathEnable(Soc_Aud_Digital_Block_MEM_AWB) == false,
 		 * return\n ", __func__);
 		 */
@@ -2262,8 +2273,8 @@ void Auddrv_AWB_Interrupt_Handler(void)
 	/* buffer overflow */
 	if (mBlock->u4DataRemained > mBlock->u4BufferSize) {
 		pr_debug("%s buffer overflow u4DMAReadIdx:%x, u4WriteIdx:%x, u4DataRemained:%x, u4BufferSize:%x\n",
-			 __func__, mBlock->u4DMAReadIdx, mBlock->u4WriteIdx,
-			 mBlock->u4DataRemained, mBlock->u4BufferSize);
+			__func__, mBlock->u4DMAReadIdx, mBlock->u4WriteIdx,
+			mBlock->u4DataRemained, mBlock->u4BufferSize);
 		mBlock->u4DataRemained %= mBlock->u4BufferSize;
 	}
 
@@ -2302,7 +2313,7 @@ void Auddrv_AWB_Interrupt_Handler(void)
 void Auddrv_DAI_Interrupt_Handler(void)
 {
 	struct afe_mem_control_t *Mem_Block =
-			afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_DAI];
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_DAI];
 	kal_uint32 HW_Cur_ReadIdx = 0;
 	kal_int32 Hw_Get_bytes = 0;
 	struct afe_block_t *mBlock = NULL;
@@ -2377,7 +2388,7 @@ void Auddrv_DAI_Interrupt_Handler(void)
 void Auddrv_VUL2_Interrupt_Handler(void)
 {
 	struct afe_mem_control_t *Mem_Block =
-			afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_VUL2];
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_VUL2];
 	kal_uint32 HW_Cur_ReadIdx = 0;
 	kal_uint32 MaxCopySize = 0;
 	kal_int32 Hw_Get_bytes = 0;
@@ -2394,7 +2405,7 @@ void Auddrv_VUL2_Interrupt_Handler(void)
 	spin_lock_irqsave(&Mem_Block->substream_lock, flags);
 
 	if (GetMemoryPathEnable(Soc_Aud_Digital_Block_MEM_VUL2) == false) {
-		/* printk("%s(),
+		/* pr_debug("%s(),
 		 * GetMemoryPathEnable(Soc_Aud_Digital_Block_MEM_AWB) == false,
 		 * return\n ", __func__);
 		 */
@@ -2501,14 +2512,13 @@ void Auddrv_DSP_DL1_Interrupt_Handler(void *PrivateData)
 {
 	/* irq1 ISR handler */
 	struct afe_mem_control_t *Mem_Block =
-			afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_DL1];
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_DL1];
 	kal_int32 Afe_consumed_bytes = 0;
 	kal_int32 HW_memory_index = 0;
 	kal_int32 HW_Cur_ReadIdx = 0;
-	struct afe_block_t *Afe_Block;
+	struct afe_block_t *Afe_Block = &(
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_DL1]->rBlock);
 	unsigned long flags;
-
-	Afe_Block = &afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_DL1]->rBlock;
 
 	if (Mem_Block == NULL)
 		return;
@@ -2566,28 +2576,28 @@ void Auddrv_DSP_DL1_Interrupt_Handler(void *PrivateData)
 		if (AFE_dL_Abnormal_context.u4UnderflowCnt <
 		    DL_ABNORMAL_CONTROL_MAX) {
 			AFE_dL_Abnormal_context.pucPhysBufAddr
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Afe_Block->pucPhysBufAddr;
 			AFE_dL_Abnormal_context.u4BufferSize
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Afe_Block->u4BufferSize;
 			AFE_dL_Abnormal_context.u4ConsumedBytes
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Afe_consumed_bytes;
 			AFE_dL_Abnormal_context.u4DataRemained
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Afe_Block->u4DataRemained;
 			AFE_dL_Abnormal_context.u4DMAReadIdx
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Afe_Block->u4DMAReadIdx;
 			AFE_dL_Abnormal_context.u4HwMemoryIndex
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				HW_memory_index;
 			AFE_dL_Abnormal_context.u4WriteIdx
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Afe_Block->u4WriteIdx;
 			AFE_dL_Abnormal_context.MemIfNum
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Soc_Aud_Digital_Block_MEM_DL1;
 		}
 		AFE_dL_Abnormal_context.u4UnderflowCnt++;
@@ -2601,8 +2611,8 @@ void Auddrv_DSP_DL1_Interrupt_Handler(void *PrivateData)
 		Afe_Block->u4DMAReadIdx %= Afe_Block->u4BufferSize;
 	}
 
-	afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_DL1]
-	->interruptTrigger = 1;
+	AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_DL1]
+		->interruptTrigger = 1;
 	/* pr_debug("-DL_Handling normal ReadIdx:%x ,
 	 * DataRemained:%x, WriteIdx:%x\n", Afe_Block->u4DMAReadIdx,
 	 * Afe_Block->u4DataRemained,Afe_Block->u4WriteIdx);
@@ -2626,14 +2636,13 @@ void Auddrv_DL1_Interrupt_Handler(void)
 {
 	/* irq1 ISR handler */
 	struct afe_mem_control_t *Mem_Block =
-			afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_DL1];
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_DL1];
 	kal_int32 Afe_consumed_bytes = 0;
 	kal_int32 HW_memory_index = 0;
 	kal_int32 HW_Cur_ReadIdx = 0;
-	struct afe_block_t *Afe_Block;
+	struct afe_block_t *Afe_Block = &(
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_DL1]->rBlock);
 	unsigned long flags;
-
-	Afe_Block = &(afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_DL1]->rBlock);
 
 	if (Mem_Block == NULL)
 		return;
@@ -2651,7 +2660,7 @@ void Auddrv_DL1_Interrupt_Handler(void)
 	spin_lock_irqsave(&Mem_Block->substream_lock, flags);
 
 	if (GetMemoryPathEnable(Soc_Aud_Digital_Block_MEM_DL1) == false) {
-		/* printk("%s(),
+		/* pr_debug("%s(),
 		 * GetMemoryPathEnable(Soc_Aud_Digital_Block_MEM_DL1) == false,
 		 * return\n ", __func__);
 		 */
@@ -2693,28 +2702,28 @@ void Auddrv_DL1_Interrupt_Handler(void)
 		if (AFE_dL_Abnormal_context.u4UnderflowCnt <
 		    DL_ABNORMAL_CONTROL_MAX) {
 			AFE_dL_Abnormal_context.pucPhysBufAddr
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Afe_Block->pucPhysBufAddr;
 			AFE_dL_Abnormal_context.u4BufferSize
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Afe_Block->u4BufferSize;
 			AFE_dL_Abnormal_context.u4ConsumedBytes
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Afe_consumed_bytes;
 			AFE_dL_Abnormal_context.u4DataRemained
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Afe_Block->u4DataRemained;
 			AFE_dL_Abnormal_context.u4DMAReadIdx
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Afe_Block->u4DMAReadIdx;
 			AFE_dL_Abnormal_context.u4HwMemoryIndex
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				HW_memory_index;
 			AFE_dL_Abnormal_context.u4WriteIdx
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Afe_Block->u4WriteIdx;
 			AFE_dL_Abnormal_context.MemIfNum
-			[AFE_dL_Abnormal_context.u4UnderflowCnt] =
+				[AFE_dL_Abnormal_context.u4UnderflowCnt] =
 				Soc_Aud_Digital_Block_MEM_DL1;
 		}
 		AFE_dL_Abnormal_context.u4UnderflowCnt++;
@@ -2728,8 +2737,8 @@ void Auddrv_DL1_Interrupt_Handler(void)
 		Afe_Block->u4DMAReadIdx %= Afe_Block->u4BufferSize;
 	}
 
-	afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_DL1]
-	->interruptTrigger = 1;
+	AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_DL1]
+		->interruptTrigger = 1;
 	/* pr_debug("-DL_Handling normal ReadIdx:%x ,DataRemained:%x,
 	 * WriteIdx:%x\n", Afe_Block->u4DMAReadIdx, Afe_Block->u4DataRemained,
 	 * Afe_Block->u4WriteIdx);
@@ -2753,7 +2762,7 @@ void Auddrv_DL1_Data2_Interrupt_Handler(enum soc_aud_digital_block mem_block)
 {
 	/* irq6 ISR handler */
 	struct afe_mem_control_t *Mem_Block =
-			afe_mem_ctrl[mem_block];
+		AFE_Mem_Control_context[mem_block];
 	unsigned long flags;
 
 	if (GetMemoryPathEnable(mem_block)) {
@@ -2784,7 +2793,7 @@ void Auddrv_DL2_Interrupt_Handler(void)
 {
 	/* irq2 ISR handler */
 	struct afe_mem_control_t *Mem_Block =
-			afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_DL2];
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_DL2];
 	unsigned long flags;
 
 	if (Mem_Block == NULL)
@@ -2794,7 +2803,7 @@ void Auddrv_DL2_Interrupt_Handler(void)
 	spin_lock_irqsave(&Mem_Block->substream_lock, flags);
 
 	if (GetMemoryPathEnable(Soc_Aud_Digital_Block_MEM_DL2) == false) {
-		/* printk("%s(),
+		/* pr_debug("%s(),
 		 * GetMemoryPathEnable(Soc_Aud_Digital_Block_MEM_DL2) == false,
 		 * return\n ", __func__);
 		 */
@@ -2860,7 +2869,7 @@ struct snd_dma_buffer *Get_Mem_Buffer(enum soc_aud_digital_block MemBlock)
 void Auddrv_UL1_Interrupt_Handler(void)
 {
 	struct afe_mem_control_t *Mem_Block =
-			afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_VUL];
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_VUL];
 	kal_uint32 HW_Cur_ReadIdx = 0;
 	kal_int32 Hw_Get_bytes = 0;
 	struct afe_block_t *mBlock = NULL;
@@ -2875,7 +2884,7 @@ void Auddrv_UL1_Interrupt_Handler(void)
 	spin_lock_irqsave(&Mem_Block->substream_lock, flags);
 
 	if (GetMemoryPathEnable(Soc_Aud_Digital_Block_MEM_VUL) == false) {
-		/* printk("%s(),
+		/* pr_debug("%s(),
 		 * GetMemoryPathEnable(Soc_Aud_Digital_Block_MEM_VUL) == false,
 		 * return\n ", __func__);
 		 */
@@ -2920,8 +2929,8 @@ void Auddrv_UL1_Interrupt_Handler(void)
 			mBlock->u4DataRemained, mBlock->u4BufferSize);
 	}
 
-	afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_VUL]
-	->interruptTrigger = 1;
+	AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_VUL]
+		->interruptTrigger = 1;
 
 	if (Mem_Block->substreamL != NULL) {
 		if (Mem_Block->substreamL->substream != NULL) {
@@ -2941,10 +2950,10 @@ static void Clear_Mem_CopySize(enum soc_aud_digital_block MemBlock)
 {
 	struct substream_list *head;
 	/* unsigned long flags; */
-	/* spin_lock_irqsave(&afe_mem_ctrl[MemBlock]->substream_lock,
+	/* spin_lock_irqsave(&AFE_Mem_Control_context[MemBlock]->substream_lock,
 	 * flags);
 	 */
-	head = afe_mem_ctrl[MemBlock]->substreamL;
+	head = AFE_Mem_Control_context[MemBlock]->substreamL;
 
 	while (head != NULL) { /* frst item is NULL */
 		head->u4MaxCopySize = 0;
@@ -2959,25 +2968,25 @@ kal_uint32 Get_Mem_CopySizeByStream(enum soc_aud_digital_block MemBlock,
 	unsigned long flags;
 	kal_uint32 MaxCopySize;
 
-	spin_lock_irqsave(&afe_mem_ctrl[MemBlock]->substream_lock,
+	spin_lock_irqsave(&AFE_Mem_Control_context[MemBlock]->substream_lock,
 			  flags);
-	head = afe_mem_ctrl[MemBlock]->substreamL;
+	head = AFE_Mem_Control_context[MemBlock]->substreamL;
 
-	/* printk("+%s MemBlock = %d\n ", __func__, MemBlock); */
+	/* pr_debug("+%s MemBlock = %d\n ", __func__, MemBlock); */
 	while (head != NULL) { /* frst item is NULL */
 		if (head->substream == substream) {
 			MaxCopySize = head->u4MaxCopySize;
 			spin_unlock_irqrestore(
-				&afe_mem_ctrl[MemBlock]
-				->substream_lock,
+				&AFE_Mem_Control_context[MemBlock]
+					 ->substream_lock,
 				flags);
 			return MaxCopySize;
 		}
 		head = head->next;
 	}
 	spin_unlock_irqrestore(
-		&afe_mem_ctrl[MemBlock]->substream_lock, flags);
-	/* printk("-%s MemBlock = %d\n ", __func__, MemBlock); */
+		&AFE_Mem_Control_context[MemBlock]->substream_lock, flags);
+	/* pr_debug("-%s MemBlock = %d\n ", __func__, MemBlock); */
 
 	return 0;
 }
@@ -2989,12 +2998,12 @@ static kal_uint32 Get_Mem_MaxCopySize(enum soc_aud_digital_block MemBlock)
 	/* unsigned long flags; */
 	kal_uint32 MaxCopySize;
 
-	/* spin_lock_irqsave(&afe_mem_ctrl[MemBlock]->substream_lock,
+	/* spin_lock_irqsave(&AFE_Mem_Control_context[MemBlock]->substream_lock,
 	 * flags);
 	 */
-	head = afe_mem_ctrl[MemBlock]->substreamL;
+	head = AFE_Mem_Control_context[MemBlock]->substreamL;
 	MaxCopySize = 0;
-	/* printk("+%s MemBlock = %d\n ", __func__, MemBlock); */
+	/* pr_debug("+%s MemBlock = %d\n ", __func__, MemBlock); */
 	while (head != NULL) { /* frst item is NULL */
 		if (MaxCopySize < head->u4MaxCopySize)
 			MaxCopySize = head->u4MaxCopySize;
@@ -3002,10 +3011,10 @@ static kal_uint32 Get_Mem_MaxCopySize(enum soc_aud_digital_block MemBlock)
 	}
 
 	/* spin_unlock_irqrestore(
-	 * &afe_mem_ctrl[MemBlock]->substream_lock,
+	 * &AFE_Mem_Control_context[MemBlock]->substream_lock,
 	 * flags);
 	 */
-	/* printk("-%s MemBlock = %d\n ", __func__, MemBlock); */
+	/* pr_debug("-%s MemBlock = %d\n ", __func__, MemBlock); */
 	return MaxCopySize;
 }
 
@@ -3016,11 +3025,11 @@ void Set_Mem_CopySizeByStream(enum soc_aud_digital_block MemBlock,
 	struct substream_list *head;
 	unsigned long flags;
 
-	spin_lock_irqsave(&afe_mem_ctrl[MemBlock]->substream_lock,
+	spin_lock_irqsave(&AFE_Mem_Control_context[MemBlock]->substream_lock,
 			  flags);
-	head = afe_mem_ctrl[MemBlock]->substreamL;
+	head = AFE_Mem_Control_context[MemBlock]->substreamL;
 
-	/* printk("+%s MemBlock = %d\n ", __func__, MemBlock); */
+	/* pr_debug("+%s MemBlock = %d\n ", __func__, MemBlock); */
 	while (head != NULL) { /* frst item is NULL */
 		if (head->substream == substream) {
 			head->u4MaxCopySize += size;
@@ -3029,14 +3038,14 @@ void Set_Mem_CopySizeByStream(enum soc_aud_digital_block MemBlock,
 		head = head->next;
 	}
 	spin_unlock_irqrestore(
-		&afe_mem_ctrl[MemBlock]->substream_lock, flags);
-	/* printk("-%s MemBlock = %d\n ", __func__, MemBlock); */
+		&AFE_Mem_Control_context[MemBlock]->substream_lock, flags);
+	/* pr_debug("-%s MemBlock = %d\n ", __func__, MemBlock); */
 }
 
 void Auddrv_UL2_Interrupt_Handler(void)
 {
 	struct afe_mem_control_t *Mem_Block =
-			afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_VUL_DATA2];
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_VUL_DATA2];
 	kal_uint32 HW_Cur_ReadIdx = 0;
 	kal_int32 Hw_Get_bytes = 0;
 	struct afe_block_t *mBlock = NULL;
@@ -3092,8 +3101,8 @@ void Auddrv_UL2_Interrupt_Handler(void)
 			mBlock->u4DataRemained, mBlock->u4BufferSize);
 	}
 
-	afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_VUL_DATA2]
-	->interruptTrigger = 1;
+	AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_VUL_DATA2]
+		->interruptTrigger = 1;
 
 	if (Mem_Block->substreamL != NULL) {
 		if (Mem_Block->substreamL->substream != NULL) {
@@ -3112,7 +3121,7 @@ void Auddrv_UL2_Interrupt_Handler(void)
 void Auddrv_MOD_DAI_Interrupt_Handler(void)
 {
 	struct afe_mem_control_t *Mem_Block =
-			afe_mem_ctrl[Soc_Aud_Digital_Block_MEM_MOD_DAI];
+		AFE_Mem_Control_context[Soc_Aud_Digital_Block_MEM_MOD_DAI];
 	kal_uint32 HW_Cur_ReadIdx = 0;
 	kal_int32 Hw_Get_bytes = 0;
 	struct afe_block_t *mBlock = NULL;
@@ -3150,8 +3159,8 @@ void Auddrv_MOD_DAI_Interrupt_Handler(void)
 
 	if (mBlock->u4DataRemained > mBlock->u4BufferSize) {
 		pr_warn("%s buffer overflow u4DMAReadIdx:%x, u4WriteIdx:%x, u4DataRemained:%x, u4BufferSize:%x\n",
-			__func__, mBlock->u4DMAReadIdx, mBlock->u4WriteIdx,
-			mBlock->u4DataRemained, mBlock->u4BufferSize);
+		       __func__, mBlock->u4DMAReadIdx, mBlock->u4WriteIdx,
+		       mBlock->u4DataRemained, mBlock->u4BufferSize);
 	}
 	Mem_Block->interruptTrigger = 1;
 
@@ -3177,11 +3186,20 @@ unsigned int word_size_align(unsigned int in_size)
 {
 	unsigned int align_size;
 
-	/* sram is device memory, need word size align, 8 byte for 64 bit
-	 * platform
-	 */
-	/* [3:0] = 4'h0 for the convenience of the hardware implementation */
-	align_size = in_size & 0xFFFFFFF0;
+#if defined(CONFIG_MTK_AUDIO_SCP_SPKPROTECT_SUPPORT)
+	if (scp_smartpa_used_flag) {
+		/* SCP use cache. Cache use 32 bytes data alignment */
+		align_size = in_size & 0xFFFFFFE0;
+	} else
+#endif
+	{
+		/* sram is device memory, need word size align,
+		 * 8 byte for 64 bit platform.
+		 * [3:0] = 4'h0 for the convenience of the hardware
+		 * implementation.
+		 */
+		align_size = in_size & 0xFFFFFFF0;
+	}
 
 	return align_size;
 }
@@ -4302,6 +4320,10 @@ get_ulmem_frame_index(struct snd_pcm_substream *substream,
 	 */
 	mem_blk_spinlock(mem_block);
 	spin_lock_irqsave(&afe_mem_control->substream_lock, flags);
+	/* pr_debug("mtk_capture_pcm_pointer UL1_Block->u4WriteIdx= 0x%x,
+	 * u4DataRemained=0x%x\n", UL1_Block->u4WriteIdx,
+	 * UL1_Block->u4DataRemained);
+	 */
 
 	if (GetMemoryPathEnable(mem_block) == true) {
 		switch (mem_block) {
@@ -5041,3 +5063,51 @@ int mtk_pcm_mmap(struct snd_pcm_substream *substream,
 				 runtime->dma_area, runtime->dma_addr,
 				 runtime->dma_bytes);
 }
+
+/* calculate the target DMA-buffer position to be written/read */
+static void *get_dma_ptr(struct snd_pcm_runtime *runtime,
+			 int channel, unsigned long hwoff)
+{
+	return runtime->dma_area + hwoff +
+		channel * (runtime->dma_bytes / runtime->channels);
+}
+
+/* default copy_user ops for write; used for both interleaved and non- modes */
+static int default_write_copy(struct snd_pcm_substream *substream,
+			      int channel, unsigned long hwoff,
+			      void *buf, unsigned long bytes)
+{
+	if (copy_from_user(get_dma_ptr(substream->runtime, channel, hwoff),
+			   (void __user *)buf, bytes))
+		return -EFAULT;
+	return 0;
+}
+
+/* default copy_user ops for read; used for both interleaved and non- modes */
+static int default_read_copy(struct snd_pcm_substream *substream,
+			     int channel, unsigned long hwoff,
+			     void *buf, unsigned long bytes)
+{
+	if (copy_to_user((void __user *)buf,
+			 get_dma_ptr(substream->runtime, channel, hwoff),
+			 bytes))
+		return -EFAULT;
+	return 0;
+}
+
+int mtk_afe_pcm_copy(struct snd_pcm_substream *substream,
+		     int channel, unsigned long hwoff,
+		     void *buf, unsigned long bytes)
+{
+	int (*sp_copy)(struct snd_pcm_substream *substream,
+		       int channel, unsigned long hwoff,
+		       void *buf, unsigned long bytes) = NULL;
+	int is_playback = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
+
+	sp_copy = is_playback ? default_write_copy : default_read_copy;
+	sp_copy(substream, channel, hwoff,
+		(void __user *)buf, bytes);
+
+	return 0;
+}
+

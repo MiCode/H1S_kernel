@@ -594,7 +594,8 @@ int dtSearch(struct inode *ip, struct component_name * key, ino_t * data,
 	struct component_name ciKey;
 	struct super_block *sb = ip->i_sb;
 
-	ciKey.name = kmalloc((JFS_NAME_MAX + 1) * sizeof(wchar_t), GFP_NOFS);
+	ciKey.name = kmalloc_array(JFS_NAME_MAX + 1, sizeof(wchar_t),
+				   GFP_NOFS);
 	if (!ciKey.name) {
 		rc = -ENOMEM;
 		goto dtSearch_Exit2;
@@ -644,6 +645,11 @@ int dtSearch(struct inode *ip, struct component_name * key, ino_t * data,
 		 */
 		for (base = 0, lim = p->header.nextindex; lim; lim >>= 1) {
 			index = base + (lim >> 1);
+
+			if (stbl[index] < 0) {
+				rc = -EIO;
+				goto out;
+			}
 
 			if (p->header.flag & BT_LEAF) {
 				/* uppercase leaf name to compare */
@@ -957,7 +963,7 @@ static int dtSplitUp(tid_t tid,
 	smp = split->mp;
 	sp = DT_PAGE(ip, smp);
 
-	key.name = kmalloc((JFS_NAME_MAX + 2) * sizeof(wchar_t), GFP_NOFS);
+	key.name = kmalloc_array(JFS_NAME_MAX + 2, sizeof(wchar_t), GFP_NOFS);
 	if (!key.name) {
 		DT_PUTPAGE(smp);
 		rc = -ENOMEM;
@@ -1982,7 +1988,7 @@ static int dtSplitRoot(tid_t tid,
 		do {
 			f = &rp->slot[fsi];
 			fsi = f->next;
-		} while (fsi != -1);
+		} while (fsi >= 0);
 
 		f->next = n;
 	}
@@ -3779,12 +3785,12 @@ static int ciGetLeafPrefixKey(dtpage_t * lp, int li, dtpage_t * rp,
 	struct component_name lkey;
 	struct component_name rkey;
 
-	lkey.name = kmalloc((JFS_NAME_MAX + 1) * sizeof(wchar_t),
+	lkey.name = kmalloc_array(JFS_NAME_MAX + 1, sizeof(wchar_t),
 					GFP_KERNEL);
 	if (lkey.name == NULL)
 		return -ENOMEM;
 
-	rkey.name = kmalloc((JFS_NAME_MAX + 1) * sizeof(wchar_t),
+	rkey.name = kmalloc_array(JFS_NAME_MAX + 1, sizeof(wchar_t),
 					GFP_KERNEL);
 	if (rkey.name == NULL) {
 		kfree(lkey.name);

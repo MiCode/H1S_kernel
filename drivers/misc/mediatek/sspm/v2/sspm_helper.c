@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2011-2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #include <linux/module.h>       /* needed by all modules */
@@ -42,6 +34,7 @@
 #include "sspm_ipi_table.h"
 #include "sspm_sysfs.h"
 #include "sspm_reservedmem.h"
+#include "sspm_timesync.h"
 
 #define SEM_TIMEOUT	5000
 #define SSPM_INIT_FLAG	0x1
@@ -220,6 +213,25 @@ static int sspm_device_probe(struct platform_device *pdev)
 }
 EXPORT_SYMBOL_GPL(sspm_ipidev);
 
+#ifdef CONFIG_PM
+static int sspm_suspend(struct device *dev)
+{
+	sspm_timesync_suspend();
+	return 0;
+}
+
+static int sspm_resume(struct device *dev)
+{
+	sspm_timesync_resume();
+	return 0;
+}
+
+static const struct dev_pm_ops sspm_dev_pm_ops = {
+	.suspend = sspm_suspend,
+	.resume  = sspm_resume,
+};
+#endif
+
 static const struct of_device_id sspm_of_match[] = {
 	{ .compatible = "mediatek,sspm", },
 	{},
@@ -240,6 +252,9 @@ static struct platform_driver mtk_sspm_driver = {
 		.name = "sspm",
 		.owner = THIS_MODULE,
 		.of_match_table = sspm_of_match,
+#ifdef CONFIG_PM
+		.pm = &sspm_dev_pm_ops,
+#endif
 	},
 	.id_table = sspm_id_table,
 };
@@ -299,6 +314,13 @@ static int __init sspm_module_init(void)
 		return -1;
 	}
 	pr_info("SSPM platform service is ready\n");
+#endif
+
+#if SSPM_TIMESYNC_SUPPORT
+	if (sspm_timesync_init()) {
+		pr_err("[SSPM] Timesync Init Failed\n");
+		return -1;
+	}
 #endif
 
 	sspm_lock_emi_mpu();

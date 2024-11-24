@@ -32,6 +32,7 @@
 
 #include <rdma/ib_umem.h>
 #include <rdma/ib_umem_odp.h>
+#include <linux/kernel.h>
 
 #include "mlx5_ib.h"
 #include "cmd.h"
@@ -487,7 +488,7 @@ void mlx5_ib_free_implicit_mr(struct mlx5_ib_mr *imr)
 
 	down_read(&ctx->umem_rwsem);
 	rbt_ib_umem_for_each_in_range(&ctx->umem_tree, 0, ULLONG_MAX,
-				      mr_leaf_free, imr);
+				      mr_leaf_free, true, imr);
 	up_read(&ctx->umem_rwsem);
 
 	wait_event(imr->q_leaf_free, !atomic_read(&imr->num_leaf_free));
@@ -496,7 +497,7 @@ void mlx5_ib_free_implicit_mr(struct mlx5_ib_mr *imr)
 static int pagefault_mr(struct mlx5_ib_dev *dev, struct mlx5_ib_mr *mr,
 			u64 io_virt, size_t bcnt, u32 *bytes_mapped)
 {
-	u64 access_mask = ODP_READ_ALLOWED_BIT;
+	u64 access_mask;
 	int npages = 0, page_shift, np;
 	u64 start_idx, page_mask;
 	struct ib_umem_odp *odp;
@@ -521,6 +522,7 @@ next_mr:
 	page_shift = mr->umem->page_shift;
 	page_mask = ~(BIT(page_shift) - 1);
 	start_idx = (io_virt - (mr->mmkey.iova & page_mask)) >> page_shift;
+	access_mask = ODP_READ_ALLOWED_BIT;
 
 	if (mr->umem->writable)
 		access_mask |= ODP_WRITE_ALLOWED_BIT;
@@ -930,9 +932,8 @@ static int mlx5_ib_mr_initiator_pfault_handler(
 		return -EFAULT;
 	}
 
-	if (unlikely(opcode >= sizeof(mlx5_ib_odp_opcode_cap) /
-	    sizeof(mlx5_ib_odp_opcode_cap[0]) ||
-	    !(transport_caps & mlx5_ib_odp_opcode_cap[opcode]))) {
+	if (unlikely(opcode >= ARRAY_SIZE(mlx5_ib_odp_opcode_cap) ||
+		     !(transport_caps & mlx5_ib_odp_opcode_cap[opcode]))) {
 		mlx5_ib_err(dev, "ODP fault on QP of an unsupported opcode 0x%x\n",
 			    opcode);
 		return -EFAULT;
@@ -1208,10 +1209,6 @@ int mlx5_ib_odp_init_one(struct mlx5_ib_dev *dev)
 {
 	int ret;
 
-	ret = init_srcu_struct(&dev->mr_srcu);
-	if (ret)
-		return ret;
-
 	if (dev->odp_caps.general_caps & IB_ODP_SUPPORT_IMPLICIT) {
 		ret = mlx5_cmd_null_mkey(dev->mdev, &dev->null_mkey);
 		if (ret) {
@@ -1221,11 +1218,6 @@ int mlx5_ib_odp_init_one(struct mlx5_ib_dev *dev)
 	}
 
 	return 0;
-}
-
-void mlx5_ib_odp_remove_one(struct mlx5_ib_dev *dev)
-{
-	cleanup_srcu_struct(&dev->mr_srcu);
 }
 
 int mlx5_ib_odp_init(void)

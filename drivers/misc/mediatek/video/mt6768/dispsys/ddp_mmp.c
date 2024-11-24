@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 
 #define LOG_TAG "MMP"
@@ -686,6 +678,7 @@ void ddp_mmp_ovl_layer(struct OVL_CONFIG_STRUCT *pLayer,
 #endif
 		}
 	} else {
+		memset(&meta, 0, sizeof(struct mmp_metadata_t));
 		meta.data_type = MMPROFILE_META_RAW;
 		meta.size = pLayer->src_pitch * pLayer->src_h;
 		if (disp_mva_map_kernel(module, pLayer->addr,
@@ -800,6 +793,7 @@ void ddp_mmp_wdma_layer(struct WDMA_CONFIG_STRUCT *wdma_layer,
 				wdma_layer->outputFormat);
 		}
 	} else {
+		memset(&meta, 0, sizeof(struct mmp_metadata_t));
 		meta.data_type = MMPROFILE_META_RAW;
 		meta.size = wdma_layer->dstPitch * wdma_layer->srcHeight;
 		if (disp_mva_map_kernel(DISP_MODULE_WDMA0,
@@ -904,6 +898,7 @@ void ddp_mmp_rdma_layer(struct RDMA_CONFIG_STRUCT *rdma_layer,
 			       rdma_layer->inputFormat);
 		}
 	} else {
+		memset(&meta, 0, sizeof(struct mmp_metadata_t));
 		meta.data_type = MMPROFILE_META_RAW;
 		meta.size = rdma_layer->pitch * rdma_layer->height;
 		if (disp_mva_map_kernel(module, rdma_layer->address,

@@ -408,26 +408,29 @@ static ssize_t thunderx_lmc_inject_ecc_write(struct file *file,
 					     size_t count, loff_t *ppos)
 {
 	struct thunderx_lmc *lmc = file->private_data;
-
 	unsigned int cline_size = cache_line_size();
-
-	u8 tmp[cline_size];
+	u8 *tmp;
 	void __iomem *addr;
 	unsigned int offs, timeout = 100000;
 
 	atomic_set(&lmc->ecc_int, 0);
 
 	lmc->mem = alloc_pages_node(lmc->node, GFP_KERNEL, 0);
-
 	if (!lmc->mem)
 		return -ENOMEM;
+
+	tmp = kmalloc(cline_size, GFP_KERNEL);
+	if (!tmp) {
+		__free_pages(lmc->mem, 0);
+		return -ENOMEM;
+	}
 
 	addr = page_address(lmc->mem);
 
 	while (!atomic_read(&lmc->ecc_int) && timeout--) {
 		stop_machine(inject_ecc_fn, lmc, NULL);
 
-		for (offs = 0; offs < PAGE_SIZE; offs += sizeof(tmp)) {
+		for (offs = 0; offs < PAGE_SIZE; offs += cline_size) {
 			/*
 			 * Do a load from the previously rigged location
 			 * This should generate an error interrupt.
@@ -437,6 +440,7 @@ static ssize_t thunderx_lmc_inject_ecc_write(struct file *file,
 		}
 	}
 
+	kfree(tmp);
 	__free_pages(lmc->mem, 0);
 
 	return count;
@@ -639,27 +643,6 @@ err_free:
 	return ret;
 }
 
-#ifdef CONFIG_PM
-static int thunderx_lmc_suspend(struct pci_dev *pdev, pm_message_t state)
-{
-	pci_save_state(pdev);
-	pci_disable_device(pdev);
-
-	pci_set_power_state(pdev, pci_choose_state(pdev, state));
-
-	return 0;
-}
-
-static int thunderx_lmc_resume(struct pci_dev *pdev)
-{
-	pci_set_power_state(pdev, PCI_D0);
-	pci_enable_wake(pdev, PCI_D0, 0);
-	pci_restore_state(pdev);
-
-	return 0;
-}
-#endif
-
 static const struct pci_device_id thunderx_lmc_pci_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_CAVIUM, PCI_DEVICE_ID_THUNDER_LMC) },
 	{ 0, },
@@ -834,10 +817,6 @@ static struct pci_driver thunderx_lmc_driver = {
 	.name     = "thunderx_lmc_edac",
 	.probe    = thunderx_lmc_probe,
 	.remove   = thunderx_lmc_remove,
-#ifdef CONFIG_PM
-	.suspend  = thunderx_lmc_suspend,
-	.resume   = thunderx_lmc_resume,
-#endif
 	.id_table = thunderx_lmc_pci_tbl,
 };
 
@@ -1154,7 +1133,7 @@ static irqreturn_t thunderx_ocx_com_threaded_isr(int irq, void *irq_id)
 		decode_register(other, OCX_OTHER_SIZE,
 				ocx_com_errors, ctx->reg_com_int);
 
-		strncat(msg, other, OCX_MESSAGE_SIZE);
+		strlcat(msg, other, OCX_MESSAGE_SIZE);
 
 		for (lane = 0; lane < OCX_RX_LANES; lane++)
 			if (ctx->reg_com_int & BIT(lane)) {
@@ -1163,12 +1142,12 @@ static irqreturn_t thunderx_ocx_com_threaded_isr(int irq, void *irq_id)
 					 lane, ctx->reg_lane_int[lane],
 					 lane, ctx->reg_lane_stat11[lane]);
 
-				strncat(msg, other, OCX_MESSAGE_SIZE);
+				strlcat(msg, other, OCX_MESSAGE_SIZE);
 
 				decode_register(other, OCX_OTHER_SIZE,
 						ocx_lane_errors,
 						ctx->reg_lane_int[lane]);
-				strncat(msg, other, OCX_MESSAGE_SIZE);
+				strlcat(msg, other, OCX_MESSAGE_SIZE);
 			}
 
 		if (ctx->reg_com_int & OCX_COM_INT_CE)
@@ -1238,7 +1217,7 @@ static irqreturn_t thunderx_ocx_lnk_threaded_isr(int irq, void *irq_id)
 		decode_register(other, OCX_OTHER_SIZE,
 				ocx_com_link_errors, ctx->reg_com_link_int);
 
-		strncat(msg, other, OCX_MESSAGE_SIZE);
+		strlcat(msg, other, OCX_MESSAGE_SIZE);
 
 		if (ctx->reg_com_link_int & OCX_COM_LINK_INT_UE)
 			edac_device_handle_ue(ocx->edac_dev, 0, 0, msg);
@@ -1917,7 +1896,7 @@ static irqreturn_t thunderx_l2c_threaded_isr(int irq, void *irq_id)
 
 		decode_register(other, L2C_OTHER_SIZE, l2_errors, ctx->reg_int);
 
-		strncat(msg, other, L2C_MESSAGE_SIZE);
+		strlcat(msg, other, L2C_MESSAGE_SIZE);
 
 		if (ctx->reg_int & mask_ue)
 			edac_device_handle_ue(l2c->edac_dev, 0, 0, msg);

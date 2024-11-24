@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __IMGSENSOR_HW_GPIO_H__
@@ -31,6 +23,10 @@ enum GPIO_CTRL_STATE_CAM {
 	GPIO_CTRL_STATE_RST_L,
 	GPIO_CTRL_STATE_LDO_VCAMA_H,
 	GPIO_CTRL_STATE_LDO_VCAMA_L,
+#ifdef CONFIG_REGULATOR_RT5133
+	GPIO_CTRL_STATE_LDO_VCAMA1_H,
+	GPIO_CTRL_STATE_LDO_VCAMA1_L,
+#endif
 	GPIO_CTRL_STATE_LDO_VCAMD_H,
 	GPIO_CTRL_STATE_LDO_VCAMD_L,
 	GPIO_CTRL_STATE_LDO_VCAMIO_H,

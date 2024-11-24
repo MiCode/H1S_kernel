@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -44,13 +36,16 @@
 #define MAX(a, b)			((a) >= (b) ? (a) : (b))
 #define MIN(a, b)			((a) >= (b) ? (b) : (a))
 
+#define SWPM_OPS (swpm_m.plat_ops)
 /****************************************************************************
  *  Type Definitions
  ****************************************************************************/
 struct swpm_manager {
 	bool initialize;
+	bool plat_ready;
 	struct swpm_mem_ref_tbl *mem_ref_tbl;
 	unsigned int ref_tbl_size;
+	struct swpm_core_internal_ops *plat_ops;
 };
 
 /****************************************************************************
@@ -58,6 +53,7 @@ struct swpm_manager {
  ****************************************************************************/
 static struct swpm_manager swpm_m = {
 	.initialize = 0,
+	.plat_ready = 0,
 	.mem_ref_tbl = NULL,
 	.ref_tbl_size = 0,
 };
@@ -423,9 +419,48 @@ PROC_FOPS_RW(avg_window);
 PROC_FOPS_RW(log_interval);
 PROC_FOPS_RW(log_mask);
 
+static int swpm_core_ops_ready_chk(void)
+{
+	bool func_ready = false;
+	struct swpm_core_internal_ops *ops_chk = swpm_m.plat_ops;
+
+	if (ops_chk &&
+	    ops_chk->cmd)
+		func_ready = true;
+
+	return func_ready;
+}
 /***************************************************************************
  *  API
  ***************************************************************************/
+int swpm_core_ops_register(struct swpm_core_internal_ops *ops)
+{
+	if (!swpm_m.plat_ops && ops) {
+		swpm_m.plat_ops = ops;
+		swpm_m.plat_ready = swpm_core_ops_ready_chk();
+	} else
+		return -1;
+
+	return 0;
+}
+
+#undef swpm_pmu_enable
+int swpm_pmu_enable(enum swpm_pmu_user id,
+		    unsigned int enable)
+{
+	unsigned int cmd_code;
+
+	if (!swpm_m.plat_ready)
+		return SWPM_INIT_ERR;
+	else if (id >= NR_SWPM_PMU_USER)
+		return SWPM_ARGS_ERR;
+
+	cmd_code = (!!enable) | (id << SWPM_CODE_USER_BIT);
+	SWPM_OPS->cmd(SET_PMU, cmd_code);
+
+	return SWPM_SUCCESS;
+}
+
 int swpm_append_procfs(struct swpm_entry *p)
 {
 	if (!swpm_dir) {
@@ -533,25 +568,25 @@ int swpm_interface_manager_init(struct swpm_mem_ref_tbl *ref_tbl,
 
 	return 0;
 }
+void swpm_update_periodic_timer(void)
+{
+	mod_timer(&swpm_timer, jiffies + msecs_to_jiffies(log_interval_ms));
+}
 
-int swpm_set_periodic_timer(void (*func)(unsigned long))
+int swpm_set_periodic_timer(void (*func)(struct timer_list *))
 {
 	swpm_lock(&swpm_mutex);
 
 	if (func != NULL) {
 		swpm_timer.function = func;
-		swpm_timer.data = (unsigned long)&swpm_timer;
-		init_timer_deferrable(&swpm_timer);
+		//init_timer_deferrable(&swpm_timer);
+		timer_setup(&swpm_timer,func,0);
 	}
 	swpm_unlock(&swpm_mutex);
 
 	return 0;
 }
 
-void swpm_update_periodic_timer(void)
-{
-	mod_timer(&swpm_timer, jiffies + msecs_to_jiffies(log_interval_ms));
-}
 
 int swpm_mem_addr_request(enum swpm_type id, phys_addr_t **ptr)
 {

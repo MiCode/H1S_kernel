@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 /* system includes */
 #include <linux/kernel.h>
@@ -65,7 +57,7 @@
 
 #ifdef USE_CPU_TO_DRAM_MAP
 static struct delayed_work cm_mgr_work;
-static struct pm_qos_request ddr_opp_req_by_cpu_opp;
+static struct mtk_pm_qos_request ddr_opp_req_by_cpu_opp;
 static int cm_mgr_cpu_to_dram_opp;
 
 static void cm_mgr_process(struct work_struct *work);
@@ -623,7 +615,7 @@ static struct notifier_block cm_mgr_idle_notify = {
 struct timer_list cm_mgr_ratio_timer;
 #define CM_MGR_RATIO_TIMER_MS	msecs_to_jiffies(1)
 
-static void cm_mgr_ratio_timer_fn(unsigned long data)
+static void cm_mgr_ratio_timer_fn(struct timer_list *unused)
 {
 	int i;
 
@@ -650,7 +642,7 @@ void cm_mgr_ratio_timer_en(int enable)
 
 #define PERF_TIME 3000
 
-static struct pm_qos_request ddr_opp_req;
+static struct mtk_pm_qos_request ddr_opp_req;
 static ktime_t perf_now;
 void cm_mgr_perf_platform_set_status(int enable)
 {
@@ -665,12 +657,12 @@ void cm_mgr_perf_platform_set_status(int enable)
 		if (cm_mgr_dram_opp_base == -1) {
 			cm_mgr_dram_opp = 0;
 			cm_mgr_dram_opp_base = cm_mgr_get_dram_opp();
-			pm_qos_update_request(&ddr_opp_req,
+			mtk_pm_qos_update_request(&ddr_opp_req,
 					cm_mgr_dram_opp);
 		} else {
 			if (cm_mgr_dram_opp > 0) {
 				cm_mgr_dram_opp--;
-				pm_qos_update_request(&ddr_opp_req,
+				mtk_pm_qos_update_request(&ddr_opp_req,
 						cm_mgr_dram_opp);
 			}
 		}
@@ -692,12 +684,12 @@ void cm_mgr_perf_platform_set_status(int enable)
 			cm_mgr_dram_opp = cm_mgr_dram_opp_base *
 				debounce_times_perf_down_local /
 				debounce_times_perf_down;
-			pm_qos_update_request(&ddr_opp_req,
+			mtk_pm_qos_update_request(&ddr_opp_req,
 					cm_mgr_dram_opp);
 		} else {
 			cm_mgr_dram_opp = cm_mgr_dram_opp_base = -1;
-			pm_qos_update_request(&ddr_opp_req,
-					PM_QOS_DDR_OPP_DEFAULT_VALUE);
+			mtk_pm_qos_update_request(&ddr_opp_req,
+					MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE);
 
 			pm_qos_update_request_status = enable;
 			debounce_times_perf_down_local = -1;
@@ -719,12 +711,12 @@ void cm_mgr_perf_platform_set_force_status(int enable)
 		if (cm_mgr_dram_opp_base == -1) {
 			cm_mgr_dram_opp = 0;
 			cm_mgr_dram_opp_base = cm_mgr_get_dram_opp();
-			pm_qos_update_request(&ddr_opp_req,
+			mtk_pm_qos_update_request(&ddr_opp_req,
 					cm_mgr_dram_opp);
 		} else {
 			if (cm_mgr_dram_opp > 0) {
 				cm_mgr_dram_opp--;
-				pm_qos_update_request(&ddr_opp_req,
+				mtk_pm_qos_update_request(&ddr_opp_req,
 						cm_mgr_dram_opp);
 			}
 		}
@@ -745,12 +737,12 @@ void cm_mgr_perf_platform_set_force_status(int enable)
 				cm_mgr_dram_opp = cm_mgr_dram_opp_base *
 					debounce_times_perf_down_force_local /
 					debounce_times_perf_force_down;
-				pm_qos_update_request(&ddr_opp_req,
+				mtk_pm_qos_update_request(&ddr_opp_req,
 						cm_mgr_dram_opp);
 			} else {
 				cm_mgr_dram_opp = cm_mgr_dram_opp_base = -1;
-				pm_qos_update_request(&ddr_opp_req,
-						PM_QOS_DDR_OPP_DEFAULT_VALUE);
+				mtk_pm_qos_update_request(&ddr_opp_req,
+						MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE);
 
 				pm_qos_update_request_status = enable;
 				debounce_times_perf_down_force_local = -1;
@@ -793,8 +785,8 @@ int cm_mgr_register_init(void)
 #ifdef USE_CPU_TO_DRAM_MAP
 static void cm_mgr_add_cpu_opp_to_ddr_req(void)
 {
-	pm_qos_add_request(&ddr_opp_req_by_cpu_opp, PM_QOS_DDR_OPP,
-			PM_QOS_DDR_OPP_DEFAULT_VALUE);
+	mtk_pm_qos_add_request(&ddr_opp_req_by_cpu_opp, MTK_PM_QOS_DDR_OPP,
+			MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE);
 }
 #endif /* USE_CPU_TO_DRAM_MAP */
 
@@ -827,16 +819,15 @@ int cm_mgr_platform_init(void)
 	mtk_idle_notifier_register(&cm_mgr_idle_notify);
 #endif /* USE_IDLE_NOTIFY */
 
-	init_timer_deferrable(&cm_mgr_ratio_timer);
-	cm_mgr_ratio_timer.function = cm_mgr_ratio_timer_fn;
-	cm_mgr_ratio_timer.data = 0;
+	timer_setup(&cm_mgr_ratio_timer, cm_mgr_ratio_timer_fn, 0);
+	//timer_setup(&cm_mgr_perf_timeout_timer, cm_mgr_perf_timeout_timer_fn, 0);
 
 #ifdef CONFIG_MTK_CPU_FREQ
 	mt_cpufreq_set_governor_freq_registerCB(check_cm_mgr_status);
 #endif /* CONFIG_MTK_CPU_FREQ */
 
-	pm_qos_add_request(&ddr_opp_req, PM_QOS_DDR_OPP,
-			PM_QOS_DDR_OPP_DEFAULT_VALUE);
+	mtk_pm_qos_add_request(&ddr_opp_req, MTK_PM_QOS_DDR_OPP,
+			MTK_PM_QOS_DDR_OPP_DEFAULT_VALUE);
 
 	vcore_opp_bw = vcore_opp_bw_ptr(cm_mgr_get_idx());
 
@@ -915,7 +906,7 @@ static int cm_mgr_cpu_opp_to_dram[CM_MGR_CPU_OPP_SIZE] = {
 
 static void cm_mgr_process(struct work_struct *work)
 {
-	pm_qos_update_request(&ddr_opp_req_by_cpu_opp, cm_mgr_cpu_to_dram_opp);
+	mtk_pm_qos_update_request(&ddr_opp_req_by_cpu_opp, cm_mgr_cpu_to_dram_opp);
 }
 
 void cm_mgr_update_dram_by_cpu_opp(int cpu_opp)

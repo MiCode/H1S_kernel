@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 struct seq_file;
@@ -19,11 +11,23 @@ struct seq_file;
 #define clk_setl(addr, val)	clk_writel(addr, clk_readl(addr) | (val))
 #define clk_clrl(addr, val)	clk_writel(addr, clk_readl(addr) & ~(val))
 
+enum PWR_STA_TYPE {
+	PWR_STA,
+	PWR_STA2,
+	XPU_PWR_STA,
+	XPU_PWR_STA2,
+	OTHER_PWR_STA,
+	STA_NUM,
+};
+
+
+
 enum FMETER_TYPE {
 	FT_NULL,
 	ABIST,
 	CKGEN,
 	ABIST_2,
+	SUBSYS,
 };
 
 struct fmeter_clk {
@@ -32,6 +36,7 @@ struct fmeter_clk {
 	const char *name;
 	u32 ofs;
 	u32 pdn;
+	u32 grp;
 };
 
 struct regbase {
@@ -65,6 +70,7 @@ struct provider_clk {
 	u32 idx;
 	struct clk *ck;
 	u32 pwr_mask;
+	u32 sta_type;
 };
 
 struct clkdbg_ops {
@@ -77,6 +83,7 @@ struct clkdbg_ops {
 	const char * const *(*get_pwr_names)(void);
 	void (*setup_provider_clk)(struct provider_clk *pvdck);
 	u32 (*get_spm_pwr_status)(void);
+	u32 *(*get_spm_pwr_status_array)(void);
 	bool (*is_pwr_on)(struct provider_clk *pvdck);
 };
 

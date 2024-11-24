@@ -1,22 +1,72 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+* Copyright (C) 2021 MediaTek Inc.
+*/
 
 #ifndef _MT_PMIC_COMMON_H_
 #define _MT_PMIC_COMMON_H_
 
 #include <linux/types.h>
+#if defined(CONFIG_MACH_MT8173)
 #include <mach/upmu_sw.h>
 #include <mach/upmu_hw.h>
+#endif
+
+#if defined(CONFIG_MACH_MT6739)
+#include <mach/upmu_sw.h>
+#include <mach/upmu_hw.h>
+#endif
+
+#if defined(CONFIG_MACH_MT6768)
+#include <mach/upmu_sw.h>
+#include <mach/upmu_hw.h>
+#endif
+
+#if defined(CONFIG_MACH_MT6771)
+#include <mach/upmu_sw.h>
+#include <mach/upmu_hw.h>
+#endif
+
+#if defined(CONFIG_MACH_MT6781)
+#include <mach/upmu_sw.h>
+#include <mach/upmu_hw.h>
+#endif
+
+#if defined(CONFIG_MACH_MT6785)
+#include <mach/upmu_sw.h>
+#include <mach/upmu_hw.h>
+#endif
+
+#if defined(CONFIG_MACH_MT6877)
+#include <mach/upmu_sw.h>
+#include <mach/upmu_hw.h>
+#endif
+
+#if defined(CONFIG_MACH_MT6833)
+#include <mach/upmu_sw.h>
+#include <mach/upmu_hw.h>
+#endif
+
+
+#if defined(CONFIG_MACH_MT6873)
+#include <mach/upmu_sw.h>
+#include <mach/upmu_hw.h>
+#endif
+
+#if defined(CONFIG_MACH_MT6853)
+#include <mach/upmu_sw.h>
+#include <mach/upmu_hw.h>
+#endif
+
+#if defined(CONFIG_MACH_MT6893)
+#include "mt6885/include/mach/upmu_sw.h"
+#include "mt6885/include/mach/upmu_hw.h"
+#endif
+
+#if defined(CONFIG_MACH_MT6885)
+#include "mt6885/include/mach/upmu_sw.h"
+#include "mt6885/include/mach/upmu_hw.h"
+#endif
 
 #define MAX_DEVICE      32
 #define MAX_MOD_NAME    32
@@ -135,34 +185,6 @@ extern signed int g_I_SENSE_offset;
 /*
  * PMIC extern functions
  */
-#if (!defined(CONFIG_MTK_PMIC_COMMON) && !defined(CONFIG_MACH_MT8167))
-static inline unsigned int pmic_read_interface(unsigned int RegNum,
-	unsigned int *val, unsigned int MASK, unsigned int SHIFT)
-{
-	return 0;
-}
-static inline unsigned int pmic_config_interface(unsigned int RegNum,
-	unsigned int *val, unsigned int MASK, unsigned int SHIFT)
-{
-	return 0;
-}
-static inline unsigned short pmic_set_register_value(
-	PMU_FLAGS_LIST_ENUM flagname, unsigned int val)
-{
-	return 0;
-}
-static inline unsigned short pmic_get_register_value(
-	PMU_FLAGS_LIST_ENUM flagname)
-{
-	return 0;
-}
-static inline void upmu_set_reg_value(
-	unsigned int reg, unsigned int reg_val) {}
-static inline unsigned int upmu_get_reg_value(unsigned int reg)
-{
-	return 0;
-}
-#else
 extern unsigned int pmic_read_interface(unsigned int RegNum,
 					unsigned int *val,
 					unsigned int MASK,
@@ -183,7 +205,7 @@ extern unsigned int pmic_config_interface_nospinlock(unsigned int RegNum,
 	unsigned int val,
 	unsigned int MASK,
 	unsigned int SHIFT);
-#ifndef CONFIG_MACH_MT8167
+#ifdef CONFIG_MTK_PMIC_COMMON
 extern unsigned short pmic_set_register_value(PMU_FLAGS_LIST_ENUM flagname,
 					      unsigned int val);
 extern unsigned short pmic_get_register_value(PMU_FLAGS_LIST_ENUM flagname);
@@ -201,7 +223,6 @@ extern unsigned short bc11_get_register_value(PMU_FLAGS_LIST_ENUM flagname);
 #endif
 extern void upmu_set_reg_value(unsigned int reg, unsigned int reg_val);
 extern unsigned int upmu_get_reg_value(unsigned int reg);
-#endif
 extern void pmic_lock(void);
 extern void pmic_unlock(void);
 
@@ -211,7 +232,7 @@ extern void pmic_enable_interrupt(unsigned int intNo,
 extern void pmic_mask_interrupt(unsigned int intNo, char *str);
 extern void pmic_unmask_interrupt(unsigned int intNo, char *str);
 extern void pmic_register_interrupt_callback(unsigned int intNo
-				, void(EINT_FUNC_PTR)(void));
+				, void (EINT_FUNC_PTR)(void));
 
 extern unsigned short is_battery_remove_pmic(void);
 
@@ -221,7 +242,6 @@ extern void unlockadcch3(void);
 extern unsigned int pmic_Read_Efuse_HPOffset(int i);
 extern void Charger_Detect_Init(void);
 extern void Charger_Detect_Release(void);
-extern void usb_dpdm_pulldown(bool enable);
 
 extern int get_dlpt_imix_spm(void);
 extern int get_dlpt_imix(void);

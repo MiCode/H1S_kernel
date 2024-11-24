@@ -118,6 +118,13 @@ done:
 	return nfsd_return_attrs(nfserr, resp);
 }
 
+/* Obsolete, replaced by MNTPROC_MNT. */
+static __be32
+nfsd_proc_root(struct svc_rqst *rqstp)
+{
+	return nfs_ok;
+}
+
 /*
  * Look up a path name component
  * Note: the dentry in the resp->fh may be negative if the file
@@ -201,6 +208,13 @@ nfsd_proc_read(struct svc_rqst *rqstp)
 	return fh_getattr(&resp->fh, &resp->stat);
 }
 
+/* Reserved */
+static __be32
+nfsd_proc_writecache(struct svc_rqst *rqstp)
+{
+	return nfs_ok;
+}
+
 /*
  * Write data to a file
  * N.B. After this call resp->fh needs an fh_put
@@ -212,13 +226,19 @@ nfsd_proc_write(struct svc_rqst *rqstp)
 	struct nfsd_attrstat *resp = rqstp->rq_resp;
 	__be32	nfserr;
 	unsigned long cnt = argp->len;
+	unsigned int nvecs;
 
-	dprintk("nfsd: WRITE    %s %d bytes at %d\n",
+	dprintk("nfsd: WRITE    %s %u bytes at %d\n",
 		SVCFH_fmt(&argp->fh),
 		argp->len, argp->offset);
 
-	nfserr = nfsd_write(rqstp, fh_copy(&resp->fh, &argp->fh), argp->offset,
-				rqstp->rq_vec, argp->vlen, &cnt, NFS_DATA_SYNC);
+	nvecs = svc_fill_write_vector(rqstp, rqstp->rq_arg.pages,
+				      &argp->first, cnt);
+	if (!nvecs)
+		return nfserr_io;
+	nfserr = nfsd_write(rqstp, fh_copy(&resp->fh, &argp->fh),
+			    argp->offset, rqstp->rq_vec, nvecs,
+			    &cnt, NFS_DATA_SYNC);
 	return nfsd_return_attrs(nfserr, resp);
 }
 
@@ -444,20 +464,24 @@ nfsd_proc_symlink(struct svc_rqst *rqstp)
 	struct svc_fh	newfh;
 	__be32		nfserr;
 
+	if (argp->tlen > NFS_MAXPATHLEN)
+		return nfserr_nametoolong;
+
+	argp->tname = svc_fill_symlink_pathname(rqstp, &argp->first,
+						page_address(rqstp->rq_arg.pages[0]),
+						argp->tlen);
+	if (IS_ERR(argp->tname))
+		return nfserrno(PTR_ERR(argp->tname));
+
 	dprintk("nfsd: SYMLINK  %s %.*s -> %.*s\n",
 		SVCFH_fmt(&argp->ffh), argp->flen, argp->fname,
 		argp->tlen, argp->tname);
 
 	fh_init(&newfh, NFS_FHSIZE);
-	/*
-	 * Crazy hack: the request fits in a page, and already-decoded
-	 * attributes follow argp->tname, so it's safe to just write a
-	 * null to ensure it's null-terminated:
-	 */
-	argp->tname[argp->tlen] = '\0';
 	nfserr = nfsd_symlink(rqstp, &argp->ffh, argp->fname, argp->flen,
 						 argp->tname, &newfh);
 
+	kfree(argp->tname);
 	fh_put(&argp->ffh);
 	fh_put(&newfh);
 	return nfserr;
@@ -605,6 +629,7 @@ static const struct svc_procedure nfsd_procedures2[18] = {
 		.pc_xdrressize = ST+AT,
 	},
 	[NFSPROC_ROOT] = {
+		.pc_func = nfsd_proc_root,
 		.pc_decode = nfssvc_decode_void,
 		.pc_encode = nfssvc_encode_void,
 		.pc_argsize = sizeof(struct nfsd_void),
@@ -642,6 +667,7 @@ static const struct svc_procedure nfsd_procedures2[18] = {
 		.pc_xdrressize = ST+AT+1+NFSSVC_MAXBLKSIZE_V2/4,
 	},
 	[NFSPROC_WRITECACHE] = {
+		.pc_func = nfsd_proc_writecache,
 		.pc_decode = nfssvc_decode_void,
 		.pc_encode = nfssvc_encode_void,
 		.pc_argsize = sizeof(struct nfsd_void),

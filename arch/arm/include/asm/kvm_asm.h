@@ -66,7 +66,12 @@ extern void __kvm_tlb_flush_vmid_ipa(struct kvm *kvm, phys_addr_t ipa);
 extern void __kvm_tlb_flush_vmid(struct kvm *kvm);
 extern void __kvm_tlb_flush_local_vmid(struct kvm_vcpu *vcpu);
 
-extern int __kvm_vcpu_run(struct kvm_vcpu *vcpu);
+extern void __kvm_timer_set_cntvoff(u32 cntvoff_low, u32 cntvoff_high);
+
+/* no VHE on 32-bit :( */
+static inline int kvm_vcpu_run_vhe(struct kvm_vcpu *vcpu) { BUG(); return 0; }
+
+extern int __kvm_vcpu_run_nvhe(struct kvm_vcpu *vcpu);
 
 extern void __init_stage2_translation(void);
 

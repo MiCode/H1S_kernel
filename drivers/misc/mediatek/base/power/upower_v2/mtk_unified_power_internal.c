@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -84,8 +76,8 @@ void print_diff_results(unsigned int type)
 
 	if (idx >= TEST_TIMES) {
 		for (i = 0; i < TEST_TIMES; i++) {
-			/* upower_debug("type=%d (%d) diff=%u\n", type,
-			 * i, upower_diff[type][i]);
+			/* upower_debug("type=%d (%d) diff=%u\n", type, i,
+			 * upower_diff[type][i]);
 			 */
 			sum += upower_diff[type][i];
 		}

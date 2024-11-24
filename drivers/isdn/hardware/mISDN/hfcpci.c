@@ -301,8 +301,9 @@ reset_hfcpci(struct hfc_pci *hc)
  * Timer function called when kernel timer expires
  */
 static void
-hfcpci_Timer(struct hfc_pci *hc)
+hfcpci_Timer(struct timer_list *t)
 {
+	struct hfc_pci *hc = from_timer(hc, t, hw.timer);
 	hc->hw.timer.expires = jiffies + 75;
 	/* WD RESET */
 /*
@@ -1241,7 +1242,7 @@ hfcpci_int(int intno, void *dev_id)
  * timer callback for D-chan busy resolution. Currently no function
  */
 static void
-hfcpci_dbusy_timer(struct hfc_pci *hc)
+hfcpci_dbusy_timer(struct timer_list *t)
 {
 }
 
@@ -1295,6 +1296,7 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 	case (-1): /* used for init */
 		bch->state = -1;
 		bch->nr = bc;
+		/* fall through */
 	case (ISDN_P_NONE):
 		if (bch->state == ISDN_P_NONE)
 			return 0;
@@ -1631,16 +1633,19 @@ hfcpci_l2l1D(struct mISDNchannel *ch, struct sk_buff *skb)
 		test_and_clear_bit(FLG_L2_ACTIVATED, &dch->Flags);
 		spin_lock_irqsave(&hc->lock, flags);
 		if (hc->hw.protocol == ISDN_P_NT_S0) {
+			struct sk_buff_head free_queue;
+
+			__skb_queue_head_init(&free_queue);
 			/* prepare deactivation */
 			Write_hfc(hc, HFCPCI_STATES, 0x40);
-			skb_queue_purge(&dch->squeue);
+			skb_queue_splice_init(&dch->squeue, &free_queue);
 			if (dch->tx_skb) {
-				dev_kfree_skb(dch->tx_skb);
+				__skb_queue_tail(&free_queue, dch->tx_skb);
 				dch->tx_skb = NULL;
 			}
 			dch->tx_idx = 0;
 			if (dch->rx_skb) {
-				dev_kfree_skb(dch->rx_skb);
+				__skb_queue_tail(&free_queue, dch->rx_skb);
 				dch->rx_skb = NULL;
 			}
 			test_and_clear_bit(FLG_TX_BUSY, &dch->Flags);
@@ -1653,10 +1658,12 @@ hfcpci_l2l1D(struct mISDNchannel *ch, struct sk_buff *skb)
 			hc->hw.mst_m &= ~HFCPCI_MASTER;
 			Write_hfc(hc, HFCPCI_MST_MODE, hc->hw.mst_m);
 			ret = 0;
+			spin_unlock_irqrestore(&hc->lock, flags);
+			__skb_queue_purge(&free_queue);
 		} else {
 			ret = l1_event(dch->l1, hh->prim);
+			spin_unlock_irqrestore(&hc->lock, flags);
 		}
-		spin_unlock_irqrestore(&hc->lock, flags);
 		break;
 	}
 	if (!ret)
@@ -1717,8 +1724,7 @@ static void
 inithfcpci(struct hfc_pci *hc)
 {
 	printk(KERN_DEBUG "inithfcpci: entered\n");
-	setup_timer(&hc->dch.timer, (void *)hfcpci_dbusy_timer,
-		    (long)&hc->dch);
+	timer_setup(&hc->dch.timer, hfcpci_dbusy_timer, 0);
 	hc->chanlimit = 2;
 	mode_hfcpci(&hc->bch[0], 1, -1);
 	mode_hfcpci(&hc->bch[1], 2, -1);
@@ -2043,7 +2049,7 @@ setup_hw(struct hfc_pci *hc)
 	Write_hfc(hc, HFCPCI_INT_M1, hc->hw.int_m1);
 	/* At this point the needed PCI config is done */
 	/* fifos are still not enabled */
-	setup_timer(&hc->hw.timer, (void *)hfcpci_Timer, (long)hc);
+	timer_setup(&hc->hw.timer, hfcpci_Timer, 0);
 	/* default PCM master */
 	test_and_set_bit(HFC_CFG_MASTER, &hc->cfg);
 	return 0;
@@ -2219,7 +2225,7 @@ hfc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct hfc_pci	*card;
 	struct _hfc_map	*m = (struct _hfc_map *)ent->driver_data;
 
-	card = kzalloc(sizeof(struct hfc_pci), GFP_ATOMIC);
+	card = kzalloc(sizeof(struct hfc_pci), GFP_KERNEL);
 	if (!card) {
 		printk(KERN_ERR "No kmem for HFC card\n");
 		return err;
@@ -2265,7 +2271,7 @@ static struct pci_driver hfc_driver = {
 };
 
 static int
-_hfcpci_softirq(struct device *dev, void *arg)
+_hfcpci_softirq(struct device *dev, void *unused)
 {
 	struct hfc_pci  *hc = dev_get_drvdata(dev);
 	struct bchannel *bch;
@@ -2290,9 +2296,9 @@ _hfcpci_softirq(struct device *dev, void *arg)
 }
 
 static void
-hfcpci_softirq(void *arg)
+hfcpci_softirq(struct timer_list *unused)
 {
-	WARN_ON_ONCE(driver_for_each_device(&hfc_driver.driver, NULL, arg,
+	WARN_ON_ONCE(driver_for_each_device(&hfc_driver.driver, NULL, NULL,
 				      _hfcpci_softirq) != 0);
 
 	/* if next event would be in the past ... */
@@ -2327,9 +2333,7 @@ HFC_init(void)
 	if (poll != HFCPCI_BTRANS_THRESHOLD) {
 		printk(KERN_INFO "%s: Using alternative poll value of %d\n",
 		       __func__, poll);
-		hfc_tl.function = (void *)hfcpci_softirq;
-		hfc_tl.data = 0;
-		init_timer(&hfc_tl);
+		timer_setup(&hfc_tl, hfcpci_softirq, 0);
 		hfc_tl.expires = jiffies + tics;
 		hfc_jiffies = hfc_tl.expires;
 		add_timer(&hfc_tl);
@@ -2349,7 +2353,7 @@ static void __exit
 HFC_cleanup(void)
 {
 	if (timer_pending(&hfc_tl))
-		del_timer(&hfc_tl);
+		del_timer_sync(&hfc_tl);
 
 	pci_unregister_driver(&hfc_driver);
 }

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _COMPAT_MTK_DISP_MGR_H_
@@ -206,6 +198,11 @@ struct compat_disp_frame_cfg_t {
 	compat_int_t res_idx;
 	compat_uint_t hrt_weight;
 	compat_uint_t hrt_idx;
+
+	/* for panel HBM (High Backlight Mode) control */
+	bool hbm_en;
+	/*DynFPS*/
+	compat_int_t active_config;
 };
 
 struct compat_disp_session_info {
@@ -222,6 +219,7 @@ struct compat_disp_session_info {
 	compat_uint_t physicalHeight;
 	/* length: um, for more precise precision */
 	compat_uint_t physicalWidthUm;
+	/* length: um, for more precise precision */
 	compat_uint_t physicalHeightUm;
 	compat_uint_t density;
 	compat_uint_t isConnected;
@@ -243,13 +241,14 @@ struct compat_disp_session_buf_info {
 struct compat_layer_config {
 	compat_uint_t ovl_id;
 	compat_uint_t src_fmt;
+	compat_int_t dataspace;
 	compat_uint_t dst_offset_x, dst_offset_y;
 	compat_uint_t dst_width, dst_height;
 	compat_int_t ext_sel_layer;
-	compat_uint_t src_offst_x, src_offset_y;
+	compat_uint_t src_offset_x, src_offset_y;
 	compat_uint_t src_width, src_height;
 	compat_uint_t layer_caps;
-	compat_uint_t clip;
+	compat_uint_t clip; /* drv internal use */
 	u8 compress;
 };
 
@@ -260,6 +259,11 @@ struct compat_disp_layer_info {
 	compat_int_t gles_head[2];
 	compat_int_t gles_tail[2];
 	compat_int_t hrt_num;
+	/* res_idx: SF/HWC selects which resolution to use */
+	compat_int_t res_idx;
+	compat_uint_t hrt_weight;
+	compat_uint_t hrt_idx;
+	compat_int_t active_config_id[2];
 };
 
 struct _compat_disp_layer_info {
@@ -274,6 +278,7 @@ struct _compat_disp_layer_info {
 	compat_int_t res_idx;
 	compat_uint_t hrt_weight;
 	compat_uint_t hrt_idx;
+	compat_int_t active_config_id[2];
 };
 
 struct compat_disp_scenario_config_t {

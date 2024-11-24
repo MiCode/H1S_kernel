@@ -76,6 +76,12 @@ static int compare_input_type(const void *ap, const void *bp)
 	if (a->type != b->type)
 		return (int)(a->type - b->type);
 
+	/* If has both hs_mic and hp_mic, pick the hs_mic ahead of hp_mic. */
+	if (a->is_headset_mic && b->is_headphone_mic)
+		return -1; /* don't swap */
+	else if (a->is_headphone_mic && b->is_headset_mic)
+		return 1; /* swap */
+
 	/* In case one has boost and the other one has not,
 	   pick the one with boost first. */
 	return (int)(b->has_boost_on_pin - a->has_boost_on_pin);
@@ -793,11 +799,11 @@ EXPORT_SYMBOL_GPL(snd_hda_add_verbs);
  */
 void snd_hda_apply_verbs(struct hda_codec *codec)
 {
+	const struct hda_verb **v;
 	int i;
-	for (i = 0; i < codec->verbs.used; i++) {
-		struct hda_verb **v = snd_array_elem(&codec->verbs, i);
+
+	snd_array_for_each(&codec->verbs, i, v)
 		snd_hda_sequence_write(codec, *v);
-	}
 }
 EXPORT_SYMBOL_GPL(snd_hda_apply_verbs);
 
@@ -890,10 +896,10 @@ EXPORT_SYMBOL_GPL(snd_hda_apply_fixup);
 static bool pin_config_match(struct hda_codec *codec,
 			     const struct hda_pintbl *pins)
 {
+	const struct hda_pincfg *pin;
 	int i;
 
-	for (i = 0; i < codec->init_pins.used; i++) {
-		struct hda_pincfg *pin = snd_array_elem(&codec->init_pins, i);
+	snd_array_for_each(&codec->init_pins, i, pin) {
 		hda_nid_t nid = pin->nid;
 		u32 cfg = pin->cfg;
 		const struct hda_pintbl *t_pins;

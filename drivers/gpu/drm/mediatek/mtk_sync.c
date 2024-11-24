@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/debugfs.h>
 #include <linux/export.h>
@@ -20,6 +12,8 @@
 #include <linux/delay.h>
 
 #include <linux/sync_file.h>
+#include <linux/dma-fence.h>
+#include <trace/events/dma_fence.h>
 
 #include "mtk_sync.h"
 
@@ -226,6 +220,34 @@ static struct dma_fence_ops mtk_sync_timeline_fence_ops = {
 	.timeline_value_str = mtk_sync_timeline_fence_timeline_value_str,
 };
 
+static int dma_fence_signal_set_time_locked(struct dma_fence *fence, ktime_t time)
+{
+	struct dma_fence_cb *cur, *tmp;
+	int ret = 0;
+
+	lockdep_assert_held(fence->lock);
+	if (WARN_ON(!fence))
+		return -EINVAL;
+	if (test_and_set_bit(DMA_FENCE_FLAG_SIGNALED_BIT, &fence->flags)) {
+		ret = -EINVAL;
+
+		/*
+		 * we might have raced with the unlocked dma_fence_signal,
+		 * still run through all callbacks
+		 */
+	} else {
+		fence->timestamp = time;
+		set_bit(DMA_FENCE_FLAG_TIMESTAMP_BIT, &fence->flags);
+		trace_dma_fence_signaled(fence);
+	}
+
+	list_for_each_entry_safe(cur, tmp, &fence->cb_list, node) {
+		list_del_init(&cur->node);
+		cur->func(fence, cur);
+	}
+	return ret;
+}
+
 /* ---------------------------------------------------------------- */
 
 /**
@@ -237,7 +259,7 @@ static struct dma_fence_ops mtk_sync_timeline_fence_ops = {
  * has signaled or has an error condition.
  */
 static void mtk_sync_timeline_signal(struct sync_timeline *obj,
-				     unsigned int inc)
+				     unsigned int inc, ktime_t time)
 {
 	struct sync_pt *pt, *next;
 
@@ -260,7 +282,10 @@ static void mtk_sync_timeline_signal(struct sync_timeline *obj,
 		 * prevent deadlocking on timeline->lock inside
 		 * timeline_fence_release().
 		 */
-		dma_fence_signal_locked(&pt->base);
+		if (time != 0) {
+			dma_fence_signal_set_time_locked(&pt->base, time);
+		} else
+			dma_fence_signal_locked(&pt->base);
 	}
 
 	spin_unlock_irq(&obj->lock);
@@ -304,9 +329,9 @@ void mtk_sync_timeline_destroy(struct sync_timeline *obj)
 	mtk_sync_timeline_put(obj);
 }
 
-void mtk_sync_timeline_inc(struct sync_timeline *obj, u32 value)
+void mtk_sync_timeline_inc(struct sync_timeline *obj, u32 value, ktime_t time)
 {
-	mtk_sync_timeline_signal(obj, value);
+	mtk_sync_timeline_signal(obj, value, time);
 }
 
 int mtk_sync_fence_create(struct sync_timeline *obj, struct fence_data *data)

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 #ifndef _EAS_CTRL_H
 #define _EAS_CTRL_H
@@ -36,7 +28,6 @@ enum {
 	EAS_UCLAMP_KIR_TOUCH,
 	EAS_UCLAMP_KIR_FPSGO,
 	EAS_UCLAMP_KIR_WIFI,
-	EAS_UCLAMP_KIR_GBE,
 	EAS_UCLAMP_KIR_BIG_TASK,
 	EAS_UCLAMP_MAX_KIR
 };
@@ -65,11 +56,17 @@ extern int uclamp_min_for_perf_idx(int group_idx, int min_value);
 extern int prefer_idle_for_perf_idx(int idx, int prefer_idle);
 
 /* perfmgr */
-extern int update_eas_boost_value(int kicker, int cgroup_idx, int value);
 extern int update_eas_uclamp_min(int kicker, int cgroup_idx, int value);
 extern int update_schedplus_down_throttle_ns(int kicker, int nsec);
 extern int update_schedplus_up_throttle_ns(int kicker, int nsec);
 extern int update_schedplus_sync_flag(int kicker, int enable);
 extern int update_prefer_idle_value(int kicker, int cgroup_idx, int value);
 
+#define SCHED__UTIL_API_READY 1
+#if SCHED__UTIL_API_READY
+extern int schedutil_set_down_rate_limit_us(int cpu,
+	unsigned int rate_limit_us);
+extern int schedutil_set_up_rate_limit_us(int cpu,
+	unsigned int rate_limit_us);
+#endif
 #endif /* _EAS_CTRL_H */

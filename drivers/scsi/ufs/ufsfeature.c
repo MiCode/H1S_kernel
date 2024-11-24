@@ -1,38 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Universal Flash Storage Feature Support
- *
  * Copyright (C) 2017-2018 Samsung Electronics Co., Ltd.
- *
- * Authors:
- *	Yongmyung Lee <ymhungry.lee@samsung.com>
- *	Jinyoung Choi <j-young.choi@samsung.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- * See the COPYING file in the top-level directory or visit
- * <http://www.gnu.org/licenses/gpl-2.0.html>
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * This program is provided "AS IS" and "WITH ALL FAULTS" and
- * without warranty of any kind. You are solely responsible for
- * determining the appropriateness of using and distributing
- * the program and assume all risks associated with your exercise
- * of rights with respect to the program, including but not limited
- * to infringement of third party rights, the risks and costs of
- * program errors, damage to or loss of data, programs or equipment,
- * and unavailability or interruption of operations. Under no
- * circumstances will the contributor of this Program be liable for
- * any damages of any kind arising from your use or distribution of
- * this program.
- *
- * The Linux Foundation chooses to take subject only to the GPLv2
- * license terms, and distributes only under these terms.
  */
 
 
@@ -40,7 +8,7 @@
 #include "ufshcd.h"
 #include "ufs_quirks.h"
 
-#if defined(CONFIG_UFSHPB)
+#if defined(CONFIG_SCSI_UFS_HPB)
 #include "ufshpb.h"
 #endif
 
@@ -78,8 +46,8 @@ int ufsf_query_flag(struct ufs_hba *hba, enum query_opcode opcode,
 	ufshcd_hold(hba, false);
 	mutex_lock(&hba->dev_cmd.lock);
 
-	if (hba->card->wmanufacturerid == UFS_VENDOR_SAMSUNG ||
-		hba->card->wmanufacturerid == UFS_VENDOR_MICRON)
+	if (hba->dev_info.wmanufacturerid == UFS_VENDOR_SAMSUNG ||
+		hba->dev_info.wmanufacturerid == UFS_VENDOR_MICRON)
 		selector = UFSFEATURE_SELECTOR;
 	else
 		selector = 0;
@@ -162,8 +130,8 @@ int ufsf_query_attr_retry(struct ufs_hba *hba, enum query_opcode opcode,
 	int retries;
 	u8 selector;
 
-	if (hba->card->wmanufacturerid == UFS_VENDOR_SAMSUNG ||
-		hba->card->wmanufacturerid == UFS_VENDOR_MICRON)
+	if (hba->dev_info.wmanufacturerid == UFS_VENDOR_SAMSUNG ||
+		hba->dev_info.wmanufacturerid == UFS_VENDOR_MICRON)
 		selector = UFSFEATURE_SELECTOR;
 	else
 		selector = 0;
@@ -189,8 +157,12 @@ static int ufsf_read_desc(struct ufs_hba *hba, u8 desc_id, u8 desc_index,
 			  u8 selector, u8 *desc_buf, u32 size)
 {
 	int err = 0;
+	bool pm_resumed = false;
 
-	pm_runtime_get_sync(hba->dev);
+	if (!hba->pm_op_in_progress) {
+		pm_runtime_get_sync(hba->dev);
+		pm_resumed = true;
+	}
 
 	err = ufshcd_query_descriptor_retry(hba, UPIU_QUERY_OPCODE_READ_DESC,
 					    desc_id, desc_index,
@@ -198,8 +170,8 @@ static int ufsf_read_desc(struct ufs_hba *hba, u8 desc_id, u8 desc_index,
 					    desc_buf, &size);
 	if (err)
 		ERR_MSG("reading Device Desc failed. err = %d", err);
-
-	pm_runtime_put_sync(hba->dev);
+	if (pm_resumed)
+		pm_runtime_put_sync(hba->dev);
 
 	return err;
 }
@@ -224,11 +196,11 @@ static int ufsf_read_dev_desc(struct ufsf_feature *ufsf, u8 selector)
 		  desc_buf[DEVICE_DESC_PARAM_EX_FEAT_SUP+2],
 		  desc_buf[DEVICE_DESC_PARAM_EX_FEAT_SUP+3]);
 
-#if defined(CONFIG_UFSHPB)
+#if defined(CONFIG_SCSI_UFS_HPB)
 	ufshpb_get_dev_info(&ufsf->hpb_dev_info, desc_buf);
 #endif
 
-#if defined(CONFIG_UFSTW)
+#if defined(CONFIG_SCSI_UFS_TW)
 	ufstw_get_dev_info(&ufsf->tw_dev_info, desc_buf);
 #endif
 	return 0;
@@ -244,12 +216,12 @@ static int ufsf_read_geo_desc(struct ufsf_feature *ufsf, u8 selector)
 	if (ret)
 		return ret;
 
-#if defined(CONFIG_UFSHPB)
+#if defined(CONFIG_SCSI_UFS_HPB)
 	if (ufsf->hpb_dev_info.hpb_device)
 		ufshpb_get_geo_info(&ufsf->hpb_dev_info, geo_buf);
 #endif
 
-#if defined(CONFIG_UFSTW)
+#if defined(CONFIG_SCSI_UFS_TW)
 	if (ufsf->tw_dev_info.tw_device)
 		ufstw_get_geo_info(&ufsf->tw_dev_info, geo_buf);
 #endif
@@ -273,7 +245,7 @@ static int ufsf_read_unit_desc(struct ufsf_feature *ufsf,
 	if (!lu_enable)
 		return 0;
 
-#if defined(CONFIG_UFSHPB)
+#if defined(CONFIG_SCSI_UFS_HPB)
 	if (ufsf->hpb_dev_info.hpb_device) {
 		ret = ufshpb_get_lu_info(ufsf, lun, unit_buf);
 		if (ret == -ENOMEM)
@@ -281,7 +253,7 @@ static int ufsf_read_unit_desc(struct ufsf_feature *ufsf,
 	}
 #endif
 
-#if defined(CONFIG_UFSTW)
+#if defined(CONFIG_SCSI_UFS_TW)
 	if (ufsf->tw_dev_info.tw_device) {
 		ret = ufstw_get_lu_info(ufsf, lun, unit_buf);
 		if (ret == -ENOMEM)
@@ -299,12 +271,21 @@ void ufsf_device_check(struct ufs_hba *hba)
 	unsigned int lun;
 	u8 selector = 0;
 
+#if defined(CONFIG_SCSI_UFS_HPB)
+	if (ufsf->ufshpb_state == HPB_RESET)
+		return;
+#endif
+#if defined(CONFIG_SCSI_UFS_TW)
+	if (atomic_read(&ufsf->tw_state) == TW_RESET)
+		return;
+#endif
+
 	ufsf->slave_conf_cnt = 0;
 
 	ufsf->hba = hba;
 
-	if (hba->card->wmanufacturerid == UFS_VENDOR_SAMSUNG ||
-		hba->card->wmanufacturerid == UFS_VENDOR_MICRON)
+	if (hba->dev_info.wmanufacturerid == UFS_VENDOR_SAMSUNG ||
+		hba->dev_info.wmanufacturerid == UFS_VENDOR_MICRON)
 		selector = UFSFEATURE_SELECTOR;
 
 	ret = ufsf_read_dev_desc(ufsf, selector);
@@ -323,14 +304,14 @@ void ufsf_device_check(struct ufs_hba *hba)
 
 	return;
 out_free_mem:
-#if defined(CONFIG_UFSHPB)
+#if defined(CONFIG_SCSI_UFS_HPB)
 	seq_scan_lu(lun)
 		kfree(ufsf->ufshpb_lup[lun]);
 
 	/* don't call init handler */
 	ufsf->ufshpb_state = HPB_NOT_SUPPORTED;
 #endif
-#if defined(CONFIG_UFSTW)
+#if defined(CONFIG_SCSI_UFS_TW)
 	seq_scan_lu(lun)
 		kfree(ufsf->tw_lup[lun]);
 
@@ -423,7 +404,7 @@ int ufsf_query_ioctl(struct ufsf_feature *ufsf, unsigned int lun,
 			break;
 
 		case QUERY_DESC_IDN_STRING:
-#if defined(CONFIG_UFSHPB)
+#if defined(CONFIG_SCSI_UFS_HPB)
 			if (!ufs_is_valid_unit_desc_lun(lun)) {
 				ERR_MSG("No unit descriptor for lun 0x%x", lun);
 				err = -EINVAL;
@@ -462,7 +443,7 @@ int ufsf_query_ioctl(struct ufsf_feature *ufsf, unsigned int lun,
 	if (err)
 		goto out_release_mem;
 
-#if defined(CONFIG_UFSHPB)
+#if defined(CONFIG_SCSI_UFS_HPB)
 copy_buffer:
 #endif
 	if (opcode == UPIU_QUERY_OPCODE_READ_DESC) {
@@ -496,7 +477,7 @@ inline int ufsf_get_ee_status(struct ufs_hba *hba, u32 *status)
 /*
  * Wrapper functions for ufshpb.
  */
-#if defined(CONFIG_UFSHPB)
+#if defined(CONFIG_SCSI_UFS_HPB)
 inline int ufsf_hpb_prepare_pre_req(struct ufsf_feature *ufsf,
 				    struct scsi_cmnd *cmd, int lun)
 {
@@ -627,7 +608,7 @@ inline void ufsf_hpb_set_init_state(struct ufsf_feature *ufsf) {}
  * Wrapper functions for ufstw.
  */
 
-#if defined(CONFIG_UFSTW)
+#if defined(CONFIG_SCSI_UFS_TW)
 inline void ufsf_tw_prep_fn(struct ufsf_feature *ufsf, struct ufshcd_lrb *lrbp)
 {
 	ufstw_prep_fn(ufsf, lrbp);

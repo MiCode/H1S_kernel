@@ -36,3 +36,9 @@ config UBSAN_ALIGNMENT
 	  Enabling this option on architectures that support unaligned
 	  accesses may produce a lot of false positives.
 
+config TEST_UBSAN
+	tristate "Module for testing for undefined behavior detection"
+	depends on m && UBSAN
+	help
+	  This is a test module for UBSAN.
+	  It triggers various undefined behavior, and detect it.

@@ -11,6 +11,9 @@
 # GNU General Public License for more details.
 #
 
+
+MTK_PLATFORM = $(subst ",,$(CONFIG_MTK_PLATFORM))
+
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/m4u/$(MTK_PLATFORM)
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/mmp/
@@ -20,22 +23,20 @@ ccflags-y += -I$(srctree)/drivers/misc/mediatek/smi
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/geniezone/public
 # MTEE end
 ifeq ($(CONFIG_TRUSTONIC_TEE_SUPPORT),y)
-include $(srctree)/drivers/misc/mediatek/gud/Makefile.include
+include $(srctree)/drivers/tee/gud/Makefile.include
 endif
 ifeq ($(CONFIG_MICROTRUST_TEE_SUPPORT),y)
-include $(srctree)/drivers/misc/mediatek/teei/Makefile.include
+include $(srctree)/drivers/tee/teei/Makefile.include
 endif
 
-ifeq ($(CONFIG_MTK_TRUSTED_MEMORY_SUBSYSTEM),y)
+ifneq ($(filter $(CONFIG_MTK_SECURE_MEM_SUPPORT) $(CONFIG_MTK_TRUSTED_MEMORY_SUBSYSTEM),y),)
 include $(srctree)/drivers/misc/mediatek/trusted_mem/Makefile.include
 endif
 
-obj-y += m4u.o m4u_mva.o m4u_pgtable.o m4u_debug.o
-
+obj-$(CONFIG_MTK_M4U) += m4u.o m4u_mva.o m4u_pgtable.o m4u_debug.o
 ifeq ($(or $(strip $(CONFIG_TRUSTONIC_TEE_SUPPORT)), $(strip $(CONFIG_MICROTRUST_TEE_SUPPORT))),y)
-obj-y += m4u_sec_gp.o
+obj-$(CONFIG_MTK_M4U) += m4u_sec_gp.o
 endif
-
 ifeq ($(CONFIG_MTK_ENABLE_GENIEZONE),y)
-obj-y += m4u_sec_gz.o
+obj-$(CONFIG_MACH_MT6785) += m4u_sec_gz.o
 endif

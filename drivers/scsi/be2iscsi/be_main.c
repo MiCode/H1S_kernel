@@ -1,11 +1,22 @@
 /*
- * Copyright 2017 Broadcom. All Rights Reserved.
- * The term "Broadcom" refers to Broadcom Limited and/or its subsidiaries.
+ * This file is part of the Emulex Linux Device Driver for Enterprise iSCSI
+ * Host Bus Adapters. Refer to the README file included with this package
+ * for driver version and adapter compatibility.
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version 2
- * as published by the Free Software Foundation. The full GNU General
- * Public License is included in this distribution in the file called COPYING.
+ * Copyright (c) 2018 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License as published
+ * by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful. ALL EXPRESS
+ * OR IMPLIED CONDITIONS, REPRESENTATIONS AND WARRANTIES, INCLUDING ANY
+ * IMPLIED WARRANTY OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+ * OR NON-INFRINGEMENT, ARE DISCLAIMED, EXCEPT TO THE EXTENT THAT SUCH
+ * DISCLAIMERS ARE HELD TO BE LEGALLY INVALID.
+ * See the GNU General Public License for more details, a copy of which
+ * can be found in the file COPYING included with this package.
  *
  * Contact Information:
  * linux-drivers@broadcom.com
@@ -412,7 +423,7 @@ static struct beiscsi_hba *beiscsi_hba_alloc(struct pci_dev *pcidev)
 			"beiscsi_hba_alloc - iscsi_host_alloc failed\n");
 		return NULL;
 	}
-	shost->max_id = BE2_MAX_SESSIONS;
+	shost->max_id = BE2_MAX_SESSIONS - 1;
 	shost->max_channel = 0;
 	shost->max_cmd_len = BEISCSI_MAX_CMD_LEN;
 	shost->max_lun = BEISCSI_NUM_MAX_LUN;
@@ -455,14 +466,12 @@ static int beiscsi_map_pci_bars(struct beiscsi_hba *phba,
 		return -ENOMEM;
 	phba->ctrl.csr = addr;
 	phba->csr_va = addr;
-	phba->csr_pa.u.a64.address = pci_resource_start(pcidev, 2);
 
 	addr = ioremap_nocache(pci_resource_start(pcidev, 4), 128 * 1024);
 	if (addr == NULL)
 		goto pci_map_err;
 	phba->ctrl.db = addr;
 	phba->db_va = addr;
-	phba->db_pa.u.a64.address =  pci_resource_start(pcidev, 4);
 
 	if (phba->generation == BE_GEN2)
 		pcicfg_reg = 1;
@@ -476,7 +485,6 @@ static int beiscsi_map_pci_bars(struct beiscsi_hba *phba,
 		goto pci_map_err;
 	phba->ctrl.pcicfg = addr;
 	phba->pci_va = addr;
-	phba->pci_pa.u.a64.address = pci_resource_start(pcidev, pcicfg_reg);
 	return 0;
 
 pci_map_err:
@@ -790,6 +798,24 @@ static irqreturn_t be_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static void beiscsi_free_irqs(struct beiscsi_hba *phba)
+{
+	struct hwi_context_memory *phwi_context;
+	int i;
+
+	if (!phba->pcidev->msix_enabled) {
+		if (phba->pcidev->irq)
+			free_irq(phba->pcidev->irq, phba);
+		return;
+	}
+
+	phwi_context = phba->phwi_ctrlr->phwi_ctxt;
+	for (i = 0; i <= phba->num_cpus; i++) {
+		free_irq(pci_irq_vector(phba->pcidev, i),
+			 &phwi_context->be_eq[i]);
+		kfree(phba->msi_name[i]);
+	}
+}
 
 static int beiscsi_init_irqs(struct beiscsi_hba *phba)
 {
@@ -803,15 +829,14 @@ static int beiscsi_init_irqs(struct beiscsi_hba *phba)
 
 	if (pcidev->msix_enabled) {
 		for (i = 0; i < phba->num_cpus; i++) {
-			phba->msi_name[i] = kzalloc(BEISCSI_MSI_NAME,
-						    GFP_KERNEL);
+			phba->msi_name[i] = kasprintf(GFP_KERNEL,
+						      "beiscsi_%02x_%02x",
+						      phba->shost->host_no, i);
 			if (!phba->msi_name[i]) {
 				ret = -ENOMEM;
 				goto free_msix_irqs;
 			}
 
-			sprintf(phba->msi_name[i], "beiscsi_%02x_%02x",
-				phba->shost->host_no, i);
 			ret = request_irq(pci_irq_vector(pcidev, i),
 					  be_isr_msix, 0, phba->msi_name[i],
 					  &phwi_context->be_eq[i]);
@@ -824,13 +849,12 @@ static int beiscsi_init_irqs(struct beiscsi_hba *phba)
 				goto free_msix_irqs;
 			}
 		}
-		phba->msi_name[i] = kzalloc(BEISCSI_MSI_NAME, GFP_KERNEL);
+		phba->msi_name[i] = kasprintf(GFP_KERNEL, "beiscsi_mcc_%02x",
+					      phba->shost->host_no);
 		if (!phba->msi_name[i]) {
 			ret = -ENOMEM;
 			goto free_msix_irqs;
 		}
-		sprintf(phba->msi_name[i], "beiscsi_mcc_%02x",
-			phba->shost->host_no);
 		ret = request_irq(pci_irq_vector(pcidev, i), be_isr_mcc, 0,
 				  phba->msi_name[i], &phwi_context->be_eq[i]);
 		if (ret) {
@@ -924,12 +948,11 @@ free_io_sgl_handle(struct beiscsi_hba *phba, struct sgl_handle *psgl_handle)
 		 * this can happen if clean_task is called on a task that
 		 * failed in xmit_task or alloc_pdu.
 		 */
-		 beiscsi_log(phba, KERN_INFO, BEISCSI_LOG_IO,
-			     "BM_%d : Double Free in IO SGL io_sgl_free_index=%d,"
-			     "value there=%p\n", phba->io_sgl_free_index,
-			     phba->io_sgl_hndl_base
-			     [phba->io_sgl_free_index]);
-		 spin_unlock_irqrestore(&phba->io_sgl_lock, flags);
+		beiscsi_log(phba, KERN_INFO, BEISCSI_LOG_IO,
+			    "BM_%d : Double Free in IO SGL io_sgl_free_index=%d, value there=%p\n",
+			    phba->io_sgl_free_index,
+			    phba->io_sgl_hndl_base[phba->io_sgl_free_index]);
+		spin_unlock_irqrestore(&phba->io_sgl_lock, flags);
 		return;
 	}
 	phba->io_sgl_hndl_base[phba->io_sgl_free_index] = psgl_handle;
@@ -1864,8 +1887,8 @@ unsigned int beiscsi_process_cq(struct be_eq_obj *pbe_eq, int budget)
 
 		be_dws_le_to_cpu(sol, sizeof(struct sol_cqe));
 
-		 code = (sol->dw[offsetof(struct amap_sol_cqe, code) /
-			 32] & CQE_CODE_MASK);
+		code = (sol->dw[offsetof(struct amap_sol_cqe, code) / 32] &
+				CQE_CODE_MASK);
 
 		 /* Get the CID */
 		if (is_chip_be2_be3r(phba)) {
@@ -2455,8 +2478,8 @@ static int beiscsi_alloc_mem(struct beiscsi_hba *phba)
 
 	/* Allocate memory for wrb_context */
 	phwi_ctrlr = phba->phwi_ctrlr;
-	phwi_ctrlr->wrb_context = kzalloc(sizeof(struct hwi_wrb_context) *
-					  phba->params.cxns_per_ctrl,
+	phwi_ctrlr->wrb_context = kcalloc(phba->params.cxns_per_ctrl,
+					  sizeof(struct hwi_wrb_context),
 					  GFP_KERNEL);
 	if (!phwi_ctrlr->wrb_context) {
 		kfree(phba->phwi_ctrlr);
@@ -2471,8 +2494,9 @@ static int beiscsi_alloc_mem(struct beiscsi_hba *phba)
 		return -ENOMEM;
 	}
 
-	mem_arr_orig = kmalloc(sizeof(*mem_arr_orig) * BEISCSI_MAX_FRAGS_INIT,
-			       GFP_KERNEL);
+	mem_arr_orig = kmalloc_array(BEISCSI_MAX_FRAGS_INIT,
+				     sizeof(*mem_arr_orig),
+				     GFP_KERNEL);
 	if (!mem_arr_orig) {
 		kfree(phba->init_mem);
 		kfree(phwi_ctrlr->wrb_context);
@@ -2521,8 +2545,8 @@ static int beiscsi_alloc_mem(struct beiscsi_hba *phba)
 		} while (alloc_size);
 		mem_descr->num_elements = j;
 		mem_descr->size_in_bytes = phba->mem_req[i];
-		mem_descr->mem_array = kmalloc(sizeof(*mem_arr) * j,
-					       GFP_KERNEL);
+		mem_descr->mem_array = kmalloc_array(j, sizeof(*mem_arr),
+						     GFP_KERNEL);
 		if (!mem_descr->mem_array)
 			goto free_mem;
 
@@ -2608,8 +2632,8 @@ static int beiscsi_init_wrb_handle(struct beiscsi_hba *phba)
 
 	/* Allocate memory for WRBQ */
 	phwi_ctxt = phwi_ctrlr->phwi_ctxt;
-	phwi_ctxt->be_wrbq = kzalloc(sizeof(struct be_queue_info) *
-				     phba->params.cxns_per_ctrl,
+	phwi_ctxt->be_wrbq = kcalloc(phba->params.cxns_per_ctrl,
+				     sizeof(struct be_queue_info),
 				     GFP_KERNEL);
 	if (!phwi_ctxt->be_wrbq) {
 		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
@@ -2620,16 +2644,18 @@ static int beiscsi_init_wrb_handle(struct beiscsi_hba *phba)
 	for (index = 0; index < phba->params.cxns_per_ctrl; index++) {
 		pwrb_context = &phwi_ctrlr->wrb_context[index];
 		pwrb_context->pwrb_handle_base =
-				kzalloc(sizeof(struct wrb_handle *) *
-					phba->params.wrbs_per_cxn, GFP_KERNEL);
+				kcalloc(phba->params.wrbs_per_cxn,
+					sizeof(struct wrb_handle *),
+					GFP_KERNEL);
 		if (!pwrb_context->pwrb_handle_base) {
 			beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 				    "BM_%d : Mem Alloc Failed. Failing to load\n");
 			goto init_wrb_hndl_failed;
 		}
 		pwrb_context->pwrb_handle_basestd =
-				kzalloc(sizeof(struct wrb_handle *) *
-					phba->params.wrbs_per_cxn, GFP_KERNEL);
+				kcalloc(phba->params.wrbs_per_cxn,
+					sizeof(struct wrb_handle *),
+					GFP_KERNEL);
 		if (!pwrb_context->pwrb_handle_basestd) {
 			beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 				    "BM_%d : Mem Alloc Failed. Failing to load\n");
@@ -2687,6 +2713,7 @@ init_wrb_hndl_failed:
 		kfree(pwrb_context->pwrb_handle_base);
 		kfree(pwrb_context->pwrb_handle_basestd);
 	}
+	kfree(phwi_ctxt->be_wrbq);
 	return -ENOMEM;
 }
 
@@ -3024,7 +3051,7 @@ static int beiscsi_create_eqs(struct beiscsi_hba *phba,
 
 		mem->dma = paddr;
 		ret = beiscsi_cmd_eq_create(&phba->ctrl, eq,
-					    phwi_context->cur_eqd);
+					    BEISCSI_EQ_DELAY_DEF);
 		if (ret) {
 			beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 				    "BM_%d : beiscsi_cmd_eq_create"
@@ -3341,8 +3368,9 @@ beiscsi_create_wrb_rings(struct beiscsi_hba *phba,
 	idx = 0;
 	mem_descr = phba->init_mem;
 	mem_descr += HWI_MEM_WRB;
-	pwrb_arr = kmalloc(sizeof(*pwrb_arr) * phba->params.cxns_per_ctrl,
-			   GFP_KERNEL);
+	pwrb_arr = kmalloc_array(phba->params.cxns_per_ctrl,
+				 sizeof(*pwrb_arr),
+				 GFP_KERNEL);
 	if (!pwrb_arr) {
 		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 			    "BM_%d : Memory alloc failed in create wrb ring.\n");
@@ -3508,13 +3536,14 @@ static int be_mcc_queues_create(struct beiscsi_hba *phba,
 		goto err;
 	/* Ask BE to create MCC compl queue; */
 	if (phba->pcidev->msix_enabled) {
-		if (beiscsi_cmd_cq_create(ctrl, cq, &phwi_context->be_eq
-					 [phba->num_cpus].q, false, true, 0))
-		goto mcc_cq_free;
+		if (beiscsi_cmd_cq_create(ctrl, cq,
+					&phwi_context->be_eq[phba->num_cpus].q,
+					false, true, 0))
+			goto mcc_cq_free;
 	} else {
 		if (beiscsi_cmd_cq_create(ctrl, cq, &phwi_context->be_eq[0].q,
 					  false, true, 0))
-		goto mcc_cq_free;
+			goto mcc_cq_free;
 	}
 
 	/* Alloc MCC queue */
@@ -3689,9 +3718,6 @@ static int hwi_init_port(struct beiscsi_hba *phba)
 
 	phwi_ctrlr = phba->phwi_ctrlr;
 	phwi_context = phwi_ctrlr->phwi_ctxt;
-	phwi_context->max_eqd = 128;
-	phwi_context->min_eqd = 0;
-	phwi_context->cur_eqd = 32;
 	/* set port optic state to unknown */
 	phba->optic_state = 0xff;
 
@@ -3884,18 +3910,18 @@ static int beiscsi_init_sgl_handle(struct beiscsi_hba *phba)
 	mem_descr_sglh = phba->init_mem;
 	mem_descr_sglh += HWI_MEM_SGLH;
 	if (1 == mem_descr_sglh->num_elements) {
-		phba->io_sgl_hndl_base = kzalloc(sizeof(struct sgl_handle *) *
-						 phba->params.ios_per_ctrl,
+		phba->io_sgl_hndl_base = kcalloc(phba->params.ios_per_ctrl,
+						 sizeof(struct sgl_handle *),
 						 GFP_KERNEL);
 		if (!phba->io_sgl_hndl_base) {
 			beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 				    "BM_%d : Mem Alloc Failed. Failing to load\n");
 			return -ENOMEM;
 		}
-		phba->eh_sgl_hndl_base = kzalloc(sizeof(struct sgl_handle *) *
-						 (phba->params.icds_per_ctrl -
-						 phba->params.ios_per_ctrl),
-						 GFP_KERNEL);
+		phba->eh_sgl_hndl_base =
+			kcalloc(phba->params.icds_per_ctrl -
+					phba->params.ios_per_ctrl,
+				sizeof(struct sgl_handle *), GFP_KERNEL);
 		if (!phba->eh_sgl_hndl_base) {
 			kfree(phba->io_sgl_hndl_base);
 			beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
@@ -4022,8 +4048,9 @@ static int hba_setup_cid_tbls(struct beiscsi_hba *phba)
 			phba->cid_array_info[ulp_num] = ptr_cid_info;
 		}
 	}
-	phba->ep_array = kzalloc(sizeof(struct iscsi_endpoint *) *
-				 phba->params.cxns_per_ctrl, GFP_KERNEL);
+	phba->ep_array = kcalloc(phba->params.cxns_per_ctrl,
+				 sizeof(struct iscsi_endpoint *),
+				 GFP_KERNEL);
 	if (!phba->ep_array) {
 		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 			    "BM_%d : Failed to allocate memory in "
@@ -4033,8 +4060,9 @@ static int hba_setup_cid_tbls(struct beiscsi_hba *phba)
 		goto free_memory;
 	}
 
-	phba->conn_table = kzalloc(sizeof(struct beiscsi_conn *) *
-				   phba->params.cxns_per_ctrl, GFP_KERNEL);
+	phba->conn_table = kcalloc(phba->params.cxns_per_ctrl,
+				   sizeof(struct beiscsi_conn *),
+				   GFP_KERNEL);
 	if (!phba->conn_table) {
 		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 			    "BM_%d : Failed to allocate memory in"
@@ -4792,10 +4820,10 @@ static int beiscsi_task_xmit(struct iscsi_task *task)
 	sg = scsi_sglist(sc);
 	if (sc->sc_data_direction == DMA_TO_DEVICE)
 		writedir = 1;
-	 else
+	else
 		writedir = 0;
 
-	 return phba->iotask_fn(task, sg, num_sg, xferlen, writedir);
+	return phba->iotask_fn(task, sg, num_sg, xferlen, writedir);
 }
 
 /**
@@ -4917,6 +4945,13 @@ void beiscsi_start_boot_work(struct beiscsi_hba *phba, unsigned int s_handle)
 	schedule_work(&phba->boot_work);
 }
 
+/**
+ * Boot flag info for iscsi-utilities
+ * Bit 0 Block valid flag
+ * Bit 1 Firmware booting selected
+ */
+#define BEISCSI_SYSFS_ISCSI_BOOT_FLAGS	3
+
 static ssize_t beiscsi_show_boot_tgt_info(void *data, int type, char *buf)
 {
 	struct beiscsi_hba *phba = data;
@@ -4972,7 +5007,7 @@ static ssize_t beiscsi_show_boot_tgt_info(void *data, int type, char *buf)
 			     auth_data.chap.intr_secret);
 		break;
 	case ISCSI_BOOT_TGT_FLAGS:
-		rc = sprintf(str, "2\n");
+		rc = sprintf(str, "%d\n", BEISCSI_SYSFS_ISCSI_BOOT_FLAGS);
 		break;
 	case ISCSI_BOOT_TGT_NIC_ASSOC:
 		rc = sprintf(str, "0\n");
@@ -5004,7 +5039,7 @@ static ssize_t beiscsi_show_boot_eth_info(void *data, int type, char *buf)
 
 	switch (type) {
 	case ISCSI_BOOT_ETH_FLAGS:
-		rc = sprintf(str, "2\n");
+		rc = sprintf(str, "%d\n", BEISCSI_SYSFS_ISCSI_BOOT_FLAGS);
 		break;
 	case ISCSI_BOOT_ETH_INDEX:
 		rc = sprintf(str, "0\n");
@@ -5209,8 +5244,8 @@ static void beiscsi_eqd_update_work(struct work_struct *work)
 
 		if (eqd < 8)
 			eqd = 0;
-		eqd = min_t(u32, eqd, phwi_context->max_eqd);
-		eqd = max_t(u32, eqd, phwi_context->min_eqd);
+		eqd = min_t(u32, eqd, BEISCSI_EQ_DELAY_MAX);
+		eqd = max_t(u32, eqd, BEISCSI_EQ_DELAY_MIN);
 
 		aic->jiffies = now;
 		aic->eq_prev = pbe_eq->cq_count;
@@ -5230,12 +5265,11 @@ static void beiscsi_eqd_update_work(struct work_struct *work)
 			      msecs_to_jiffies(BEISCSI_EQD_UPDATE_INTERVAL));
 }
 
-static void beiscsi_hw_tpe_check(unsigned long ptr)
+static void beiscsi_hw_tpe_check(struct timer_list *t)
 {
-	struct beiscsi_hba *phba;
+	struct beiscsi_hba *phba = from_timer(phba, t, hw_check);
 	u32 wait;
 
-	phba = (struct beiscsi_hba *)ptr;
 	/* if not TPE, do nothing */
 	if (!beiscsi_detect_tpe(phba))
 		return;
@@ -5248,11 +5282,10 @@ static void beiscsi_hw_tpe_check(unsigned long ptr)
 			   msecs_to_jiffies(wait));
 }
 
-static void beiscsi_hw_health_check(unsigned long ptr)
+static void beiscsi_hw_health_check(struct timer_list *t)
 {
-	struct beiscsi_hba *phba;
+	struct beiscsi_hba *phba = from_timer(phba, t, hw_check);
 
-	phba = (struct beiscsi_hba *)ptr;
 	beiscsi_detect_ue(phba);
 	if (beiscsi_detect_ue(phba)) {
 		__beiscsi_log(phba, KERN_ERR,
@@ -5300,10 +5333,11 @@ static int beiscsi_enable_port(struct beiscsi_hba *phba)
 	be2iscsi_enable_msix(phba);
 
 	beiscsi_get_params(phba);
+	beiscsi_set_host_data(phba);
 	/* Re-enable UER. If different TPE occurs then it is recoverable. */
 	beiscsi_set_uer_feature(phba);
 
-	phba->shost->max_id = phba->params.cxns_per_ctrl;
+	phba->shost->max_id = phba->params.cxns_per_ctrl - 1;
 	phba->shost->can_queue = phba->params.ios_per_ctrl;
 	ret = beiscsi_init_port(phba);
 	if (ret < 0) {
@@ -5389,15 +5423,7 @@ static void beiscsi_disable_port(struct beiscsi_hba *phba, int unload)
 	phwi_ctrlr = phba->phwi_ctrlr;
 	phwi_context = phwi_ctrlr->phwi_ctxt;
 	hwi_disable_intr(phba);
-	if (phba->pcidev->msix_enabled) {
-		for (i = 0; i <= phba->num_cpus; i++) {
-			free_irq(pci_irq_vector(phba->pcidev, i),
-				&phwi_context->be_eq[i]);
-			kfree(phba->msi_name[i]);
-		}
-	} else
-		if (phba->pcidev->irq)
-			free_irq(phba->pcidev->irq, phba);
+	beiscsi_free_irqs(phba);
 	pci_free_irq_vectors(phba->pcidev);
 
 	for (i = 0; i < phba->num_cpus; i++) {
@@ -5588,12 +5614,12 @@ static int beiscsi_dev_probe(struct pci_dev *pcidev,
 	if (ret) {
 		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 			    "BM_%d : be_ctrl_init failed\n");
-		goto hba_free;
+		goto free_hba;
 	}
 
 	ret = beiscsi_init_sliport(phba);
 	if (ret)
-		goto hba_free;
+		goto free_hba;
 
 	spin_lock_init(&phba->io_sgl_lock);
 	spin_lock_init(&phba->mgmt_sgl_lock);
@@ -5606,6 +5632,7 @@ static int beiscsi_dev_probe(struct pci_dev *pcidev,
 	}
 	beiscsi_get_port_name(&phba->ctrl, phba);
 	beiscsi_get_params(phba);
+	beiscsi_set_host_data(phba);
 	beiscsi_set_uer_feature(phba);
 
 	be2iscsi_enable_msix(phba);
@@ -5673,13 +5700,13 @@ static int beiscsi_dev_probe(struct pci_dev *pcidev,
 		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
 			    "BM_%d : beiscsi_dev_probe-"
 			    "Failed to beiscsi_init_irqs\n");
-		goto free_blkenbld;
+		goto disable_iopoll;
 	}
 	hwi_enable_intr(phba);
 
 	ret = iscsi_host_add(phba->shost, &phba->pcidev->dev);
 	if (ret)
-		goto free_blkenbld;
+		goto free_irqs;
 
 	/* set online bit after port is operational */
 	set_bit(BEISCSI_HBA_ONLINE, &phba->state);
@@ -5708,21 +5735,22 @@ static int beiscsi_dev_probe(struct pci_dev *pcidev,
 	 * Start UE detection here. UE before this will cause stall in probe
 	 * and eventually fail the probe.
 	 */
-	init_timer(&phba->hw_check);
-	phba->hw_check.function = beiscsi_hw_health_check;
-	phba->hw_check.data = (unsigned long)phba;
+	timer_setup(&phba->hw_check, beiscsi_hw_health_check, 0);
 	mod_timer(&phba->hw_check,
 		  jiffies + msecs_to_jiffies(BEISCSI_UE_DETECT_INTERVAL));
 	beiscsi_log(phba, KERN_INFO, BEISCSI_LOG_INIT,
 		    "\n\n\n BM_%d : SUCCESS - DRIVER LOADED\n\n\n");
 	return 0;
 
-free_blkenbld:
-	destroy_workqueue(phba->wq);
+free_irqs:
+	hwi_disable_intr(phba);
+	beiscsi_free_irqs(phba);
+disable_iopoll:
 	for (i = 0; i < phba->num_cpus; i++) {
 		pbe_eq = &phwi_context->be_eq[i];
 		irq_poll_disable(&pbe_eq->iopoll);
 	}
+	destroy_workqueue(phba->wq);
 free_twq:
 	hwi_cleanup_port(phba);
 	beiscsi_cleanup_port(phba);
@@ -5731,12 +5759,13 @@ free_port:
 	pci_free_consistent(phba->pcidev,
 			    phba->ctrl.mbox_mem_alloced.size,
 			    phba->ctrl.mbox_mem_alloced.va,
-			   phba->ctrl.mbox_mem_alloced.dma);
+			    phba->ctrl.mbox_mem_alloced.dma);
 	beiscsi_unmap_pci_function(phba);
-hba_free:
+free_hba:
 	pci_disable_msix(phba->pcidev);
 	pci_dev_put(phba->pcidev);
 	iscsi_host_free(phba->shost);
+	pci_disable_pcie_error_reporting(pcidev);
 	pci_set_drvdata(pcidev, NULL);
 disable_pci:
 	pci_release_regions(pcidev);

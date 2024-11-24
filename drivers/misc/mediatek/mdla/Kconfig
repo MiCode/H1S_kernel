@@ -1,0 +1,7 @@
+config MTK_MDLA_SUPPORT
+	bool "MDLA (Mediatek Deep Learning Accelerator) Driver"
+	help
+	  Support deep neural network calculation using
+	  hardware accelerator. Customers and third party
+	  could use MDLA to develop feature and algorithm
+	  by themselves.

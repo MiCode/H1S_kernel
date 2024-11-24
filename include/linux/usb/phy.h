@@ -15,6 +15,17 @@
 #include <linux/usb.h>
 #include <uapi/linux/usb/charger.h>
 
+#define ENABLE_DP_MANUAL_PULLUP	BIT(0)
+#define ENABLE_SECONDARY_PHY	BIT(1)
+#define PHY_HOST_MODE		BIT(2)
+#define PHY_CHARGER_CONNECTED	BIT(3)
+#define PHY_VBUS_VALID_OVERRIDE	BIT(4)
+#define DEVICE_IN_SS_MODE	BIT(5)
+#define PHY_LANE_A		BIT(6)
+#define PHY_LANE_B		BIT(7)
+#define PHY_HSFS_MODE		BIT(8)
+#define PHY_LS_MODE		BIT(9)
+
 enum usb_phy_interface {
 	USBPHY_INTERFACE_MODE_UNKNOWN,
 	USBPHY_INTERFACE_MODE_UTMI,
@@ -37,6 +48,8 @@ enum usb_phy_type {
 	USB_PHY_TYPE_UNDEFINED,
 	USB_PHY_TYPE_USB2,
 	USB_PHY_TYPE_USB3,
+	USB_PHY_TYPE_USB3_OR_DP,
+	USB_PHY_TYPE_USB3_AND_DP,
 };
 
 /* OTG defines lots of enumeration states before device reset */
@@ -47,6 +60,7 @@ enum usb_otg_state {
 	OTG_STATE_B_IDLE,
 	OTG_STATE_B_SRP_INIT,
 	OTG_STATE_B_PERIPHERAL,
+	OTG_STATE_B_SUSPEND,
 
 	/* extra dual-role default-b states */
 	OTG_STATE_B_WAIT_ACON,
@@ -155,22 +169,10 @@ struct usb_phy {
 	 * manually detect the charger type.
 	 */
 	enum usb_charger_type (*charger_detect)(struct usb_phy *x);
-};
 
-/**
- * struct usb_phy_bind - represent the binding for the phy
- * @dev_name: the device name of the device that will bind to the phy
- * @phy_dev_name: the device name of the phy
- * @index: used if a single controller uses multiple phys
- * @phy: reference to the phy
- * @list: to maintain a linked list of the binding information
- */
-struct usb_phy_bind {
-	const char	*dev_name;
-	const char	*phy_dev_name;
-	u8		index;
-	struct usb_phy	*phy;
-	struct list_head list;
+	/* reset the PHY clocks */
+	int     (*reset)(struct usb_phy *x);
+	int	(*drive_dp_pulse)(struct usb_phy *x, unsigned int pulse_width);
 };
 
 /* for board-specific init logic */
@@ -229,21 +231,35 @@ usb_phy_vbus_off(struct usb_phy *x)
 	return x->set_vbus(x, false);
 }
 
+static inline int
+usb_phy_reset(struct usb_phy *x)
+{
+	if (x && x->reset)
+		return x->reset(x);
+
+	return 0;
+}
+
+static inline int
+usb_phy_drive_dp_pulse(struct usb_phy *x, unsigned int pulse_width)
+{
+	if (x && x->drive_dp_pulse)
+		return x->drive_dp_pulse(x, pulse_width);
+
+	return 0;
+}
+
 /* for usb host and peripheral controller drivers */
 #if IS_ENABLED(CONFIG_USB_PHY)
 extern struct usb_phy *usb_get_phy(enum usb_phy_type type);
 extern struct usb_phy *devm_usb_get_phy(struct device *dev,
 	enum usb_phy_type type);
-extern struct usb_phy *usb_get_phy_dev(struct device *dev, u8 index);
-extern struct usb_phy *devm_usb_get_phy_dev(struct device *dev, u8 index);
 extern struct usb_phy *devm_usb_get_phy_by_phandle(struct device *dev,
 	const char *phandle, u8 index);
 extern struct usb_phy *devm_usb_get_phy_by_node(struct device *dev,
 	struct device_node *node, struct notifier_block *nb);
 extern void usb_put_phy(struct usb_phy *);
 extern void devm_usb_put_phy(struct device *dev, struct usb_phy *x);
-extern int usb_bind_phy(const char *dev_name, u8 index,
-				const char *phy_dev_name);
 extern void usb_phy_set_event(struct usb_phy *x, unsigned long event);
 extern void usb_phy_set_charger_current(struct usb_phy *usb_phy,
 					unsigned int mA);
@@ -259,16 +275,6 @@ static inline struct usb_phy *usb_get_phy(enum usb_phy_type type)
 
 static inline struct usb_phy *devm_usb_get_phy(struct device *dev,
 	enum usb_phy_type type)
-{
-	return ERR_PTR(-ENXIO);
-}
-
-static inline struct usb_phy *usb_get_phy_dev(struct device *dev, u8 index)
-{
-	return ERR_PTR(-ENXIO);
-}
-
-static inline struct usb_phy *devm_usb_get_phy_dev(struct device *dev, u8 index)
 {
 	return ERR_PTR(-ENXIO);
 }
@@ -291,12 +297,6 @@ static inline void usb_put_phy(struct usb_phy *x)
 
 static inline void devm_usb_put_phy(struct device *dev, struct usb_phy *x)
 {
-}
-
-static inline int usb_bind_phy(const char *dev_name, u8 index,
-				const char *phy_dev_name)
-{
-	return -EOPNOTSUPP;
 }
 
 static inline void usb_phy_set_event(struct usb_phy *x, unsigned long event)

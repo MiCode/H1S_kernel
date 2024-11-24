@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/device.h>
@@ -80,7 +72,9 @@ static int md_buck_oc_notify(struct notifier_block *nb, unsigned long event,
 	if (event != REGULATOR_EVENT_OVER_CURRENT)
 		return NOTIFY_OK;
 
-	snprintf(oc_str, 30, "PMIC OC:%s", oc_info->name);
+	ret = snprintf(oc_str, 30, "PMIC OC:%s", oc_info->name);
+	if (ret < 0)
+		return NOTIFY_OK;
 	aee_kernel_warning(oc_str, "\nCRDISPATCH_KEY:MD OC\nOC Interrupt: %s",
 			   oc_info->name);
 	/* notify MD by ccci */

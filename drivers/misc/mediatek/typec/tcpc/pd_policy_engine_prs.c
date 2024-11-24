@@ -1,16 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * Power Delivery Policy Engine for PRS
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "inc/pd_core.h"
@@ -50,7 +40,6 @@ void pe_prs_src_snk_assert_rd_entry(struct pd_port *pd_port)
 
 void pe_prs_src_snk_wait_source_on_entry(struct pd_port *pd_port)
 {
-	PE_STATE_HRESET_IF_TX_FAILED(pd_port);
 	pd_send_sop_ctrl_msg(pd_port, PD_CTRL_PS_RDY);
 }
 
@@ -105,7 +94,6 @@ void pe_prs_snk_src_source_on_entry(struct pd_port *pd_port)
 	dpm_reaction_set(pd_port, DPM_REACTION_CAP_RESET_CABLE);
 #endif	/* CONFIG_USB_PD_RESET_CABLE */
 
-	PE_STATE_HRESET_IF_TX_FAILED(pd_port);
 	pd_dpm_dynamic_enable_vconn(pd_port);
 	pd_dpm_prs_enable_power_source(pd_port, true);
 

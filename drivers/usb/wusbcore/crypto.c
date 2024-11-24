@@ -1,24 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Ultra Wide Band
  * AES-128 CCM Encryption
  *
  * Copyright (C) 2007 Intel Corporation
  * Inaky Perez-Gonzalez <inaky.perez-gonzalez@intel.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
- * 02110-1301, USA.
- *
  *
  * We don't do any encryption here; we use the Linux Kernel's AES-128
  * crypto modules to construct keys and payload blocks in a way
@@ -216,7 +202,7 @@ static int wusb_ccm_mac(struct crypto_skcipher *tfm_cbc,
 	struct scatterlist sg[4], sg_dst;
 	void *dst_buf;
 	size_t dst_size;
-	u8 iv[crypto_skcipher_ivsize(tfm_cbc)];
+	u8 *iv;
 	size_t zero_padding;
 
 	/*
@@ -238,7 +224,9 @@ static int wusb_ccm_mac(struct crypto_skcipher *tfm_cbc,
 	if (!dst_buf)
 		goto error_dst_buf;
 
-	memset(iv, 0, sizeof(iv));
+	iv = kzalloc(crypto_skcipher_ivsize(tfm_cbc), GFP_KERNEL);
+	if (!iv)
+		goto error_iv;
 
 	/* Setup B0 */
 	scratch->b0.flags = 0x59;	/* Format B0 */
@@ -290,6 +278,8 @@ static int wusb_ccm_mac(struct crypto_skcipher *tfm_cbc,
 	bytewise_xor(mic, &scratch->ax, iv, 8);
 	result = 8;
 error_cbc_crypt:
+	kfree(iv);
+error_iv:
 	kfree(dst_buf);
 error_dst_buf:
 	return result;

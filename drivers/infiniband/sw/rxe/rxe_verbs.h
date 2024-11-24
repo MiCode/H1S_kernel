@@ -139,8 +139,6 @@ enum rxe_qp_state {
 	QP_STATE_ERROR
 };
 
-extern char *rxe_qp_state_name[];
-
 struct rxe_req_info {
 	enum rxe_qp_state	state;
 	int			wqe_index;
@@ -160,6 +158,7 @@ struct rxe_comp_info {
 	int			opcode;
 	int			timeout;
 	int			timeout_retry;
+	int			started_retry;
 	u32			retry_cnt;
 	u32			rnr_retry;
 	struct rxe_task		task;

@@ -186,8 +186,6 @@ config REGULATOR_MT6691
 
 config MTK_EXTERNAL_CHARGER_TYPE_DETECT
 	bool "MediaTek external charger type detection"
-	depends on MTK_PMIC_NEW_ARCH
-	default n
 	---help---
 	  MediaTek external charger type detection flow
 	  only for MTK_PMIC_NEW_ARCH
@@ -198,3 +196,5 @@ config MTK_EXTERNAL_CHARGER_TYPE_DETECT
 
 source "drivers/misc/mediatek/pmic/mt6370/Kconfig"
 source "drivers/misc/mediatek/pmic/mt6360/Kconfig"
+source "drivers/misc/mediatek/pmic/mt6397/Kconfig"
+

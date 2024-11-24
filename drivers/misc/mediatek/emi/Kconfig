@@ -1,5 +1,5 @@
-config MTK_EMI
-	bool "EMI driver"
+config MTK_EMI_LEGACY
+	bool "MediaTek EMI legacy driver"
 	default n
 	help
 	  This config enable/disable the IP-based EMI

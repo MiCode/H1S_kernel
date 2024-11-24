@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/slab.h>
@@ -72,7 +64,7 @@ static void ppm_get_cluster_status(struct ppm_cluster_status *cl_status)
 static int ppm_cpu_freq_callback(struct notifier_block *nb,
 			unsigned long val, void *data)
 {
-	struct ppm_cluster_status cl_status[NR_PPM_CLUSTERS];
+	struct ppm_cluster_status cl_status[NR_PPM_CLUSTERS] = { {0} };
 	struct cpufreq_freqs *freq = data;
 	int cpu = freq->cpu;
 	int i, is_root_cpu = 0;
@@ -110,7 +102,7 @@ static struct notifier_block ppm_cpu_freq_notifier = {
 
 static int ppm_cpu_dead(unsigned int cpu)
 {
-	struct ppm_cluster_status cl_status[NR_PPM_CLUSTERS];
+	struct ppm_cluster_status cl_status[NR_PPM_CLUSTERS] = { {0} };
 #ifdef PPM_SSPM_SUPPORT
 	int i;
 #endif
@@ -128,7 +120,7 @@ static int ppm_cpu_dead(unsigned int cpu)
 
 static int ppm_cpu_up(unsigned int cpu)
 {
-	struct ppm_cluster_status cl_status[NR_PPM_CLUSTERS];
+	struct ppm_cluster_status cl_status[NR_PPM_CLUSTERS] = { {0} };
 #ifdef PPM_SSPM_SUPPORT
 	int i;
 #endif
@@ -329,7 +321,7 @@ unsigned int mt_ppm_get_leakage_mw(enum ppm_cluster_lkg cluster)
 
 	/* read total leakage */
 	if (cluster >= TOTAL_CLUSTER_LKG) {
-		struct ppm_cluster_status cl_status[NR_PPM_CLUSTERS];
+		struct ppm_cluster_status cl_status[NR_PPM_CLUSTERS] = { {0} };
 		int i;
 
 		ppm_get_cluster_status(cl_status);
@@ -370,7 +362,7 @@ unsigned int get_cluster_ptpod_fix_freq_idx(unsigned int id)
 {
 	int val = mt_cpufreq_get_cpu_level();
 
-	if (val == 5)
+	if (val == 5 || val >= 8)
 		return PTPOD_FREQ_IDX_LY;
 	else
 		return PTPOD_FREQ_IDX;

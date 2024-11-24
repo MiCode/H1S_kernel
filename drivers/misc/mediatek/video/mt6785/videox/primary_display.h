@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _PRIMARY_DISPLAY_H_
 #define _PRIMARY_DISPLAY_H_
@@ -392,8 +383,6 @@ int primary_display_diagnose_oneshot(const char *func, int line);
 
 int primary_display_get_info(struct disp_session_info *info);
 int primary_display_capture_framebuffer(unsigned long pbuf);
-int primary_display_capture_framebuffer_ovl(unsigned long pbuf,
-					    unsigned int format);
 
 int primary_display_is_video_mode(void);
 int primary_is_sec(void);
@@ -527,7 +516,7 @@ extern void check_mm0_clk_sts(void);
 #ifdef MTK_FB_MMDVFS_SUPPORT
 int primary_display_get_dvfs_last_req(void);
 #endif
-
+void primary_display_vdo_restart(bool need_wait_frame_done);
 /**************function for ARR start************************/
 unsigned int primary_display_is_support_ARR(void);
 int primary_display_wait_fps_change(unsigned int *new_fps);

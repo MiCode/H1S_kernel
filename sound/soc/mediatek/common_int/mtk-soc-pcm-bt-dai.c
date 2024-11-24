@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
 
 /*******************************************************************************
@@ -63,7 +52,7 @@ static void StartAudioBtDaiHardware(struct snd_pcm_substream *substream);
 static void StopAudioBtDaiHardware(struct snd_pcm_substream *substream);
 static int mtk_bt_dai_probe(struct platform_device *pdev);
 static int mtk_bt_dai_pcm_close(struct snd_pcm_substream *substream);
-static int mtk_asoc_bt_dai_probe(struct snd_soc_platform *platform);
+static int mtk_asoc_bt_dai_component_probe(struct snd_soc_component *component);
 
 static struct snd_pcm_hardware mtk_btdai_hardware = {
 	.info = (SNDRV_PCM_INFO_INTERLEAVED),
@@ -82,6 +71,8 @@ static struct snd_pcm_hardware mtk_btdai_hardware = {
 
 static void StopAudioBtDaiHardware(struct snd_pcm_substream *substream)
 {
+	pr_debug("StopAudioBtDaiHardware\n");
+
 	/* here to set interrupt */
 	irq_remove_user(substream,
 			irq_request_number(Soc_Aud_Digital_Block_MEM_DAI));
@@ -293,20 +284,21 @@ static bool CheckNullPointer(void *pointer)
 }
 
 static int mtk_bt_dai_pcm_copy(struct snd_pcm_substream *substream, int channel,
-			       unsigned long pos, void __user *dst,
-			       unsigned long count)
+			       unsigned long pos, void __user *buf,
+			       unsigned long bytes)
 {
 	struct afe_mem_control_t *pDAI_MEM_ConTrol = NULL;
 	struct afe_block_t *Dai_Block = NULL;
-	char *Read_Data_Ptr = (char *)dst;
+	char *Read_Data_Ptr = (char *)buf;
 	ssize_t DMA_Read_Ptr = 0, read_size = 0, read_count = 0;
 	unsigned long flags;
+	unsigned int count = 0;
 
 #if defined(AUD_DEBUG_LOG)
-	pr_debug("%s  pos = %lu count = %lu\n", __func__, pos, count);
+	pr_debug("%s(), pos = %lu, bytes = %lu\n", __func__, pos, bytes);
 #endif
 	/* get total bytes to copy */
-	count = word_size_align(count);
+	count = word_size_align(bytes);
 
 	/* check which memif nned to be write */
 	pDAI_MEM_ConTrol = Bt_Dai_Control_context;
@@ -454,7 +446,15 @@ static int mtk_bt_dai_pcm_copy(struct snd_pcm_substream *substream, int channel,
 #endif
 	}
 
-	return 0;
+	return count;
+}
+
+static int mtk_bt_dai_capture_pcm_silence(struct snd_pcm_substream *substream,
+					  int channel,
+					  unsigned long pos,
+					  unsigned long bytes)
+{
+	return 0; /* do nothing */
 }
 
 static void *dummy_page[2];
@@ -475,30 +475,40 @@ static struct snd_pcm_ops mtk_bt_dai_ops = {
 	.prepare = mtk_bt_dai_pcm_prepare,
 	.trigger = mtk_bt_dai_pcm_trigger,
 	.pointer = mtk_bt_dai_pcm_pointer,
-	.page = mtk_bt_dai_capture_pcm_page,
 	.copy_user = mtk_bt_dai_pcm_copy,
+	.fill_silence = mtk_bt_dai_capture_pcm_silence,
+	.page = mtk_bt_dai_capture_pcm_page,
 };
 
-static struct snd_soc_platform_driver mtk_bt_dai_soc_platform = {
-	.ops = &mtk_bt_dai_ops, .probe = mtk_asoc_bt_dai_probe,
+static struct snd_soc_component_driver mtk_bt_dai_soc_component = {
+	.name = AFE_PCM_NAME,
+	.ops = &mtk_bt_dai_ops,
+	.probe = mtk_asoc_bt_dai_component_probe,
 };
 
 static int mtk_bt_dai_probe(struct platform_device *pdev)
 {
-	if (pdev->dev.of_node) {
+	pr_debug("mtk_bt_dai_probe\n");
+
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_VOIP_BT_IN);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
-	return snd_soc_register_platform(&pdev->dev, &mtk_bt_dai_soc_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_bt_dai_soc_component,
+					  NULL,
+					  0);
 }
 
-static int mtk_asoc_bt_dai_probe(struct snd_soc_platform *platform)
+static int mtk_asoc_bt_dai_component_probe(struct snd_soc_component *component)
 {
-	AudDrv_Allocate_mem_Buffer(platform->dev, Soc_Aud_Digital_Block_MEM_DAI,
+	pr_debug("%s()\n", __func__);
+	AudDrv_Allocate_mem_Buffer(component->dev, Soc_Aud_Digital_Block_MEM_DAI,
 				   BT_DAI_MAX_BUFFER_SIZE);
 	Bt_Dai_Capture_dma_buf = Get_Mem_Buffer(Soc_Aud_Digital_Block_MEM_DAI);
 	return 0;
@@ -506,7 +516,7 @@ static int mtk_asoc_bt_dai_probe(struct snd_soc_platform *platform)
 
 static int mtk_bt_dai_remove(struct platform_device *pdev)
 {
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

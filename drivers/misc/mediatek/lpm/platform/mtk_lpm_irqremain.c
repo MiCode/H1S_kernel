@@ -1,7 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2019 MediaTek Inc.
  */
+
 
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -29,6 +30,14 @@
 #define FOR_EACH_IRQ_REMAIN(edges)\
 		list_for_each_entry(edges,\
 				&mtk_irqremain, list)
+
+#define IRQ_REMAIN_FREE(_irq_remain) ({\
+	if (_irq_remain) {\
+		kfree(_irq_remain->irqs);\
+		kfree(_irq_remain->wakeup_src_cat);\
+		kfree(_irq_remain->wakeup_src);\
+		kfree(_irq_remain);\
+	} })
 
 
 enum MTK_LPM_IRQREMAIN_TYPE {
@@ -114,6 +123,8 @@ int mtk_lpm_irqremain_get(struct mtk_lpm_irqremain **irq)
 	if (!tar)
 		goto mtk_lpm_irqremain_release;
 
+	tar->irqs = tar->wakeup_src_cat = tar->wakeup_src = NULL;
+
 	tar->irqs = kcalloc(count,
 				sizeof(*tar->irqs), GFP_KERNEL);
 
@@ -127,7 +138,7 @@ int mtk_lpm_irqremain_get(struct mtk_lpm_irqremain **irq)
 		goto mtk_lpm_irqremain_release;
 
 	tar->wakeup_src = kcalloc(count,
-				sizeof(*tar->irqs), GFP_KERNEL);
+				sizeof(*tar->wakeup_src), GFP_KERNEL);
 
 	if (!tar->wakeup_src)
 		goto mtk_lpm_irqremain_release;
@@ -148,12 +159,7 @@ int mtk_lpm_irqremain_get(struct mtk_lpm_irqremain **irq)
 	return 0;
 
 mtk_lpm_irqremain_release:
-	if (tar) {
-		kfree(tar->irqs);
-		kfree(tar->wakeup_src);
-		kfree(tar->wakeup_src_cat);
-		kfree(tar);
-	}
+	IRQ_REMAIN_FREE(tar);
 	mtk_lpm_system_unlock(flag);
 
 	return -ENOMEM;
@@ -162,11 +168,7 @@ EXPORT_SYMBOL(mtk_lpm_irqremain_get);
 
 void mtk_lpm_irqremain_put(struct mtk_lpm_irqremain *irqs)
 {
-	if (irqs) {
-		kfree(irqs->irqs);
-		kfree(irqs->wakeup_src);
-		kfree(irqs);
-	}
+	IRQ_REMAIN_FREE(irqs);
 }
 EXPORT_SYMBOL(mtk_lpm_irqremain_put);
 
@@ -232,7 +234,7 @@ int __init mtk_lpm_irqremain_parsing(struct device_node *parent)
 
 				if (irqnode) {
 					irqnode->irq =
-							irqnum;
+						PLAT_COVERT_IRQ_NUM(irqnum);
 					irqnode->wakeup_src_cat =
 							wakeup_src_cat;
 					irqnode->wakeup_src =
@@ -265,13 +267,13 @@ int __init mtk_lpm_irqremain_parsing(struct device_node *parent)
 	remain_count = 0;
 	FOR_EACH_IRQ_REMAIN(irqnode) {
 		mtk_lpm_smc_cpu_pm(IRQ_REMAIN_IRQ_ADD,
-				   PLAT_COVERT_IRQ_NUM(irqnode->irq),
+				   irqnode->irq,
 				   irqnode->wakeup_src_cat,
 				   irqnode->wakeup_src);
 
 		mtk_lpm_smc_cpu_pm_lp(IRQS_REMAIN_IRQ,
 				   MT_LPM_SMC_ACT_SET,
-				   PLAT_COVERT_IRQ_NUM(irqnode->irq), 0);
+				   irqnode->irq, 0);
 		mtk_lpm_smc_cpu_pm_lp(IRQS_REMAIN_WAKEUP_CAT,
 				   MT_LPM_SMC_ACT_SET,
 				   irqnode->wakeup_src_cat, 0);

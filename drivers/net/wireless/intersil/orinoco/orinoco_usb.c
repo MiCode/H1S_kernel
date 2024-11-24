@@ -319,9 +319,9 @@ static inline void ezusb_mod_timer(struct ezusb_priv *upriv,
 	mod_timer(timer, expire);
 }
 
-static void ezusb_request_timerfn(u_long _ctx)
+static void ezusb_request_timerfn(struct timer_list *t)
 {
-	struct request_context *ctx = (void *) _ctx;
+	struct request_context *ctx = from_timer(ctx, t, timer);
 
 	ctx->outurb->transfer_flags |= URB_ASYNC_UNLINK;
 	if (usb_unlink_urb(ctx->outurb) == -EINPROGRESS) {
@@ -365,7 +365,7 @@ static struct request_context *ezusb_alloc_ctx(struct ezusb_priv *upriv,
 	refcount_set(&ctx->refcount, 1);
 	init_completion(&ctx->done);
 
-	setup_timer(&ctx->timer, ezusb_request_timerfn, (u_long)ctx);
+	timer_setup(&ctx->timer, ezusb_request_timerfn, 0);
 	return ctx;
 }
 
@@ -1237,19 +1237,19 @@ static netdev_tx_t ezusb_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (skb->len < ETH_HLEN)
 		goto drop;
 
-	ctx = ezusb_alloc_ctx(upriv, EZUSB_RID_TX, 0);
-	if (!ctx)
-		goto busy;
-
-	memset(ctx->buf, 0, BULK_BUF_SIZE);
-	buf = ctx->buf->data;
-
 	tx_control = 0;
 
 	err = orinoco_process_xmit_skb(skb, dev, priv, &tx_control,
 				       &mic[0]);
 	if (err)
 		goto drop;
+
+	ctx = ezusb_alloc_ctx(upriv, EZUSB_RID_TX, 0);
+	if (!ctx)
+		goto drop;
+
+	memset(ctx->buf, 0, BULK_BUF_SIZE);
+	buf = ctx->buf->data;
 
 	{
 		__le16 *tx_cntl = (__le16 *)buf;
@@ -1458,7 +1458,6 @@ static void ezusb_bulk_in_callback(struct urb *urb)
 
 static inline void ezusb_delete(struct ezusb_priv *upriv)
 {
-	struct net_device *dev;
 	struct list_head *item;
 	struct list_head *tmp_item;
 	unsigned long flags;
@@ -1466,7 +1465,6 @@ static inline void ezusb_delete(struct ezusb_priv *upriv)
 	BUG_ON(in_interrupt());
 	BUG_ON(!upriv);
 
-	dev = upriv->dev;
 	mutex_lock(&upriv->mtx);
 
 	upriv->udev = NULL;	/* No timer will be rearmed from here */

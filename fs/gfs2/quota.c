@@ -434,6 +434,17 @@ static int qd_check_sync(struct gfs2_sbd *sdp, struct gfs2_quota_data *qd,
 	    (sync_gen && (qd->qd_sync_gen >= *sync_gen)))
 		return 0;
 
+	/*
+	 * If qd_change is 0 it means a pending quota change was negated.
+	 * We should not sync it, but we still have a qd reference and slot
+	 * reference taken by gfs2_quota_change -> do_qc that need to be put.
+	 */
+	if (!qd->qd_change && test_and_clear_bit(QDF_CHANGE, &qd->qd_flags)) {
+		slot_put(qd);
+		qd_put(qd);
+		return 0;
+	}
+
 	if (!lockref_get_not_dead(&qd->qd_lockref))
 		return 0;
 
@@ -735,7 +746,10 @@ static int gfs2_write_buf_to_page(struct gfs2_inode *ip, unsigned long index,
 			if (!buffer_uptodate(bh))
 				goto unlock_out;
 		}
-		gfs2_trans_add_data(ip->i_gl, bh);
+		if (gfs2_is_jdata(ip))
+			gfs2_trans_add_data(ip->i_gl, bh);
+		else
+			gfs2_ordered_add_inode(ip);
 
 		/* If we need to write to the next block as well */
 		if (to_write > (bsize - boff)) {
@@ -883,7 +897,7 @@ static int do_sync(unsigned int num_qd, struct gfs2_quota_data **qda)
 	gfs2_write_calc_reserv(ip, sizeof(struct gfs2_quota),
 			      &data_blocks, &ind_blocks);
 
-	ghs = kmalloc(num_qd * sizeof(struct gfs2_holder), GFP_NOFS);
+	ghs = kmalloc_array(num_qd, sizeof(struct gfs2_holder), GFP_NOFS);
 	if (!ghs)
 		return -ENOMEM;
 
@@ -955,7 +969,8 @@ out:
 		gfs2_glock_dq_uninit(&ghs[qx]);
 	inode_unlock(&ip->i_inode);
 	kfree(ghs);
-	gfs2_log_flush(ip->i_gl->gl_name.ln_sbd, ip->i_gl, NORMAL_FLUSH);
+	gfs2_log_flush(ip->i_gl->gl_name.ln_sbd, ip->i_gl,
+		       GFS2_LOG_HEAD_FLUSH_NORMAL | GFS2_LFC_DO_SYNC);
 	return error;
 }
 

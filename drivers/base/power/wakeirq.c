@@ -33,7 +33,6 @@ static int dev_pm_attach_wake_irq(struct device *dev, int irq,
 				  struct wake_irq *wirq)
 {
 	unsigned long flags;
-	int err;
 
 	if (!dev || !wirq)
 		return -EINVAL;
@@ -45,12 +44,11 @@ static int dev_pm_attach_wake_irq(struct device *dev, int irq,
 		return -EEXIST;
 	}
 
-	err = device_wakeup_attach_irq(dev, wirq);
-	if (!err)
-		dev->power.wakeirq = wirq;
+	dev->power.wakeirq = wirq;
+	device_wakeup_attach_irq(dev, wirq);
 
 	spin_unlock_irqrestore(&dev->power.lock, flags);
-	return err;
+	return 0;
 }
 
 /**
@@ -114,6 +112,7 @@ void dev_pm_clear_wake_irq(struct device *dev)
 		free_irq(wirq->irq, wirq);
 		wirq->status &= ~WAKE_IRQ_DEDICATED_MASK;
 	}
+	kfree(wirq->name);
 	kfree(wirq);
 }
 EXPORT_SYMBOL_GPL(dev_pm_clear_wake_irq);
@@ -157,6 +156,59 @@ static irqreturn_t handle_threaded_wake_irq(int irq, void *_wirq)
 	return IRQ_HANDLED;
 }
 
+static int __dev_pm_set_dedicated_wake_irq(struct device *dev, int irq, unsigned int flag)
+{
+	struct wake_irq *wirq;
+	int err;
+
+	if (irq < 0)
+		return -EINVAL;
+
+	wirq = kzalloc(sizeof(*wirq), GFP_KERNEL);
+	if (!wirq)
+		return -ENOMEM;
+
+	wirq->name = kasprintf(GFP_KERNEL, "%s:wakeup", dev_name(dev));
+	if (!wirq->name) {
+		err = -ENOMEM;
+		goto err_free;
+	}
+
+	wirq->dev = dev;
+	wirq->irq = irq;
+	irq_set_status_flags(irq, IRQ_NOAUTOEN);
+
+	/* Prevent deferred spurious wakeirqs with disable_irq_nosync() */
+	irq_set_status_flags(irq, IRQ_DISABLE_UNLAZY);
+
+	/*
+	 * Consumer device may need to power up and restore state
+	 * so we use a threaded irq.
+	 */
+	err = request_threaded_irq(irq, NULL, handle_threaded_wake_irq,
+				   IRQF_ONESHOT, wirq->name, wirq);
+	if (err)
+		goto err_free_name;
+
+	err = dev_pm_attach_wake_irq(dev, irq, wirq);
+	if (err)
+		goto err_free_irq;
+
+	wirq->status = WAKE_IRQ_DEDICATED_ALLOCATED | flag;
+
+	return err;
+
+err_free_irq:
+	free_irq(irq, wirq);
+err_free_name:
+	kfree(wirq->name);
+err_free:
+	kfree(wirq);
+
+	return err;
+}
+
+
 /**
  * dev_pm_set_dedicated_wake_irq - Request a dedicated wake-up interrupt
  * @dev: Device entry
@@ -171,53 +223,40 @@ static irqreturn_t handle_threaded_wake_irq(int irq, void *_wirq)
  *
  * The interrupt starts disabled, and needs to be managed for
  * the device by the bus code or the device driver using
- * dev_pm_enable_wake_irq() and dev_pm_disable_wake_irq()
+ * dev_pm_enable_wake_irq*() and dev_pm_disable_wake_irq*()
  * functions.
  */
 int dev_pm_set_dedicated_wake_irq(struct device *dev, int irq)
 {
-	struct wake_irq *wirq;
-	int err;
-
-	if (irq < 0)
-		return -EINVAL;
-
-	wirq = kzalloc(sizeof(*wirq), GFP_KERNEL);
-	if (!wirq)
-		return -ENOMEM;
-
-	wirq->dev = dev;
-	wirq->irq = irq;
-	irq_set_status_flags(irq, IRQ_NOAUTOEN);
-
-	/* Prevent deferred spurious wakeirqs with disable_irq_nosync() */
-	irq_set_status_flags(irq, IRQ_DISABLE_UNLAZY);
-
-	/*
-	 * Consumer device may need to power up and restore state
-	 * so we use a threaded irq.
-	 */
-	err = request_threaded_irq(irq, NULL, handle_threaded_wake_irq,
-				   IRQF_ONESHOT, dev_name(dev), wirq);
-	if (err)
-		goto err_free;
-
-	err = dev_pm_attach_wake_irq(dev, irq, wirq);
-	if (err)
-		goto err_free_irq;
-
-	wirq->status = WAKE_IRQ_DEDICATED_ALLOCATED;
-
-	return err;
-
-err_free_irq:
-	free_irq(irq, wirq);
-err_free:
-	kfree(wirq);
-
-	return err;
+	return __dev_pm_set_dedicated_wake_irq(dev, irq, 0);
 }
 EXPORT_SYMBOL_GPL(dev_pm_set_dedicated_wake_irq);
+
+/**
+ * dev_pm_set_dedicated_wake_irq_reverse - Request a dedicated wake-up interrupt
+ *                                         with reverse enable ordering
+ * @dev: Device entry
+ * @irq: Device wake-up interrupt
+ *
+ * Unless your hardware has separate wake-up interrupts in addition
+ * to the device IO interrupts, you don't need this.
+ *
+ * Sets up a threaded interrupt handler for a device that has a dedicated
+ * wake-up interrupt in addition to the device IO interrupt. It sets
+ * the status of WAKE_IRQ_DEDICATED_REVERSE to tell rpm_suspend()
+ * to enable dedicated wake-up interrupt after running the runtime suspend
+ * callback for @dev.
+ *
+ * The interrupt starts disabled, and needs to be managed for
+ * the device by the bus code or the device driver using
+ * dev_pm_enable_wake_irq*() and dev_pm_disable_wake_irq*()
+ * functions.
+ */
+int dev_pm_set_dedicated_wake_irq_reverse(struct device *dev, int irq)
+{
+	return __dev_pm_set_dedicated_wake_irq(dev, irq, WAKE_IRQ_DEDICATED_REVERSE);
+}
+EXPORT_SYMBOL_GPL(dev_pm_set_dedicated_wake_irq_reverse);
 
 /**
  * dev_pm_enable_wake_irq - Enable device wake-up interrupt
@@ -289,25 +328,58 @@ void dev_pm_enable_wake_irq_check(struct device *dev,
 	return;
 
 enable:
-	enable_irq(wirq->irq);
+	if (!can_change_status || !(wirq->status & WAKE_IRQ_DEDICATED_REVERSE)) {
+		enable_irq(wirq->irq);
+		wirq->status |= WAKE_IRQ_DEDICATED_ENABLED;
+	}
 }
 
 /**
  * dev_pm_disable_wake_irq_check - Checks and disables wake-up interrupt
  * @dev: Device
+ * @cond_disable: if set, also check WAKE_IRQ_DEDICATED_REVERSE
  *
  * Disables wake-up interrupt conditionally based on status.
  * Should be only called from rpm_suspend() and rpm_resume() path.
  */
-void dev_pm_disable_wake_irq_check(struct device *dev)
+void dev_pm_disable_wake_irq_check(struct device *dev, bool cond_disable)
 {
 	struct wake_irq *wirq = dev->power.wakeirq;
 
 	if (!wirq || !((wirq->status & WAKE_IRQ_DEDICATED_MASK)))
 		return;
 
-	if (wirq->status & WAKE_IRQ_DEDICATED_MANAGED)
+	if (cond_disable && (wirq->status & WAKE_IRQ_DEDICATED_REVERSE))
+		return;
+
+	if (wirq->status & WAKE_IRQ_DEDICATED_MANAGED) {
+		wirq->status &= ~WAKE_IRQ_DEDICATED_ENABLED;
 		disable_irq_nosync(wirq->irq);
+	}
+}
+
+/**
+ * dev_pm_enable_wake_irq_complete - enable wake IRQ not enabled before
+ * @dev: Device using the wake IRQ
+ *
+ * Enable wake IRQ conditionally based on status, mainly used if want to
+ * enable wake IRQ after running ->runtime_suspend() which depends on
+ * WAKE_IRQ_DEDICATED_REVERSE.
+ *
+ * Should be only called from rpm_suspend() path.
+ */
+void dev_pm_enable_wake_irq_complete(struct device *dev)
+{
+	struct wake_irq *wirq = dev->power.wakeirq;
+
+	if (!wirq || !(wirq->status & WAKE_IRQ_DEDICATED_MASK))
+		return;
+
+	if (wirq->status & WAKE_IRQ_DEDICATED_MANAGED &&
+	    wirq->status & WAKE_IRQ_DEDICATED_REVERSE) {
+		enable_irq(wirq->irq);
+		wirq->status |= WAKE_IRQ_DEDICATED_ENABLED;
+	}
 }
 
 /**
@@ -324,7 +396,7 @@ void dev_pm_arm_wake_irq(struct wake_irq *wirq)
 
 	if (device_may_wakeup(wirq->dev)) {
 		if (wirq->status & WAKE_IRQ_DEDICATED_ALLOCATED &&
-		    !pm_runtime_status_suspended(wirq->dev))
+		    !(wirq->status & WAKE_IRQ_DEDICATED_ENABLED))
 			enable_irq(wirq->irq);
 
 		enable_irq_wake(wirq->irq);
@@ -347,7 +419,7 @@ void dev_pm_disarm_wake_irq(struct wake_irq *wirq)
 		disable_irq_wake(wirq->irq);
 
 		if (wirq->status & WAKE_IRQ_DEDICATED_ALLOCATED &&
-		    !pm_runtime_status_suspended(wirq->dev))
+		    !(wirq->status & WAKE_IRQ_DEDICATED_ENABLED))
 			disable_irq_nosync(wirq->irq);
 	}
 }

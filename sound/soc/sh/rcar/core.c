@@ -1,16 +1,12 @@
-/*
- * Renesas R-Car SRU/SCU/SSIU/SSI support
- *
- * Copyright (C) 2013 Renesas Solutions Corp.
- * Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>
- *
- * Based on fsi.c
- * Kuninori Morimoto <morimoto.kuninori@renesas.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- */
+// SPDX-License-Identifier: GPL-2.0
+//
+// Renesas R-Car SRU/SCU/SSIU/SSI support
+//
+// Copyright (C) 2013 Renesas Solutions Corp.
+// Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>
+//
+// Based on fsi.c
+// Kuninori Morimoto <morimoto.kuninori@renesas.com>
 
 /*
  * Renesas R-Car sound device structure
@@ -93,6 +89,15 @@
  *  [mod]->fn() -> [mod]->fn() -> [mod]->fn()...
  *
  */
+
+/*
+ * you can enable below define if you don't need
+ * DAI status debug message when debugging
+ * see rsnd_dbg_dai_call()
+ *
+ * #define RSND_DEBUG_NO_DAI_CALL 1
+ */
+
 #include <linux/pm_runtime.h>
 #include "rsnd.h"
 
@@ -102,7 +107,7 @@
 static const struct of_device_id rsnd_of_match[] = {
 	{ .compatible = "renesas,rcar_sound-gen1", .data = (void *)RSND_GEN1 },
 	{ .compatible = "renesas,rcar_sound-gen2", .data = (void *)RSND_GEN2 },
-	{ .compatible = "renesas,rcar_sound-gen3", .data = (void *)RSND_GEN2 }, /* gen2 compatible */
+	{ .compatible = "renesas,rcar_sound-gen3", .data = (void *)RSND_GEN3 },
 	{},
 };
 MODULE_DEVICE_TABLE(of, rsnd_of_match);
@@ -119,14 +124,6 @@ void rsnd_mod_make_sure(struct rsnd_mod *mod, enum rsnd_mod_type type)
 		dev_warn(dev, "%s[%d] is not your expected module\n",
 			 rsnd_mod_name(mod), rsnd_mod_id(mod));
 	}
-}
-
-char *rsnd_mod_name(struct rsnd_mod *mod)
-{
-	if (!mod || !mod->ops)
-		return "unknown";
-
-	return mod->ops->name;
 }
 
 struct dma_chan *rsnd_mod_dma_req(struct rsnd_dai_stream *io,
@@ -172,8 +169,7 @@ int rsnd_mod_init(struct rsnd_priv *priv,
 
 void rsnd_mod_quit(struct rsnd_mod *mod)
 {
-	if (mod->clk)
-		clk_unprepare(mod->clk);
+	clk_unprepare(mod->clk);
 	mod->clk = NULL;
 }
 
@@ -200,19 +196,33 @@ void rsnd_mod_interrupt(struct rsnd_mod *mod,
 int rsnd_io_is_working(struct rsnd_dai_stream *io)
 {
 	/* see rsnd_dai_stream_init/quit() */
-	return !!io->substream;
+	if (io->substream)
+		return snd_pcm_running(io->substream);
+
+	return 0;
 }
 
-int rsnd_runtime_channel_original(struct rsnd_dai_stream *io)
+int rsnd_runtime_channel_original_with_params(struct rsnd_dai_stream *io,
+					      struct snd_pcm_hw_params *params)
 {
 	struct snd_pcm_runtime *runtime = rsnd_io_to_runtime(io);
 
-	return runtime->channels;
+	/*
+	 * params will be added when refine
+	 * see
+	 *	__rsnd_soc_hw_rule_rate()
+	 *	__rsnd_soc_hw_rule_channels()
+	 */
+	if (params)
+		return params_channels(params);
+	else
+		return runtime->channels;
 }
 
-int rsnd_runtime_channel_after_ctu(struct rsnd_dai_stream *io)
+int rsnd_runtime_channel_after_ctu_with_params(struct rsnd_dai_stream *io,
+					       struct snd_pcm_hw_params *params)
 {
-	int chan = rsnd_runtime_channel_original(io);
+	int chan = rsnd_runtime_channel_original_with_params(io, params);
 	struct rsnd_mod *ctu_mod = rsnd_io_to_mod_ctu(io);
 
 	if (ctu_mod) {
@@ -225,12 +235,13 @@ int rsnd_runtime_channel_after_ctu(struct rsnd_dai_stream *io)
 	return chan;
 }
 
-int rsnd_runtime_channel_for_ssi(struct rsnd_dai_stream *io)
+int rsnd_runtime_channel_for_ssi_with_params(struct rsnd_dai_stream *io,
+					     struct snd_pcm_hw_params *params)
 {
 	struct rsnd_dai *rdai = rsnd_io_to_rdai(io);
 	int chan = rsnd_io_is_play(io) ?
-		rsnd_runtime_channel_after_ctu(io) :
-		rsnd_runtime_channel_original(io);
+		rsnd_runtime_channel_after_ctu_with_params(io, params) :
+		rsnd_runtime_channel_original_with_params(io, params);
 
 	/* Use Multi SSI */
 	if (rsnd_runtime_is_ssi_multi(io))
@@ -268,10 +279,10 @@ u32 rsnd_get_adinr_bit(struct rsnd_mod *mod, struct rsnd_dai_stream *io)
 	struct snd_pcm_runtime *runtime = rsnd_io_to_runtime(io);
 	struct device *dev = rsnd_priv_to_dev(priv);
 
-	switch (runtime->sample_bits) {
+	switch (snd_pcm_format_width(runtime->format)) {
 	case 16:
 		return 8 << 16;
-	case 32:
+	case 24:
 		return 0 << 16;
 	}
 
@@ -288,11 +299,12 @@ u32 rsnd_get_dalign(struct rsnd_mod *mod, struct rsnd_dai_stream *io)
 	struct rsnd_mod *ssiu = rsnd_io_to_mod_ssiu(io);
 	struct rsnd_mod *target;
 	struct snd_pcm_runtime *runtime = rsnd_io_to_runtime(io);
-	u32 val = 0x76543210;
-	u32 mask = ~0;
 
 	/*
-	 * *Hardware* L/R and *Software* L/R are inverted.
+	 * *Hardware* L/R and *Software* L/R are inverted for 16bit data.
+	 *	    31..16 15...0
+	 *	HW: [L ch] [R ch]
+	 *	SW: [R ch] [L ch]
 	 * We need to care about inversion timing to control
 	 * Playback/Capture correctly.
 	 * The point is [DVC] needs *Hardware* L/R, [MEM] needs *Software* L/R
@@ -319,27 +331,13 @@ u32 rsnd_get_dalign(struct rsnd_mod *mod, struct rsnd_dai_stream *io)
 		target = cmd ? cmd : ssiu;
 	}
 
-	mask <<= runtime->channels * 4;
-	val = val & mask;
-
-	switch (runtime->sample_bits) {
-	case 16:
-		val |= 0x67452301 & ~mask;
-		break;
-	case 32:
-		val |= 0x76543210 & ~mask;
-		break;
-	}
-
-	/*
-	 * exchange channeles on SRC if possible,
-	 * otherwise, R/L volume settings on DVC
-	 * changes inverted channels
-	 */
-	if (mod == target)
-		return val;
-	else
+	/* Non target mod or 24bit data needs normal DALIGN */
+	if ((snd_pcm_format_width(runtime->format) != 16) ||
+	    (mod != target))
 		return 0x76543210;
+	/* Target mod needs inverted DALIGN when 16bit */
+	else
+		return 0x67452301;
 }
 
 u32 rsnd_get_busif_shift(struct rsnd_dai_stream *io, struct rsnd_mod *mod)
@@ -369,12 +367,8 @@ u32 rsnd_get_busif_shift(struct rsnd_dai_stream *io, struct rsnd_mod *mod)
 	 * HW    24bit data is located as 0x******00
 	 *
 	 */
-	switch (runtime->sample_bits) {
-	case 16:
+	if (snd_pcm_format_width(runtime->format) == 16)
 		return 0;
-	case 32:
-		break;
-	}
 
 	for (i = 0; i < ARRAY_SIZE(playback_mods); i++) {
 		tmod = rsnd_io_to_mod(io, mods[i]);
@@ -407,11 +401,9 @@ struct rsnd_mod *rsnd_mod_next(int *iterator,
 
 	for (; *iterator < max; (*iterator)++) {
 		type = (array) ? array[*iterator] : *iterator;
-		mod = io->mod[type];
-		if (!mod)
-			continue;
-
-		return mod;
+		mod = rsnd_io_to_mod(io, type);
+		if (mod)
+			return mod;
 	}
 
 	return NULL;
@@ -481,7 +473,7 @@ static int rsnd_status_update(u32 *status,
 						__rsnd_mod_shift_##fn,	\
 						__rsnd_mod_add_##fn,	\
 						__rsnd_mod_call_##fn);	\
-		dev_dbg(dev, "%s[%d]\t0x%08x %s\n",			\
+		rsnd_dbg_dai_call(dev, "%s[%d]\t0x%08x %s\n",		\
 			rsnd_mod_name(mod), rsnd_mod_id(mod), *status,	\
 			(func_call && (mod)->ops->fn) ? #fn : "");	\
 		if (func_call && (mod)->ops->fn)			\
@@ -556,6 +548,15 @@ struct rsnd_dai *rsnd_rdai_get(struct rsnd_priv *priv, int id)
 	return priv->rdai + id;
 }
 
+static struct snd_soc_dai_driver
+*rsnd_daidrv_get(struct rsnd_priv *priv, int id)
+{
+	if ((id < 0) || (id >= rsnd_rdai_nr(priv)))
+		return NULL;
+
+	return priv->daidrv + id;
+}
+
 #define rsnd_dai_to_priv(dai) snd_soc_dai_get_drvdata(dai)
 static struct rsnd_dai *rsnd_dai_to_rdai(struct snd_soc_dai *dai)
 {
@@ -624,8 +625,6 @@ static int rsnd_soc_dai_trigger(struct snd_pcm_substream *substream, int cmd,
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
-		rsnd_dai_stream_init(io, substream);
-
 		ret = rsnd_dai_call(init, io, priv);
 		if (ret < 0)
 			goto dai_trigger_end;
@@ -647,7 +646,6 @@ static int rsnd_soc_dai_trigger(struct snd_pcm_substream *substream, int cmd,
 
 		ret |= rsnd_dai_call(quit, io, priv);
 
-		rsnd_dai_stream_quit(io);
 		break;
 	default:
 		ret = -EINVAL;
@@ -793,8 +791,9 @@ static int rsnd_soc_hw_rule(struct rsnd_priv *priv,
 	return snd_interval_refine(iv, &p);
 }
 
-static int rsnd_soc_hw_rule_rate(struct snd_pcm_hw_params *params,
-				 struct snd_pcm_hw_rule *rule)
+static int __rsnd_soc_hw_rule_rate(struct snd_pcm_hw_params *params,
+				   struct snd_pcm_hw_rule *rule,
+				   int is_play)
 {
 	struct snd_interval *ic_ = hw_param_interval(params, SNDRV_PCM_HW_PARAM_CHANNELS);
 	struct snd_interval *ir = hw_param_interval(params, SNDRV_PCM_HW_PARAM_RATE);
@@ -802,25 +801,37 @@ static int rsnd_soc_hw_rule_rate(struct snd_pcm_hw_params *params,
 	struct snd_soc_dai *dai = rule->private;
 	struct rsnd_dai *rdai = rsnd_dai_to_rdai(dai);
 	struct rsnd_priv *priv = rsnd_rdai_to_priv(rdai);
+	struct rsnd_dai_stream *io = is_play ? &rdai->playback : &rdai->capture;
 
 	/*
 	 * possible sampling rate limitation is same as
 	 * 2ch if it supports multi ssi
+	 * and same as 8ch if TDM 6ch (see rsnd_ssi_config_init())
 	 */
 	ic = *ic_;
-	if (1 < rsnd_rdai_ssi_lane_get(rdai)) {
-		ic.min = 2;
-		ic.max = 2;
-	}
+	ic.min =
+	ic.max = rsnd_runtime_channel_for_ssi_with_params(io, params);
 
 	return rsnd_soc_hw_rule(priv, rsnd_soc_hw_rate_list,
 				ARRAY_SIZE(rsnd_soc_hw_rate_list),
 				&ic, ir);
 }
 
+static int rsnd_soc_hw_rule_rate_playback(struct snd_pcm_hw_params *params,
+				 struct snd_pcm_hw_rule *rule)
+{
+	return __rsnd_soc_hw_rule_rate(params, rule, 1);
+}
 
-static int rsnd_soc_hw_rule_channels(struct snd_pcm_hw_params *params,
-				     struct snd_pcm_hw_rule *rule)
+static int rsnd_soc_hw_rule_rate_capture(struct snd_pcm_hw_params *params,
+					  struct snd_pcm_hw_rule *rule)
+{
+	return __rsnd_soc_hw_rule_rate(params, rule, 0);
+}
+
+static int __rsnd_soc_hw_rule_channels(struct snd_pcm_hw_params *params,
+				       struct snd_pcm_hw_rule *rule,
+				       int is_play)
 {
 	struct snd_interval *ic_ = hw_param_interval(params, SNDRV_PCM_HW_PARAM_CHANNELS);
 	struct snd_interval *ir = hw_param_interval(params, SNDRV_PCM_HW_PARAM_RATE);
@@ -828,20 +839,32 @@ static int rsnd_soc_hw_rule_channels(struct snd_pcm_hw_params *params,
 	struct snd_soc_dai *dai = rule->private;
 	struct rsnd_dai *rdai = rsnd_dai_to_rdai(dai);
 	struct rsnd_priv *priv = rsnd_rdai_to_priv(rdai);
+	struct rsnd_dai_stream *io = is_play ? &rdai->playback : &rdai->capture;
 
 	/*
 	 * possible sampling rate limitation is same as
 	 * 2ch if it supports multi ssi
+	 * and same as 8ch if TDM 6ch (see rsnd_ssi_config_init())
 	 */
 	ic = *ic_;
-	if (1 < rsnd_rdai_ssi_lane_get(rdai)) {
-		ic.min = 2;
-		ic.max = 2;
-	}
+	ic.min =
+	ic.max = rsnd_runtime_channel_for_ssi_with_params(io, params);
 
 	return rsnd_soc_hw_rule(priv, rsnd_soc_hw_channels_list,
 				ARRAY_SIZE(rsnd_soc_hw_channels_list),
 				ir, &ic);
+}
+
+static int rsnd_soc_hw_rule_channels_playback(struct snd_pcm_hw_params *params,
+					      struct snd_pcm_hw_rule *rule)
+{
+	return __rsnd_soc_hw_rule_channels(params, rule, 1);
+}
+
+static int rsnd_soc_hw_rule_channels_capture(struct snd_pcm_hw_params *params,
+					     struct snd_pcm_hw_rule *rule)
+{
+	return __rsnd_soc_hw_rule_channels(params, rule, 0);
 }
 
 static const struct snd_pcm_hardware rsnd_pcm_hardware = {
@@ -867,6 +890,8 @@ static int rsnd_soc_dai_startup(struct snd_pcm_substream *substream,
 	unsigned int max_channels = rsnd_rdai_channels_get(rdai);
 	int ret;
 	int i;
+
+	rsnd_dai_stream_init(io, substream);
 
 	/*
 	 * Channel Limitation
@@ -895,11 +920,17 @@ static int rsnd_soc_dai_startup(struct snd_pcm_substream *substream,
 	 * It depends on Clock Master Mode
 	 */
 	if (rsnd_rdai_is_clk_master(rdai)) {
+		int is_play = substream->stream == SNDRV_PCM_STREAM_PLAYBACK;
+
 		snd_pcm_hw_rule_add(runtime, 0, SNDRV_PCM_HW_PARAM_RATE,
-				    rsnd_soc_hw_rule_rate, dai,
+				    is_play ? rsnd_soc_hw_rule_rate_playback :
+					      rsnd_soc_hw_rule_rate_capture,
+				    dai,
 				    SNDRV_PCM_HW_PARAM_CHANNELS, -1);
 		snd_pcm_hw_rule_add(runtime, 0, SNDRV_PCM_HW_PARAM_CHANNELS,
-				    rsnd_soc_hw_rule_channels, dai,
+				    is_play ? rsnd_soc_hw_rule_channels_playback :
+					      rsnd_soc_hw_rule_channels_capture,
+				    dai,
 				    SNDRV_PCM_HW_PARAM_RATE, -1);
 	}
 
@@ -924,6 +955,8 @@ static void rsnd_soc_dai_shutdown(struct snd_pcm_substream *substream,
 	 * call rsnd_dai_call without spinlock
 	 */
 	rsnd_dai_call(nolock_stop, io, priv);
+
+	rsnd_dai_stream_quit(io);
 }
 
 static int rsnd_soc_dai_prepare(struct snd_pcm_substream *substream,
@@ -1010,7 +1043,7 @@ of_node_compatible:
 
 static void __rsnd_dai_probe(struct rsnd_priv *priv,
 			     struct device_node *dai_np,
-			     int dai_i, int is_graph)
+			     int dai_i)
 {
 	struct device_node *playback, *capture;
 	struct rsnd_dai_stream *io_playback;
@@ -1021,7 +1054,7 @@ static void __rsnd_dai_probe(struct rsnd_priv *priv,
 	int io_i;
 
 	rdai		= rsnd_rdai_get(priv, dai_i);
-	drv		= priv->daidrv + dai_i;
+	drv		= rsnd_daidrv_get(priv, dai_i);
 	io_playback	= &rdai->playback;
 	io_capture	= &rdai->capture;
 
@@ -1069,6 +1102,12 @@ static void __rsnd_dai_probe(struct rsnd_priv *priv,
 		of_node_put(capture);
 	}
 
+	if (rsnd_ssi_is_pin_sharing(io_capture) ||
+	    rsnd_ssi_is_pin_sharing(io_playback)) {
+		/* should have symmetric_rates if pin sharing */
+		drv->symmetric_rates = 1;
+	}
+
 	dev_dbg(dev, "%s (%s/%s)\n", rdai->name,
 		rsnd_io_to_mod_ssi(io_playback) ? "play"    : " -- ",
 		rsnd_io_to_mod_ssi(io_capture) ? "capture" : "  --   ");
@@ -1094,8 +1133,8 @@ static int rsnd_dai_probe(struct rsnd_priv *priv)
 	if (!nr)
 		return -EINVAL;
 
-	rdrv = devm_kzalloc(dev, sizeof(*rdrv) * nr, GFP_KERNEL);
-	rdai = devm_kzalloc(dev, sizeof(*rdai) * nr, GFP_KERNEL);
+	rdrv = devm_kcalloc(dev, nr, sizeof(*rdrv), GFP_KERNEL);
+	rdai = devm_kcalloc(dev, nr, sizeof(*rdai), GFP_KERNEL);
 	if (!rdrv || !rdai)
 		return -ENOMEM;
 
@@ -1109,13 +1148,13 @@ static int rsnd_dai_probe(struct rsnd_priv *priv)
 	dai_i = 0;
 	if (is_graph) {
 		for_each_endpoint_of_node(dai_node, dai_np) {
-			__rsnd_dai_probe(priv, dai_np, dai_i, is_graph);
+			__rsnd_dai_probe(priv, dai_np, dai_i);
 			rsnd_ssi_parse_hdmi_connection(priv, dai_np, dai_i);
 			dai_i++;
 		}
 	} else {
 		for_each_child_of_node(dai_node, dai_np)
-			__rsnd_dai_probe(priv, dai_np, dai_i++, is_graph);
+			__rsnd_dai_probe(priv, dai_np, dai_i++);
 	}
 
 	return 0;
@@ -1254,6 +1293,33 @@ struct rsnd_kctrl_cfg *rsnd_kctrl_init_s(struct rsnd_kctrl_cfg_s *cfg)
 	return &cfg->cfg;
 }
 
+const char * const volume_ramp_rate[] = {
+	"128 dB/1 step",	 /* 00000 */
+	"64 dB/1 step",		 /* 00001 */
+	"32 dB/1 step",		 /* 00010 */
+	"16 dB/1 step",		 /* 00011 */
+	"8 dB/1 step",		 /* 00100 */
+	"4 dB/1 step",		 /* 00101 */
+	"2 dB/1 step",		 /* 00110 */
+	"1 dB/1 step",		 /* 00111 */
+	"0.5 dB/1 step",	 /* 01000 */
+	"0.25 dB/1 step",	 /* 01001 */
+	"0.125 dB/1 step",	 /* 01010 = VOLUME_RAMP_MAX_MIX */
+	"0.125 dB/2 steps",	 /* 01011 */
+	"0.125 dB/4 steps",	 /* 01100 */
+	"0.125 dB/8 steps",	 /* 01101 */
+	"0.125 dB/16 steps",	 /* 01110 */
+	"0.125 dB/32 steps",	 /* 01111 */
+	"0.125 dB/64 steps",	 /* 10000 */
+	"0.125 dB/128 steps",	 /* 10001 */
+	"0.125 dB/256 steps",	 /* 10010 */
+	"0.125 dB/512 steps",	 /* 10011 */
+	"0.125 dB/1024 steps",	 /* 10100 */
+	"0.125 dB/2048 steps",	 /* 10101 */
+	"0.125 dB/4096 steps",	 /* 10110 */
+	"0.125 dB/8192 steps",	 /* 10111 = VOLUME_RAMP_MAX_DVC */
+};
+
 int rsnd_kctrl_new(struct rsnd_mod *mod,
 		   struct rsnd_dai_stream *io,
 		   struct snd_soc_pcm_runtime *rtd,
@@ -1315,11 +1381,42 @@ int rsnd_kctrl_new(struct rsnd_mod *mod,
 }
 
 /*
- *		snd_soc_platform
+ *		snd_soc_component
  */
 
 #define PREALLOC_BUFFER		(32 * 1024)
 #define PREALLOC_BUFFER_MAX	(32 * 1024)
+
+static int rsnd_preallocate_pages(struct snd_soc_pcm_runtime *rtd,
+				  struct rsnd_dai_stream *io,
+				  int stream)
+{
+	struct rsnd_priv *priv = rsnd_io_to_priv(io);
+	struct device *dev = rsnd_priv_to_dev(priv);
+	struct snd_pcm_substream *substream;
+	int err;
+
+	/*
+	 * use Audio-DMAC dev if we can use IPMMU
+	 * see
+	 *	rsnd_dmaen_attach()
+	 */
+	if (io->dmac_dev)
+		dev = io->dmac_dev;
+
+	for (substream = rtd->pcm->streams[stream].substream;
+	     substream;
+	     substream = substream->next) {
+		err = snd_pcm_lib_preallocate_pages(substream,
+					SNDRV_DMA_TYPE_DEV,
+					dev,
+					PREALLOC_BUFFER, PREALLOC_BUFFER_MAX);
+		if (err < 0)
+			return err;
+	}
+
+	return 0;
+}
 
 static int rsnd_pcm_new(struct snd_soc_pcm_runtime *rtd)
 {
@@ -1335,19 +1432,22 @@ static int rsnd_pcm_new(struct snd_soc_pcm_runtime *rtd)
 	if (ret)
 		return ret;
 
-	return snd_pcm_lib_preallocate_pages_for_all(
-		rtd->pcm,
-		SNDRV_DMA_TYPE_CONTINUOUS,
-		snd_dma_continuous_data(GFP_KERNEL),
-		PREALLOC_BUFFER, PREALLOC_BUFFER_MAX);
+	ret = rsnd_preallocate_pages(rtd, &rdai->playback,
+				     SNDRV_PCM_STREAM_PLAYBACK);
+	if (ret)
+		return ret;
+
+	ret = rsnd_preallocate_pages(rtd, &rdai->capture,
+				     SNDRV_PCM_STREAM_CAPTURE);
+	if (ret)
+		return ret;
+
+	return 0;
 }
 
-static const struct snd_soc_platform_driver rsnd_soc_platform = {
+static const struct snd_soc_component_driver rsnd_soc_component = {
 	.ops		= &rsnd_pcm_ops,
 	.pcm_new	= rsnd_pcm_new,
-};
-
-static const struct snd_soc_component_driver rsnd_soc_component = {
 	.name		= "rsnd",
 };
 
@@ -1456,17 +1556,11 @@ static int rsnd_probe(struct platform_device *pdev)
 	/*
 	 *	asoc register
 	 */
-	ret = snd_soc_register_platform(dev, &rsnd_soc_platform);
-	if (ret < 0) {
-		dev_err(dev, "cannot snd soc register\n");
-		return ret;
-	}
-
-	ret = snd_soc_register_component(dev, &rsnd_soc_component,
+	ret = devm_snd_soc_register_component(dev, &rsnd_soc_component,
 					 priv->daidrv, rsnd_rdai_nr(priv));
 	if (ret < 0) {
 		dev_err(dev, "cannot snd dai register\n");
-		goto exit_snd_soc;
+		goto exit_snd_probe;
 	}
 
 	pm_runtime_enable(dev);
@@ -1474,8 +1568,6 @@ static int rsnd_probe(struct platform_device *pdev)
 	dev_info(dev, "probed\n");
 	return ret;
 
-exit_snd_soc:
-	snd_soc_unregister_platform(dev);
 exit_snd_probe:
 	for_each_rsnd_dai(rdai, priv, i) {
 		rsnd_dai_call(remove, &rdai->playback, priv);
@@ -1509,6 +1601,8 @@ static int rsnd_remove(struct platform_device *pdev)
 	};
 	int ret = 0, i;
 
+	snd_soc_disconnect_sync(&pdev->dev);
+
 	pm_runtime_disable(&pdev->dev);
 
 	for_each_rsnd_dai(rdai, priv, i) {
@@ -1519,13 +1613,10 @@ static int rsnd_remove(struct platform_device *pdev)
 	for (i = 0; i < ARRAY_SIZE(remove_func); i++)
 		remove_func[i](priv);
 
-	snd_soc_unregister_component(&pdev->dev);
-	snd_soc_unregister_platform(&pdev->dev);
-
 	return ret;
 }
 
-static int rsnd_suspend(struct device *dev)
+static int __maybe_unused rsnd_suspend(struct device *dev)
 {
 	struct rsnd_priv *priv = dev_get_drvdata(dev);
 
@@ -1534,7 +1625,7 @@ static int rsnd_suspend(struct device *dev)
 	return 0;
 }
 
-static int rsnd_resume(struct device *dev)
+static int __maybe_unused rsnd_resume(struct device *dev)
 {
 	struct rsnd_priv *priv = dev_get_drvdata(dev);
 
@@ -1544,8 +1635,7 @@ static int rsnd_resume(struct device *dev)
 }
 
 static const struct dev_pm_ops rsnd_pm_ops = {
-	.suspend		= rsnd_suspend,
-	.resume			= rsnd_resume,
+	SET_SYSTEM_SLEEP_PM_OPS(rsnd_suspend, rsnd_resume)
 };
 
 static struct platform_driver rsnd_driver = {
@@ -1559,7 +1649,7 @@ static struct platform_driver rsnd_driver = {
 };
 module_platform_driver(rsnd_driver);
 
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("Renesas R-Car audio driver");
 MODULE_AUTHOR("Kuninori Morimoto <kuninori.morimoto.gx@renesas.com>");
 MODULE_ALIAS("platform:rcar-pcm-audio");

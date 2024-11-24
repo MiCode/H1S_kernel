@@ -1,16 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * Power Delivery Policy Engine for SRC
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/delay.h>
@@ -115,11 +105,13 @@ void pe_src_hard_reset_entry(struct pd_port *pd_port)
 {
 	pd_send_hard_reset(pd_port);
 	pd_enable_timer(pd_port, PD_TIMER_PS_HARD_RESET);
+	pd_enable_timer(pd_port, PD_TIMER_NO_RESPONSE);
 }
 
 void pe_src_hard_reset_received_entry(struct pd_port *pd_port)
 {
 	pd_enable_timer(pd_port, PD_TIMER_PS_HARD_RESET);
+	pd_enable_timer(pd_port, PD_TIMER_NO_RESPONSE);
 }
 
 void pe_src_transition_to_default_entry(struct pd_port *pd_port)
@@ -131,7 +123,6 @@ void pe_src_transition_to_default_entry(struct pd_port *pd_port)
 void pe_src_transition_to_default_exit(struct pd_port *pd_port)
 {
 	pd_set_vconn(pd_port, PD_ROLE_VCONN_ON);
-	pd_enable_timer(pd_port, PD_TIMER_NO_RESPONSE);
 }
 
 void pe_src_get_sink_cap_entry(struct pd_port *pd_port)
@@ -223,7 +214,7 @@ void pe_src_not_supported_received_entry(struct pd_port *pd_port)
 
 void pe_src_chunk_received_entry(struct pd_port *pd_port)
 {
-	pd_enable_timer(pd_port, PD_TIMER_CK_NO_SUPPORT);
+	pd_enable_timer(pd_port, PD_TIMER_CK_NOT_SUPPORTED);
 }
 
 /*

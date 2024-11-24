@@ -10,7 +10,7 @@ if ANDROID
 
 config ANDROID_BINDER_IPC
 	bool "Android Binder IPC Driver"
-	depends on MMU && !M68K
+	depends on MMU
 	default n
 	---help---
 	  Binder is used in Android for both communication between processes,
@@ -53,6 +53,15 @@ config ANDROID_BINDER_IPC_SELFTEST
 	  Binder selftest checks the allocation and free of binder buffers
 	  exhaustively with combinations of various buffer sizes and
 	  alignments.
+
+config ANDROID_BINDER_USER_TRACKING
+	bool "Android Binder Transaction Tracking"
+	depends on ANDROID_BINDER_IPC
+	help
+	  Used for track abnormal binder transaction which is over 2 seconds,
+	  when the transaction is done or be free, this transaction would be
+	  checked whether it executed overtime.
+	  If yes, printing out the detailed info.
 
 endif # if ANDROID
 

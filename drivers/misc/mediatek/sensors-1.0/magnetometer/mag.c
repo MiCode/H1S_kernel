@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #define pr_fmt(fmt) "<MAG> " fmt
@@ -238,7 +230,7 @@ static int mag_enable_and_batch(void)
 }
 #endif
 /*----------------------------------------------------------------------------*/
-static ssize_t mag_show_magdev(struct device *dev,
+static ssize_t magdev_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
 	int len = 0;
@@ -246,7 +238,7 @@ static ssize_t mag_show_magdev(struct device *dev,
 	pr_debug("sensor test: mag function!\n");
 	return len;
 }
-static ssize_t mag_store_active(struct device *dev,
+static ssize_t magactive_store(struct device *dev,
 				struct device_attribute *attr, const char *buf,
 				size_t count)
 {
@@ -284,7 +276,7 @@ err_out:
 		return count;
 }
 /*----------------------------------------------------------------------------*/
-static ssize_t mag_show_active(struct device *dev,
+static ssize_t magactive_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
 	struct mag_context *cxt = NULL;
@@ -296,7 +288,7 @@ static ssize_t mag_show_active(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%d\n", div);
 }
 
-static ssize_t mag_store_batch(struct device *dev,
+static ssize_t magbatch_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
 {
@@ -330,7 +322,7 @@ static ssize_t mag_store_batch(struct device *dev,
 		return count;
 }
 
-static ssize_t mag_show_batch(struct device *dev, struct device_attribute *attr,
+static ssize_t magbatch_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	int len = 0;
@@ -339,13 +331,13 @@ static ssize_t mag_show_batch(struct device *dev, struct device_attribute *attr,
 	return len;
 }
 
-static ssize_t mag_show_flush(struct device *dev, struct device_attribute *attr,
+static ssize_t magflush_show(struct device *dev, struct device_attribute *attr,
 			      char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-static ssize_t mag_store_flush(struct device *dev,
+static ssize_t magflush_store(struct device *dev,
 			       struct device_attribute *attr, const char *buf,
 			       size_t count)
 {
@@ -374,13 +366,13 @@ static ssize_t mag_store_flush(struct device *dev,
 		return count;
 }
 
-static ssize_t mag_show_cali(struct device *dev, struct device_attribute *attr,
+static ssize_t magcali_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-static ssize_t mag_store_cali(struct device *dev, struct device_attribute *attr,
+static ssize_t magcali_store(struct device *dev, struct device_attribute *attr,
 			      const char *buf, size_t count)
 {
 	struct mag_context *cxt = NULL;
@@ -407,14 +399,14 @@ static ssize_t mag_store_cali(struct device *dev, struct device_attribute *attr,
 }
 
 /* need work around again */
-static ssize_t mag_show_sensordevnum(struct device *dev,
+static ssize_t magdevnum_show(struct device *dev,
 				     struct device_attribute *attr, char *buf)
 {
 
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-static ssize_t mag_show_libinfo(struct device *dev,
+static ssize_t maglibinfo_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	struct mag_context *cxt = mag_context_obj;
@@ -562,13 +554,13 @@ static int mag_misc_init(struct mag_context *cxt)
 	return err;
 }
 
-DEVICE_ATTR(magdev, 0644, mag_show_magdev, NULL);
-DEVICE_ATTR(magactive, 0644, mag_show_active, mag_store_active);
-DEVICE_ATTR(magbatch, 0644, mag_show_batch, mag_store_batch);
-DEVICE_ATTR(magflush, 0644, mag_show_flush, mag_store_flush);
-DEVICE_ATTR(magcali, 0644, mag_show_cali, mag_store_cali);
-DEVICE_ATTR(magdevnum, 0644, mag_show_sensordevnum, NULL);
-DEVICE_ATTR(maglibinfo, 0644, mag_show_libinfo, NULL);
+DEVICE_ATTR_RO(magdev);
+DEVICE_ATTR_RW(magactive);
+DEVICE_ATTR_RW(magbatch);
+DEVICE_ATTR_RW(magflush);
+DEVICE_ATTR_RW(magcali);
+DEVICE_ATTR_RO(magdevnum);
+DEVICE_ATTR_RO(maglibinfo);
 
 static struct attribute *mag_attributes[] = {
 	&dev_attr_magdev.attr,
@@ -798,6 +790,7 @@ static int mag_remove(void)
 		pr_err("misc_deregister fail: %d\n", err);
 
 	kfree(mag_context_obj);
+	platform_driver_unregister(&msensor_driver);
 
 	return 0;
 }

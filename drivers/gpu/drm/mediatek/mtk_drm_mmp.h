@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTK_DRM_MMP_H__
 #define __MTK_DRM_MMP_H__
@@ -17,6 +9,9 @@
 #include "mmprofile.h"
 #include "mmprofile_function.h"
 #include "mtk_drm_ddp.h"
+
+/* [63:0] A:B:G:R 16:16:16:16 little endian */
+#define DRM_FORMAT_ABGR16161616F fourcc_code('A', 'B', '4', 'H')
 
 #define MMP_CRTC_NUM 3
 
@@ -103,6 +98,13 @@ struct CRTC_MMP_Events {
 	mmp_event clk_change;
 	mmp_event layerBmpDump;
 	mmp_event layer_dump[6];
+	mmp_event lcm;
+	mmp_event cwbBmpDump;
+	mmp_event cwb_dump;
+	mmp_event mode_switch;
+#ifdef CONFIG_MTK_MT6382_BDG
+	mmp_event bdg_gce_irq;
+#endif
 };
 
 struct DRM_MMP_Events *get_drm_mmp_events(void);
@@ -110,6 +112,9 @@ struct CRTC_MMP_Events *get_crtc_mmp_events(unsigned long id);
 void drm_mmp_init(void);
 int mtk_drm_mmp_ovl_layer(struct mtk_plane_state *state,
 			  u32 downSampleX, u32 downSampleY);
+int mtk_drm_mmp_cwb_buffer(struct drm_crtc *crtc,
+	struct mtk_cwb_info *cwb_info,
+	void *buffer, unsigned int buf_idx);
 
 /* print mmp log for DRM_MMP_Events */
 #ifdef CONFIG_DRM_MEDIATEK

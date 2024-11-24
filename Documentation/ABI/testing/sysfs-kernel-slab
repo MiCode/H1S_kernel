@@ -37,7 +37,7 @@ Description:
 		The alloc_calls file is read-only and lists the kernel code
 		locations from which allocations for this cache were performed.
 		The alloc_calls file only contains information if debugging is
-		enabled for that cache (see Documentation/vm/slub.txt).
+		enabled for that cache (see Documentation/vm/slub.rst).
 
 What:		/sys/kernel/slab/cache/alloc_fastpath
 Date:		February 2008
@@ -105,6 +105,15 @@ Description:
 		The cache_dma file is read-only and specifies whether objects
 		are from ZONE_DMA.
 		Available when CONFIG_ZONE_DMA is enabled.
+
+What:		/sys/kernel/slab/cache/cache_dma32
+Date:		December 2018
+KernelVersion:	4.21
+Contact:	Nicolas Boichat <drinkcat@chromium.org>
+Description:
+		The cache_dma32 file is read-only and specifies whether objects
+		are from ZONE_DMA32.
+		Available when CONFIG_ZONE_DMA32 is enabled.
 
 What:		/sys/kernel/slab/cache/cpu_slabs
 Date:		May 2007
@@ -219,7 +228,7 @@ Contact:	Pekka Enberg <penberg@cs.helsinki.fi>,
 Description:
 		The free_calls file is read-only and lists the locations of
 		object frees if slab debugging is enabled (see
-		Documentation/vm/slub.txt).
+		Documentation/vm/slub.rst).
 
 What:		/sys/kernel/slab/cache/free_fastpath
 Date:		February 2008

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #ifndef _MTK_MDPM_PLATFORM_H_
@@ -370,7 +362,7 @@ enum md1_rf_avg_pwr_tbl_c2k {
 #define MAX_DBM_FUNC_NUM 5
 
 struct mdpm {
-	int scenario_power[POWER_CATEGORY_NUM];
+	int scenario_power[POWER_TYPE_NUM];
 
 	int (*dbm_power_func[MAX_DBM_FUNC_NUM])(u32 *, unsigned int);
 
@@ -381,10 +373,10 @@ extern void md_power_meter_ut(void);
 #endif
 extern void init_md1_section_level(u32 *share_mem);
 extern unsigned int get_md1_scenario(u32 share_reg,
-	unsigned int power_category);
+	enum mdpm_power_type power_type);
 extern int get_md1_scenario_power(unsigned int scenario,
-	unsigned int power_category);
+	enum mdpm_power_type power_type);
 extern int get_md1_dBm_power(unsigned int scenario, u32 *share_mem,
-	unsigned int power_category);
+	enum mdpm_power_type power_type);
 
 #endif /* _MTK_MDPM_PLATFORM_H_ */

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #ifndef __MTK_MCDI_PROFILE_H__
@@ -126,7 +118,9 @@ void mcdi_usage_calc(int cpu);
 bool mcdi_usage_cpu_valid(int cpu);
 
 void mcdi_profile_ts(int cpu_idx, unsigned int prof_idx);
+#ifdef CONFIG_MACH_MT6739
 void mcdi_profile_ts_clr(int cpu_idx, unsigned int prof_idx);
+#endif
 void mcdi_profile_calc(int cpu);
 
 void mcdi_prof_core_cluster_off_token(int cpu);

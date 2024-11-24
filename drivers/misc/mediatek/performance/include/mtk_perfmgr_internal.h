@@ -1,19 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _MTK_PERFMGR_INTERNAL_H
 #define _MTK_PERFMGR_INTERNAL_H
-#include "mtk_ppm_api.h"
 
 /* PROCFS */
 #define PROC_FOPS_RW(name) \
@@ -51,13 +42,13 @@ static const struct file_operations perfmgr_ ## name ## _proc_fops = { \
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define for_each_perfmgr_clusters(i)	\
-	for (i = 0; i < clstr_num; i++)
+	for (i = 0; i < topo_cluster_num; i++)
 
-#define perfmgr_clusters clstr_num
+#define perfmgr_clusters topo_cluster_num
 
 #define LOG_BUF_SIZE (128)
 
-extern int clstr_num;
+extern int topo_cluster_num;
 extern int powerhal_tid;
 extern char *perfmgr_copy_from_user_for_proc(const char __user *buffer,
 					size_t count);
@@ -72,7 +63,5 @@ extern void perfmgr_trace_end(void);
 extern void perfmgr_trace_begin(char *name, int id, int a, int b);
 extern void perfmgr_trace_printk(char *module, char *string);
 extern void perfmgr_trace_log(char *module, const char *fmt, ...);
-extern int perfmgr_common_userlimit_cpu_freq(unsigned int cluster_num,
-					struct ppm_limit_data *final_freq);
 
 #endif /* _MTK_PERFMGR_INTERNAL_H */

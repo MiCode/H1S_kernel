@@ -1,16 +1,6 @@
-/* SCP sensor hub driver
- *
+// SPDX-License-Identifier: GPL-2.0
+/*
  * Copyright (C) 2016 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #define pr_fmt(fmt) "[sensorHub] " fmt
@@ -33,10 +23,8 @@
 #include <asm/arch_timer.h>
 #include <linux/pm_wakeup.h>
 #include <linux/suspend.h>
-#include <scp_ipi.h>
-#include "scp_helper.h"
-#include "scp_excep.h"
 #include <linux/time.h>
+#include "include/scp.h"
 #include "cust_sensorHub.h"
 #include "hwmsensor.h"
 #include "sensors_io.h"
@@ -48,8 +36,8 @@
 #include "SCP_power_monitor.h"
 #include <asm/arch_timer.h>
 #include <linux/math64.h>
+#include <linux/timekeeping.h>
 #include <uapi/linux/sched/types.h>
-
 
 /* ALGIN TO SCP SENSOR_IPI_SIZE AT FILE CONTEXTHUB_FW.H, ALGIN
  * TO SCP_SENSOR_HUB_DATA UNION, ALGIN TO STRUCT DATA_UNIT_T
@@ -97,7 +85,7 @@ struct SCP_sensorHub_data {
 	struct workqueue_struct	*direct_push_workqueue;
 	struct timer_list sync_time_timer;
 	struct work_struct sync_time_worker;
-	struct wakeup_source ws;
+	struct wakeup_source *ws;
 
 	struct sensorFIFO *SCP_sensorFIFO;
 	struct curr_wp_queue wp_queue;
@@ -117,7 +105,6 @@ static DEFINE_SPINLOCK(scp_state_lock);
 static uint8_t scp_system_ready;
 static uint8_t scp_chre_ready;
 static struct SCP_sensorHub_data *obj_data;
-
 enum scp_ipi_status __attribute__((weak)) scp_ipi_registration(enum ipi_id id,
 	void (*ipi_handler)(int id, void *data, unsigned int len),
 	const char *name)
@@ -155,6 +142,10 @@ phys_addr_t __attribute__((weak))
 }
 
 void __attribute__((weak)) scp_register_feature(enum feature_id id)
+{
+}
+
+void __attribute__((weak)) scp_A_unregister_notify(struct notifier_block *nb)
 {
 }
 
@@ -528,18 +519,21 @@ static void SCP_sensorHub_sync_time_work(struct work_struct *work)
 		jiffies +  msecs_to_jiffies(SYNC_TIME_CYCLC));
 }
 
-static void SCP_sensorHub_sync_time_func(unsigned long data)
+static void SCP_sensorHub_sync_time_func(struct timer_list *t)
 {
-	struct SCP_sensorHub_data *obj = obj_data;
+	struct SCP_sensorHub_data *obj = from_timer(obj, t, sync_time_timer);
 
 	schedule_work(&obj->sync_time_worker);
 }
 
 static int SCP_sensorHub_direct_push_work(void *data)
 {
+	int ret = 0;
 	for (;;) {
-		wait_event(chre_kthread_wait,
+		ret = wait_event_interruptible(chre_kthread_wait,
 			READ_ONCE(chre_kthread_wait_condition));
+		if (ret)
+			continue;
 		WRITE_ONCE(chre_kthread_wait_condition, false);
 		mark_timestamp(0, WORK_START, ktime_get_boot_ns(), 0);
 		SCP_sensorHub_read_wp_queue();
@@ -617,16 +611,18 @@ SCP_sensorHub_set_timestamp_cmd(union SCP_SENSOR_HUB_DATA *rsp,
 {
 	SCP_sensorHub_xcmd_putdata(rsp, rx_len);
 }
+
 static void SCP_sensorHub_moving_average(union SCP_SENSOR_HUB_DATA *rsp)
 {
 	uint64_t ap_now_time = 0, arch_counter = 0;
 	uint64_t scp_raw_time = 0, scp_now_time = 0;
 	uint64_t ipi_transfer_time = 0;
 
-	if (!timekeeping_rtc_skipresume()) {
-		if (READ_ONCE(rtc_compensation_suspend))
-			return;
-	}
+	/* if (!timekeeping_rtc_skipresume()) {
+	 *	if (READ_ONCE(rtc_compensation_suspend))
+	 *	return;
+	 * }
+	 */
 	ap_now_time = ktime_get_boot_ns();
 	arch_counter = arch_counter_get_cntvct();
 	scp_raw_time = rsp->notify_rsp.scp_timestamp;
@@ -639,10 +635,11 @@ static void SCP_sensorHub_notify_cmd(union SCP_SENSOR_HUB_DATA *rsp,
 	int rx_len)
 {
 	/* struct SCP_sensorHub_data *obj = obj_data; */
-#if 0
-	struct data_unit_t *event;
-	int handle = 0;
-#endif
+	/*
+	 *struct data_unit_t *event;
+	 *int handle = 0;
+	 */
+
 	unsigned long flags = 0;
 
 	switch (rsp->notify_rsp.event) {
@@ -665,21 +662,21 @@ static void SCP_sensorHub_notify_cmd(union SCP_SENSOR_HUB_DATA *rsp,
 		wake_up(&chre_kthread_wait);
 		break;
 	case SCP_NOTIFY:
-#if 0
-		handle = rsp->rsp.sensorType;
-		if (handle > ID_SENSOR_MAX_HANDLE) {
-			pr_err("invalid sensor %d\n", handle);
-		} else {
-			event = (struct data_unit_t *)rsp->notify_rsp.int8_Data;
-			if (obj->dispatch_data_cb[handle] != NULL)
-				obj->dispatch_data_cb[handle](event, NULL);
-			else
-				pr_err("type:%d don't support this flow?\n",
-					handle);
-			if (event->flush_action == FLUSH_ACTION)
-				atomic_dec(&mSensorState[handle].flushCnt);
-		}
-#endif
+/*
+ *		handle = rsp->rsp.sensorType;
+ *		if (handle > ID_SENSOR_MAX_HANDLE) {
+ *			pr_err("invalid sensor %d\n", handle);
+ *		} else {
+ *			event = (struct data_unit_t *)rsp->notify_rsp.int8_Data;
+ *			if (obj->dispatch_data_cb[handle] != NULL)
+ *				obj->dispatch_data_cb[handle](event, NULL);
+ *			else
+ *				pr_err("type:%d don't support this flow?\n",
+ *					handle);
+ *			if (event->flush_action == FLUSH_ACTION)
+ *				atomic_dec(&mSensorState[handle].flushCnt);
+ *		}
+ */
 		break;
 	case SCP_INIT_DONE:
 		spin_lock_irqsave(&scp_state_lock, flags);
@@ -1293,9 +1290,9 @@ static int sensor_send_timestamp_to_hub(void)
 		return 0;
 	}
 
-	__pm_stay_awake(&obj->ws);
+	__pm_stay_awake(obj->ws);
 	err = sensor_send_timestamp_wake_locked();
-	__pm_relax(&obj->ws);
+	__pm_relax(obj->ws);
 	return err;
 }
 static void sensor_disable_report_flush(uint8_t handle)
@@ -2216,12 +2213,14 @@ static void restoring_enable_sensorHub_sensor(int handle)
 
 void sensorHub_power_up_loop(void *data)
 {
-	int handle = 0;
+	int ret = 0, handle = 0;
 	struct SCP_sensorHub_data *obj = obj_data;
 	unsigned long flags = 0;
 
-	wait_event(power_reset_wait,
+	ret = wait_event_interruptible(power_reset_wait,
 		READ_ONCE(scp_system_ready) && READ_ONCE(scp_chre_ready));
+	if (ret)
+		return;
 	spin_lock_irqsave(&scp_state_lock, flags);
 	WRITE_ONCE(scp_chre_ready, false);
 	WRITE_ONCE(scp_system_ready, false);
@@ -2299,6 +2298,7 @@ static int sensorHub_ready_event(struct notifier_block *this,
 static struct notifier_block sensorHub_ready_notifier = {
 	.notifier_call = sensorHub_ready_event,
 };
+
 static int sensorHub_probe(struct platform_device *pdev)
 {
 	struct SCP_sensorHub_data *obj;
@@ -2327,29 +2327,31 @@ static int sensorHub_probe(struct platform_device *pdev)
 		vzalloc(obj->wp_queue.bufsize * sizeof(uint32_t));
 	if (!obj->wp_queue.ringbuffer) {
 		pr_err("Alloc ringbuffer error!\n");
-		goto exit;
+		goto exit_wp_queue;
 	}
 	/* register ipi interrupt handler */
 	scp_ipi_registration(IPI_SENSOR,
 		SCP_sensorHub_IPI_handler, "SCP_sensorHub");
+
 	/* init receive scp dram data worker */
 	/* INIT_WORK(&obj->direct_push_work, SCP_sensorHub_direct_push_work); */
 	/* obj->direct_push_workqueue = alloc_workqueue("chre_work",
 	 * WQ_MEM_RECLAIM | WQ_HIGHPRI | WQ_CPU_INTENSIVE, 1);
 	 */
-#if 0
-	obj->direct_push_workqueue = create_singlethread_workqueue("chre_work");
-	if (obj->direct_push_workqueue == NULL) {
-		pr_err("direct_push_workqueue fail\n");
-		return -1;
-	}
-#endif
+	/* obj->direct_push_workqueue =
+	 *		create_singlethread_workqueue("chre_work");
+	 *	if (obj->direct_push_workqueue == NULL) {
+	 *	pr_err("direct_push_workqueue fail\n");
+	 *	return -1;
+	 *}
+	 */
+
 	WRITE_ONCE(chre_kthread_wait_condition, false);
 	task = kthread_run(SCP_sensorHub_direct_push_work,
 		NULL, "chre_kthread");
 	if (IS_ERR(task)) {
 		pr_err("SCP_sensorHub_direct_push_work create fail!\n");
-		goto exit;
+		goto exit_direct_push;
 	}
 	sched_setscheduler(task, SCHED_FIFO, &param);
 	/* init the debug trace flag */
@@ -2360,10 +2362,16 @@ static int sensorHub_probe(struct platform_device *pdev)
 	obj->sync_time_timer.expires =
 		jiffies + msecs_to_jiffies(SYNC_TIME_START_CYCLC);
 	obj->sync_time_timer.function = SCP_sensorHub_sync_time_func;
-	init_timer(&obj->sync_time_timer);
+	timer_setup(&obj->sync_time_timer, SCP_sensorHub_sync_time_func, 0);
 	mod_timer(&obj->sync_time_timer,
 		jiffies + msecs_to_jiffies(SYNC_TIME_START_CYCLC));
-	wakeup_source_init(&obj->ws, "sync_time");
+	obj->ws = wakeup_source_register(NULL, "sync_time");
+	if (!obj->ws) {
+		pr_err("SCP_sensorHub: wakeup source init fail\n");
+		err = -ENOMEM;
+		goto exit_wakeup;
+	}
+
 	/* this call back can get scp power down status */
 	scp_A_register_notify(&sensorHub_ready_notifier);
 	/* this call back can get scp power UP status */
@@ -2372,7 +2380,7 @@ static int sensorHub_probe(struct platform_device *pdev)
 		NULL, "scp_power_reset");
 	if (IS_ERR(task_power_reset)) {
 		pr_err("sensorHub_power_up_work create fail!\n");
-		goto exit;
+		goto exit_kthread_power_up;
 	}
 
 	SCP_sensorHub_init_flag = 0;
@@ -2382,6 +2390,17 @@ static int sensorHub_probe(struct platform_device *pdev)
 	BUG_ON(sizeof(struct data_unit_t) != SENSOR_DATA_SIZE
 		|| sizeof(union SCP_SENSOR_HUB_DATA) != SENSOR_IPI_SIZE);
 	return 0;
+
+exit_kthread_power_up:
+	scp_A_unregister_notify(&sensorHub_ready_notifier);
+	wakeup_source_unregister(obj->ws);
+exit_wakeup:
+	if (!IS_ERR(task))
+		kthread_stop(task);
+exit_direct_push:
+	vfree(obj->wp_queue.ringbuffer);
+exit_wp_queue:
+	kfree(obj);
 exit:
 	pr_err("%s: err = %d\n", __func__, err);
 	SCP_sensorHub_init_flag = -1;
@@ -2390,6 +2409,11 @@ exit:
 
 static int sensorHub_remove(struct platform_device *pdev)
 {
+	struct SCP_sensorHub_data *obj = obj_data;
+
+	if (obj)
+		wakeup_source_unregister(obj->ws);
+
 	return 0;
 }
 

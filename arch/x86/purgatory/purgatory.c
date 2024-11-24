@@ -11,9 +11,9 @@
  */
 
 #include <linux/bug.h>
+#include <linux/sha256.h>
 #include <asm/purgatory.h>
 
-#include "sha256.h"
 #include "../boot/string.h"
 
 unsigned long purgatory_backup_dest __section(.kexec-purgatory);
@@ -70,3 +70,9 @@ void purgatory(void)
 	}
 	copy_backup_region();
 }
+
+/*
+ * Defined in order to reuse memcpy() and memset() from
+ * arch/x86/boot/compressed/string.c
+ */
+void warn(const char *msg) {}

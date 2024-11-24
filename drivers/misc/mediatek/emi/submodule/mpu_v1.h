@@ -1,19 +1,15 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Sagy Shih <sagy.shih@mediatek.com>
  */
 
 #ifndef __MPU_H__
 #define __MPU_H__
 
+#include <linux/types.h>
+
+#define CCCI_API_READY		0
 #define EMI_MPU_TEST		0
 
 #define EMI_MPU_MAX_CMD_LEN	128
@@ -82,6 +78,9 @@ extern int bypass_violation(unsigned int mpus, unsigned int *init_flag);
 extern int is_md_master(unsigned int master_id, unsigned int domain_id);
 extern void set_ap_region_permission(unsigned int apc[EMI_MPU_DGROUP_NUM]);
 extern int emi_mpu_set_protection(struct emi_region_info_t *region_info);
+extern int emi_mpu_set_single_permission(unsigned int region,
+					 unsigned int domain,
+					 unsigned int permission);
 extern void clear_md_violation(void);
 
 #endif /* __MPU_H__ */

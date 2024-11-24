@@ -1,26 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  of-thermal.c - Generic Thermal Management device tree support.
  *
  *  Copyright (C) 2013 Texas Instruments
  *  Copyright (C) 2013 Eduardo Valentin <eduardo.valentin@ti.com>
- *
- *
- *  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful, but
- *  WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
- *
- * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
 #include <linux/thermal.h>
 #include <linux/slab.h>
@@ -30,7 +13,10 @@
 #include <linux/err.h>
 #include <linux/export.h>
 #include <linux/string.h>
-#include <linux/thermal.h>
+#include <linux/list.h>
+
+#define CREATE_TRACE_POINTS
+#include <trace/events/thermal_virtual.h>
 
 #include "thermal_core.h"
 
@@ -54,18 +40,38 @@ struct __thermal_bind_params {
 };
 
 /**
+ * struct __sensor_param - Holds individual sensor data
+ * @sensor_data: sensor driver private data passed as input argument
+ * @ops: sensor driver ops
+ * @trip_high: last trip high value programmed in the sensor driver
+ * @trip_low: last trip low value programmed in the sensor driver
+ * @lock: mutex lock acquired before updating the trip temperatures
+ * @first_tz: list head pointing the first thermal zone
+ */
+struct __sensor_param {
+	void *sensor_data;
+	const struct thermal_zone_of_device_ops *ops;
+	int trip_high, trip_low;
+	struct mutex lock;
+	struct list_head first_tz;
+};
+
+/**
  * struct __thermal_zone - internal representation of a thermal zone
  * @mode: current thermal zone device mode (enabled/disabled)
  * @passive_delay: polling interval while passive cooling is activated
  * @polling_delay: zone polling interval
  * @slope: slope of the temperature adjustment curve
  * @offset: offset of the temperature adjustment curve
+ * @default_disable: Keep the thermal zone disabled by default
+ * @is_wakeable: Ignore post suspend thermal zone re-evaluation
+ * @tzd: thermal zone device pointer for this sensor
  * @ntrips: number of trip points
  * @trips: an array of trip points (0..ntrips - 1)
  * @num_tbps: number of thermal bind params
  * @tbps: an array of thermal bind params (0..num_tbps - 1)
- * @sensor_data: sensor private data used while reading temperature and trend
- * @ops: set of callbacks to handle the thermal zone based on DT
+ * @senps: sensor related parameters
+ * @list: sibling thermal zone
  */
 
 struct __thermal_zone {
@@ -74,6 +80,9 @@ struct __thermal_zone {
 	int polling_delay;
 	int slope;
 	int offset;
+	struct thermal_zone_device *tzd;
+	bool default_disable;
+	bool is_wakeable;
 
 	/* trip data */
 	int ntrips;
@@ -83,22 +92,101 @@ struct __thermal_zone {
 	int num_tbps;
 	struct __thermal_bind_params *tbps;
 
+	struct list_head list;
 	/* sensor interface */
-	void *sensor_data;
-	const struct thermal_zone_of_device_ops *ops;
+	struct __sensor_param *senps;
 };
 
+/**
+ * struct virtual_sensor - internal representation of a virtual thermal zone
+ * @num_sensors - number of sensors this virtual sensor will reference to
+ *		  estimate temperature
+ * @tz - Array of thermal zones of the sensors this virtual sensor will use
+ *	 to estimate temperature
+ * @virt_tz - Virtual thermal zone pointer
+ * @logic - aggregation logic to be used to estimate the temperature
+ * @last_reading - last estimated temperature
+ * @coefficients - array of coefficients to be used for weighted aggregation
+ *		       logic
+ * @avg_offset - offset value to be used for the weighted aggregation logic
+ * @avg_denominator - denominator value to be used for the weighted aggregation
+ *			logic
+ */
+struct virtual_sensor {
+	int                        num_sensors;
+	struct thermal_zone_device *tz[THERMAL_MAX_VIRT_SENSORS];
+	struct thermal_zone_device *virt_tz;
+	enum aggregation_logic     logic;
+	int                        last_reading;
+	int                        coefficients[THERMAL_MAX_VIRT_SENSORS];
+	int                        avg_offset;
+	int                        avg_denominator;
+};
+
+
 /***   DT thermal zone device callbacks   ***/
+
+static int virt_sensor_read_temp(void *data, int *val)
+{
+	struct virtual_sensor *sens = data;
+	int idx, temp = 0, ret = 0;
+
+	for (idx = 0; idx < sens->num_sensors; idx++) {
+		int sens_temp = 0;
+
+		ret = thermal_zone_get_temp(sens->tz[idx], &sens_temp);
+		if (ret) {
+			pr_err("virt zone: sensor[%s] read error:%d\n",
+				sens->tz[idx]->type, ret);
+			return ret;
+		}
+		switch (sens->logic) {
+		case VIRT_COUNT_THRESHOLD:
+			if ((sens->coefficients[idx] < 0 &&
+			     sens_temp < -sens->coefficients[idx]) ||
+			    (sens->coefficients[idx] > 0 &&
+			     sens_temp >= sens->coefficients[idx]))
+				temp += 1;
+			break;
+		case VIRT_WEIGHTED_AVG:
+			temp += sens_temp * sens->coefficients[idx];
+			if (idx == (sens->num_sensors - 1))
+				temp = (temp + sens->avg_offset)
+					/ sens->avg_denominator;
+			break;
+		case VIRT_MAXIMUM:
+			if (idx == 0)
+				temp = INT_MIN;
+			if (sens_temp > temp)
+				temp = sens_temp;
+			break;
+		case VIRT_MINIMUM:
+			if (idx == 0)
+				temp = INT_MAX;
+			if (sens_temp < temp)
+				temp = sens_temp;
+			break;
+		default:
+			break;
+		}
+		trace_virtual_temperature(sens->virt_tz, sens->tz[idx],
+					sens_temp, temp);
+	}
+
+	sens->last_reading = *val = temp;
+
+	return 0;
+}
 
 static int of_thermal_get_temp(struct thermal_zone_device *tz,
 			       int *temp)
 {
 	struct __thermal_zone *data = tz->devdata;
 
-	if (!data->ops->get_temp)
+	if (!data->senps || !data->senps->ops->get_temp)
 		return -EINVAL;
 
-	return data->ops->get_temp(data->sensor_data, temp);
+	return data->senps->ops->get_temp(data->senps->sensor_data, temp);
 }
 
 static int of_thermal_set_trips(struct thermal_zone_device *tz,
@@ -106,10 +194,10 @@ static int of_thermal_set_trips(struct thermal_zone_device *tz,
 {
 	struct __thermal_zone *data = tz->devdata;
 
-	if (!data->ops || !data->ops->set_trips)
+	if (!data->senps || !data->senps->ops->set_trips)
 		return -EINVAL;
 
-	return data->ops->set_trips(data->sensor_data, low, high);
+	return data->senps->ops->set_trips(data->senps->sensor_data, low, high);
 }
 
 /**
@@ -192,7 +280,10 @@ static int of_thermal_set_emul_temp(struct thermal_zone_device *tz,
 {
 	struct __thermal_zone *data = tz->devdata;
 
-	return data->ops->set_emul_temp(data->sensor_data, temp);
+	if (!data->senps || !data->senps->ops->set_emul_temp)
+		return -EINVAL;
+
+	return data->senps->ops->set_emul_temp(data->senps->sensor_data, temp);
 }
 
 static int of_thermal_get_trend(struct thermal_zone_device *tz, int trip,
@@ -200,10 +291,11 @@ static int of_thermal_get_trend(struct thermal_zone_device *tz, int trip,
 {
 	struct __thermal_zone *data = tz->devdata;
 
-	if (!data->ops->get_trend)
+	if (!data->senps || !data->senps->ops->get_trend)
 		return -EINVAL;
 
-	return data->ops->get_trend(data->sensor_data, trip, trend);
+	return data->senps->ops->get_trend(data->senps->sensor_data,
+					   trip, trend);
 }
 
 static int of_thermal_bind(struct thermal_zone_device *thermal,
@@ -315,9 +407,61 @@ static int of_thermal_get_trip_temp(struct thermal_zone_device *tz, int trip,
 	if (trip >= data->ntrips || trip < 0)
 		return -EDOM;
 
-	*temp = data->trips[trip].temperature;
+	if (data->senps && data->senps->ops &&
+	    data->senps->ops->get_trip_temp) {
+		int ret;
+
+		ret = data->senps->ops->get_trip_temp(data->senps->sensor_data,
+						      trip, temp);
+		if (ret)
+			return ret;
+	} else {
+		*temp = data->trips[trip].temperature;
+	}
 
 	return 0;
+}
+
+static bool of_thermal_is_trips_triggered(struct thermal_zone_device *tz,
+		int temp)
+{
+	int tt, th, trip, last_temp;
+	struct __thermal_zone *data = tz->devdata;
+	bool triggered = false;
+
+	if (!tz->tzp)
+		return triggered;
+
+	mutex_lock(&tz->lock);
+	last_temp = tz->temperature;
+	for (trip = 0; trip < data->ntrips; trip++) {
+		if (!tz->tzp->tracks_low) {
+			tt = data->trips[trip].temperature;
+			if (temp >= tt && last_temp < tt) {
+				triggered = true;
+				break;
+			}
+			th = tt - data->trips[trip].hysteresis;
+			if (temp <= th && last_temp > th) {
+				triggered = true;
+				break;
+			}
+		} else {
+			tt = data->trips[trip].temperature;
+			if (temp <= tt && last_temp > tt) {
+				triggered = true;
+				break;
+			}
+			th = tt + data->trips[trip].hysteresis;
+			if (temp >= th && last_temp < th) {
+				triggered = true;
+				break;
+			}
+		}
+	}
+	mutex_unlock(&tz->lock);
+
+	return triggered;
 }
 
 static int of_thermal_set_trip_temp(struct thermal_zone_device *tz, int trip,
@@ -328,10 +472,11 @@ static int of_thermal_set_trip_temp(struct thermal_zone_device *tz, int trip,
 	if (trip >= data->ntrips || trip < 0)
 		return -EDOM;
 
-	if (data->ops->set_trip_temp) {
+	if (data->senps && data->senps->ops->set_trip_temp) {
 		int ret;
 
-		ret = data->ops->set_trip_temp(data->sensor_data, trip, temp);
+		ret = data->senps->ops->set_trip_temp(data->senps->sensor_data,
+						      trip, temp);
 		if (ret)
 			return ret;
 	}
@@ -384,6 +529,70 @@ static int of_thermal_get_crit_temp(struct thermal_zone_device *tz,
 	return -EINVAL;
 }
 
+static bool of_thermal_is_wakeable(struct thermal_zone_device *tz)
+{
+	struct __thermal_zone *data = tz->devdata;
+
+	return data->is_wakeable;
+}
+
+static void handle_thermal_trip(struct thermal_zone_device *tz,
+		bool temp_valid, int trip_temp)
+{
+	struct thermal_zone_device *zone;
+	struct __thermal_zone *data;
+	struct list_head *head;
+
+	if (!tz || !tz->devdata)
+		return;
+
+	data = tz->devdata;
+
+	if (!data->senps)
+		return;
+
+	head = &data->senps->first_tz;
+
+	list_for_each_entry(data, head, list) {
+		zone = data->tzd;
+		if (data->mode == THERMAL_DEVICE_DISABLED)
+			continue;
+		if (!temp_valid) {
+			thermal_zone_device_update(zone,
+				THERMAL_EVENT_UNSPECIFIED);
+		} else {
+			if (!of_thermal_is_trips_triggered(zone, trip_temp))
+				continue;
+			thermal_zone_device_update_temp(zone,
+				THERMAL_EVENT_UNSPECIFIED, trip_temp);
+		}
+	}
+}
+
+/*
+ * of_thermal_handle_trip_temp - Handle thermal trip from sensors
+ *
+ * @tz: pointer to the primary thermal zone.
+ * @trip_temp: The temperature
+ */
+void of_thermal_handle_trip_temp(struct thermal_zone_device *tz,
+		int trip_temp)
+{
+	return handle_thermal_trip(tz, true, trip_temp);
+}
+EXPORT_SYMBOL_GPL(of_thermal_handle_trip_temp);
+
+/*
+ * of_thermal_handle_trip - Handle thermal trip from sensors
+ *
+ * @tz: pointer to the primary thermal zone.
+ */
+void of_thermal_handle_trip(struct thermal_zone_device *tz)
+{
+	return handle_thermal_trip(tz, false, 0);
+}
+EXPORT_SYMBOL_GPL(of_thermal_handle_trip);
+
 static struct thermal_zone_device_ops of_thermal_ops = {
 	.get_mode = of_thermal_get_mode,
 	.set_mode = of_thermal_set_mode,
@@ -397,14 +606,20 @@ static struct thermal_zone_device_ops of_thermal_ops = {
 
 	.bind = of_thermal_bind,
 	.unbind = of_thermal_unbind,
+
+	.is_wakeable = of_thermal_is_wakeable,
+};
+
+static struct thermal_zone_of_device_ops of_virt_ops = {
+	.get_temp = virt_sensor_read_temp,
 };
 
 /***   sensor API   ***/
 
 static struct thermal_zone_device *
 thermal_zone_of_add_sensor(struct device_node *zone,
-			   struct device_node *sensor, void *data,
-			   const struct thermal_zone_of_device_ops *ops)
+			   struct device_node *sensor,
+			   struct __sensor_param *sens_param)
 {
 	struct thermal_zone_device *tzd;
 	struct __thermal_zone *tz;
@@ -415,12 +630,11 @@ thermal_zone_of_add_sensor(struct device_node *zone,
 
 	tz = tzd->devdata;
 
-	if (!ops)
+	if (!sens_param->ops)
 		return ERR_PTR(-EINVAL);
 
 	mutex_lock(&tzd->lock);
-	tz->ops = ops;
-	tz->sensor_data = data;
+	tz->senps = sens_param;
 
 	tzd->ops->get_temp = of_thermal_get_temp;
 	tzd->ops->get_trend = of_thermal_get_trend;
@@ -429,12 +643,13 @@ thermal_zone_of_add_sensor(struct device_node *zone,
 	 * The thermal zone core will calculate the window if they have set the
 	 * optional set_trips pointer.
 	 */
-	if (ops->set_trips)
+	if (sens_param->ops->set_trips)
 		tzd->ops->set_trips = of_thermal_set_trips;
 
-	if (ops->set_emul_temp)
+	if (sens_param->ops->set_emul_temp)
 		tzd->ops->set_emul_temp = of_thermal_set_emul_temp;
 
+	list_add_tail(&tz->list, &sens_param->first_tz);
 	mutex_unlock(&tzd->lock);
 
 	return tzd;
@@ -469,7 +684,9 @@ thermal_zone_of_add_sensor(struct device_node *zone,
  * that refer to it.
  *
  * Return: On success returns a valid struct thermal_zone_device,
- * otherwise, it returns a corresponding ERR_PTR(). Caller must
+ * otherwise, it returns a corresponding ERR_PTR(). Incase there are multiple
+ * thermal zones referencing the same sensor, the return value will be
+ * thermal_zone_device pointer of the first thermal zone. Caller must
  * check the return value with help of IS_ERR() helper.
  */
 struct thermal_zone_device *
@@ -478,6 +695,8 @@ thermal_zone_of_sensor_register(struct device *dev, int sensor_id, void *data,
 {
 	struct device_node *np, *child, *sensor_np;
 	struct thermal_zone_device *tzd = ERR_PTR(-ENODEV);
+	struct thermal_zone_device *first_tzd = NULL;
+	struct __sensor_param *sens_param = NULL;
 
 	np = of_find_node_by_name(NULL, "thermal-zones");
 	if (!np)
@@ -488,11 +707,23 @@ thermal_zone_of_sensor_register(struct device *dev, int sensor_id, void *data,
 		return ERR_PTR(-EINVAL);
 	}
 
+	sens_param = kzalloc(sizeof(*sens_param), GFP_KERNEL);
+	if (!sens_param) {
+		of_node_put(np);
+		return ERR_PTR(-ENOMEM);
+	}
+	sens_param->sensor_data = data;
+	sens_param->ops = ops;
+	INIT_LIST_HEAD(&sens_param->first_tz);
+	sens_param->trip_high = INT_MAX;
+	sens_param->trip_low = INT_MIN;
+	mutex_init(&sens_param->lock);
 	sensor_np = of_node_get(dev->of_node);
 
 	for_each_available_child_of_node(np, child) {
 		struct of_phandle_args sensor_specs;
 		int ret, id;
+		struct __thermal_zone *tz;
 
 		/* For now, thermal framework supports only 1 sensor per zone */
 		ret = of_parse_phandle_with_args(child, "thermal-sensors",
@@ -512,21 +743,26 @@ thermal_zone_of_sensor_register(struct device *dev, int sensor_id, void *data,
 
 		if (sensor_specs.np == sensor_np && id == sensor_id) {
 			tzd = thermal_zone_of_add_sensor(child, sensor_np,
-							 data, ops);
-			if (!IS_ERR(tzd))
-				tzd->ops->set_mode(tzd, THERMAL_DEVICE_ENABLED);
-
-			of_node_put(sensor_specs.np);
-			of_node_put(child);
-			goto exit;
+							 sens_param);
+			if (!IS_ERR(tzd)) {
+				if (!first_tzd)
+					first_tzd = tzd;
+				tz = tzd->devdata;
+				if (!tz->default_disable)
+					tzd->ops->set_mode(tzd,
+						THERMAL_DEVICE_ENABLED);
+			}
 		}
 		of_node_put(sensor_specs.np);
 	}
-exit:
 	of_node_put(sensor_np);
 	of_node_put(np);
 
-	return tzd;
+	if (!first_tzd) {
+		first_tzd = ERR_PTR(-ENODEV);
+		kfree(sens_param);
+	}
+	return first_tzd;
 }
 EXPORT_SYMBOL_GPL(thermal_zone_of_sensor_register);
 
@@ -548,7 +784,9 @@ EXPORT_SYMBOL_GPL(thermal_zone_of_sensor_register);
 void thermal_zone_of_sensor_unregister(struct device *dev,
 				       struct thermal_zone_device *tzd)
 {
-	struct __thermal_zone *tz;
+	struct __thermal_zone *tz, *next;
+	struct thermal_zone_device *pos;
+	struct list_head *head;
 
 	if (!dev || !tzd || !tzd->devdata)
 		return;
@@ -559,14 +797,20 @@ void thermal_zone_of_sensor_unregister(struct device *dev,
 	if (!tz)
 		return;
 
-	mutex_lock(&tzd->lock);
-	tzd->ops->get_temp = NULL;
-	tzd->ops->get_trend = NULL;
-	tzd->ops->set_emul_temp = NULL;
+	head = &tz->senps->first_tz;
+	list_for_each_entry_safe(tz, next, head, list) {
+		pos = tz->tzd;
+		mutex_lock(&pos->lock);
+		pos->ops->get_temp = NULL;
+		pos->ops->get_trend = NULL;
+		pos->ops->set_emul_temp = NULL;
 
-	tz->ops = NULL;
-	tz->sensor_data = NULL;
-	mutex_unlock(&tzd->lock);
+		list_del(&tz->list);
+		if (list_empty(&tz->senps->first_tz))
+			kfree(tz->senps);
+		tz->senps = NULL;
+		mutex_unlock(&pos->lock);
+	}
 }
 EXPORT_SYMBOL_GPL(thermal_zone_of_sensor_unregister);
 
@@ -650,6 +894,138 @@ void devm_thermal_zone_of_sensor_unregister(struct device *dev,
 			       devm_thermal_zone_of_sensor_match, tzd));
 }
 EXPORT_SYMBOL_GPL(devm_thermal_zone_of_sensor_unregister);
+
+/**
+ * devm_thermal_of_virtual_sensor_register - Register a virtual sensor.
+ *	Three types of virtual sensors are supported.
+ *	1. Weighted aggregation type:
+ *		Virtual sensor of this type calculates the weighted aggregation
+ *		of sensor temperatures using the below formula,
+ *		temp = (sensor_1_temp * coeff_1 + ... + sensor_n_temp * coeff_n)
+ *			+ avg_offset / avg_denominator
+ *		So the sensor drivers has to specify n+2 coefficients.
+ *	2. Maximum type:
+ *		Virtual sensors of this type will report the maximum of all
+ *		sensor temperatures.
+ *	3. Minimum type:
+ *		Virtual sensors of this type will report the minimum of all
+ *		sensor temperatures.
+ *
+ * @input arguments:
+ * @dev: Virtual sensor driver device pointer.
+ * @sensor_data: Virtual sensor data supported for the device.
+ *
+ * @return: Returns a virtual thermal zone pointer. Returns error if thermal
+ * zone is not created. Returns -EAGAIN, if the sensor that is required for
+ * this virtual sensor temperature estimation is not registered yet. The
+ * sensor driver can try again later.
+ */
+struct thermal_zone_device *devm_thermal_of_virtual_sensor_register(
+		struct device *dev,
+		const struct virtual_sensor_data *sensor_data)
+{
+	int sens_idx = 0;
+	struct virtual_sensor *sens;
+	struct __thermal_zone *tz;
+	struct thermal_zone_device **ptr;
+	struct thermal_zone_device *tzd;
+	struct __sensor_param *sens_param = NULL;
+	enum thermal_device_mode mode;
+
+	if (!dev || !sensor_data)
+		return ERR_PTR(-EINVAL);
+
+	tzd = thermal_zone_get_zone_by_name(
+				sensor_data->virt_zone_name);
+	if (IS_ERR(tzd)) {
+		dev_dbg(dev, "sens:%s not available err: %ld\n",
+				sensor_data->virt_zone_name,
+				PTR_ERR(tzd));
+		return tzd;
+	}
+
+	mutex_lock(&tzd->lock);
+	/*
+	 * Check if the virtual zone is registered and enabled.
+	 * If so return the registered thermal zone.
+	 */
+	tzd->ops->get_mode(tzd, &mode);
+	mutex_unlock(&tzd->lock);
+	if (mode == THERMAL_DEVICE_ENABLED)
+		return tzd;
+
+	sens = devm_kzalloc(dev, sizeof(*sens), GFP_KERNEL);
+	if (!sens)
+		return ERR_PTR(-ENOMEM);
+
+	sens->virt_tz = tzd;
+	sens->logic = sensor_data->logic;
+	sens->num_sensors = sensor_data->num_sensors;
+	if ((sens->logic == VIRT_WEIGHTED_AVG) ||
+	    (sens->logic == VIRT_COUNT_THRESHOLD)) {
+		int coeff_ct = sensor_data->coefficient_ct;
+
+		/*
+		 * For weighted aggregation, sensor drivers has to specify
+		 * n+2 coefficients.
+		 */
+		if (coeff_ct != sens->num_sensors) {
+			dev_err(dev, "sens:%s invalid coefficient\n",
+					sensor_data->virt_zone_name);
+			return ERR_PTR(-EINVAL);
+		}
+		memcpy(sens->coefficients, sensor_data->coefficients,
+			       coeff_ct * sizeof(*sens->coefficients));
+		sens->avg_offset = sensor_data->avg_offset;
+		sens->avg_denominator = sensor_data->avg_denominator;
+	}
+
+	for (sens_idx = 0; sens_idx < sens->num_sensors; sens_idx++) {
+		sens->tz[sens_idx] = thermal_zone_get_zone_by_name(
+					sensor_data->sensor_names[sens_idx]);
+		if (IS_ERR(sens->tz[sens_idx])) {
+			dev_err(dev, "sens:%s sensor[%s] fetch err:%ld\n",
+				     sensor_data->virt_zone_name,
+				     sensor_data->sensor_names[sens_idx],
+				     PTR_ERR(sens->tz[sens_idx]));
+			break;
+		}
+	}
+	if (sens->num_sensors != sens_idx)
+		return ERR_PTR(-EAGAIN);
+
+	sens_param = kzalloc(sizeof(*sens_param), GFP_KERNEL);
+	if (!sens_param)
+		return ERR_PTR(-ENOMEM);
+	sens_param->sensor_data = sens;
+	sens_param->ops = &of_virt_ops;
+	INIT_LIST_HEAD(&sens_param->first_tz);
+	sens_param->trip_high = INT_MAX;
+	sens_param->trip_low = INT_MIN;
+	mutex_init(&sens_param->lock);
+
+	mutex_lock(&tzd->lock);
+	tz = tzd->devdata;
+	tz->senps = sens_param;
+	tzd->ops->get_temp = of_thermal_get_temp;
+	list_add_tail(&tz->list, &sens_param->first_tz);
+	mutex_unlock(&tzd->lock);
+
+	ptr = devres_alloc(devm_thermal_zone_of_sensor_release, sizeof(*ptr),
+			   GFP_KERNEL);
+	if (!ptr)
+		return ERR_PTR(-ENOMEM);
+
+	*ptr = tzd;
+	devres_add(dev, ptr);
+
+	if (!tz->default_disable)
+		tzd->ops->set_mode(tzd, THERMAL_DEVICE_ENABLED);
+
+	return tzd;
+}
+EXPORT_SYMBOL(devm_thermal_of_virtual_sensor_register);
+
 
 /***   functions parsing device tree nodes   ***/
 
@@ -835,6 +1211,7 @@ __init *thermal_of_build_thermal_zone(struct device_node *np)
 	if (!tz)
 		return ERR_PTR(-ENOMEM);
 
+	INIT_LIST_HEAD(&tz->list);
 	ret = of_property_read_u32(np, "polling-delay-passive", &prop);
 	if (ret < 0) {
 		pr_err("missing polling-delay-passive property\n");
@@ -849,6 +1226,10 @@ __init *thermal_of_build_thermal_zone(struct device_node *np)
 	}
 	tz->polling_delay = prop;
 
+	tz->is_wakeable = of_property_read_bool(np,
+					"wake-capable-sensor");
+	tz->default_disable = of_property_read_bool(np,
+					"disable-thermal-zone");
 	/*
 	 * REVIST: for now, the thermal framework supports only
 	 * one sensor per thermal zone. Thus, we are considering
@@ -874,7 +1255,7 @@ __init *thermal_of_build_thermal_zone(struct device_node *np)
 	if (tz->ntrips == 0) /* must have at least one child */
 		goto finish;
 
-	tz->trips = kzalloc(tz->ntrips * sizeof(*tz->trips), GFP_KERNEL);
+	tz->trips = kcalloc(tz->ntrips, sizeof(*tz->trips), GFP_KERNEL);
 	if (!tz->trips) {
 		ret = -ENOMEM;
 		goto free_tz;
@@ -900,7 +1281,7 @@ __init *thermal_of_build_thermal_zone(struct device_node *np)
 	if (tz->num_tbps == 0)
 		goto finish;
 
-	tz->tbps = kzalloc(tz->num_tbps * sizeof(*tz->tbps), GFP_KERNEL);
+	tz->tbps = kcalloc(tz->num_tbps, sizeof(*tz->tbps), GFP_KERNEL);
 	if (!tz->tbps) {
 		ret = -ENOMEM;
 		goto free_trips;
@@ -1010,6 +1391,9 @@ int __init of_parse_thermal_zones(void)
 		tzp->slope = tz->slope;
 		tzp->offset = tz->offset;
 
+		if (of_property_read_bool(child, "tracks-low"))
+			tzp->tracks_low = true;
+
 		zone = thermal_zone_device_register(child->name, tz->ntrips,
 						    mask, tz,
 						    ops, tzp,
@@ -1022,7 +1406,9 @@ int __init of_parse_thermal_zones(void)
 			kfree(ops);
 			of_thermal_free_zone(tz);
 			/* attempting to build remaining zones still */
+			continue;
 		}
+		tz->tzd = zone;
 	}
 	of_node_put(np);
 

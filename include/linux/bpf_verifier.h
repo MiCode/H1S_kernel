@@ -41,6 +41,7 @@ enum bpf_reg_liveness {
 };
 
 struct bpf_reg_state {
+	/* Ordering of fields matters.  See states_equal() */
 	enum bpf_reg_type type;
 	union {
 		/* valid when type == PTR_TO_PACKET */
@@ -62,7 +63,6 @@ struct bpf_reg_state {
 	 * came from, when one is tested for != NULL.
 	 */
 	u32 id;
-	/* Ordering of fields matters.  See states_equal() */
 	/* For scalar types (SCALAR_VALUE), this represents our knowledge of
 	 * the actual value.
 	 * For pointer types, this represents the variable part of the offset
@@ -79,14 +79,23 @@ struct bpf_reg_state {
 	s64 smax_value; /* maximum possible (s64)value */
 	u64 umin_value; /* minimum possible (u64)value */
 	u64 umax_value; /* maximum possible (u64)value */
-	/* This field must be last, for states_equal() reasons. */
+	/* parentage chain for liveness checking */
+	struct bpf_reg_state *parent;
+	/* Inside the callee two registers can be both PTR_TO_STACK like
+	 * R1=fp-8 and R2=fp-8, but one of them points to this function stack
+	 * while another to the caller's stack. To differentiate them 'frameno'
+	 * is used which is an index in bpf_verifier_state->frame[] array
+	 * pointing to bpf_func_state.
+	 */
+	u32 frameno;
 	enum bpf_reg_liveness live;
 };
 
 enum bpf_stack_slot_type {
 	STACK_INVALID,    /* nothing was stored in this stack slot */
 	STACK_SPILL,      /* register spilled into stack */
-	STACK_MISC	  /* BPF program wrote some data into this slot */
+	STACK_MISC,	  /* BPF program wrote some data into this slot */
+	STACK_ZERO,	  /* BPF program wrote constant zero */
 };
 
 #define BPF_REG_SIZE 8	/* size of eBPF register in bytes */
@@ -99,11 +108,37 @@ struct bpf_stack_state {
 /* state of the program:
  * type of all registers and stack info
  */
-struct bpf_verifier_state {
+struct bpf_func_state {
 	struct bpf_reg_state regs[MAX_BPF_REG];
-	struct bpf_verifier_state *parent;
+	/* index of call instruction that called into this func */
+	int callsite;
+	/* stack frame number of this function state from pov of
+	 * enclosing bpf_verifier_state.
+	 * 0 = main function, 1 = first callee.
+	 */
+	u32 frameno;
+	/* subprog number == index within subprog_stack_depth
+	 * zero == main subprog
+	 */
+	u32 subprogno;
+
+	/* should be second to last. See copy_func_state() */
 	int allocated_stack;
 	struct bpf_stack_state *stack;
+};
+
+struct bpf_id_pair {
+	u32 old;
+	u32 cur;
+};
+
+/* Maximum number of register states that can exist at once */
+#define BPF_ID_MAP_SIZE (MAX_BPF_REG + MAX_BPF_STACK / BPF_REG_SIZE)
+#define MAX_CALL_FRAMES 8
+struct bpf_verifier_state {
+	/* call stack tracking */
+	struct bpf_func_state *frame[MAX_CALL_FRAMES];
+	u32 curframe;
 	bool speculative;
 };
 
@@ -114,31 +149,54 @@ struct bpf_verifier_state_list {
 };
 
 /* Possible states for alu_state member. */
-#define BPF_ALU_SANITIZE_SRC		1U
-#define BPF_ALU_SANITIZE_DST		2U
+#define BPF_ALU_SANITIZE_SRC		(1U << 0)
+#define BPF_ALU_SANITIZE_DST		(1U << 1)
 #define BPF_ALU_NEG_VALUE		(1U << 2)
 #define BPF_ALU_NON_POINTER		(1U << 3)
+#define BPF_ALU_IMMEDIATE		(1U << 4)
 #define BPF_ALU_SANITIZE		(BPF_ALU_SANITIZE_SRC | \
 					 BPF_ALU_SANITIZE_DST)
 
 struct bpf_insn_aux_data {
 	union {
 		enum bpf_reg_type ptr_type;	/* pointer type for load/store insns */
-		struct bpf_map *map_ptr;	/* pointer for call insn into lookup_elem */
+		unsigned long map_state;	/* pointer/poison value for maps */
+		s32 call_imm;			/* saved imm field of call insn */
 		u32 alu_limit;			/* limit for add/sub register with pointer */
 	};
 	int ctx_field_size; /* the ctx field size for load insn, maybe 0 */
-	int sanitize_stack_off; /* stack slot to be cleared */
 	bool seen; /* this insn was processed by the verifier */
+	bool sanitize_stack_spill; /* subject to Spectre v4 sanitation */
 	u8 alu_state; /* used in combination with alu_limit */
 };
 
 #define MAX_USED_MAPS 64 /* max number of maps accessed by one eBPF program */
 
-struct bpf_verifier_env;
-struct bpf_ext_analyzer_ops {
-	int (*insn_hook)(struct bpf_verifier_env *env,
-			 int insn_idx, int prev_insn_idx);
+#define BPF_VERIFIER_TMP_LOG_SIZE	1024
+
+struct bpf_verifier_log {
+	u32 level;
+	char kbuf[BPF_VERIFIER_TMP_LOG_SIZE];
+	char __user *ubuf;
+	u32 len_used;
+	u32 len_total;
+};
+
+static inline bool bpf_verifier_log_full(const struct bpf_verifier_log *log)
+{
+	return log->len_used >= log->len_total - 1;
+}
+
+static inline bool bpf_verifier_log_needed(const struct bpf_verifier_log *log)
+{
+	return log->level && log->ubuf && !bpf_verifier_log_full(log);
+}
+
+#define BPF_MAX_SUBPROGS 256
+
+struct bpf_subprog_info {
+	u32 start; /* insn idx of function entry point */
+	u16 stack_depth; /* max. stack depth used by this function */
 };
 
 /* single container for all structs
@@ -148,27 +206,39 @@ struct bpf_verifier_env {
 	u32 insn_idx;
 	u32 prev_insn_idx;
 	struct bpf_prog *prog;		/* eBPF program being verified */
+	const struct bpf_verifier_ops *ops;
 	struct bpf_verifier_stack_elem *head; /* stack of verifier states to be processed */
 	int stack_size;			/* number of states to be processed */
 	bool strict_alignment;		/* perform strict pointer alignment checks */
 	struct bpf_verifier_state *cur_state; /* current verifier state */
 	struct bpf_verifier_state_list **explored_states; /* search pruning optimization */
-	const struct bpf_ext_analyzer_ops *analyzer_ops; /* external analyzer ops */
-	void *analyzer_priv; /* pointer to external analyzer's private data */
 	struct bpf_map *used_maps[MAX_USED_MAPS]; /* array of map's used by eBPF program */
 	u32 used_map_cnt;		/* number of used maps */
 	u32 id_gen;			/* used to generate unique reg IDs */
+	bool explore_alu_limits;
 	bool allow_ptr_leaks;
 	bool seen_direct_write;
 	struct bpf_insn_aux_data *insn_aux_data; /* array of per-insn state */
+	struct bpf_verifier_log log;
+	struct bpf_subprog_info subprog_info[BPF_MAX_SUBPROGS + 1];
+	struct bpf_id_pair idmap_scratch[BPF_ID_MAP_SIZE];
+	u32 subprog_cnt;
 };
+
+__printf(2, 0) void bpf_verifier_vlog(struct bpf_verifier_log *log,
+				      const char *fmt, va_list args);
+__printf(2, 3) void bpf_verifier_log_write(struct bpf_verifier_env *env,
+					   const char *fmt, ...);
 
 static inline struct bpf_reg_state *cur_regs(struct bpf_verifier_env *env)
 {
-	return env->cur_state->regs;
+	struct bpf_verifier_state *cur = env->cur_state;
+
+	return cur->frame[cur->curframe]->regs;
 }
 
-int bpf_analyzer(struct bpf_prog *prog, const struct bpf_ext_analyzer_ops *ops,
-		 void *priv);
+int bpf_prog_offload_verifier_prep(struct bpf_verifier_env *env);
+int bpf_prog_offload_verify_insn(struct bpf_verifier_env *env,
+				 int insn_idx, int prev_insn_idx);
 
 #endif /* _LINUX_BPF_VERIFIER_H */

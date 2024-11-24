@@ -1,23 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
-
-/**************************************************************
- * camera_dip.c - MT6799 Linux DIP Device Driver
- *
- * DESCRIPTION:
- *     This file provid the other drivers DIP relative functions
- *
- **************************************************************/
 /* MET: define to enable MET*/
 //#include <error_test.h>
 #include <linux/types.h>
@@ -73,7 +57,7 @@
 /*#include"../../../smi/smi_debug.h" YWclose*/
 
 /*for kernel log count*/
-#define _K_LOG_ADJUST (1)
+#define _K_LOG_ADJUST (0)
 
 #ifdef CONFIG_COMPAT
 /* 64 bit */
@@ -505,9 +489,10 @@ static struct DIP_MEM_INFO_STRUCT g_CmdqBaseAddrInfo = {
 static unsigned int m_CurrentPPB;
 
 #ifdef CONFIG_PM_SLEEP
-struct wakeup_source dip_wake_lock;
-struct wakeup_source isp_mdp_wake_lock;
+struct wakeup_source *dip_wake_lock;
+struct wakeup_source *isp_mdp_wake_lock;
 #endif
+
 static int g_bWaitLock;
 static unsigned int g_dip1sterr = DIP_GCE_EVENT_NONE;
 
@@ -2743,6 +2728,55 @@ static signed int DIP_Dump_IMGSYS_DIP_Reg(void)
 			DIP_RD32(dipRegBasAddr + 0x87C),
 			DipDumpTL[DIPNo].region,
 			DIP_RD32(dipRegBasAddr + 0x880));
+
+
+		cmdq_util_err("nr3d: 0x%x8000(0x%x)-0x%x8004(0x%x)",
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x7000),
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x7004));
+		cmdq_util_err("nr3d: 0x%x8008(0x%x)-0x%x800c(0x%x)",
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x7008),
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x700c));
+		cmdq_util_err("nr3d: 0x%x8010(0x%x)-0x%x8014(0x%x)",
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x7010),
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x7014));
+		cmdq_util_err("nr3d: 0x%x8218(0x%x)-0x%x821c(0x%x)",
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x7218),
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x721c));
+		cmdq_util_err("nr3d: 0x%x8220(0x%x)-0x%x8224(0x%x)",
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x7220),
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x7224));
+		cmdq_util_err("nr3d: 0x%x8228(0x%x)-0x%x822c(0x%x)",
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x7228),
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x722c));
+		cmdq_util_err("mix_d2: 0x%x7b40(0x%x)-0x%x7b44(0x%x)",
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x6b40),
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x6b44));
+
+
+		cmdq_util_err("dce: 0x%x7000(0x%x)-0x%x7088(0x%x)",
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x6000),
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x6088));
+		cmdq_util_err("dce: 0x%x708C(0x%x)-0x%x7090(0x%x)",
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x608C),
+			DipDumpTL[DIPNo].region,
+			DIP_RD32(dipRegBasAddr + 0x6090));
 
 		/* CRZ */
 		cmdq_util_err("crz: 0x%x8700(0x%x)-0x%x8704(0x%x)",
@@ -5650,7 +5684,7 @@ static signed int DIP_P2_BufQue_CTRL_FUNC(
 		idx2 = DIP_P2_BufQue_GetMatchIdx(param,
 			DIP_P2_BUFQUE_MATCH_TYPE_FRAMEOP,
 			DIP_P2_BUFQUE_LIST_TAG_UNIT);
-		if (idx2 ==  -1) {
+		if ((idx2 < 0) || (idx2 >= _MAX_SUPPORT_P2_FRAME_NUM_)) {
 			spin_unlock(&(SpinLock_P2FrameList));
 			LOG_ERR("Match index 2 fail(%d_0x%x_0x%x_%d, %d_%d)",
 				param.property,
@@ -5673,7 +5707,7 @@ static signed int DIP_P2_BufQue_CTRL_FUNC(
 		idx = DIP_P2_BufQue_GetMatchIdx(param,
 			DIP_P2_BUFQUE_MATCH_TYPE_FRAMEOP,
 			DIP_P2_BUFQUE_LIST_TAG_PACKAGE);
-		if (idx ==  -1) {
+		if ((idx < 0) || (idx >= _MAX_SUPPORT_P2_PACKAGE_NUM_)) {
 			spin_unlock(&(SpinLock_P2FrameList));
 			LOG_ERR("Match index 1 fail(%d_0x%x_0x%x_%d, %d_%d)",
 				param.property,
@@ -5945,16 +5979,18 @@ static long DIP_ioctl(
 			if (wakelock_ctrl == 1) {    /* Enable     wakelock */
 				if (g_bWaitLock == 0) {
 #ifdef CONFIG_PM_SLEEP
-					__pm_stay_awake(&dip_wake_lock);
+					__pm_stay_awake(dip_wake_lock);
 #endif
+
 					g_bWaitLock = 1;
 					LOG_DBG("wakelock enable!!\n");
 				}
 			} else {        /* Disable wakelock */
 				if (g_bWaitLock == 1) {
 #ifdef CONFIG_PM_SLEEP
-					__pm_relax(&dip_wake_lock);
+					__pm_relax(dip_wake_lock);
 #endif
+
 					g_bWaitLock = 0;
 					LOG_DBG("wakelock disable!!\n");
 				}
@@ -6623,18 +6659,19 @@ static signed int DIP_open(
 	}
 	/* Enable clock */
 #ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&dip_wake_lock);
+	__pm_stay_awake(dip_wake_lock);
 #endif
+
 	DIP_EnableClock(MTRUE);
 	/* Initial HW default value */
 	if (G_u4DipEnClkCnt == 1)
 		DIP_Load_InitialSettings();
 
-
 	g_u4DipCnt = 0;
 #ifdef CONFIG_PM_SLEEP
-	__pm_relax(&dip_wake_lock);
+	__pm_relax(dip_wake_lock);
 #endif
+
 	LOG_DBG("dip open G_u4DipEnClkCnt: %d\n", G_u4DipEnClkCnt);
 #ifdef KERNEL_LOG
 	IspInfo.DebugMask = (DIP_DBG_INT);
@@ -6703,8 +6740,9 @@ static signed int DIP_release(
 
 	if (g_bWaitLock == 1) {
 #ifdef CONFIG_PM_SLEEP
-		__pm_relax(&dip_wake_lock);
+		__pm_relax(dip_wake_lock);
 #endif
+
 		g_bWaitLock = 0;
 	}
 	/* reset */
@@ -6794,12 +6832,14 @@ static signed int DIP_release(
 #endif
 
 #ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&dip_wake_lock);
+	__pm_stay_awake(dip_wake_lock);
 #endif
+
 	DIP_EnableClock(MFALSE);
 #ifdef CONFIG_PM_SLEEP
-	__pm_relax(&dip_wake_lock);
+	__pm_relax(dip_wake_lock);
 #endif
+
 	LOG_DBG("dip release G_u4DipEnClkCnt: %d", G_u4DipEnClkCnt);
 EXIT:
 	mutex_unlock(&gDipMutex);
@@ -7174,9 +7214,10 @@ static signed int DIP_probe(struct platform_device *pDev)
 		for (i = 0 ; i < DIP_IRQ_TYPE_AMOUNT; i++)
 			init_waitqueue_head(&IspInfo.WaitQueueHead[i]);
 
-#ifdef CONFIG_PM_SLEEP
-		wakeup_source_init(&dip_wake_lock, "dip_lock_wakelock");
-		wakeup_source_init(&isp_mdp_wake_lock, "isp_mdp_wakelock");
+#ifdef CONFIG_PM_WAKELOCKS
+		dip_wake_lock = wakeup_source_register(&pDev->dev, "dip_lock_wakelock");
+		isp_mdp_wake_lock = wakeup_source_register(&pDev->dev,
+							"isp_mdp_wakelock");
 #endif
 
 		/* enqueue/dequeue control in ihalpipe wrapper */
@@ -7853,6 +7894,18 @@ enum m4u_callback_ret_t ISP_M4U_TranslationFault_callback(int port,
 			DIP_RD32(DIP_A_BASE + 0x700c),
 			DIP_RD32(DIP_A_BASE + 0x7010),
 			DIP_RD32(DIP_A_BASE + 0x7014));
+		pr_info("nr3d int1:0x%08x, int2:0x%08x, int3:0x%08x\n",
+			DIP_RD32(DIP_A_BASE + 0x7218),
+			DIP_RD32(DIP_A_BASE + 0x721c),
+			DIP_RD32(DIP_A_BASE + 0x7220));
+		pr_info("nr3d out_cnt:0x%08x, status:0x%08x\n",
+			DIP_RD32(DIP_A_BASE + 0x7224),
+			DIP_RD32(DIP_A_BASE + 0x7228));
+		pr_info("mix_d2 ctl0:0x%08x, cltl1:0x%08x\n",
+			DIP_RD32(DIP_A_BASE + 0x6b40),
+			DIP_RD32(DIP_A_BASE + 0x6b44));
+
+
 
 		pr_info("TDRI:0x%08x, CQ0_EN(0x%08x)_BA(0x%08x),",
 			DIP_RD32(DIP_A_BASE + 0x004),
@@ -8563,7 +8616,7 @@ int32_t DIP_MDPClockOnCallback(uint64_t engineFlag)
 	/* LOG_DBG("DIP_MDPClockOnCallback"); */
 	/*LOG_DBG("+MDPEn:%d", G_u4DipEnClkCnt);*/
 #ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&isp_mdp_wake_lock);
+	__pm_stay_awake(isp_mdp_wake_lock);
 #endif
 	DIP_EnableClock(MTRUE);
 
@@ -8638,7 +8691,7 @@ int32_t DIP_MDPClockOffCallback(uint64_t engineFlag)
 	/*LOG_INF("DIP_MDPClockOffCallback");*/
 	DIP_EnableClock(MFALSE);
 #ifdef CONFIG_PM_SLEEP
-	__pm_relax(&isp_mdp_wake_lock);
+	__pm_relax(isp_mdp_wake_lock);
 #endif
 	/*LOG_INF("-MDPEn:%d", G_u4DipEnClkCnt);*/
 	return 0;

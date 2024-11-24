@@ -1825,13 +1825,9 @@ static int stfsm_mtd_erase(struct mtd_info *mtd, struct erase_info *instr)
 
 	mutex_unlock(&fsm->lock);
 
-	instr->state = MTD_ERASE_DONE;
-	mtd_erase_callback(instr);
-
 	return 0;
 
 out1:
-	instr->state = MTD_ERASE_FAILED;
 	mutex_unlock(&fsm->lock);
 
 	return ret;
@@ -1868,8 +1864,7 @@ static struct flash_info *stfsm_jedec_probe(struct stfsm *fsm)
 	 */
 	ext_jedec = id[3] << 8  | id[4];
 
-	dev_dbg(fsm->dev, "JEDEC =  0x%08x [%02x %02x %02x %02x %02x]\n",
-		jedec, id[0], id[1], id[2], id[3], id[4]);
+	dev_dbg(fsm->dev, "JEDEC =  0x%08x [%5ph]\n", jedec, id);
 
 	for (info = flash_types; info->name; info++) {
 		if (info->jedec_id == jedec) {
@@ -2125,10 +2120,12 @@ static int stfsm_probe(struct platform_device *pdev)
 		(long long)fsm->mtd.size, (long long)(fsm->mtd.size >> 20),
 		fsm->mtd.erasesize, (fsm->mtd.erasesize >> 10));
 
-	return mtd_device_register(&fsm->mtd, NULL, 0);
-
+	ret = mtd_device_register(&fsm->mtd, NULL, 0);
+	if (ret) {
 err_clk_unprepare:
-	clk_disable_unprepare(fsm->clk);
+		clk_disable_unprepare(fsm->clk);
+	}
+
 	return ret;
 }
 

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2021 MediaTek Inc.
  */
 
 #include <linux/delay.h>
@@ -20,7 +12,7 @@
 #include <linux/reboot.h>
 #include <linux/workqueue.h>
 
-#include <mt-plat/charger_type.h>
+#include <mt-plat/v1/charger_type.h>
 #include <mt-plat/mtk_boot.h>
 #include <mt-plat/upmu_common.h>
 #include <mach/upmu_sw.h>
@@ -347,7 +339,9 @@ void mtk_pmic_enable_chr_type_det(bool en)
 	mutex_lock(&chrdet_lock);
 
 	if (en) {
-		if (is_meta_mode()) {
+// workaround for mt6739
+//		if (is_meta_mode()) {
+		if (0) {
 			/* Skip charger type detection to speed up meta boot */
 			pr_notice("charger type: force Standard USB Host in meta\n");
 			g_chr_type = STANDARD_HOST;
@@ -386,7 +380,9 @@ void chrdet_int_handler(void)
 		int boot_mode = 0;
 
 		hw_bc11_done();
-		boot_mode = get_boot_mode();
+// workaround for mt6739
+		boot_mode = 0;
+		//boot_mode = get_boot_mode();
 
 		if (boot_mode == KERNEL_POWER_OFF_CHARGING_BOOT
 		    || boot_mode == LOW_POWER_OFF_CHARGING_BOOT) {

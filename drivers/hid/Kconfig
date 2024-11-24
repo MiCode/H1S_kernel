@@ -148,6 +148,7 @@ config HID_APPLEIR
 
 config HID_ASUS
 	tristate "Asus"
+	depends on USB_HID
 	depends on LEDS_CLASS
 	---help---
 	Support for Asus notebook built-in keyboard and touchpad via i2c, and
@@ -191,14 +192,14 @@ config HID_CHERRY
 
 config HID_CHICONY
 	tristate "Chicony devices"
-	depends on HID
+	depends on USB_HID
 	default !EXPERT
 	---help---
 	Support for Chicony Tactical pad and special keys on Chicony keyboards.
 
 config HID_CORSAIR
 	tristate "Corsair devices"
-	depends on HID && USB && LEDS_CLASS
+	depends on USB_HID && LEDS_CLASS
 	---help---
 	Support for Corsair devices that are not fully compliant with the
 	HID standard.
@@ -207,9 +208,19 @@ config HID_CORSAIR
 	- Vengeance K90
 	- Scimitar PRO RGB
 
+config HID_COUGAR
+	tristate "Cougar devices"
+	depends on HID
+	help
+	Support for Cougar devices that are not fully compliant with the
+	HID standard.
+
+	Supported devices:
+	- Cougar 500k Gaming Keyboard
+
 config HID_PRODIKEYS
 	tristate "Prodikeys PC-MIDI Keyboard support"
-	depends on HID && SND
+	depends on USB_HID && SND
 	select SND_RAWMIDI
 	---help---
 	Support for Prodikeys PC-MIDI Keyboard device support.
@@ -274,14 +285,23 @@ config HID_EMS_FF
 	Currently the following devices are known to be supported:
 	 - Trio Linker Plus II
 
+config HID_ELAN
+	tristate "ELAN USB Touchpad Support"
+	depends on LEDS_CLASS && USB_HID
+	---help---
+	Say Y to enable support for the USB ELAN touchpad
+	Currently the following devices are known to be supported:
+	 - HP Pavilion X2 10-p0XX.
+
 config HID_ELECOM
 	tristate "ELECOM HID devices"
 	depends on HID
 	---help---
 	Support for ELECOM devices:
 	  - BM084 Bluetooth Mouse
-	  - DEFT Trackball (Wired and wireless)
-	  - HUGE Trackball (Wired and wireless)
+	  - EX-G Trackballs (M-XT3DRBK, M-XT3URBK)
+	  - DEFT Trackballs (M-DT1DRBK, M-DT1URBK, M-DT2DRBK, M-DT2URBK)
+	  - HUGE Trackballs (M-HT1DRBK, M-HT1URBK)
 
 config HID_ELO
 	tristate "ELO USB 4000/4500 touchscreen"
@@ -329,6 +349,12 @@ config HOLTEK_FF
 	---help---
 	  Say Y here if you have a Holtek On Line Grip based game controller
 	  and want to have force feedback support for it.
+
+config HID_GOOGLE_HAMMER
+	tristate "Google Hammer Keyboard"
+	depends on USB_HID && LEDS_CLASS
+	---help---
+	Say Y here if you have a Google Hammer device.
 
 config HID_GT683R
 	tristate "MSI GT68xR LED support"
@@ -396,6 +422,17 @@ config HID_ITE
 	---help---
 	Support for ITE devices not fully compliant with HID standard.
 
+config HID_JABRA
+	tristate "Jabra USB HID Driver"
+	depends on HID
+	---help---
+	Support for Jabra USB HID devices.
+
+	Prevents mapping of vendor defined HID usages to input events. Without
+	this driver HID	reports from Jabra devices may incorrectly be seen as
+	mouse button events.
+	Say M here if you may ever plug in a Jabra USB device.
+
 config HID_TWINHAN
 	tristate "Twinhan IR remote control"
 	depends on HID
@@ -448,7 +485,7 @@ config HID_LENOVO
 
 config HID_LOGITECH
 	tristate "Logitech devices"
-	depends on HID
+	depends on USB_HID
 	default !EXPERT
 	---help---
 	Support for Logitech devices that are not fully compliant with HID standard.
@@ -548,6 +585,13 @@ config HID_MAYFLASH
 	---help---
 	Say Y here if you have HJZ Mayflash PS3 game controller adapters
 	and want to enable force feedback support.
+
+config HID_REDRAGON
+	tristate "Redragon keyboards"
+	depends on HID
+	default !EXPERT
+	---help---
+    Support for Redragon keyboards that need fix-ups to work properly.
 
 config HID_MICROSOFT
 	tristate "Microsoft non-fully HID-compliant devices"
@@ -762,11 +806,10 @@ config HID_PRIMAX
 	HID standard.
 
 config HID_RETRODE
-	tristate "Retrode"
+	tristate "Retrode 2 USB adapter for vintage video games"
 	depends on USB_HID
 	---help---
 	Support for
-
 	  * Retrode 2 cartridge and controller adapter
 
 config HID_ROCCAT
@@ -791,7 +834,7 @@ config HID_SAITEK
 
 config HID_SAMSUNG
 	tristate "Samsung InfraRed remote control or keyboards"
-	depends on HID
+	depends on USB_HID
 	---help---
 	Support for Samsung InfraRed remote control or keyboards.
 
@@ -827,6 +870,7 @@ config HID_SPEEDLINK
 config HID_STEAM
 	tristate "Steam Controller support"
 	depends on HID
+	select POWER_SUPPLY
 	---help---
 	Say Y here if you have a Steam Controller if you want to use it
 	without running the Steam Client. It supports both the wired and

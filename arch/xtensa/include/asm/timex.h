@@ -30,10 +30,6 @@
 
 extern unsigned long ccount_freq;
 
-typedef unsigned long long cycles_t;
-
-#define get_cycles()	(0)
-
 void local_timer_setup(unsigned cpu);
 
 /*
@@ -68,5 +64,7 @@ static inline void set_linux_timer (unsigned long ccompare)
 {
 	WSR_CCOMPARE(LINUX_TIMER, ccompare);
 }
+
+#include <asm-generic/timex.h>
 
 #endif	/* _XTENSA_TIMEX_H */

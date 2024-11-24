@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+*/
 
 #include <drm/drmP.h>
 #include <linux/clk.h>
@@ -40,6 +32,8 @@
 
 static unsigned int g_gamma_relay_value[DISP_GAMMA_TOTAL];
 #define index_of_gamma(module) ((module == DDP_COMPONENT_GAMMA0) ? 0 : 1)
+// It's a work around for no comp assigned in functions.
+static struct mtk_ddp_comp *default_comp;
 
 static struct DISP_GAMMA_LUT_T *g_disp_gamma_lut[DISP_GAMMA_TOTAL] = { NULL };
 
@@ -55,6 +49,7 @@ static DEFINE_SPINLOCK(g_gamma_clock_lock);
 
 enum GAMMA_IOCTL_CMD {
 	SET_GAMMALUT = 0,
+	BYPASS_GAMMA
 };
 
 struct mtk_disp_gamma_data {
@@ -70,9 +65,16 @@ struct mtk_disp_gamma {
 static void mtk_gamma_init(struct mtk_ddp_comp *comp,
 	struct mtk_ddp_config *cfg, struct cmdq_pkt *handle)
 {
+	unsigned int width;
+
+	if (comp->mtk_crtc->is_dual_pipe)
+		width = cfg->w / 2;
+	else
+		width = cfg->w;
+
 	cmdq_pkt_write(handle, comp->cmdq_base,
 		comp->regs_pa + DISP_GAMMA_SIZE,
-		(cfg->w << 16) | cfg->h, ~0);
+		(width << 16) | cfg->h, ~0);
 	cmdq_pkt_write(handle, comp->cmdq_base,
 		comp->regs_pa + DISP_GAMMA_EN, GAMMA_EN, ~0);
 
@@ -224,13 +226,13 @@ static void mtk_gamma_stop(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle)
 		comp->regs_pa + DISP_GAMMA_EN, 0x0, ~0);
 }
 
-static void mtk_gamma_bypass(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle)
+static void mtk_gamma_bypass(struct mtk_ddp_comp *comp, int bypass,
+	struct cmdq_pkt *handle)
 {
 	DDPINFO("%s\n", __func__);
-
 	cmdq_pkt_write(handle, comp->cmdq_base,
-		comp->regs_pa + DISP_GAMMA_CFG, 0x1, 0x1);
-	g_gamma_relay_value[index_of_gamma(comp->id)] = 0x1;
+		comp->regs_pa + DISP_GAMMA_CFG, bypass, 0x1);
+	g_gamma_relay_value[index_of_gamma(comp->id)] = bypass;
 
 }
 
@@ -290,6 +292,24 @@ static int mtk_gamma_user_cmd(struct mtk_ddp_comp *comp,
 			DDPPR_ERR("%s: failed\n", __func__);
 			return -EFAULT;
 		}
+		if (comp->mtk_crtc->is_dual_pipe) {
+			struct mtk_drm_crtc *mtk_crtc = comp->mtk_crtc;
+			struct drm_crtc *crtc = &mtk_crtc->base;
+			struct mtk_drm_private *priv = crtc->dev->dev_private;
+			struct mtk_ddp_comp *comp_gamma1 = priv->ddp_comp[DDP_COMPONENT_GAMMA1];
+
+			if (mtk_gamma_set_lut(comp_gamma1, handle, config) < 0) {
+				DDPPR_ERR("%s: comp_gamma1 failed\n", __func__);
+				return -EFAULT;
+			}
+		}
+	}
+	break;
+	case BYPASS_GAMMA:
+	{
+		int *value = data;
+
+		mtk_gamma_bypass(comp, *value, handle);
 	}
 	break;
 	default:
@@ -299,10 +319,27 @@ static int mtk_gamma_user_cmd(struct mtk_ddp_comp *comp,
 	return 0;
 }
 
+struct gamma_backup {
+	unsigned int GAMMA_CFG;
+};
+static struct gamma_backup g_gamma_backup;
+
+static void ddp_dither_backup(struct mtk_ddp_comp *comp)
+{
+	g_gamma_backup.GAMMA_CFG =
+		readl(comp->regs + DISP_GAMMA_CFG);
+}
+
+static void ddp_dither_restore(struct mtk_ddp_comp *comp)
+{
+	writel(g_gamma_backup.GAMMA_CFG, comp->regs + DISP_GAMMA_CFG);
+}
+
 static void mtk_gamma_prepare(struct mtk_ddp_comp *comp)
 {
 	mtk_ddp_comp_clk_prepare(comp);
 	atomic_set(&g_gamma_is_clock_on[index_of_gamma(comp->id)], 1);
+	ddp_dither_restore(comp);
 }
 
 static void mtk_gamma_unprepare(struct mtk_ddp_comp *comp)
@@ -318,7 +355,7 @@ static void mtk_gamma_unprepare(struct mtk_ddp_comp *comp)
 	spin_unlock_irqrestore(&g_gamma_clock_lock, flags);
 	DDPINFO("%s @ %d......... spin_unlock_irqrestore ",
 		__func__, __LINE__);
-
+	ddp_dither_backup(comp);
 	mtk_ddp_comp_clk_unprepare(comp);
 }
 
@@ -399,6 +436,9 @@ static int mtk_disp_gamma_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	if (!default_comp)
+		default_comp = &priv->ddp_comp;
+
 	platform_set_drvdata(pdev, priv);
 
 	pm_runtime_enable(dev);
@@ -433,7 +473,15 @@ static const struct mtk_disp_gamma_data mt6873_gamma_driver_data = {
 	.support_shadow = false,
 };
 
+static const struct mtk_disp_gamma_data mt6781_gamma_driver_data = {
+	.support_shadow = false,
+};
+
 static const struct mtk_disp_gamma_data mt6853_gamma_driver_data = {
+	.support_shadow = false,
+};
+
+static const struct mtk_disp_gamma_data mt6877_gamma_driver_data = {
 	.support_shadow = false,
 };
 
@@ -450,7 +498,11 @@ static const struct of_device_id mtk_disp_gamma_driver_dt_match[] = {
 	  .data = &mt6873_gamma_driver_data},
 	{ .compatible = "mediatek,mt6853-disp-gamma",
 	  .data = &mt6853_gamma_driver_data},
+	{ .compatible = "mediatek,mt6877-disp-gamma",
+	  .data = &mt6877_gamma_driver_data},
 	{ .compatible = "mediatek,mt6833-disp-gamma",
+	  .data = &mt6833_gamma_driver_data},
+	{ .compatible = "mediatek,mt6781-disp-gamma",
 	  .data = &mt6833_gamma_driver_data},
 	{},
 };
@@ -467,3 +519,11 @@ struct platform_driver mtk_disp_gamma_driver = {
 			.of_match_table = mtk_disp_gamma_driver_dt_match,
 		},
 };
+
+void disp_gamma_set_bypass(struct drm_crtc *crtc, int bypass)
+{
+	int ret;
+
+	ret = mtk_crtc_user_cmd(crtc, default_comp, BYPASS_GAMMA, &bypass);
+	DDPFUNC("ret = %d", ret);
+}

@@ -10,5 +10,6 @@
 #define SCP_IRQ_SHIFT_BIT (16)
 
 const int get_scp_ultra_memif_id(int scp_spk_task_id);
+const int set_afe_clock(bool enable, struct mtk_base_afe *afe);
 
 #endif

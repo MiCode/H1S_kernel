@@ -1,26 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2011-2014 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify it under
- * the terms of the
- * GNU General Public License version 2 as published by the Free Software
- * Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY;
- * without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
- * PARTICULAR PURPOSE.
- * See the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (C) 2016 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) "<sensor_event> " fmt
 
 #include "sensor_event.h"
 #include "hwmsensor.h"
+#include "sensor_attr.h"
 #include <linux/init.h>
 #include <linux/mm.h>
 #include <linux/module.h>
@@ -244,7 +231,7 @@ unsigned int sensor_event_deregister(unsigned char handle)
 {
 	struct sensor_event_obj *obj = event_obj;
 
-	kfree(obj->client[handle].buffer);
+	vfree(obj->client[handle].buffer);
 	return 0;
 }
 

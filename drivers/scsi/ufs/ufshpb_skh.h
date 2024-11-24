@@ -1,42 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Universal Flash Storage Host Performance Booster
- *
- * Original work Copyright (C) 2017-2018 Samsung Electronics Co., Ltd.
+ * Copyright (C) 2017-2018 Samsung Electronics Co., Ltd.
  * Modified work Copyright (C) 2018, Google, Inc.
  * Modified work Copyright (C) 2019 SK hynix
- *
- * Origianl work Authors:
- *	Yongmyung Lee <ymhungry.lee@samsung.com>
- *	Jinyoung Choi <j-young.choi@samsung.com>
- * Modifier
- * 	Kihyun Cho <kihyun.cho@sk.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- * See the COPYING file in the top-level directory or visit
- * <http://www.gnu.org/licenses/gpl-2.0.html>
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * This program is provided "AS IS" and "WITH ALL FAULTS" and
- * without warranty of any kind. You are solely responsible for
- * determining the appropriateness of using and distributing
- * the program and assume all risks associated with your exercise
- * of rights with respect to the program, including but not limited
- * to infringement of third party rights, the risks and costs of
- * program errors, damage to or loss of data, programs or equipment,
- * and unavailability or interruption of operations. Under no
- * circumstances will the contributor of this Program be liable for
- * any damages of any kind arising from your use or distribution of
- * this program.
- *
- * The Linux Foundation chooses to take subject only to the GPLv2
- * license terms, and distributes only under these terms.
  */
 
 #ifndef _SKHPB_H_
@@ -47,12 +13,7 @@
 #include <linux/workqueue.h>
 
 /* Version info*/
-#define SKHPB_DD_VER				0x010500
-
-/* QUIRKs */
-/* Use READ16 instead of HPB_READ command,
- * This is workaround solution to countmeasure QCT ICE issue */
-#define SKHPB_QUIRK_USE_READ_16_FOR_ENCRYPTION (1 << 0)
+#define SKHPB_DD_VER				0x010508
 
 /* This quirk makes HPB driver always works as Devie Control Mode.
  * To cover old Configuration descriptor format which interpret
@@ -60,8 +21,9 @@
 #define SKHPB_QUIRK_ALWAYS_DEVICE_CONTROL_MODE (1 << 1)
 
 /* Discard SubRegion activation hint information that has been processed,
- * when the host enters RPM/SPM sleep */
-#define SKHPB_QUIRK_PURGE_HINT_INFO_WHEN_SLEEP (1 << 2)
+ * when the host enters RPM/SPM sleep.
+ * Must not be set the bit in ufs_quirks.h.*/
+#define SKHPB_QUIRK_PURGE_HINT_INFO_WHEN_SLEEP (1 << 20)
 
 /* Constant value*/
 #define SKHPB_SECTOR					512
@@ -313,7 +275,6 @@ struct skhpb_map_req {
 	int subregion_mem_size;
 	int lun;
 	int retry_cnt;
-	bool unset_rb_block_flag;
 
 	/* for debug : RSP Profiling */
 	__u64 RSP_start; // get the request from device
@@ -391,7 +352,7 @@ struct skhpb_lu {
 	/* for debug constant variables */
 	unsigned long long lu_num_blocks;
 
-	u8 lun;
+	int lun;
 
 	struct ufs_hba *hba;
 
@@ -402,6 +363,8 @@ struct skhpb_lu {
 	struct kobject kobj;
 	struct mutex sysfs_lock;
 	struct skhpb_sysfs_entry *sysfs_entries;
+
+	bool hpb_control_mode;
 
 	/* for debug */
 	bool force_hpb_read_disable;
@@ -415,6 +378,7 @@ struct skhpb_lu {
 	atomic64_t rb_noti_cnt;
 	atomic64_t rb_fail;
 	atomic64_t reset_noti_cnt;
+	atomic64_t w_map_req_cnt;
 #if defined(SKHPB_READ_LARGE_CHUNK_SUPPORT)
 	atomic64_t lc_entry_dirty_miss;
 	atomic64_t lc_reg_subreg_miss;
@@ -439,9 +403,9 @@ struct ufshcd_lrb;
 void ufshcd_init_hpb(struct ufs_hba *hba);
 void skhpb_init_handler(struct work_struct *work);
 void skhpb_prep_fn(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
-void skhpb_hcm_prep_fn(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
 void skhpb_rsp_upiu(struct ufs_hba *hba, struct ufshcd_lrb *lrbp);
 void skhpb_suspend(struct ufs_hba *hba);
+void skhpb_resume(struct ufs_hba *hba);
 void skhpb_release(struct ufs_hba *hba, int state);
 int skhpb_issue_req_dev_ctx(struct skhpb_lu *hpb, unsigned char *buf,
 				int buf_length);
@@ -466,34 +430,34 @@ enum SKHPB_LOG_MASK {
 };
 #define SKHPB_DRIVER_E(fmt, args...)								\
 	do {											\
-		if(likely(skhpb_debug_mask & SKHPB_LOG_ERR))                             	\
+		if (likely(skhpb_debug_mask & SKHPB_LOG_ERR))                             	\
 			pr_err("[HPB E][%s:%d] "	fmt, __func__, __LINE__, ##args);	\
 	} while (0)
 
 #define SKHPB_DRIVER_I(fmt, args...)								\
 	do {											\
-		if(unlikely(skhpb_debug_mask & SKHPB_LOG_INFO))                             	\
+		if (unlikely(skhpb_debug_mask & SKHPB_LOG_INFO))                             	\
 			pr_err("[HPB][%s:%d] "	fmt, __func__, __LINE__, ##args);		\
 	} while (0)
 
 #define SKHPB_DRIVER_D(fmt, args...)								\
 	do {											\
-		if(unlikely(skhpb_debug_mask & SKHPB_LOG_DEBUG))                             	\
+		if (unlikely(skhpb_debug_mask & SKHPB_LOG_DEBUG))                             	\
 			printk(KERN_DEBUG "[HPB][%s:%d] "	fmt, __func__, __LINE__, ##args);		\
 	} while (0)
 
 #define SKHPB_DRIVER_HEXDUMP(fmt, args...)							\
 	do {											\
-		if(unlikely(skhpb_debug_mask & SKHPB_LOG_HEX)) {					\
+		if (unlikely(skhpb_debug_mask & SKHPB_LOG_HEX)) {					\
 			print_hex_dump(KERN_DEBUG, fmt, DUMP_PREFIX_ADDRESS, ##args);		\
 		}                             							\
 	} while (0)
 
 #define SKHPB_MAP_REQ_TIME(map_req, val, print)							\
 	do {											\
-		if(unlikely(debug_map_req)) {							\
+		if (unlikely(debug_map_req)) {							\
 			val = ktime_to_us(ktime_get());						\
-			if(print) {								\
+			if (print) {								\
 				SKHPB_DRIVER_I("SKHPB COMPL BUFFER %d - %d\n",			\
 						map_req->region, map_req->subregion);		\
 				SKHPB_DRIVER_I("start~issue = %lluus, issue~end = %lluus\n",	\
@@ -505,9 +469,9 @@ enum SKHPB_LOG_MASK {
 
 #define SKHPB_RSP_TIME(val)									\
 	do {											\
-		if(unlikely(debug_map_req)) {							\
+		if (unlikely(debug_map_req)) {							\
 			val = ktime_to_us(ktime_get());						\
 		}										\
-	} while(0)
+	} while (0)
 
 #endif /* End of Header */

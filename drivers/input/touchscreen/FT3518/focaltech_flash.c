@@ -1,25 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2012-2019, FocalTech Systems, Ltd., all rights reserved.
+ * Copyright (C) 2016 MediaTek Inc.
  */
 
-/*****************************************************************************
- *
- * File Name: focaltech_flash.c
- *
- * Author: Focaltech Driver Team
- *
- * Created: 2016-08-08
- *
- * Abstract:
- *
- * Reference:
- *
- *****************************************************************************/
-
-/*****************************************************************************
- * 1.Included header files
- *****************************************************************************/
 #include "focaltech_flash.h"
 #include "focaltech_core.h"
 
@@ -243,7 +226,7 @@ static int fts_pram_ecc_cal_algo(struct fts_upgrade *upg, u32 start_addr,
 
 	cmd[0] = FTS_ROMBOOT_CMD_ECC_FINISH;
 	for (i = 0; i < FTS_ECC_FINISH_TIMEOUT; i++) {
-        msleep(1);
+		msleep(1);
 		ret = fts_read(cmd, 1, val, 1);
 		if (ret < 0) {
 			FTS_ERROR("ecc_finish read cmd fail");

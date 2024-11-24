@@ -312,6 +312,11 @@ static void read_main_config_table(struct pm8001_hba_info *pm8001_ha)
 	/* read port recover and reset timeout */
 	pm8001_ha->main_cfg_tbl.pm80xx_tbl.port_recovery_timer =
 		pm8001_mr32(address, MAIN_PORT_RECOVERY_TIMER);
+	/* read ILA and inactive firmware version */
+	pm8001_ha->main_cfg_tbl.pm80xx_tbl.ila_version =
+		pm8001_mr32(address, MAIN_MPI_ILA_RELEASE_TYPE);
+	pm8001_ha->main_cfg_tbl.pm80xx_tbl.inc_fw_version =
+		pm8001_mr32(address, MAIN_MPI_INACTIVE_FW_VERSION);
 }
 
 /**
@@ -595,6 +600,12 @@ static void update_main_config_table(struct pm8001_hba_info *pm8001_ha)
 	pm8001_ha->main_cfg_tbl.pm80xx_tbl.port_recovery_timer &= 0xffff0000;
 	pm8001_ha->main_cfg_tbl.pm80xx_tbl.port_recovery_timer |=
 							PORT_RECOVERY_TIMEOUT;
+	if (pm8001_ha->chip_id == chip_8006) {
+		pm8001_ha->main_cfg_tbl.pm80xx_tbl.port_recovery_timer &=
+					0x0000ffff;
+		pm8001_ha->main_cfg_tbl.pm80xx_tbl.port_recovery_timer |=
+					CHIP_8006_PORT_RECOVERY_TIMEOUT;
+	}
 	pm8001_mw32(address, MAIN_PORT_RECOVERY_TIMER,
 			pm8001_ha->main_cfg_tbl.pm80xx_tbl.port_recovery_timer);
 }
@@ -870,9 +881,11 @@ pm80xx_set_thermal_config(struct pm8001_hba_info *pm8001_ha)
 	else
 		page_code = THERMAL_PAGE_CODE_8H;
 
-	payload.cfg_pg[0] = (THERMAL_LOG_ENABLE << 9) |
-				(THERMAL_ENABLE << 8) | page_code;
-	payload.cfg_pg[1] = (LTEMPHIL << 24) | (RTEMPHIL << 8);
+	payload.cfg_pg[0] =
+		cpu_to_le32((THERMAL_LOG_ENABLE << 9) |
+			    (THERMAL_ENABLE << 8) | page_code);
+	payload.cfg_pg[1] =
+		cpu_to_le32((LTEMPHIL << 24) | (RTEMPHIL << 8));
 
 	rc = pm8001_mpi_build_cmd(pm8001_ha, circularQ, opc, &payload, 0);
 	if (rc)
@@ -1424,6 +1437,7 @@ static void pm80xx_send_abort_all(struct pm8001_hba_info *pm8001_ha,
 	ccb->device = pm8001_ha_dev;
 	ccb->ccb_tag = ccb_tag;
 	ccb->task = task;
+	ccb->n_elem = 0;
 
 	circularQ = &pm8001_ha->inbnd_q_tbl[0];
 
@@ -1488,6 +1502,7 @@ static void pm80xx_send_read_log(struct pm8001_hba_info *pm8001_ha,
 	ccb->device = pm8001_ha_dev;
 	ccb->ccb_tag = ccb_tag;
 	ccb->task = task;
+	ccb->n_elem = 0;
 	pm8001_ha_dev->id |= NCQ_READ_LOG_FLAG;
 	pm8001_ha_dev->id |= NCQ_2ND_RLE_FLAG;
 
@@ -1504,7 +1519,7 @@ static void pm80xx_send_read_log(struct pm8001_hba_info *pm8001_ha,
 
 	sata_cmd.tag = cpu_to_le32(ccb_tag);
 	sata_cmd.device_id = cpu_to_le32(pm8001_ha_dev->device_id);
-	sata_cmd.ncqtag_atap_dir_m_dad |= ((0x1 << 7) | (0x5 << 9));
+	sata_cmd.ncqtag_atap_dir_m_dad = cpu_to_le32(((0x1 << 7) | (0x5 << 9)));
 	memcpy(&sata_cmd.sata_fis, &fis, sizeof(struct host_to_dev_fis));
 
 	res = pm8001_mpi_build_cmd(pm8001_ha, circularQ, opc, &sata_cmd, 0);
@@ -1780,6 +1795,8 @@ mpi_ssp_completion(struct pm8001_hba_info *pm8001_ha , void *piomb)
 			"task 0x%p done with io_status 0x%x resp 0x%x "
 			"stat 0x%x but aborted by upper layer!\n",
 			t, status, ts->resp, ts->stat));
+		if (t->slow_task)
+			complete(&t->slow_task->completion);
 		pm8001_ccb_task_free(pm8001_ha, t, ccb, tag);
 	} else {
 		spin_unlock_irqrestore(&t->task_state_lock, flags);
@@ -3045,10 +3062,10 @@ hw_event_phy_down(struct pm8001_hba_info *pm8001_ha, void *piomb)
 
 	struct pm8001_port *port = &pm8001_ha->port[port_id];
 	struct pm8001_phy *phy = &pm8001_ha->phy[phy_id];
+	u32 port_sata = (phy->phy_type & PORT_TYPE_SATA);
 	port->port_state = portstate;
 	phy->identify.device_type = 0;
 	phy->phy_attached = 0;
-	memset(&phy->dev_sas_addr, 0, SAS_ADDR_SIZE);
 	switch (portstate) {
 	case PORT_VALID:
 		break;
@@ -3057,7 +3074,7 @@ hw_event_phy_down(struct pm8001_hba_info *pm8001_ha, void *piomb)
 			pm8001_printk(" PortInvalid portID %d\n", port_id));
 		PM8001_MSG_DBG(pm8001_ha,
 			pm8001_printk(" Last phy Down and port invalid\n"));
-		if (phy->phy_type & PORT_TYPE_SATA) {
+		if (port_sata) {
 			phy->phy_type = 0;
 			port->port_attached = 0;
 			pm80xx_hw_event_ack_req(pm8001_ha, 0, HW_EVENT_PHY_DOWN,
@@ -3079,7 +3096,7 @@ hw_event_phy_down(struct pm8001_hba_info *pm8001_ha, void *piomb)
 			pm8001_printk(" Phy Down and PORT_LOSTCOMM\n"));
 		PM8001_MSG_DBG(pm8001_ha,
 			pm8001_printk(" Last phy Down and port invalid\n"));
-		if (phy->phy_type & PORT_TYPE_SATA) {
+		if (port_sata) {
 			port->port_attached = 0;
 			phy->phy_type = 0;
 			pm80xx_hw_event_ack_req(pm8001_ha, 0, HW_EVENT_PHY_DOWN,
@@ -3094,6 +3111,11 @@ hw_event_phy_down(struct pm8001_hba_info *pm8001_ha, void *piomb)
 			portstate));
 		break;
 
+	}
+	if (port_sata && (portstate != PORT_IN_RESET)) {
+		struct sas_ha_struct *sas_ha = pm8001_ha->sas;
+
+		sas_ha->notify_phy_event(&phy->sas_phy, PHYE_LOSS_OF_SIGNAL);
 	}
 }
 
@@ -3197,12 +3219,14 @@ static int mpi_hw_event(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	case HW_EVENT_PHY_DOWN:
 		PM8001_MSG_DBG(pm8001_ha,
 			pm8001_printk("HW_EVENT_PHY_DOWN\n"));
-		if (phy->phy_type & PORT_TYPE_SATA)
-			sas_ha->notify_phy_event(&phy->sas_phy,
-				PHYE_LOSS_OF_SIGNAL);
+		hw_event_phy_down(pm8001_ha, piomb);
+		if (pm8001_ha->reset_in_progress) {
+			PM8001_MSG_DBG(pm8001_ha,
+				pm8001_printk("Reset in progress\n"));
+			return 0;
+		}
 		phy->phy_attached = 0;
 		phy->phy_state = 0;
-		hw_event_phy_down(pm8001_ha, piomb);
 		break;
 	case HW_EVENT_PORT_INVALID:
 		PM8001_MSG_DBG(pm8001_ha,
@@ -3309,9 +3333,17 @@ static int mpi_hw_event(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	case HW_EVENT_PORT_RESET_TIMER_TMO:
 		PM8001_MSG_DBG(pm8001_ha,
 			pm8001_printk("HW_EVENT_PORT_RESET_TIMER_TMO\n"));
+		pm80xx_hw_event_ack_req(pm8001_ha, 0, HW_EVENT_PHY_DOWN,
+			port_id, phy_id, 0, 0);
 		sas_phy_disconnected(sas_phy);
 		phy->phy_attached = 0;
 		sas_ha->notify_port_event(sas_phy, PORTE_LINK_RESET_ERR);
+		if (pm8001_ha->phy[phy_id].reset_completion) {
+			pm8001_ha->phy[phy_id].port_reset_status =
+					PORT_RESET_TMO;
+			complete(pm8001_ha->phy[phy_id].reset_completion);
+			pm8001_ha->phy[phy_id].reset_completion = NULL;
+		}
 		break;
 	case HW_EVENT_PORT_RECOVERY_TIMER_TMO:
 		PM8001_MSG_DBG(pm8001_ha,
@@ -3336,6 +3368,12 @@ static int mpi_hw_event(struct pm8001_hba_info *pm8001_ha, void *piomb)
 	case HW_EVENT_PORT_RESET_COMPLETE:
 		PM8001_MSG_DBG(pm8001_ha,
 			pm8001_printk("HW_EVENT_PORT_RESET_COMPLETE\n"));
+		if (pm8001_ha->phy[phy_id].reset_completion) {
+			pm8001_ha->phy[phy_id].port_reset_status =
+					PORT_RESET_SUCCESS;
+			complete(pm8001_ha->phy[phy_id].reset_completion);
+			pm8001_ha->phy[phy_id].reset_completion = NULL;
+		}
 		break;
 	case EVENT_BROADCAST_ASYNCH_EVENT:
 		PM8001_MSG_DBG(pm8001_ha,
@@ -3773,7 +3811,7 @@ static int process_oq(struct pm8001_hba_info *pm8001_ha, u8 vec)
 {
 	struct outbound_queue_table *circularQ;
 	void *pMsg1 = NULL;
-	u8 uninitialized_var(bc);
+	u8 bc;
 	u32 ret = MPI_IO_STATUS_FAIL;
 	unsigned long flags;
 	u32 regval;
@@ -4459,7 +4497,7 @@ pm80xx_chip_phy_start_req(struct pm8001_hba_info *pm8001_ha, u8 phy_id)
 	payload.sas_identify.dev_type = SAS_END_DEVICE;
 	payload.sas_identify.initiator_bits = SAS_PROTOCOL_ALL;
 	memcpy(payload.sas_identify.sas_addr,
-		pm8001_ha->sas_addr, SAS_ADDR_SIZE);
+	  &pm8001_ha->phy[phy_id].dev_sas_addr, SAS_ADDR_SIZE);
 	payload.sas_identify.phy_id = phy_id;
 	ret = pm8001_mpi_build_cmd(pm8001_ha, circularQ, opcode, &payload, 0);
 	return ret;
@@ -4566,17 +4604,20 @@ static int pm80xx_chip_reg_dev_req(struct pm8001_hba_info *pm8001_ha,
 static int pm80xx_chip_phy_ctl_req(struct pm8001_hba_info *pm8001_ha,
 	u32 phyId, u32 phy_op)
 {
+	u32 tag;
+	int rc;
 	struct local_phy_ctl_req payload;
 	struct inbound_queue_table *circularQ;
-	int ret;
 	u32 opc = OPC_INB_LOCAL_PHY_CONTROL;
 	memset(&payload, 0, sizeof(payload));
+	rc = pm8001_tag_alloc(pm8001_ha, &tag);
+	if (rc)
+		return rc;
 	circularQ = &pm8001_ha->inbnd_q_tbl[0];
-	payload.tag = cpu_to_le32(1);
+	payload.tag = cpu_to_le32(tag);
 	payload.phyop_phyid =
 		cpu_to_le32(((phy_op & 0xFF) << 8) | (phyId & 0xFF));
-	ret = pm8001_mpi_build_cmd(pm8001_ha, circularQ, opc, &payload, 0);
-	return ret;
+	return pm8001_mpi_build_cmd(pm8001_ha, circularQ, opc, &payload, 0);
 }
 
 static u32 pm80xx_chip_is_our_interupt(struct pm8001_hba_info *pm8001_ha)

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __APUSYS_DEVICE_H__
@@ -86,6 +78,7 @@ struct apusys_kmem {
 	int mem_type;
 	int fd;
 	unsigned long long khandle;
+	int uidr;
 	int property;
 };
 
@@ -111,6 +104,9 @@ struct apusys_cmd_hnd {
 	int boost_val;
 	int cluster_size;
 
+	/* mdw priv*/
+	uint64_t m_kva;
+
 	/* multicore info */
 	uint32_t multicore_total; // how many cores to exec this subcmd
 	uint32_t multicore_idx; // which part of subcmd
@@ -118,9 +114,9 @@ struct apusys_cmd_hnd {
 	/* mdla specific */
 	uint64_t pmu_kva;
 	uint64_t cmd_entry;
+	uint32_t cmd_size;
 
 	/* For preemption */
-
 	int (*context_callback)(int a, int b, uint8_t c);
 	int ctx_id;
 };

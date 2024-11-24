@@ -140,11 +140,11 @@ static const struct alps_model_info alps_model_data[] = {
 };
 
 static const struct alps_protocol_info alps_v3_protocol_data = {
-	ALPS_PROTO_V3, 0x8f, 0x8f, ALPS_DUALPOINT
+	ALPS_PROTO_V3, 0x8f, 0x8f, ALPS_DUALPOINT | ALPS_DUALPOINT_WITH_PRESSURE
 };
 
 static const struct alps_protocol_info alps_v3_rushmore_data = {
-	ALPS_PROTO_V3_RUSHMORE, 0x8f, 0x8f, ALPS_DUALPOINT
+	ALPS_PROTO_V3_RUSHMORE, 0x8f, 0x8f, ALPS_DUALPOINT | ALPS_DUALPOINT_WITH_PRESSURE
 };
 
 static const struct alps_protocol_info alps_v4_protocol_data = {
@@ -156,7 +156,7 @@ static const struct alps_protocol_info alps_v5_protocol_data = {
 };
 
 static const struct alps_protocol_info alps_v7_protocol_data = {
-	ALPS_PROTO_V7, 0x48, 0x48, ALPS_DUALPOINT
+	ALPS_PROTO_V7, 0x48, 0x48, ALPS_DUALPOINT | ALPS_DUALPOINT_WITH_PRESSURE
 };
 
 static const struct alps_protocol_info alps_v8_protocol_data = {
@@ -213,7 +213,7 @@ static void alps_set_abs_params_v7(struct alps_data *priv,
 static void alps_set_abs_params_ss4_v2(struct alps_data *priv,
 				       struct input_dev *dev1);
 
-/* Packet formats are described in Documentation/input/alps.txt */
+/* Packet formats are described in Documentation/input/devices/alps.rst */
 
 static bool alps_is_valid_first_byte(struct alps_data *priv,
 				     unsigned char data)
@@ -584,7 +584,7 @@ static void alps_process_trackstick_packet_v3(struct psmouse *psmouse)
 
 	x = (s8)(((packet[0] & 0x20) << 2) | (packet[1] & 0x7f));
 	y = (s8)(((packet[0] & 0x10) << 3) | (packet[2] & 0x7f));
-	z = (packet[4] & 0x7c) >> 2;
+	z = packet[4] & 0x7f;
 
 	/*
 	 * The x and y values tend to be quite large, and when used
@@ -596,6 +596,7 @@ static void alps_process_trackstick_packet_v3(struct psmouse *psmouse)
 
 	input_report_rel(dev, REL_X, x);
 	input_report_rel(dev, REL_Y, -y);
+	input_report_abs(dev, ABS_PRESSURE, z);
 
 	/*
 	 * Most ALPS models report the trackstick buttons in the touchpad
@@ -828,7 +829,7 @@ static void alps_process_packet_v6(struct psmouse *psmouse)
 	unsigned char *packet = psmouse->packet;
 	struct input_dev *dev = psmouse->dev;
 	struct input_dev *dev2 = priv->dev2;
-	int x, y, z, left, right, middle;
+	int x, y, z;
 
 	/*
 	 * We can use Byte5 to distinguish if the packet is from Touchpad
@@ -848,21 +849,16 @@ static void alps_process_packet_v6(struct psmouse *psmouse)
 		x = packet[1] | ((packet[3] & 0x20) << 2);
 		y = packet[2] | ((packet[3] & 0x40) << 1);
 		z = packet[4];
-		left = packet[3] & 0x01;
-		right = packet[3] & 0x02;
-		middle = packet[3] & 0x04;
 
 		/* To prevent the cursor jump when finger lifted */
 		if (x == 0x7F && y == 0x7F && z == 0x7F)
 			x = y = z = 0;
 
 		/* Divide 4 since trackpoint's speed is too fast */
-		input_report_rel(dev2, REL_X, (char)x / 4);
-		input_report_rel(dev2, REL_Y, -((char)y / 4));
+		input_report_rel(dev2, REL_X, (s8)x / 4);
+		input_report_rel(dev2, REL_Y, -((s8)y / 4));
 
-		input_report_key(dev2, BTN_LEFT, left);
-		input_report_key(dev2, BTN_RIGHT, right);
-		input_report_key(dev2, BTN_MIDDLE, middle);
+		psmouse_report_standard_buttons(dev2, packet[3]);
 
 		input_sync(dev2);
 		return;
@@ -872,8 +868,6 @@ static void alps_process_packet_v6(struct psmouse *psmouse)
 	x = packet[1] | ((packet[3] & 0x78) << 4);
 	y = packet[2] | ((packet[4] & 0x78) << 4);
 	z = packet[5];
-	left = packet[3] & 0x01;
-	right = packet[3] & 0x02;
 
 	if (z > 30)
 		input_report_key(dev, BTN_TOUCH, 1);
@@ -889,8 +883,8 @@ static void alps_process_packet_v6(struct psmouse *psmouse)
 	input_report_key(dev, BTN_TOOL_FINGER, z > 0);
 
 	/* v6 touchpad does not have middle button */
-	input_report_key(dev, BTN_LEFT, left);
-	input_report_key(dev, BTN_RIGHT, right);
+	packet[3] &= ~BIT(2);
+	psmouse_report_standard_buttons(dev2, packet[3]);
 
 	input_sync(dev);
 }
@@ -1099,7 +1093,7 @@ static void alps_process_trackstick_packet_v7(struct psmouse *psmouse)
 	struct alps_data *priv = psmouse->private;
 	unsigned char *packet = psmouse->packet;
 	struct input_dev *dev2 = priv->dev2;
-	int x, y, z, left, right, middle;
+	int x, y, z;
 
 	/* It should be a DualPoint when received trackstick packet */
 	if (!(priv->flags & ALPS_DUALPOINT)) {
@@ -1113,16 +1107,11 @@ static void alps_process_trackstick_packet_v7(struct psmouse *psmouse)
 	    ((packet[3] & 0x20) << 1);
 	z = (packet[5] & 0x3f) | ((packet[3] & 0x80) >> 1);
 
-	left = (packet[1] & 0x01);
-	right = (packet[1] & 0x02) >> 1;
-	middle = (packet[1] & 0x04) >> 2;
+	input_report_rel(dev2, REL_X, (s8)x);
+	input_report_rel(dev2, REL_Y, -((s8)y));
+	input_report_abs(dev2, ABS_PRESSURE, z);
 
-	input_report_rel(dev2, REL_X, (char)x);
-	input_report_rel(dev2, REL_Y, -((char)y));
-
-	input_report_key(dev2, BTN_LEFT, left);
-	input_report_key(dev2, BTN_RIGHT, right);
-	input_report_key(dev2, BTN_MIDDLE, middle);
+	psmouse_report_standard_buttons(dev2, packet[1]);
 
 	input_sync(dev2);
 }
@@ -1504,10 +1493,7 @@ static void alps_report_bare_ps2_packet(struct psmouse *psmouse,
 		alps_report_buttons(dev, dev2,
 				packet[0] & 1, packet[0] & 2, packet[0] & 4);
 
-	input_report_rel(dev, REL_X,
-		packet[1] ? packet[1] - ((packet[0] << 4) & 0x100) : 0);
-	input_report_rel(dev, REL_Y,
-		packet[2] ? ((packet[0] << 3) & 0x100) - packet[2] : 0);
+	psmouse_report_standard_motion(dev, packet);
 
 	input_sync(dev);
 }
@@ -1591,10 +1577,10 @@ static psmouse_ret_t alps_handle_interleaved_ps2(struct psmouse *psmouse)
 	return PSMOUSE_GOOD_DATA;
 }
 
-static void alps_flush_packet(unsigned long data)
+static void alps_flush_packet(struct timer_list *t)
 {
-	struct psmouse *psmouse = (struct psmouse *)data;
-	struct alps_data *priv = psmouse->private;
+	struct alps_data *priv = from_timer(priv, t, timer);
+	struct psmouse *psmouse = priv->psmouse;
 
 	serio_pause_rx(psmouse->ps2dev.serio);
 
@@ -2064,13 +2050,10 @@ static int alps_hw_init_v1_v2(struct psmouse *psmouse)
 	return 0;
 }
 
-static int alps_hw_init_v6(struct psmouse *psmouse)
+/* Must be in passthrough mode when calling this function */
+static int alps_trackstick_enter_extended_mode_v3_v6(struct psmouse *psmouse)
 {
 	unsigned char param[2] = {0xC8, 0x14};
-
-	/* Enter passthrough mode to let trackpoint enter 6byte raw mode */
-	if (alps_passthrough_mode_v2(psmouse, true))
-		return -1;
 
 	if (ps2_command(&psmouse->ps2dev, NULL, PSMOUSE_CMD_SETSCALE11) ||
 	    ps2_command(&psmouse->ps2dev, NULL, PSMOUSE_CMD_SETSCALE11) ||
@@ -2079,8 +2062,24 @@ static int alps_hw_init_v6(struct psmouse *psmouse)
 	    ps2_command(&psmouse->ps2dev, &param[1], PSMOUSE_CMD_SETRATE))
 		return -1;
 
+	return 0;
+}
+
+static int alps_hw_init_v6(struct psmouse *psmouse)
+{
+	int ret;
+
+	/* Enter passthrough mode to let trackpoint enter 6byte raw mode */
+	if (alps_passthrough_mode_v2(psmouse, true))
+		return -1;
+
+	ret = alps_trackstick_enter_extended_mode_v3_v6(psmouse);
+
 	if (alps_passthrough_mode_v2(psmouse, false))
 		return -1;
+
+	if (ret)
+		return ret;
 
 	if (alps_absolute_mode_v6(psmouse)) {
 		psmouse_err(psmouse, "Failed to enable absolute mode\n");
@@ -2155,9 +2154,17 @@ error:
 
 static int alps_setup_trackstick_v3(struct psmouse *psmouse, int reg_base)
 {
-	struct ps2dev *ps2dev = &psmouse->ps2dev;
 	int ret = 0;
+	int reg_val;
 	unsigned char param[4];
+
+	/*
+	 * We need to configure trackstick to report data for touchpad in
+	 * extended format. And also we need to tell touchpad to expect data
+	 * from trackstick in extended format. Without this configuration
+	 * trackstick packets sent from touchpad are in basic format which is
+	 * different from what we expect.
+	 */
 
 	if (alps_passthrough_mode_v3(psmouse, reg_base, true))
 		return -EIO;
@@ -2176,39 +2183,36 @@ static int alps_setup_trackstick_v3(struct psmouse *psmouse, int reg_base)
 		ret = -ENODEV;
 	} else {
 		psmouse_dbg(psmouse, "trackstick E7 report: %3ph\n", param);
-
-		/*
-		 * Not sure what this does, but it is absolutely
-		 * essential. Without it, the touchpad does not
-		 * work at all and the trackstick just emits normal
-		 * PS/2 packets.
-		 */
-		if (ps2_command(ps2dev, NULL, PSMOUSE_CMD_SETSCALE11) ||
-		    ps2_command(ps2dev, NULL, PSMOUSE_CMD_SETSCALE11) ||
-		    ps2_command(ps2dev, NULL, PSMOUSE_CMD_SETSCALE11) ||
-		    alps_command_mode_send_nibble(psmouse, 0x9) ||
-		    alps_command_mode_send_nibble(psmouse, 0x4)) {
-			psmouse_err(psmouse,
-				    "Error sending magic E6 sequence\n");
+		if (alps_trackstick_enter_extended_mode_v3_v6(psmouse)) {
+			psmouse_err(psmouse, "Failed to enter into trackstick extended mode\n");
 			ret = -EIO;
-			goto error;
 		}
+	}
 
+	if (alps_passthrough_mode_v3(psmouse, reg_base, false))
+		return -EIO;
+
+	if (ret)
+		return ret;
+
+	if (alps_enter_command_mode(psmouse))
+		return -EIO;
+
+	reg_val = alps_command_mode_read_reg(psmouse, reg_base + 0x08);
+	if (reg_val == -1) {
+		ret = -EIO;
+	} else {
 		/*
-		 * This ensures the trackstick packets are in the format
-		 * supported by this driver. If bit 1 isn't set the packet
-		 * format is different.
+		 * Tell touchpad that trackstick is now in extended mode.
+		 * If bit 1 isn't set the packet format is different.
 		 */
-		if (alps_enter_command_mode(psmouse) ||
-		    alps_command_mode_write_reg(psmouse,
-						reg_base + 0x08, 0x82) ||
-		    alps_exit_command_mode(psmouse))
+		reg_val |= BIT(1);
+		if (__alps_command_mode_write_reg(psmouse, reg_val))
 			ret = -EIO;
 	}
 
-error:
-	if (alps_passthrough_mode_v3(psmouse, reg_base, false))
-		ret = -EIO;
+	if (alps_exit_command_mode(psmouse))
+		return -EIO;
 
 	return ret;
 }
@@ -2293,20 +2297,20 @@ static int alps_get_v3_v7_resolution(struct psmouse *psmouse, int reg_pitch)
 	if (reg < 0)
 		return reg;
 
-	x_pitch = (char)(reg << 4) >> 4; /* sign extend lower 4 bits */
+	x_pitch = (s8)(reg << 4) >> 4; /* sign extend lower 4 bits */
 	x_pitch = 50 + 2 * x_pitch; /* In 0.1 mm units */
 
-	y_pitch = (char)reg >> 4; /* sign extend upper 4 bits */
+	y_pitch = (s8)reg >> 4; /* sign extend upper 4 bits */
 	y_pitch = 36 + 2 * y_pitch; /* In 0.1 mm units */
 
 	reg = alps_command_mode_read_reg(psmouse, reg_pitch + 1);
 	if (reg < 0)
 		return reg;
 
-	x_electrode = (char)(reg << 4) >> 4; /* sign extend lower 4 bits */
+	x_electrode = (s8)(reg << 4) >> 4; /* sign extend lower 4 bits */
 	x_electrode = 17 + x_electrode;
 
-	y_electrode = (char)reg >> 4; /* sign extend upper 4 bits */
+	y_electrode = (s8)reg >> 4; /* sign extend upper 4 bits */
 	y_electrode = 13 + y_electrode;
 
 	x_phys = x_pitch * (x_electrode - 1); /* In 0.1 mm units */
@@ -2724,7 +2728,7 @@ static int alps_set_protocol(struct psmouse *psmouse,
 {
 	psmouse->private = priv;
 
-	setup_timer(&priv->timer, alps_flush_packet, (unsigned long)psmouse);
+	timer_setup(&priv->timer, alps_flush_packet, 0);
 
 	priv->proto_version = protocol->version;
 	priv->byte0 = protocol->byte0;

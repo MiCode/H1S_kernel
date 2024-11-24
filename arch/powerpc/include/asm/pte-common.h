@@ -8,9 +8,6 @@
 #ifndef _PAGE_HASHPTE
 #define _PAGE_HASHPTE	0
 #endif
-#ifndef _PAGE_SHARED
-#define _PAGE_SHARED	0
-#endif
 #ifndef _PAGE_HWWRITE
 #define _PAGE_HWWRITE	0
 #endif
@@ -45,25 +42,40 @@
 #ifndef _PAGE_PTE
 #define _PAGE_PTE 0
 #endif
+/* At least one of _PAGE_PRIVILEGED or _PAGE_USER must be defined */
+#ifndef _PAGE_PRIVILEGED
+#define _PAGE_PRIVILEGED 0
+#else
+#ifndef _PAGE_USER
+#define _PAGE_USER 0
+#endif
+#endif
+#ifndef _PAGE_NA
+#define _PAGE_NA 0
+#endif
+#ifndef _PAGE_HUGE
+#define _PAGE_HUGE 0
+#endif
 
 #ifndef _PMD_PRESENT_MASK
 #define _PMD_PRESENT_MASK	_PMD_PRESENT
 #endif
-#ifndef _PMD_SIZE
-#define _PMD_SIZE	0
-#define PMD_PAGE_SIZE(pmd)	bad_call_to_PMD_PAGE_SIZE()
+#ifndef _PMD_USER
+#define _PMD_USER	0
 #endif
 #ifndef _PAGE_KERNEL_RO
-#define _PAGE_KERNEL_RO		(_PAGE_RO)
+#define _PAGE_KERNEL_RO		(_PAGE_PRIVILEGED | _PAGE_RO)
 #endif
 #ifndef _PAGE_KERNEL_ROX
-#define _PAGE_KERNEL_ROX	(_PAGE_EXEC | _PAGE_RO)
+#define _PAGE_KERNEL_ROX	(_PAGE_PRIVILEGED | _PAGE_RO | _PAGE_EXEC)
 #endif
 #ifndef _PAGE_KERNEL_RW
-#define _PAGE_KERNEL_RW		(_PAGE_DIRTY | _PAGE_RW | _PAGE_HWWRITE)
+#define _PAGE_KERNEL_RW		(_PAGE_PRIVILEGED | _PAGE_DIRTY | _PAGE_RW | \
+				 _PAGE_HWWRITE)
 #endif
 #ifndef _PAGE_KERNEL_RWX
-#define _PAGE_KERNEL_RWX	(_PAGE_DIRTY | _PAGE_RW | _PAGE_HWWRITE | _PAGE_EXEC)
+#define _PAGE_KERNEL_RWX	(_PAGE_PRIVILEGED | _PAGE_DIRTY | _PAGE_RW | \
+				 _PAGE_HWWRITE | _PAGE_EXEC)
 #endif
 #ifndef _PAGE_HPTEFLAGS
 #define _PAGE_HPTEFLAGS _PAGE_HASHPTE
@@ -72,11 +84,7 @@
 #define _PTE_NONE_MASK	_PAGE_HPTEFLAGS
 #endif
 
-/* Make sure we get a link error if PMD_PAGE_SIZE is ever called on a
- * kernel without large page PMD support
- */
 #ifndef __ASSEMBLY__
-extern unsigned long bad_call_to_PMD_PAGE_SIZE(void);
 
 /*
  * Don't just check for any non zero bits in __PAGE_USER, since for book3e
@@ -85,7 +93,7 @@ extern unsigned long bad_call_to_PMD_PAGE_SIZE(void);
  */
 static inline bool pte_user(pte_t pte)
 {
-	return (pte_val(pte) & _PAGE_USER) == _PAGE_USER;
+	return (pte_val(pte) & (_PAGE_USER | _PAGE_PRIVILEGED)) == _PAGE_USER;
 }
 #endif /* __ASSEMBLY__ */
 
@@ -102,8 +110,10 @@ static inline bool pte_user(pte_t pte)
  */
 #if defined(CONFIG_PPC32) && defined(CONFIG_PTE_64BIT)
 #define PTE_RPN_MASK	(~((1ULL<<PTE_RPN_SHIFT)-1))
+#define MAX_POSSIBLE_PHYSMEM_BITS 36
 #else
 #define PTE_RPN_MASK	(~((1UL<<PTE_RPN_SHIFT)-1))
+#define MAX_POSSIBLE_PHYSMEM_BITS 32
 #endif
 
 /* _PAGE_CHG_MASK masks of bits that are to be preserved across
@@ -115,7 +125,8 @@ static inline bool pte_user(pte_t pte)
 /* Mask of bits returned by pte_pgprot() */
 #define PAGE_PROT_BITS	(_PAGE_GUARDED | _PAGE_COHERENT | _PAGE_NO_CACHE | \
 			 _PAGE_WRITETHRU | _PAGE_ENDIAN | _PAGE_4K_PFN | \
-			 _PAGE_USER | _PAGE_ACCESSED | _PAGE_RO | \
+			 _PAGE_USER | _PAGE_ACCESSED | _PAGE_RO | _PAGE_NA | \
+			 _PAGE_PRIVILEGED | \
 			 _PAGE_RW | _PAGE_HWWRITE | _PAGE_DIRTY | _PAGE_EXEC)
 
 /*
@@ -142,7 +153,7 @@ static inline bool pte_user(pte_t pte)
  *
  * Note due to the way vm flags are laid out, the bits are XWR
  */
-#define PAGE_NONE	__pgprot(_PAGE_BASE)
+#define PAGE_NONE	__pgprot(_PAGE_BASE | _PAGE_NA)
 #define PAGE_SHARED	__pgprot(_PAGE_BASE | _PAGE_USER | _PAGE_RW)
 #define PAGE_SHARED_X	__pgprot(_PAGE_BASE | _PAGE_USER | _PAGE_RW | \
 				 _PAGE_EXEC)
@@ -198,9 +209,6 @@ static inline bool pte_user(pte_t pte)
 /* Advertise special mapping type for AGP */
 #define PAGE_AGP		(PAGE_KERNEL_NC)
 #define HAVE_PAGE_AGP
-
-/* Advertise support for _PAGE_SPECIAL */
-#define __HAVE_ARCH_PTE_SPECIAL
 
 #ifndef _PAGE_READ
 /* if not defined, we should not find _PAGE_WRITE too */

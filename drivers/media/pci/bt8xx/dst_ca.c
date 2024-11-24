@@ -25,8 +25,8 @@
 #include <linux/mutex.h>
 #include <linux/string.h>
 #include <linux/dvb/ca.h>
-#include "dvbdev.h"
-#include "dvb_frontend.h"
+#include <media/dvbdev.h>
+#include <media/dvb_frontend.h>
 #include "dst_ca.h"
 #include "dst_common.h"
 
@@ -680,7 +680,7 @@ struct dvb_device *dst_ca_attach(struct dst_state *dst, struct dvb_adapter *dvb_
 	return NULL;
 }
 
-EXPORT_SYMBOL(dst_ca_attach);
+EXPORT_SYMBOL_GPL(dst_ca_attach);
 
 MODULE_DESCRIPTION("DST DVB-S/T/C Combo CA driver");
 MODULE_AUTHOR("Manu Abraham");

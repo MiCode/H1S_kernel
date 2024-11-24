@@ -85,11 +85,11 @@ extern unsigned long recover_probed_instruction(kprobe_opcode_t *buf,
  * Copy an instruction and adjust the displacement if the instruction
  * uses the %rip-relative addressing mode.
  */
-extern int __copy_instruction(u8 *dest, u8 *src, struct insn *insn);
+extern int __copy_instruction(u8 *dest, u8 *src, u8 *real, struct insn *insn);
 
 /* Generate a relative-jump/call instruction */
-extern void synthesize_reljump(void *from, void *to);
-extern void synthesize_relcall(void *from, void *to);
+extern void synthesize_reljump(void *dest, void *from, void *to);
+extern void synthesize_relcall(void *dest, void *from, void *to);
 
 #ifdef	CONFIG_OPTPROBES
 extern int setup_detour_execution(struct kprobe *p, struct pt_regs *regs, int reenter);
@@ -105,14 +105,4 @@ static inline unsigned long __recover_optprobed_insn(kprobe_opcode_t *buf, unsig
 }
 #endif
 
-#ifdef CONFIG_KPROBES_ON_FTRACE
-extern int skip_singlestep(struct kprobe *p, struct pt_regs *regs,
-			   struct kprobe_ctlblk *kcb);
-#else
-static inline int skip_singlestep(struct kprobe *p, struct pt_regs *regs,
-				  struct kprobe_ctlblk *kcb)
-{
-	return 0;
-}
-#endif
 #endif

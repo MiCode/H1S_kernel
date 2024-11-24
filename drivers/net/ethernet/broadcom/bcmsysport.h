@@ -11,8 +11,10 @@
 #ifndef __BCM_SYSPORT_H
 #define __BCM_SYSPORT_H
 
+#include <linux/bitmap.h>
 #include <linux/ethtool.h>
 #include <linux/if_vlan.h>
+#include <linux/net_dim.h>
 
 /* Receive/transmit descriptor format */
 #define DESC_ADDR_HI_STATUS_LEN	0x00
@@ -155,13 +157,17 @@ struct bcm_rsb {
 #define  RXCHK_PARSE_AUTH		(1 << 22)
 
 #define RXCHK_BRCM_TAG0			0x04
-#define RXCHK_BRCM_TAG(i)		((i) * RXCHK_BRCM_TAG0)
+#define RXCHK_BRCM_TAG(i)		((i) * 0x4 + RXCHK_BRCM_TAG0)
 #define RXCHK_BRCM_TAG0_MASK		0x24
-#define RXCHK_BRCM_TAG_MASK(i)		((i) * RXCHK_BRCM_TAG0_MASK)
+#define RXCHK_BRCM_TAG_MASK(i)		((i) * 0x4 + RXCHK_BRCM_TAG0_MASK)
 #define RXCHK_BRCM_TAG_MATCH_STATUS	0x44
 #define RXCHK_ETHERTYPE			0x48
 #define RXCHK_BAD_CSUM_CNTR		0x4C
 #define RXCHK_OTHER_DISC_CNTR		0x50
+
+#define RXCHK_BRCM_TAG_MAX		8
+#define RXCHK_BRCM_TAG_CID_SHIFT	16
+#define RXCHK_BRCM_TAG_CID_MASK		0xff
 
 /* TXCHCK offsets and defines */
 #define SYS_PORT_TXCHK_OFFSET		0x380
@@ -185,6 +191,7 @@ struct bcm_rsb {
 #define  RBUF_RSB_SWAP0			(1 << 22)
 #define  RBUF_RSB_SWAP1			(1 << 23)
 #define  RBUF_ACPI_EN			(1 << 23)
+#define  RBUF_ACPI_EN_LITE		(1 << 24)
 
 #define RBUF_PKT_RDY_THRESH		0x04
 
@@ -406,7 +413,7 @@ struct bcm_rsb {
 #define  RING_CONS_INDEX_MASK		0xffff
 
 #define RING_MAPPING			0x14
-#define  RING_QID_MASK			0x3
+#define  RING_QID_MASK			0x7
 #define  RING_PORT_ID_SHIFT		3
 #define  RING_PORT_ID_MASK		0x7
 #define  RING_IGNORE_STATUS		(1 << 6)
@@ -697,6 +704,14 @@ struct bcm_sysport_hw_params {
 	unsigned int	num_rx_desc_words;
 };
 
+struct bcm_sysport_net_dim {
+	u16			use_dim;
+	u16			event_ctr;
+	unsigned long		packets;
+	unsigned long		bytes;
+	struct net_dim		dim;
+};
+
 /* Software view of the TX ring */
 struct bcm_sysport_tx_ring {
 	spinlock_t	lock;		/* Ring lock for tx reclaim/xmit */
@@ -714,6 +729,9 @@ struct bcm_sysport_tx_ring {
 	struct bcm_sysport_priv *priv;	/* private context backpointer */
 	unsigned long	packets;	/* packets statistics */
 	unsigned long	bytes;		/* bytes statistics */
+	unsigned int	switch_queue;	/* switch port queue number */
+	unsigned int	switch_port;	/* switch port queue number */
+	bool		inspect;	/* inspect switch port and queue */
 };
 
 /* Driver private structure */
@@ -733,6 +751,7 @@ struct bcm_sysport_priv {
 	int			wol_irq;
 
 	/* Transmit rings */
+	spinlock_t		desc_lock;
 	struct bcm_sysport_tx_ring *tx_rings;
 
 	/* Receive queue */
@@ -741,6 +760,10 @@ struct bcm_sysport_priv {
 	unsigned int		num_rx_bds;
 	unsigned int		rx_read_ptr;
 	unsigned int		rx_c_index;
+
+	struct bcm_sysport_net_dim	dim;
+	u32			rx_max_coalesced_frames;
+	u32			rx_coalesce_usecs;
 
 	/* PHY device */
 	struct device_node	*phy_dn;
@@ -763,10 +786,18 @@ struct bcm_sysport_priv {
 
 	/* Ethtool */
 	u32			msg_enable;
+	DECLARE_BITMAP(filters, RXCHK_BRCM_TAG_MAX);
 
 	struct bcm_sysport_stats64	stats64;
 
 	/* For atomic update generic 64bit value on 32bit Machine */
 	struct u64_stats_sync	syncp;
+
+	/* map information between switch port queues and local queues */
+	struct notifier_block	dsa_notifier;
+	unsigned int		per_port_num_tx_queues;
+	unsigned long		queue_bitmap;
+	struct bcm_sysport_tx_ring *ring_map[DSA_MAX_PORTS * 8];
+
 };
 #endif /* __BCM_SYSPORT_H */

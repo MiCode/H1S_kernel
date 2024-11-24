@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /*****************************************************************************
@@ -541,8 +533,6 @@ static kal_uint32 set_gain(kal_uint32 gain)
 	if (reg_gain > 0x7c0) {
 		reg_d_gain = reg_gain*1024/1984;
 
-		if (reg_d_gain < 0x400)// sensor 1xGain
-			reg_d_gain = 0x400;
 		if (reg_d_gain > 0x3fff)// sensor 16xGain
 			reg_d_gain = 0x3fff;
 		/* long exposure */
@@ -554,8 +544,6 @@ static kal_uint32 set_gain(kal_uint32 gain)
 	} else {
 		if (reg_gain < 0x80)// sensor 1xGain
 			reg_gain = 0x80;
-		if (reg_gain > 0x7c0)// sensor 15.5xGain
-			reg_gain = 0x7c0;
 
 		/* binary to find A_Gain */
 		reg_a_gain = binary_find_AGain(AGain_table,
@@ -693,8 +681,6 @@ static void hdr_write_gain(kal_uint16 lgain, kal_uint16 sgain)
 	if (reg_lgain > 0x7c0) {
 		reg_d_lgain = reg_lgain*1024/1984;
 
-		if (reg_d_lgain < 0x400)// sensor 1xGain
-			reg_d_lgain = 0x400;
 		if (reg_d_lgain > 0x3fff)// sensor 16xGain
 			reg_d_lgain = 0x3fff;
 		/* long exposure */
@@ -710,8 +696,6 @@ static void hdr_write_gain(kal_uint16 lgain, kal_uint16 sgain)
 	} else {
 		if (reg_lgain < 0x80)// sensor 1xGain
 			reg_lgain = 0x80;
-		if (reg_lgain > 0x7c0)// sensor 15.5xGain
-			reg_lgain = 0x7c0;
 
 		/* binary to find A_Gain */
 		reg_a_gain = binary_find_AGain(AGain_table,
@@ -736,8 +720,6 @@ static void hdr_write_gain(kal_uint16 lgain, kal_uint16 sgain)
 	if (reg_sgain > 0x7c0) {
 		reg_d_sgain = reg_sgain*1024/1984;
 
-		if (reg_d_sgain < 0x400)// sensor 1xGain
-			reg_d_sgain = 0x400;
 		if (reg_d_sgain > 0x3fff)// sensor 16xGain
 			reg_d_sgain = 0x3fff;
 		/* short gain */
@@ -753,8 +735,6 @@ static void hdr_write_gain(kal_uint16 lgain, kal_uint16 sgain)
 	} else {
 		if (reg_sgain < 0x80)// sensor 1xGain
 			reg_sgain = 0x80;
-		if (reg_sgain > 0x7c0)// sensor 15.5xGain
-			reg_sgain = 0x7c0;
 
 		/* binary to find A_Gain */
 		reg_a_gain = binary_find_AGain(AGain_table,

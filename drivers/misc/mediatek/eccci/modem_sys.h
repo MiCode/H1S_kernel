@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __MODEM_SYS_H__
@@ -24,7 +16,7 @@
 #include <linux/pm_wakeup.h>
 #include <linux/kobject.h>
 #include <linux/sysfs.h>
-#include <mt-plat/mtk_ccci_common.h>
+#include "mt-plat/mtk_ccci_common.h"
 #include "ccci_core.h"
 #include "ccci_modem.h"
 #include "ccci_fsm.h"
@@ -42,7 +34,6 @@ enum MD_COMM_TYPE {
 enum LOW_POEWR_NOTIFY_TYPE {
 	LOW_BATTERY,
 	BATTERY_PERCENT,
-	OVER_CURRENT,
 };
 
 enum MODEM_EE_FLAG {
@@ -130,7 +121,7 @@ struct md_sys1_info {
 		void __iomem *md_peer_wakeup;
 #endif
 		char peer_wakelock_name[32];
-		struct wakeup_source peer_wake_lock;
+		struct wakeup_source *peer_wake_lock;
 
 		void __iomem *md_bus_status;
 		void __iomem *md_pc_monitor;
@@ -183,7 +174,7 @@ struct ccci_modem {
 	unsigned long md_wdt_irq_flags;
 	atomic_t wdt_enabled;
 	char trm_wakelock_name[32];
-	struct wakeup_source trm_wake_lock;
+	struct wakeup_source *trm_wake_lock;
 	atomic_t reset_on_going;
 
 	unsigned int hif_flag;
@@ -233,10 +224,8 @@ static inline int ccci_md_recv_skb(unsigned char md_id,
 {
 	int flag = NORMAL_DATA;
 
-#if MD_GENERATION >= (6293)
 	if (hif_id == MD1_NET_HIF)
 		flag = CLDMA_NET_DATA;
-#endif
 	return ccci_port_recv_skb(md_id, hif_id, skb, flag);
 }
 
@@ -271,6 +260,4 @@ extern u32 mt_irq_get_pending(unsigned int irq);
 extern int gf_port_list_reg[GF_PORT_LIST_MAX];
 extern int gf_port_list_unreg[GF_PORT_LIST_MAX];
 extern int ccci_ipc_set_garbage_filter(struct ccci_modem *md, int reg);
-/* mp1 1, mp2 0, ro 1 */
-extern void spm_ap_mdsrc_req(u8 lock);
 #endif	/* __CCCI_MODEM_H__ */

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 #undef pr_fmt
 #define pr_fmt(fmt) "Task-Turbo: " fmt
@@ -28,7 +20,7 @@
 #define TURBO_ENABLE		1
 #define TURBO_DISABLE		0
 #define SCHED_PREFER_BCPU	TURBO_ENABLE
-#define SCHED_PREFER_NONE	TURBO_DISABLE
+//#define SCHED_PREFER_NONE	TURBO_DISABLE
 
 static uint32_t latency_turbo = SUB_FEAT_LOCK | SUB_FEAT_BINDER |
 				SUB_FEAT_SCHED;
@@ -458,7 +450,7 @@ bool start_turbo_inherit(struct task_struct *task,
 			int type,
 			int cnt)
 {
-	if (type <= START_INHERIT && type >= END_INHERIT)
+	if (type <= START_INHERIT || type >= END_INHERIT)
 		return false;
 
 	add_inherit_types(task, type);
@@ -476,7 +468,7 @@ bool stop_turbo_inherit(struct task_struct *task,
 	unsigned int inherit_types;
 	bool ret = false;
 
-	if (type <= START_INHERIT && type >= END_INHERIT)
+	if (type <= START_INHERIT || type >= END_INHERIT)
 		goto done;
 
 	inherit_types = atomic_read(&task->inherit_types);

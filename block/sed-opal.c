@@ -94,8 +94,8 @@ struct opal_dev {
 	u64 lowest_lba;
 
 	size_t pos;
-	u8 cmd[IO_BUFFER_LENGTH];
-	u8 resp[IO_BUFFER_LENGTH];
+	u8 *cmd;
+	u8 *resp;
 
 	struct parsed_resp parsed;
 	size_t prev_d_len;
@@ -490,7 +490,7 @@ static int opal_discovery0_end(struct opal_dev *dev)
 
 	if (!found_com_id) {
 		pr_debug("Could not find OPAL comid for device. Returning early\n");
-		return -EOPNOTSUPP;;
+		return -EOPNOTSUPP;
 	}
 
 	dev->comid = comid;
@@ -554,15 +554,14 @@ static void add_token_u64(int *err, struct opal_dev *cmd, u64 number)
 
 	size_t len;
 	int msb;
-	u8 n;
 
 	if (!(number & ~TINY_ATOM_DATA_MASK)) {
 		add_token_u8(err, cmd, number);
 		return;
 	}
 
-	msb = fls(number);
-	len = DIV_ROUND_UP(msb, 4);
+	msb = fls64(number);
+	len = DIV_ROUND_UP(msb, 8);
 
 	if (cmd->pos >= IO_BUFFER_LENGTH - len - 1) {
 		pr_debug("Error adding u64: end of buffer.\n");
@@ -570,10 +569,8 @@ static void add_token_u64(int *err, struct opal_dev *cmd, u64 number)
 		return;
 	}
 	add_short_atom_header(cmd, false, false, len);
-	while (len--) {
-		n = number >> (len * 8);
-		add_token_u8(err, cmd, n);
-	}
+	while (len--)
+		add_token_u8(err, cmd, number >> (len * 8));
 }
 
 static void add_token_bytestring(int *err, struct opal_dev *cmd,
@@ -847,16 +844,20 @@ static int response_parse(const u8 *buf, size_t length,
 			token_length = response_parse_medium(iter, pos);
 		else if (pos[0] <= LONG_ATOM_BYTE) /* long atom */
 			token_length = response_parse_long(iter, pos);
+		else if (pos[0] == EMPTY_ATOM_BYTE) /* empty atom */
+			token_length = 1;
 		else /* TOKEN */
 			token_length = response_parse_token(iter, pos);
 
 		if (token_length < 0)
 			return token_length;
 
+		if (pos[0] != EMPTY_ATOM_BYTE)
+			num_entries++;
+
 		pos += token_length;
 		total -= token_length;
 		iter++;
-		num_entries++;
 	}
 
 	if (num_entries == 0) {
@@ -871,6 +872,9 @@ static int response_parse(const u8 *buf, size_t length,
 static size_t response_get_string(const struct parsed_resp *resp, int n,
 				  const char **store)
 {
+	u8 skip;
+	const struct opal_resp_tok *token;
+
 	*store = NULL;
 	if (!resp) {
 		pr_debug("Response is NULL\n");
@@ -883,13 +887,30 @@ static size_t response_get_string(const struct parsed_resp *resp, int n,
 		return 0;
 	}
 
-	if (resp->toks[n].type != OPAL_DTA_TOKENID_BYTESTRING) {
+	token = &resp->toks[n];
+	if (token->type != OPAL_DTA_TOKENID_BYTESTRING) {
 		pr_debug("Token is not a byte string!\n");
 		return 0;
 	}
 
-	*store = resp->toks[n].pos + 1;
-	return resp->toks[n].len - 1;
+	switch (token->width) {
+	case OPAL_WIDTH_TINY:
+	case OPAL_WIDTH_SHORT:
+		skip = 1;
+		break;
+	case OPAL_WIDTH_MEDIUM:
+		skip = 2;
+		break;
+	case OPAL_WIDTH_LONG:
+		skip = 4;
+		break;
+	default:
+		pr_debug("Token has invalid width!\n");
+		return 0;
+	}
+
+	*store = token->pos + skip;
+	return token->len - skip;
 }
 
 static u64 response_get_u64(const struct parsed_resp *resp, int n)
@@ -2011,6 +2032,8 @@ void free_opal_dev(struct opal_dev *dev)
 	if (!dev)
 		return;
 	clean_opal_dev(dev);
+	kfree(dev->resp);
+	kfree(dev->cmd);
 	kfree(dev);
 }
 EXPORT_SYMBOL(free_opal_dev);
@@ -2023,16 +2046,38 @@ struct opal_dev *init_opal_dev(void *data, sec_send_recv *send_recv)
 	if (!dev)
 		return NULL;
 
+	/*
+	 * Presumably DMA-able buffers must be cache-aligned. Kmalloc makes
+	 * sure the allocated buffer is DMA-safe in that regard.
+	 */
+	dev->cmd = kmalloc(IO_BUFFER_LENGTH, GFP_KERNEL);
+	if (!dev->cmd)
+		goto err_free_dev;
+
+	dev->resp = kmalloc(IO_BUFFER_LENGTH, GFP_KERNEL);
+	if (!dev->resp)
+		goto err_free_cmd;
+
 	INIT_LIST_HEAD(&dev->unlk_lst);
 	mutex_init(&dev->dev_lock);
 	dev->data = data;
 	dev->send_recv = send_recv;
 	if (check_opal_support(dev) != 0) {
 		pr_debug("Opal is not supported on this device\n");
-		kfree(dev);
-		return NULL;
+		goto err_free_resp;
 	}
 	return dev;
+
+err_free_resp:
+	kfree(dev->resp);
+
+err_free_cmd:
+	kfree(dev->cmd);
+
+err_free_dev:
+	kfree(dev);
+
+	return NULL;
 }
 EXPORT_SYMBOL(init_opal_dev);
 

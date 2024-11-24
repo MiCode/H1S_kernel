@@ -7,19 +7,20 @@
  */
 
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/gpio/consumer.h>
-#include <linux/delay.h>
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_platform.h>
 #include <linux/of_device.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
-#include <linux/sysfs.h>
 #include <linux/regmap.h>
+#include <linux/reset.h>
+#include <linux/sysfs.h>
 #include <linux/thermal.h>
 
 /* ASPEED PWM & FAN Tach Register Definition */
@@ -161,7 +162,7 @@
  * 11: reserved.
  */
 #define M_TACH_MODE 0x02 /* 10b */
-#define M_TACH_UNIT 0x00c0
+#define M_TACH_UNIT 0x0210
 #define INIT_FAN_CTRL 0xFF
 
 /* How long we sleep in us while waiting for an RPM result. */
@@ -181,6 +182,7 @@ struct aspeed_cooling_device {
 
 struct aspeed_pwm_tacho_data {
 	struct regmap *regmap;
+	struct reset_control *rst;
 	unsigned long clk_freq;
 	bool pwm_present[8];
 	bool fan_tach_present[16];
@@ -195,6 +197,8 @@ struct aspeed_pwm_tacho_data {
 	u8 fan_tach_ch_source[16];
 	struct aspeed_cooling_device *cdev[8];
 	const struct attribute_group *groups[3];
+	/* protects access to shared ASPEED_PTCR_RESULT */
+	struct mutex tach_lock;
 };
 
 enum type { TYPEM, TYPEN, TYPEO };
@@ -529,6 +533,8 @@ static int aspeed_get_fan_tach_ch_rpm(struct aspeed_pwm_tacho_data *priv,
 	u8 fan_tach_ch_source, type, mode, both;
 	int ret;
 
+	mutex_lock(&priv->tach_lock);
+
 	regmap_write(priv->regmap, ASPEED_PTCR_TRIGGER, 0);
 	regmap_write(priv->regmap, ASPEED_PTCR_TRIGGER, 0x1 << fan_tach_ch);
 
@@ -545,6 +551,8 @@ static int aspeed_get_fan_tach_ch_rpm(struct aspeed_pwm_tacho_data *priv,
 		(val & RESULT_STATUS_MASK),
 		ASPEED_RPM_STATUS_SLEEP_USEC,
 		usec);
+
+	mutex_unlock(&priv->tach_lock);
 
 	/* return -ETIMEDOUT if we didn't get an answer. */
 	if (ret)
@@ -878,6 +886,8 @@ static int aspeed_create_fan(struct device *dev,
 	ret = of_property_read_u32(child, "reg", &pwm_port);
 	if (ret)
 		return ret;
+	if (pwm_port >= ARRAY_SIZE(pwm_port_params))
+		return -EINVAL;
 	aspeed_create_pwm_port(priv, (u8)pwm_port);
 
 	ret = of_property_count_u8_elems(child, "cooling-levels");
@@ -892,7 +902,7 @@ static int aspeed_create_fan(struct device *dev,
 	count = of_property_count_u8_elems(child, "aspeed,fan-tach-ch");
 	if (count < 1)
 		return -EINVAL;
-	fan_tach_ch = devm_kzalloc(dev, sizeof(*fan_tach_ch) * count,
+	fan_tach_ch = devm_kcalloc(dev, count, sizeof(*fan_tach_ch),
 				   GFP_KERNEL);
 	if (!fan_tach_ch)
 		return -ENOMEM;
@@ -903,6 +913,13 @@ static int aspeed_create_fan(struct device *dev,
 	aspeed_create_fan_tach_channel(priv, fan_tach_ch, count, pwm_port);
 
 	return 0;
+}
+
+static void aspeed_pwm_tacho_remove(void *data)
+{
+	struct aspeed_pwm_tacho_data *priv = data;
+
+	reset_control_assert(priv->rst);
 }
 
 static int aspeed_pwm_tacho_probe(struct platform_device *pdev)
@@ -927,10 +944,24 @@ static int aspeed_pwm_tacho_probe(struct platform_device *pdev)
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
+	mutex_init(&priv->tach_lock);
 	priv->regmap = devm_regmap_init(dev, NULL, (__force void *)regs,
 			&aspeed_pwm_tacho_regmap_config);
 	if (IS_ERR(priv->regmap))
 		return PTR_ERR(priv->regmap);
+
+	priv->rst = devm_reset_control_get_exclusive(dev, NULL);
+	if (IS_ERR(priv->rst)) {
+		dev_err(dev,
+			"missing or invalid reset controller device tree entry");
+		return PTR_ERR(priv->rst);
+	}
+	reset_control_deassert(priv->rst);
+
+	ret = devm_add_action_or_reset(dev, aspeed_pwm_tacho_remove, priv);
+	if (ret)
+		return ret;
+
 	regmap_write(priv->regmap, ASPEED_PTCR_TACH_SOURCE, 0);
 	regmap_write(priv->regmap, ASPEED_PTCR_TACH_SOURCE_EXT, 0);
 

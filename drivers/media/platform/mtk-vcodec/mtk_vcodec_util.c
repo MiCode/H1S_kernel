@@ -1,17 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
-* Copyright (c) 2016 MediaTek Inc.
-* Author: PC Chen <pc.chen@mediatek.com>
-*       Tiffany Lin <tiffany.lin@mediatek.com>
-*
-* This program is free software; you can redistribute it and/or modify
-* it under the terms of the GNU General Public License version 2 as
-* published by the Free Software Foundation.
-*
-* This program is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-* GNU General Public License for more details.
-*/
+ * Copyright (c) 2019 MediaTek Inc.
+ */
 
 #include <linux/module.h>
 #include <linux/module.h>
@@ -22,6 +12,11 @@
 #include "mtk_vcodec_util.h"
 #include "mtk_vcu.h"
 #include "mtk_vcodec_dec.h"
+#include "vdec_drv_if.h"
+#include "venc_drv_if.h"
+
+#define LOG_INFO_SIZE 64
+#define MAX_SUPPORTED_LOG_PARAMS_COUNT 12
 
 /* For encoder, this will enable logs in venc/*/
 bool mtk_vcodec_dbg;
@@ -139,6 +134,22 @@ struct mtk_vcodec_ctx *mtk_vcodec_get_curr_ctx(struct mtk_vcodec_dev *dev,
 }
 EXPORT_SYMBOL(mtk_vcodec_get_curr_ctx);
 
+void mtk_vcodec_add_ctx_list(struct mtk_vcodec_ctx *ctx)
+{
+	mutex_lock(&ctx->dev->ctx_mutex);
+	list_add(&ctx->list, &ctx->dev->ctx_list);
+	mutex_unlock(&ctx->dev->ctx_mutex);
+}
+EXPORT_SYMBOL_GPL(mtk_vcodec_add_ctx_list);
+
+void mtk_vcodec_del_ctx_list(struct mtk_vcodec_ctx *ctx)
+{
+	mutex_lock(&ctx->dev->ctx_mutex);
+	list_del_init(&ctx->list);
+	mutex_unlock(&ctx->dev->ctx_mutex);
+}
+EXPORT_SYMBOL_GPL(mtk_vcodec_del_ctx_list);
+
 
 struct vdec_fb *mtk_vcodec_get_fb(struct mtk_vcodec_ctx *ctx)
 {
@@ -168,6 +179,7 @@ struct vdec_fb *mtk_vcodec_get_fb(struct mtk_vcodec_ctx *ctx)
 		pfb->num_planes = dst_vb2_v4l2->vb2_buf.num_planes;
 		pfb->index = dst_buf->index;
 
+		mutex_lock(&ctx->buf_lock);
 		for (i = 0; i < dst_vb2_v4l2->vb2_buf.num_planes; i++) {
 			pfb->fb_base[i].va = vb2_plane_vaddr(dst_buf, i);
 #ifdef CONFIG_VB2_MEDIATEK_DMA_SG
@@ -180,22 +192,27 @@ struct vdec_fb *mtk_vcodec_get_fb(struct mtk_vcodec_ctx *ctx)
 			pfb->fb_base[i].size = ctx->picinfo.fb_sz[i];
 			pfb->fb_base[i].length = dst_buf->planes[i].length;
 			pfb->fb_base[i].dmabuf = dst_buf->planes[i].dbuf;
+			if (dst_buf_info->used == false) {
+				get_file(dst_buf->planes[i].dbuf->file);
+				mtk_v4l2_debug(4, "[Ref cnt] id=%d Ref get dma %p", dst_buf->index,
+					dst_buf->planes[i].dbuf);
+			}
 		}
-
 		pfb->status = 0;
-		mtk_v4l2_debug(1, "[%d] idx=%d pfb=0x%p VA=%p dma_addr[0]=%p dma_addr[1]=%p Size=%zx fd:%x, dma_general_buf = %p, general_buf_fd = %d",
-				ctx->id, dst_buf->index, pfb,
+		dst_buf_info->used = true;
+		ctx->fb_list[pfb->index + 1] = (uintptr_t)pfb;
+		mutex_unlock(&ctx->buf_lock);
+
+		mtk_v4l2_debug(1, "[%d] id=%d pfb=0x%p %llx VA=%p dma_addr[0]=%lx dma_addr[1]=%lx Size=%zx fd:%x, dma_general_buf = %p, general_buf_fd = %d",
+				ctx->id, dst_buf->index, pfb, (unsigned long long)pfb,
 				pfb->fb_base[0].va,
-				&pfb->fb_base[0].dma_addr,
-				&pfb->fb_base[1].dma_addr,
+				(unsigned long)pfb->fb_base[0].dma_addr,
+				(unsigned long)pfb->fb_base[1].dma_addr,
 				pfb->fb_base[0].size,
 				dst_buf->planes[0].m.fd,
 				pfb->dma_general_buf,
 				pfb->general_buf_fd);
 
-		mutex_lock(&ctx->buf_lock);
-		dst_buf_info->used = true;
-		mutex_unlock(&ctx->buf_lock);
 		dst_buf = v4l2_m2m_dst_buf_remove(ctx->m2m_ctx);
 		if (dst_buf != NULL)
 			mtk_v4l2_debug(8, "[%d] index=%d, num_rdy_bufs=%d\n",
@@ -232,4 +249,115 @@ void v4l2_m2m_buf_queue_check(struct v4l2_m2m_ctx *m2m_ctx,
 	v4l2_m2m_buf_queue(m2m_ctx, vbuf);
 }
 EXPORT_SYMBOL(v4l2_m2m_buf_queue_check);
+
+void mtk_vcodec_set_log(struct mtk_vcodec_ctx *ctx, char *val)
+{
+	int i, argc = 0;
+	char (*argv)[LOG_PARAM_INFO_SIZE] = NULL;
+	char *temp = NULL;
+	char *token = NULL;
+	long temp_val = 0;
+	char *log = NULL;
+	char vcu_log[128] = {0};
+	struct venc_enc_param *enc_prm = NULL;
+
+	if (ctx == NULL || val == NULL || strlen(val) == 0)
+		return;
+
+	mtk_v4l2_debug(0, "val: %s", val);
+
+	argv = kzalloc(MAX_SUPPORTED_LOG_PARAMS_COUNT * 2 * LOG_PARAM_INFO_SIZE, GFP_KERNEL);
+	if (!argv)
+		return;
+	log = kzalloc(LOG_PROPERTY_SIZE, GFP_KERNEL);
+	if (!log) {
+		kfree(argv);
+		return;
+	}
+
+	strncpy(log, val, LOG_PROPERTY_SIZE - 1);
+	temp = log;
+	for (token = strsep(&temp, "\n\r ");
+	     token != NULL && argc < MAX_SUPPORTED_LOG_PARAMS_COUNT * 2;
+	     token = strsep(&temp, "\n\r ")) {
+		if (strlen(token) == 0)
+			continue;
+		strncpy(argv[argc], token, LOG_PARAM_INFO_SIZE);
+		argv[argc][LOG_PARAM_INFO_SIZE - 1] = '\0';
+		argc++;
+	}
+
+	for (i = 0; i < argc-1; i += 2) {
+		if (strlen(argv[i]) == 0)
+			continue;
+		if (strcmp("-mtk_vcodec_dbg", argv[i]) == 0) {
+			if (kstrtol(argv[i+1], 0, &temp_val) == 0) {
+				mtk_vcodec_dbg = temp_val;
+				mtk_v4l2_debug(0, "mtk_vcodec_dbg: %d\n", mtk_vcodec_dbg);
+			}
+		} else if (strcmp("-mtk_vcodec_perf", argv[i]) == 0) {
+			if (kstrtol(argv[i+1], 0, &temp_val) == 0) {
+				mtk_vcodec_perf = temp_val;
+				mtk_v4l2_debug(0, "mtk_vcodec_perf: %d\n", mtk_vcodec_perf);
+			}
+		} else if (strcmp("-mtk_v4l2_dbg_level", argv[i]) == 0) {
+			if (kstrtol(argv[i+1], 0, &temp_val) == 0) {
+				mtk_v4l2_dbg_level = temp_val;
+				mtk_v4l2_debug(0, "mtk_v4l2_dbg_level: %d\n", mtk_v4l2_dbg_level);
+			}
+		} else {
+			memset(vcu_log, 0x00, sizeof(vcu_log));
+			snprintf(vcu_log, sizeof(vcu_log) - 1, "%s %s", argv[i], argv[i+1]);
+			if (ctx->type == MTK_INST_DECODER) {
+				vdec_if_set_param(ctx, SET_PARAM_DEC_LOG, vcu_log);
+			} else {
+				enc_prm = kzalloc(sizeof(*enc_prm), GFP_KERNEL);
+				if (enc_prm) {
+					enc_prm->log = vcu_log;
+					venc_if_set_param(ctx, VENC_SET_PARAM_LOG, enc_prm);
+					kfree(enc_prm);
+				}
+			}
+		}
+	}
+
+	kfree(argv);
+	kfree(log);
+}
+
+void mtk_vcodec_get_log(struct mtk_vcodec_ctx *ctx, char *val)
+{
+	int len = 0;
+
+	if (!ctx || !val) {
+		mtk_v4l2_err("Invalid arguments, ctx=0x%x, val=0x%x", ctx, val);
+		return;
+	}
+
+	memset(val, 0x00, LOG_PROPERTY_SIZE);
+
+	if (ctx->type == MTK_INST_DECODER)
+		vdec_if_get_param(ctx, GET_PARAM_DEC_LOG, val);
+	else
+		venc_if_get_param(ctx, VENC_GET_PARAM_LOG, val);
+
+	// join kernel log level
+	len = strlen(val);
+	if (len < LOG_PROPERTY_SIZE)
+		snprintf(val + len, LOG_PROPERTY_SIZE - 1 - len,
+			" %s %d", "-mtk_vcodec_dbg", mtk_vcodec_dbg);
+
+	len = strlen(val);
+	if (len < LOG_PROPERTY_SIZE)
+		snprintf(val + len, LOG_PROPERTY_SIZE - 1 - len,
+			" %s %d", "-mtk_vcodec_perf", mtk_vcodec_perf);
+
+	len = strlen(val);
+	if (len < LOG_PROPERTY_SIZE)
+		snprintf(val + len, LOG_PROPERTY_SIZE - 1 - len,
+			" %s %d", "-mtk_v4l2_dbg_level", mtk_v4l2_dbg_level);
+
+	mtk_v4l2_debug(0, "val: %s", val);
+}
+EXPORT_SYMBOL_GPL(mtk_vcodec_get_log);
 

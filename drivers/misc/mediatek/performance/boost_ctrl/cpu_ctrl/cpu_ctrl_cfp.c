@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) "[cpu_ctrl_cfp]"fmt
@@ -20,6 +12,8 @@
 #include <linux/uaccess.h>
 #include <linux/cpumask.h>
 
+#include <mt-plat/cpu_ctrl.h>
+#include <mt-plat/mtk_ppm_api.h>
 #include "cpu_ctrl.h"
 #include "boost_ctrl.h"
 #include "mtk_perfmgr_internal.h"
@@ -49,7 +43,6 @@ static int cfp_curr_headroom_opp;
 static int cfp_curr_up_time;
 static int cfp_curr_down_time;
 static int cfp_curr_loading;
-static unsigned long cc_isolation, cfp_isolation;
 
 static int **freq_tbl;
 DEFINE_MUTEX(cfp_mlock);
@@ -82,50 +75,6 @@ static int cfp_get_idx_by_freq(int clu_idx, int freq)
 	return opp_idx >= 1 ? opp_idx - 1 : 0;
 }
 
-static void set_cfp_percpu_isolation(int enable, int cpu)
-{
-#ifdef CONFIG_TRACING
-	perfmgr_trace_count(enable, "cfp_isolation_%d", cpu);
-#endif
-
-	if (enable)
-		sched_isolate_cpu(cpu);
-	else
-		sched_deisolate_cpu(cpu);
-}
-
-static void set_cfp_cpumask_isolation(int request)
-{
-	int i;
-	int final = request ^ cfp_isolation;
-
-	cfp_isolation = request;
-
-	for_each_possible_cpu(i) {
-		int set = final & 1;
-
-		if (set)
-			set_cfp_percpu_isolation(request & 1, i);
-		final = final >> 1;
-		request = request >> 1;
-	}
-}
-
-static void set_cfp_isolation(int headroom_opp)
-{
-	cfp_lockprove(__func__);
-
-	if (cc_isolation == cfp_isolation)
-		return;
-
-	if (headroom_opp <= 0) {
-		set_cfp_cpumask_isolation(cc_isolation);
-		return;
-	}
-
-	set_cfp_cpumask_isolation(0);
-}
-
 static void set_cfp_ppm(struct ppm_limit_data *desired_freq, int headroom_opp)
 {
 	int clu_idx, cfp_ceiling_opp;
@@ -155,15 +104,10 @@ static void set_cfp_ppm(struct ppm_limit_data *desired_freq, int headroom_opp)
 #ifdef CONFIG_TRACING
 	perfmgr_trace_count(cc_is_ceiled, "cfp_ceiled");
 #endif
-#ifndef CONFIG_FPGA_EARLY_PORTING
-	if (mt_ppm_userlimit_cpu_freq)
-		mt_ppm_userlimit_cpu_freq(perfmgr_clusters, cfp_freq);
-	else
-		perfmgr_common_userlimit_cpu_freq(perfmgr_clusters, cfp_freq);
-#endif
+	mt_ppm_userlimit_cpu_freq(perfmgr_clusters, cfp_freq);
 }
 
-static void cfp_lt_callback(int loading)
+static void cfp_lt_callback(int mask_loading, int loading)
 {
 	cfp_lock(__func__);
 
@@ -180,7 +124,6 @@ static void cfp_lt_callback(int loading)
 					MAX_NR_FREQ - 1);
 
 			set_cfp_ppm(cc_freq, cfp_curr_headroom_opp);
-			set_cfp_isolation(cfp_curr_headroom_opp);
 		}
 
 	} else if (loading > __cfp_down_loading) {
@@ -196,7 +139,6 @@ static void cfp_lt_callback(int loading)
 				MAX(cfp_curr_headroom_opp - __cfp_down_opp, 0);
 
 			set_cfp_ppm(cc_freq, cfp_curr_headroom_opp);
-			set_cfp_isolation(cfp_curr_headroom_opp);
 		}
 	}
 #ifdef CONFIG_TRACING
@@ -221,7 +163,7 @@ static void start_cfp(void)
 	pr_debug("%s\n", __func__);
 
 	cfp_unlock(__func__);
-	reg_ret = reg_loading_tracking(cfp_lt_callback, poll_ms);
+	reg_ret = reg_loading_tracking(cfp_lt_callback, poll_ms, cpu_possible_mask);
 	if (reg_ret)
 		pr_debug("%s reg_ret=%d\n", __func__, reg_ret);
 	cfp_lock(__func__);
@@ -298,26 +240,6 @@ void cpu_ctrl_cfp(struct ppm_limit_data *desired_freq)
 	set_cfp_ppm(desired_freq, cfp_curr_headroom_opp);
 
 out_cpu_ctrl_cfp:
-	cfp_unlock(__func__);
-}
-
-void cpu_ctrl_cfp_isolation(int enable, int cpu)
-{
-	cfp_lock(__func__);
-
-	if (enable)
-		set_bit(cpu, &cc_isolation);
-	else
-		clear_bit(cpu, &cc_isolation);
-
-	if (!__cfp_enable) {
-		set_cfp_isolation(cfp_curr_headroom_opp);
-		goto out_cpu_ctrl_cfp_iso;
-	}
-
-	set_cfp_isolation(cfp_curr_headroom_opp);
-
-out_cpu_ctrl_cfp_iso:
 	cfp_unlock(__func__);
 }
 
@@ -464,12 +386,12 @@ PROC_FOPS_RW(cfp_up_loading);
 PROC_FOPS_RW(cfp_down_loading);
 PROC_FOPS_RO(cfp_curr_stat);
 
-#ifdef CONFIG_MTK_CPU_CTRL_CFP
 int cpu_ctrl_cfp_init(struct proc_dir_entry *parent)
 {
 	int i;
 	int clu_idx, opp_idx;
 	int ret = 0;
+	size_t idx;
 
 	struct pentry {
 		const char *name;
@@ -488,11 +410,11 @@ int cpu_ctrl_cfp_init(struct proc_dir_entry *parent)
 		PROC_ENTRY(cfp_curr_stat),
 	};
 
-	for (i = 0; i < ARRAY_SIZE(entries); i++) {
-		if (!proc_create(entries[i].name, 0644,
-					parent, entries[i].fops)) {
+	for (idx = 0; idx < ARRAY_SIZE(entries); idx++) {
+		if (!proc_create(entries[idx].name, 0644,
+					parent, entries[idx].fops)) {
 			pr_debug("%s(), create /cpu_ctrl%s failed\n",
-					__func__, entries[i].name);
+					__func__, entries[idx].name);
 			ret = -EINVAL;
 			goto out_err;
 		}
@@ -529,7 +451,8 @@ int cpu_ctrl_cfp_init(struct proc_dir_entry *parent)
 
 		for (opp_idx = 0; opp_idx < MAX_NR_FREQ; opp_idx++)
 			freq_tbl[clu_idx][opp_idx] =
-				mt_cpufreq_get_freq_by_idx(clu_idx, opp_idx);
+			mt_cpufreq_get_freq_by_idx(clu_idx, opp_idx);
+
 	}
 
 	__cfp_enable       = 1;
@@ -567,4 +490,3 @@ void cpu_ctrl_cfp_exit(void)
 
 	kfree(freq_tbl);
 }
-#endif

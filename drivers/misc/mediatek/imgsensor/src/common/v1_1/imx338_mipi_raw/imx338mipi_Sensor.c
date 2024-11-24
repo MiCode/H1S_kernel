@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /*****************************************************************************
@@ -4371,6 +4363,8 @@ static kal_uint32 feature_control(
 			(*feature_para_len) / sizeof(UINT32), feature_data_16);
 		break;
 	case SENSOR_FEATURE_SET_PDAF_REG_SETTING:
+		LOG_INF("SENSOR_FEATURE_SET_PDAF_REG_SETTING %d",
+			(*feature_para_len));
 		imx338_set_pdaf_reg_setting(
 			(*feature_para_len) / sizeof(UINT32), feature_data_16);
 		break;

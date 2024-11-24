@@ -263,8 +263,6 @@
 		};
 
 		timers13: timers@40001c00 {
-			#address-cells = <1>;
-			#size-cells = <0>;
 			compatible = "st,stm32-timers";
 			reg = <0x40001C00 0x400>;
 			clocks = <&rcc 0 STM32F4_APB1_CLOCK(TIM13)>;
@@ -278,8 +276,6 @@
 		};
 
 		timers14: timers@40002000 {
-			#address-cells = <1>;
-			#size-cells = <0>;
 			compatible = "st,stm32-timers";
 			reg = <0x40002000 0x400>;
 			clocks = <&rcc 0 STM32F4_APB1_CLOCK(TIM14)>;
@@ -302,7 +298,7 @@
 			interrupt-parent = <&exti>;
 			interrupts = <17 1>;
 			interrupt-names = "alarm";
-			st,syscfg = <&pwrcfg>;
+			st,syscfg = <&pwrcfg 0x00 0x100>;
 			status = "disabled";
 		};
 
@@ -310,11 +306,12 @@
 			compatible = "st,stm32-iwdg";
 			reg = <0x40003000 0x400>;
 			clocks = <&clk_lsi>;
+			clock-names = "lsi";
 			status = "disabled";
 		};
 
 		usart2: serial@40004400 {
-			compatible = "st,stm32-usart", "st,stm32-uart";
+			compatible = "st,stm32-uart";
 			reg = <0x40004400 0x400>;
 			interrupts = <38>;
 			clocks = <&rcc 0 STM32F4_APB1_CLOCK(UART2)>;
@@ -322,7 +319,7 @@
 		};
 
 		usart3: serial@40004800 {
-			compatible = "st,stm32-usart", "st,stm32-uart";
+			compatible = "st,stm32-uart";
 			reg = <0x40004800 0x400>;
 			interrupts = <39>;
 			clocks = <&rcc 0 STM32F4_APB1_CLOCK(UART3)>;
@@ -386,7 +383,7 @@
 		};
 
 		usart7: serial@40007800 {
-			compatible = "st,stm32-usart", "st,stm32-uart";
+			compatible = "st,stm32-uart";
 			reg = <0x40007800 0x400>;
 			interrupts = <82>;
 			clocks = <&rcc 0 STM32F4_APB1_CLOCK(UART7)>;
@@ -394,7 +391,7 @@
 		};
 
 		usart8: serial@40007c00 {
-			compatible = "st,stm32-usart", "st,stm32-uart";
+			compatible = "st,stm32-uart";
 			reg = <0x40007c00 0x400>;
 			interrupts = <83>;
 			clocks = <&rcc 0 STM32F4_APB1_CLOCK(UART8)>;
@@ -444,7 +441,7 @@
 		};
 
 		usart1: serial@40011000 {
-			compatible = "st,stm32-usart", "st,stm32-uart";
+			compatible = "st,stm32-uart";
 			reg = <0x40011000 0x400>;
 			interrupts = <37>;
 			clocks = <&rcc 0 STM32F4_APB2_CLOCK(USART1)>;
@@ -455,7 +452,7 @@
 		};
 
 		usart6: serial@40011400 {
-			compatible = "st,stm32-usart", "st,stm32-uart";
+			compatible = "st,stm32-uart";
 			reg = <0x40011400 0x400>;
 			interrupts = <71>;
 			clocks = <&rcc 0 STM32F4_APB2_CLOCK(USART6)>;
@@ -511,6 +508,17 @@
 			};
 		};
 
+		sdio: sdio@40012c00 {
+			compatible = "arm,pl180", "arm,primecell";
+			arm,primecell-periphid = <0x00880180>;
+			reg = <0x40012c00 0x400>;
+			clocks = <&rcc 0 STM32F4_APB2_CLOCK(SDIO)>;
+			clock-names = "apb_pclk";
+			interrupts = <49>;
+			max-frequency = <48000000>;
+			status = "disabled";
+		};
+
 		syscfg: system-config@40013800 {
 			compatible = "syscon";
 			reg = <0x40013800 0x400>;
@@ -546,8 +554,6 @@
 		};
 
 		timers10: timers@40014400 {
-			#address-cells = <1>;
-			#size-cells = <0>;
 			compatible = "st,stm32-timers";
 			reg = <0x40014400 0x400>;
 			clocks = <&rcc 0 STM32F4_APB2_CLOCK(TIM10)>;
@@ -561,8 +567,6 @@
 		};
 
 		timers11: timers@40014800 {
-			#address-cells = <1>;
-			#size-cells = <0>;
 			compatible = "st,stm32-timers";
 			reg = <0x40014800 0x400>;
 			clocks = <&rcc 0 STM32F4_APB2_CLOCK(TIM11)>;
@@ -597,7 +601,7 @@
 			status = "disabled";
 		};
 
-		rcc: rcc@40023810 {
+		rcc: rcc@40023800 {
 			#reset-cells = <1>;
 			#clock-cells = <2>;
 			compatible = "st,stm32f42xx-rcc", "st,stm32-rcc";

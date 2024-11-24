@@ -10,20 +10,16 @@
 
 #if defined(CMDQ_SECURE_PATH_SUPPORT)
 #include "cmdq_sec_iwc_common.h"
-#if defined(CMDQ_SECURE_TEE_SUPPORT) && !defined(CONFIG_MTK_IN_HOUSE_TEE_SUPPORT)
+#if defined(CMDQ_SECURE_TEE_SUPPORT)
 #include "tee_client_api.h"
 #endif
-#if defined(CONFIG_MTK_TEE_GP_SUPPORT)
+#if defined(CMDQ_GP_SUPPORT)
 #include "cmdq_sec_gp.h"
-#elif defined(CONFIG_TRUSTONIC_TEE_SUPPORT)
+#else
 #include "cmdq_sec_trustonic.h"
 #endif
 #if defined(CMDQ_SECURE_MTEE_SUPPORT)
 #include "cmdq_sec_mtee.h"
-#endif
-
-#if defined(CONFIG_MTK_IN_HOUSE_TEE_SUPPORT)
-#include "cmdq_sec_trustzone.h"
 #endif
 #endif /* CMDQ_SECURE_PATH_SUPPORT */
 
@@ -67,7 +63,7 @@ struct cmdqSecContextStruct {
 	void *iwcMessageEx;	/* message buffer extra */
 	void *iwcMessageEx2;	/* message buffer extra */
 
-#if defined(CMDQ_SECURE_TEE_SUPPORT)
+#if defined(CMDQ_SECURE_PATH_SUPPORT)
 	struct cmdq_sec_tee_context tee;	/* trustzone parameters */
 #endif
 #if defined(CMDQ_SECURE_MTEE_SUPPORT)
@@ -150,7 +146,7 @@ void cmdqSecDeInitialize(void);
 
 void cmdqSecEnableProfile(const bool enable);
 
-#if defined(CMDQ_SECURE_TEE_SUPPORT)
+#if defined(CMDQ_SECURE_PATH_SUPPORT)
 /*
  * tee vendor interface
  */
@@ -172,7 +168,7 @@ s32 cmdq_sec_close_session(struct cmdq_sec_tee_context *tee);
 
 s32 cmdq_sec_execute_session(struct cmdq_sec_tee_context *tee,
 	u32 cmd, s32 timeout_ms, bool share_mem_ex, bool share_mem_ex2);
-#endif
+#endif /* CMDQ_SECURE_PATH_SUPPORT */
 
 #if defined(CMDQ_SECURE_MTEE_SUPPORT)
 void cmdq_sec_mtee_setup_context(struct cmdq_sec_mtee_context *tee);

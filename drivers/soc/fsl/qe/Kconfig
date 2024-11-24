@@ -3,7 +3,7 @@
 #
 
 config QUICC_ENGINE
-	bool "Freescale QUICC Engine (QE) Support"
+	bool "QUICC Engine (QE) framework support"
 	depends on FSL_SOC && PPC32
 	select GENERIC_ALLOCATOR
 	select CRC32
@@ -37,6 +37,7 @@ config QE_TDM
 
 config QE_USB
 	bool
+	depends on QUICC_ENGINE
 	default y if USB_FSL_QE
 	help
 	  QE USB Controller support

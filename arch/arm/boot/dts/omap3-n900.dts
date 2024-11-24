@@ -35,6 +35,8 @@
 		i2c1 = &i2c1;
 		i2c2 = &i2c2;
 		i2c3 = &i2c3;
+		display0 = &lcd;
+		display1 = &tv;
 	};
 
 	cpus {
@@ -154,6 +156,12 @@
 	ir: n900-ir {
 		compatible = "nokia,n900-ir";
 		pwms = <&pwm9 0 26316 0>; /* 38000 Hz */
+	};
+
+	rom_rng: rng {
+		compatible = "nokia,n900-rom-rng";
+		clocks = <&rng_ick>;
+		clock-names = "ick";
 	};
 
 	/* controlled (enabled/disabled) directly by bcm2048 and wl1251 */
@@ -558,7 +566,7 @@
 	tlv320aic3x: tlv320aic3x@18 {
 		compatible = "ti,tlv320aic3x";
 		reg = <0x18>;
-		gpio-reset = <&gpio2 28 GPIO_ACTIVE_HIGH>; /* 60 */
+		reset-gpios = <&gpio2 28 GPIO_ACTIVE_LOW>; /* 60 */
 		ai3x-gpio-func = <
 			0 /* AIC3X_GPIO1_FUNC_DISABLED */
 			5 /* AIC3X_GPIO2_FUNC_DIGITAL_MIC_INPUT */
@@ -575,7 +583,7 @@
 	tlv320aic3x_aux: tlv320aic3x@19 {
 		compatible = "ti,tlv320aic3x";
 		reg = <0x19>;
-		gpio-reset = <&gpio2 28 GPIO_ACTIVE_HIGH>; /* 60 */
+		reset-gpios = <&gpio2 28 GPIO_ACTIVE_LOW>; /* 60 */
 
 		AVDD-supply = <&vmmc2>;
 		DRVDD-supply = <&vmmc2>;
@@ -671,6 +679,7 @@
 	bq27200: bq27200@55 {
 		compatible = "ti,bq27200";
 		reg = <0x55>;
+		power-supplies = <&bq24150a>;
 	};
 
 	/* Stereo headphone amplifier */
@@ -778,6 +787,8 @@
 
 		reset-gpio = <&gpio4 6 GPIO_ACTIVE_HIGH>; /* 102 */
 
+		lens-focus = <&ad5820>;
+
 		port {
 			csi_cam1: endpoint {
 				bus-type = <3>; /* CCP2 */
@@ -791,7 +802,7 @@
 	};
 
 	/* D/A converter for auto-focus */
-	ad5820: dac@0c {
+	ad5820: dac@c {
 		compatible = "adi,ad5820";
 		reg = <0x0c>;
 
@@ -838,36 +849,49 @@
 	onenand@0,0 {
 		#address-cells = <1>;
 		#size-cells = <1>;
+		compatible = "ti,omap2-onenand";
 		reg = <0 0 0x20000>;	/* CS0, offset 0, IO size 128K */
 
+		/*
+		 * These timings are based on CONFIG_OMAP_GPMC_DEBUG=y reported
+		 * bootloader set values when booted with v5.1
+		 * (OneNAND Manufacturer: Samsung):
+		 *
+		 *   cs0 GPMC_CS_CONFIG1: 0xfb001202
+		 *   cs0 GPMC_CS_CONFIG2: 0x00111100
+		 *   cs0 GPMC_CS_CONFIG3: 0x00020200
+		 *   cs0 GPMC_CS_CONFIG4: 0x11001102
+		 *   cs0 GPMC_CS_CONFIG5: 0x03101616
+		 *   cs0 GPMC_CS_CONFIG6: 0x90060000
+		 */
 		gpmc,sync-read;
 		gpmc,sync-write;
 		gpmc,burst-length = <16>;
 		gpmc,burst-read;
 		gpmc,burst-wrap;
 		gpmc,burst-write;
-		gpmc,device-width = <2>; /* GPMC_DEVWIDTH_16BIT */
-		gpmc,mux-add-data = <2>; /* GPMC_MUX_AD */
+		gpmc,device-width = <2>;
+		gpmc,mux-add-data = <2>;
 		gpmc,cs-on-ns = <0>;
-		gpmc,cs-rd-off-ns = <87>;
-		gpmc,cs-wr-off-ns = <87>;
+		gpmc,cs-rd-off-ns = <102>;
+		gpmc,cs-wr-off-ns = <102>;
 		gpmc,adv-on-ns = <0>;
-		gpmc,adv-rd-off-ns = <10>;
-		gpmc,adv-wr-off-ns = <10>;
-		gpmc,oe-on-ns = <15>;
-		gpmc,oe-off-ns = <87>;
+		gpmc,adv-rd-off-ns = <12>;
+		gpmc,adv-wr-off-ns = <12>;
+		gpmc,oe-on-ns = <12>;
+		gpmc,oe-off-ns = <102>;
 		gpmc,we-on-ns = <0>;
-		gpmc,we-off-ns = <87>;
-		gpmc,rd-cycle-ns = <112>;
-		gpmc,wr-cycle-ns = <112>;
-		gpmc,access-ns = <81>;
-		gpmc,page-burst-access-ns = <15>;
+		gpmc,we-off-ns = <102>;
+		gpmc,rd-cycle-ns = <132>;
+		gpmc,wr-cycle-ns = <132>;
+		gpmc,access-ns = <96>;
+		gpmc,page-burst-access-ns = <18>;
 		gpmc,bus-turnaround-ns = <0>;
 		gpmc,cycle2cycle-delay-ns = <0>;
 		gpmc,wait-monitoring-ns = <0>;
-		gpmc,clk-activation-ns = <5>;
-		gpmc,wr-data-mux-bus-ns = <30>;
-		gpmc,wr-access-ns = <81>;
+		gpmc,clk-activation-ns = <6>;
+		gpmc,wr-data-mux-bus-ns = <36>;
+		gpmc,wr-access-ns = <96>;
 		gpmc,sync-clk-ps = <15000>;
 
 		/*
@@ -965,7 +989,7 @@
 		ti,esd-recovery-timeout-ms = <8000>;
 	};
 
-	acx565akm@2 {
+	lcd: acx565akm@2 {
 		compatible = "sony,acx565akm";
 		spi-max-frequency = <6000000>;
 		reg = <2>;

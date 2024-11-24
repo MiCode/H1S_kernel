@@ -2,7 +2,6 @@
  * LED Class Core
  *
  * Copyright 2005-2006 Openedhand Ltd.
- * Copyright (C) 2021 XiaoMi, Inc.
  *
  * Author: Richard Purdie <rpurdie@openedhand.com>
  *
@@ -26,15 +25,12 @@ EXPORT_SYMBOL_GPL(leds_list_lock);
 LIST_HEAD(leds_list);
 EXPORT_SYMBOL_GPL(leds_list);
 
-extern unsigned int thermal_current_brightness;
-
 static int __led_set_brightness(struct led_classdev *led_cdev,
 				enum led_brightness value)
 {
 	if (!led_cdev->brightness_set)
 		return -ENOTSUPP;
 
-	thermal_current_brightness = value;
 	led_cdev->brightness_set(led_cdev, value);
 
 	return 0;
@@ -49,9 +45,9 @@ static int __led_set_brightness_blocking(struct led_classdev *led_cdev,
 	return led_cdev->brightness_set_blocking(led_cdev, value);
 }
 
-static void led_timer_function(unsigned long data)
+static void led_timer_function(struct timer_list *t)
 {
-	struct led_classdev *led_cdev = (void *)data;
+	struct led_classdev *led_cdev = from_timer(led_cdev, t, blink_timer);
 	unsigned long brightness;
 	unsigned long delay;
 
@@ -182,8 +178,7 @@ void led_init_core(struct led_classdev *led_cdev)
 {
 	INIT_WORK(&led_cdev->set_brightness_work, set_brightness_delayed);
 
-	setup_timer(&led_cdev->blink_timer, led_timer_function,
-		    (unsigned long)led_cdev);
+	timer_setup(&led_cdev->blink_timer, led_timer_function, 0);
 }
 EXPORT_SYMBOL_GPL(led_init_core);
 

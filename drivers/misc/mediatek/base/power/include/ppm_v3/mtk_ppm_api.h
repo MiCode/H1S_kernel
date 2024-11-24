@@ -1,17 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
-
 
 #ifndef __MT_PPM_API_H__
 #define __MT_PPM_API_H__
@@ -53,23 +43,15 @@ enum ppm_sysboost_user {
 	BOOST_BY_BOOT_TIME_OPT,
 
 	BOOST_BY_XM_THERMAL,
+
 	NR_PPM_SYSBOOST_USER,
 };
 
-#if defined(CONFIG_MACH_MT6893)
-enum ppm_cluster_lkg {
-	CLUSTER_L_LKG = 0,
-	CLUSTER_B_LKG,
-	CLUSTER_BB_LKG,
-	TOTAL_CLUSTER_LKG,
-};
-#else
 enum ppm_cluster_lkg {
 	CLUSTER_LL_LKG = 0,
 	CLUSTER_L_LKG,
 	TOTAL_CLUSTER_LKG,
 };
-#endif
 
 /*==============================================================*/
 /* Data Structures                                              */

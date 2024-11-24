@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 
@@ -54,10 +46,9 @@ static int compat_get_disp_caps_info(
 
 	for (i = 0; i < ARRAY_SIZE(data->rsz_in_res_list); i++)
 		for (j = 0; j < ARRAY_SIZE(data32->rsz_in_res_list[0]); j++) {
-			err |= get_user(u, &(data32->rsz_in_res_list[i][j]));
-			err |= put_user(u, &(data->rsz_in_res_list[i][j]));
-		}
-
+		err |= get_user(u, &(data32->rsz_in_res_list[i][j]));
+		err |= put_user(u, &(data->rsz_in_res_list[i][j]));
+	}
 	err |= get_user(u, &(data32->rsz_list_length));
 	err |= put_user(u, &(data->rsz_list_length));
 
@@ -68,18 +59,6 @@ static int compat_get_disp_caps_info(
 
 	err |= get_user(u, &(data32->is_support_three_session));
 	err |= put_user(u, &(data->is_support_three_session));
-
-	err |= get_user(u, &(data32->lcm_color_mode));
-	err |= put_user(u, &(data->lcm_color_mode));
-
-	err |= get_user(u, &(data32->max_luminance));
-	err |= put_user(u, &(data->max_luminance));
-
-	err |= get_user(u, &(data32->average_luminance));
-	err |= put_user(u, &(data->average_luminance));
-
-	err |= get_user(u, &(data32->min_luminance));
-	err |= put_user(u, &(data->min_luminance));
 
 	return err;
 }
@@ -128,19 +107,6 @@ static int compat_put_disp_caps_info(
 
 	err |= get_user(u, &(data->is_support_three_session));
 	err |= put_user(u, &(data32->is_support_three_session));
-
-	err |= get_user(u, &(data->lcm_color_mode));
-	err |= put_user(u, &(data32->lcm_color_mode));
-
-	err |= get_user(u, &(data->max_luminance));
-	err |= put_user(u, &(data32->max_luminance));
-
-	err |= get_user(u, &(data->average_luminance));
-	err |= put_user(u, &(data32->average_luminance));
-
-	err |= get_user(u, &(data->min_luminance));
-	err |= put_user(u, &(data32->min_luminance));
-
 
 	return err;
 }
@@ -297,9 +263,6 @@ static int compat_get_disp_input_config(
 	err |= get_user(u, &(data32->yuv_range));
 	err |= put_user(u, &(data->yuv_range));
 
-	err |= get_user(i, &(data32->dataspace));
-	err |= put_user(i, &(data->dataspace));
-
 	err |= get_user(u, &(data32->layer_rotation));
 	err |= put_user(u, &(data->layer_rotation));
 
@@ -332,9 +295,6 @@ static int compat_get_disp_input_config(
 
 	err |= get_user(s, &(data32->dirty_roi_num));
 	err |= put_user(s, &(data->dirty_roi_num));
-
-	err |= get_user(s, &(data32->src_v_pitch));
-	err |= put_user(s, &(data->src_v_pitch));
 
 	err |= get_user(s, &(data32->src_pitch));
 	err |= put_user(s, &(data->src_pitch));
@@ -395,9 +355,6 @@ static int compat_get_disp_input_config(
 
 	err |= get_user(c, &(data32->ext_sel_layer));
 	err |= put_user(c, &(data->ext_sel_layer));
-
-	err |= get_user(c, &(data32->compress));
-	err |= put_user(c, &(data->compress));
 
 	return err;
 }
@@ -507,7 +464,7 @@ static int compat_get_disp_layer_info(
 		/*data->input_config[iCnt] = NULL;*/
 		err |= put_user(NULL, &(data->input_config[iCnt]));
 		if (p != 0) {
-			DISPDBG("%s is Right\n", __func__);
+			DISPDBG("compat_get_disp_layer_info is Right\n");
 			/*data->input_config[iCnt] = compat_ptr(p);*/
 			err |= put_user(compat_ptr(p),
 						&(data->input_config[iCnt]));
@@ -947,12 +904,6 @@ static int compat_get_disp_frame_cfg(
 	err |= get_user(u, &(data32->res_idx));
 	err |= put_user(u, &(data->res_idx));
 
-	err |= get_user(u, &(data32->hrt_weight));
-	err |= put_user(u, &(data->hrt_weight));
-
-	err |= get_user(u, &(data32->hrt_idx));
-	err |= put_user(u, &(data->hrt_idx));
-
 	return err;
 }
 
@@ -1347,10 +1298,10 @@ int _compat_ioctl_get_vsync(struct file *file, unsigned long arg)
 {
 	int ret = 0;
 
-	DISPMSG("%s begin\n", __func__);
+	DISPMSG("_compat_ioctl_get_vsync begin\n");
 	ret = file->f_op->unlocked_ioctl(file,
 				DISP_IOCTL_GET_VSYNC_FPS, arg);
-	DISPMSG("%s done\n", __func__);
+	DISPMSG("_compat_ioctl_get_vsync done\n");
 	return ret;
 }
 
@@ -1373,9 +1324,9 @@ int _compat_ioctl_set_vsync(struct file *file, unsigned long arg)
 			__func__, fps);
 		return  -EFAULT;
 	}
-	DISPMSG("%s begin\n", __func__);
+	DISPMSG("_compat_ioctl_set_vsync begin\n");
 	ret = file->f_op->unlocked_ioctl(file, DISP_IOCTL_SET_VSYNC_FPS, arg);
-	DISPMSG("%s done\n", __func__);
+	DISPMSG("_compat_ioctl_set_vsync done\n");
 	return ret;
 }
 
@@ -1416,12 +1367,12 @@ int _compat_ioctl_inset_session_buffer(struct file *file, unsigned long arg)
 
 	struct disp_session_buf_info __user *data;
 
-	DISPDBG("%s\n", __func__);
+	DISPDBG("_compat_ioctl_inset_session_buffer\n");
 	data32 = compat_ptr(arg);
 	data = compat_alloc_user_space(sizeof(struct disp_session_buf_info));
 
 	if (data == NULL) {
-		DISPERR("%s fail!\n", __func__);
+		DISPERR("_compat_ioctl_inset_session_buffer fail!\n");
 		return -EFAULT;
 	}
 

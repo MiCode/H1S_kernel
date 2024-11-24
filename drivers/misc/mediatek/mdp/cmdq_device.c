@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include "mdp_cmdq_device.h"
 #include "cmdq_virtual.h"
@@ -434,7 +426,7 @@ void cmdq_dev_test_dts_correctness(void)
 void cmdq_dev_init_resource(CMDQ_DEV_INIT_RESOURCE_CB init_cb)
 {
 	int status, index;
-	u32 count;
+	u32 count = 0;
 
 	status = of_property_read_u32(gCmdqDev.pDev->of_node,
 		"sram_share_cnt", &count);

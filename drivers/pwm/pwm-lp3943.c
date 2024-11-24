@@ -128,6 +128,7 @@ static int lp3943_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 	if (err)
 		return err;
 
+	duty_ns = min(duty_ns, period_ns);
 	val = (u8)(duty_ns * LP3943_MAX_DUTY / period_ns);
 
 	return lp3943_write_byte(lp3943, reg_duty, val);
@@ -225,7 +226,7 @@ static int lp3943_pwm_parse_dt(struct device *dev,
 		if (num_outputs == 0)
 			continue;
 
-		output = devm_kzalloc(dev, sizeof(*output) * num_outputs,
+		output = devm_kcalloc(dev, num_outputs, sizeof(*output),
 				      GFP_KERNEL);
 		if (!output)
 			return -ENOMEM;
@@ -278,6 +279,7 @@ static int lp3943_pwm_probe(struct platform_device *pdev)
 	lp3943_pwm->chip.dev = &pdev->dev;
 	lp3943_pwm->chip.ops = &lp3943_pwm_ops;
 	lp3943_pwm->chip.npwm = LP3943_NUM_PWMS;
+	lp3943_pwm->chip.base = -1;
 
 	platform_set_drvdata(pdev, lp3943_pwm);
 

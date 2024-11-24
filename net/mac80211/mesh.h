@@ -70,6 +70,7 @@ enum mesh_deferred_task_flags {
  * @dst: mesh path destination mac address
  * @mpp: mesh proxy mac address
  * @rhash: rhashtable list pointer
+ * @walk_list: linked list containing all mesh_path objects.
  * @gate_list: list pointer for known gates list
  * @sdata: mesh subif
  * @next_hop: mesh neighbor to which frames for this destination will be
@@ -105,6 +106,7 @@ struct mesh_path {
 	u8 dst[ETH_ALEN];
 	u8 mpp[ETH_ALEN];	/* used for MPP or MAP */
 	struct rhash_head rhash;
+	struct hlist_node walk_list;
 	struct hlist_node gate_list;
 	struct ieee80211_sub_if_data *sdata;
 	struct sta_info __rcu *next_hop;
@@ -124,22 +126,6 @@ struct mesh_path {
 	unsigned long last_preq_to_root;
 	bool is_root;
 	bool is_gate;
-};
-
-/**
- * struct mesh_table
- *
- * @known_gates: list of known mesh gates and their mpaths by the station. The
- * gate's mpath may or may not be resolved and active.
- * @gates_lock: protects updates to known_gates
- * @rhead: the rhashtable containing struct mesh_paths, keyed by dest addr
- * @entries: number of entries in the table
- */
-struct mesh_table {
-	struct hlist_head known_gates;
-	spinlock_t gates_lock;
-	struct rhashtable rhead;
-	atomic_t entries;		/* Up to MAX_MESH_NEIGHBOURS */
 };
 
 /* Recent multicast cache */
@@ -276,6 +262,7 @@ void mesh_neighbour_update(struct ieee80211_sub_if_data *sdata,
 			   u8 *hw_addr, struct ieee802_11_elems *ie);
 bool mesh_peer_accepts_plinks(struct ieee802_11_elems *ie);
 u32 mesh_accept_plinks_update(struct ieee80211_sub_if_data *sdata);
+void mesh_plink_timer(struct timer_list *t);
 void mesh_plink_broken(struct sta_info *sta);
 u32 mesh_plink_deactivate(struct sta_info *sta);
 u32 mesh_plink_open(struct sta_info *sta);
@@ -293,10 +280,10 @@ int mesh_path_error_tx(struct ieee80211_sub_if_data *sdata,
 void mesh_path_assign_nexthop(struct mesh_path *mpath, struct sta_info *sta);
 void mesh_path_flush_pending(struct mesh_path *mpath);
 void mesh_path_tx_pending(struct mesh_path *mpath);
-int mesh_pathtbl_init(struct ieee80211_sub_if_data *sdata);
+void mesh_pathtbl_init(struct ieee80211_sub_if_data *sdata);
 void mesh_pathtbl_unregister(struct ieee80211_sub_if_data *sdata);
 int mesh_path_del(struct ieee80211_sub_if_data *sdata, const u8 *addr);
-void mesh_path_timer(unsigned long data);
+void mesh_path_timer(struct timer_list *t);
 void mesh_path_flush_by_nexthop(struct sta_info *sta);
 void mesh_path_discard_frame(struct ieee80211_sub_if_data *sdata,
 			     struct sk_buff *skb);

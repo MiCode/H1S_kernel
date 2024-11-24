@@ -1450,7 +1450,6 @@ static const struct iio_info sca3000_info = {
 	.write_event_value = &sca3000_write_event_value,
 	.read_event_config = &sca3000_read_event_config,
 	.write_event_config = &sca3000_write_event_config,
-	.driver_module = THIS_MODULE,
 };
 
 static int sca3000_probe(struct spi_device *spi)
@@ -1483,7 +1482,9 @@ static int sca3000_probe(struct spi_device *spi)
 	}
 	indio_dev->modes = INDIO_DIRECT_MODE;
 
-	sca3000_configure_ring(indio_dev);
+	ret = sca3000_configure_ring(indio_dev);
+	if (ret)
+		return ret;
 
 	if (spi->irq) {
 		ret = request_threaded_irq(spi->irq,

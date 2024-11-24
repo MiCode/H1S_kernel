@@ -1,24 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __FBT_USEDEXT_H__
 #define __FBT_USEDEXT_H__
 
+
 extern int prefer_idle_for_perf_idx(int idx, int prefer_idle);
-extern unsigned int mt_cpufreq_get_freq_by_idx(int id, int idx);
 extern unsigned int mt_ppm_userlimit_freq_limit_by_others(
 		unsigned int cluster);
 extern unsigned long get_cpu_orig_capacity(unsigned int cpu);

@@ -32,7 +32,6 @@
 #include <linux/pm_runtime.h>
 #include <linux/wait.h>
 #include <linux/blkdev.h>
-#include <linux/overflow.h>
 
 struct keyslot {
 	atomic_t slot_refs;

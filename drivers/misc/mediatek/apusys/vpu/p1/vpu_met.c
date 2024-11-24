@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/slab.h>
@@ -620,6 +612,6 @@ int vpu_init_dev_met(struct platform_device *pdev,
 void vpu_exit_dev_met(struct platform_device *pdev,
 	struct vpu_device *vd)
 {
-	cancel_work(&vd->met.work);
+	cancel_work_sync(&vd->met.work);
 }
 

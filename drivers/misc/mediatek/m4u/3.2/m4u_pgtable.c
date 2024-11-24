@@ -1,19 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <asm/cacheflush.h>
 #include <linux/slab.h>
 #include <linux/dma-mapping.h>
+#include <linux/kmemleak.h>
 
 #include "m4u_priv.h"
 
@@ -485,7 +478,6 @@ int m4u_clean_pte(struct m4u_domain_t *domain,
 		}
 	}
 
-#if 1
 	if (size <= SZ_4K) {
 		if (!sync_entry_nr_sum)
 			M4UMSG(
@@ -500,7 +492,7 @@ int m4u_clean_pte(struct m4u_domain_t *domain,
 			"warning, not cache sync pte, mva:0x%x, size:0x%x, size_tmp:%u, nr:%llu\n",
 				mva, size, size_tmp, sync_entry_nr_sum);
 	}
-#endif
+
 	return 0;
 }
 
@@ -768,16 +760,16 @@ int m4u_map_64K(struct m4u_domain_t *m4u_domain,
 		else
 			pte_new = 1;
 	} else {
-#if 0
-		if (unlikely((imu_pgd_val(*pgd) &
-				(~F_PGD_PA_PAGETABLE_MSK)) != pgprot)) {
-			write_unlock_domain(m4u_domain);
-			m4u_aee_print("%s: mva=0x%x, pgd=0x%x, pgprot=0x%x\n",
-					__func__, mva,
-					imu_pgd_val(*pgd), pgprot);
-			return -1;
-		}
-#endif
+/*
+ *		if (unlikely((imu_pgd_val(*pgd) &
+ *				(~F_PGD_PA_PAGETABLE_MSK)) != pgprot)) {
+ *			write_unlock_domain(m4u_domain);
+ *			m4u_aee_print("%s: mva=0x%x, pgd=0x%x, pgprot=0x%x\n",
+ *					__func__, mva,
+ *					imu_pgd_val(*pgd), pgprot);
+ *			return -1;
+ *		}
+ */
 		pte_new = 0;
 	}
 
@@ -859,17 +851,17 @@ int m4u_map_4K(struct m4u_domain_t *m4u_domain,
 		else
 			pte_new = 1;
 	} else {
-#if 0
-		if (unlikely((imu_pgd_val(*pgd) &
-			(~F_PGD_PA_PAGETABLE_MSK)) != pgprot)) {
-			write_unlock_domain(m4u_domain);
-			m4u_aee_print
-				("%s: mva=0x%x, pgd=0x%x, pgprot=0x%x\n",
-					__func__, mva,
-					imu_pgd_val(*pgd), pgprot);
-			return -1;
-		}
-#endif
+/*
+ *		if (unlikely((imu_pgd_val(*pgd) &
+ *			(~F_PGD_PA_PAGETABLE_MSK)) != pgprot)) {
+ *			write_unlock_domain(m4u_domain);
+ *			m4u_aee_print
+ *				("%s: mva=0x%x, pgd=0x%x, pgprot=0x%x\n",
+ *					__func__, mva,
+ *					imu_pgd_val(*pgd), pgprot);
+ *			return -1;
+ *		}
+ */
 		pte_new = 0;
 	}
 
@@ -1045,9 +1037,6 @@ int m4u_map_sgtable(struct m4u_domain_t *m4u_domain,
 	struct scatterlist *sg;
 	unsigned long long map_mva = (unsigned long long)mva;
 	unsigned long long map_end = map_mva + (unsigned long long)size;
-
-	if (unlikely(g_translation_fault_debug))
-		return 0;
 
 	prot = m4u_prot_fixup(prot);
 
@@ -1238,13 +1227,13 @@ const struct file_operations m4u_proc_pgtable_fops = {
 int m4u_pgtable_init(struct m4u_device *m4u_dev,
 		struct m4u_domain_t *m4u_domain, int m4u_id)
 {
-	/* ======= alloc pagetable======================= */
 
-	if (unlikely((unsigned int)m4u_id >= TOTAL_M4U_NUM)) {
-		m4u_info("%s #%d: m4u_id error:%d\n",
-			 __func__, __LINE__, m4u_id);
-		return -EINVAL;
+	if (m4u_id < 0 || m4u_id >= TOTAL_M4U_NUM) {
+		M4UMSG("%s: ERROR m4u_id:%d\n", __func__, m4u_id);
+		return 1;
 	}
+
+	/* ======= alloc pagetable======================= */
 	m4u_domain->pgd =
 	    dma_alloc_coherent(m4u_dev->pDev[m4u_id],
 			M4U_PGD_SIZE, &(m4u_domain->pgd_pa), GFP_KERNEL);

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 #ifndef _MTK_USB_BOOST_H
 #define _MTK_USB_BOOST_H
@@ -35,7 +27,7 @@ struct act_arg_obj {
 void usb_boost_set_para_and_arg(int id, int *para, int para_range,
 	struct act_arg_obj *act_arg);
 
-void usb_boost_by_id(int id);
+/* void usb_boost_by_id(int id); */
 void usb_boost(void);
 int usb_boost_init(void);
 

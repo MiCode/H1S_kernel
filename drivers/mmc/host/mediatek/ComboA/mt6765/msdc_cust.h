@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _MSDC_CUST_MT6765_H_
@@ -38,7 +30,7 @@
 #endif
 
 #ifndef CONFIG_MTK_MSDC_BRING_UP_BYPASS
-#include <mtk_spm_resource_req.h>
+//#include <mtk_spm_resource_req.h>
 #endif
 
 /**************************************************************/
@@ -48,7 +40,7 @@
 #define DT_COMPATIBLE_NAME      "mediatek,msdc"
 #define MSDC0_CLK_NAME          "msdc0-clock"
 
-#ifdef CONFIG_MTK_HW_FDE
+#if defined(CONFIG_MTK_HW_FDE) || defined(CONFIG_MMC_CRYPTO)
 #define MSDC0_AES_CLK_NAME          "msdc0-aes-clock"
 #endif
 
@@ -65,91 +57,7 @@
 /**************************************************************/
 #define SD_POWER_DEFAULT_ON     (0)
 
-#if !defined(FPGA_PLATFORM)
 #include <mt-plat/upmu_common.h>
-
-#define REG_VEMC_VOSEL_CAL      PMIC_RG_VEMC_VOCAL_ADDR
-#define REG_VEMC_VOSEL          PMIC_RG_VEMC_VOSEL_ADDR
-#define REG_VEMC_EN             PMIC_RG_LDO_VEMC_EN_ADDR
-
-#define REG_VIO18_VOSEL_CAL     PMIC_RG_VIO18_VOCAL_ADDR
-/* vio18 have no REG_VIO18_VOSEL, so not dump. */
-#define REG_VIO18_EN            PMIC_RG_LDO_VIO18_EN_ADDR
-
-#define REG_VMC_VOSEL_CAL       PMIC_RG_VMC_VOCAL_ADDR
-#define REG_VMC_VOSEL           PMIC_RG_VMC_VOSEL_ADDR
-#define REG_VMC_EN              PMIC_RG_LDO_VMC_EN_ADDR
-
-#define REG_VMCH_VOSEL_CAL      PMIC_RG_VMCH_VOCAL_ADDR
-#define REG_VMCH_VOSEL          PMIC_RG_VMCH_VOSEL_ADDR
-#define REG_VMCH_EN             PMIC_RG_LDO_VMCH_EN_ADDR
-
-#define MASK_VEMC_VOSEL_CAL     PMIC_RG_VEMC_VOCAL_MASK
-#define SHIFT_VEMC_VOSEL_CAL    PMIC_RG_VEMC_VOCAL_SHIFT
-#define FIELD_VEMC_VOSEL_CAL    (MASK_VEMC_VOSEL_CAL << SHIFT_VEMC_VOSEL_CAL)
-
-#define MASK_VEMC_VOSEL         PMIC_RG_VEMC_VOSEL_MASK
-#define SHIFT_VEMC_VOSEL        PMIC_RG_VEMC_VOSEL_SHIFT
-#define FIELD_VEMC_VOSEL        (MASK_VEMC_VOSEL << SHIFT_VEMC_VOSEL)
-
-#define MASK_VEMC_EN            PMIC_RG_LDO_VEMC_EN_MASK
-#define SHIFT_VEMC_EN           PMIC_RG_LDO_VEMC_EN_SHIFT
-#define FIELD_VEMC_EN           (MASK_VEMC_EN << SHIFT_VEMC_EN)
-
-#define MASK_VIO18_VOSEL_CAL    PMIC_RG_VIO18_VOCAL_MASK
-#define SHIFT_VIO18_VOSEL_CAL   PMIC_RG_VIO18_VOCAL_SHIFT
-#define FIELD_VIO18_VOSEL_CAL   (MASK_VIO18_VOSEL_CAL << SHIFT_VIO18_VOSEL_CAL)
-
-#define MASK_VIO18_EN           PMIC_RG_LDO_VIO18_EN_MASK
-#define SHIFT_VIO18_EN          PMIC_RG_LDO_VIO18_EN_SHIFT
-#define FIELD_VIO18_EN          (MASK_VIO18_EN << SHIFT_VIO18_EN)
-
-#define MASK_VMC_VOSEL_CAL      PMIC_RG_VMC_VOCAL_MASK
-#define SHIFT_VMC_VOSEL_CAL     PMIC_RG_VMC_VOCAL_SHIFT
-#define FIELD_VMC_VOSEL_CAL     (MASK_VMC_VOSEL_CAL << SHIFT_VMC_VOSEL_CAL)
-
-#define MASK_VMC_VOSEL          PMIC_RG_VMC_VOSEL_MASK
-#define SHIFT_VMC_VOSEL         PMIC_RG_VMC_VOSEL_SHIFT
-#define FIELD_VMC_VOSEL         (MASK_VMC_VOSEL << SHIFT_VMC_VOSEL)
-
-#define MASK_VMC_EN             PMIC_RG_LDO_VMC_EN_MASK
-#define SHIFT_VMC_EN            PMIC_RG_LDO_VMC_EN_SHIFT
-#define FIELD_VMC_EN            (MASK_VMC_EN << SHIFT_VMC_EN)
-
-#define MASK_VMCH_VOSEL_CAL     PMIC_RG_VMCH_VOCAL_MASK
-#define SHIFT_VMCH_VOSEL_CAL    PMIC_RG_VMCH_VOCAL_SHIFT
-#define FIELD_VMCH_VOSEL_CAL    (MASK_VMCH_VOSEL_CAL << SHIFT_VMCH_VOSEL_CAL)
-
-#define MASK_VMCH_VOSEL         PMIC_RG_VMCH_VOSEL_MASK
-#define SHIFT_VMCH_VOSEL        PMIC_RG_VMCH_VOSEL_SHIFT
-#define FIELD_VMCH_VOSEL        (MASK_VMCH_VOSEL << SHIFT_VMCH_VOSEL)
-
-#define MASK_VMCH_EN            PMIC_RG_LDO_VMCH_EN_MASK
-#define SHIFT_VMCH_EN           PMIC_RG_LDO_VMCH_EN_SHIFT
-#define FIELD_VMCH_EN           (MASK_VMCH_EN << SHIFT_VMCH_EN)
-
-#define REG_VMCH_OC_STATUS      PMIC_RG_INT_STATUS_VMCH_OC_ADDR
-#define MASK_VMCH_OC_STATUS     PMIC_RG_INT_STATUS_VMCH_OC_MASK
-#define SHIFT_VMCH_OC_STATUS    PMIC_RG_INT_STATUS_VMCH_OC_SHIFT
-#define FIELD_VMCH_OC_STATUS    (MASK_VMCH_OC_STATUS << SHIFT_VMCH_OC_STATUS)
-
-#define VEMC_VOSEL_3V           (11)
-#define VEMC_VOSEL_3V3          (13)
-#define VMC_VOSEL_1V8           (4)
-#define VMC_VOSEL_2V8           (9)
-#define VMC_VOSEL_3V            (11)
-#define VMCH_VOSEL_3V           (11)
-#define VMCH_VOSEL_3V3          (13)
-
-#define REG_VCORE_VOSEL_SW      PMIC_RG_BUCK_VCORE_VOSEL_ADDR
-#define VCORE_VOSEL_SW_MASK     PMIC_RG_BUCK_VCORE_VOSEL_MASK
-#define VCORE_VOSEL_SW_SHIFT    PMIC_RG_BUCK_VCORE_VOSEL_SHIFT
-
-#define REG_VIO_VOCAL_SW      PMIC_RG_VIO18_VOCAL_ADDR
-#define VIO_VOCAL_SW_MASK     PMIC_RG_VIO18_VOCAL_MASK
-#define VIO_VOCAL_SW_SHIFT    PMIC_RG_VIO18_VOCAL_SHIFT
-
-#endif
 
 #define EMMC_VOL_ACTUAL         VOL_3000
 #define SD_VOL_ACTUAL           VOL_3000
@@ -266,6 +174,17 @@
 
 #define SDCARD_ESD_RECOVERY
 /* #define MSDC_HQA */
+
+/* sd read/write crc error happen in mt6885 when vcore changes,
+ * sd can't support autok merge by fix vcore(like emmc),
+ * so add runtime autok merge function
+ */
+#define SD_RUNTIME_AUTOK_MERGE
+
+/* fix vcore in kernel will affect other module,
+ * use emmc runtime autok merge intead of the original emmc autok
+ */
+#define EMMC_RUNTIME_AUTOK_MERGE
 
 /**************************************************************/
 /* Section 6: BBChip-depenent Tunnig Parameter                */

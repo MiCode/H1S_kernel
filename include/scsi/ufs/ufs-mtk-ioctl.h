@@ -1,12 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #ifndef UFS_MTK_IOCTL_H__
@@ -23,7 +17,7 @@
 #define UFS_IOCTL_GET_FW_VER    0x5390  /* Query production revision level */
 #define UFS_IOCTL_RPMB          0x5391  /* For RPMB access */
 
-#if defined(CONFIG_UFSFEATURE)
+#if defined(CONFIG_SCSI_UFS_FEATURE)
 #define UFSFEATURE_QUERY_OPCODE		0x5500
 #endif
 

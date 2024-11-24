@@ -426,17 +426,32 @@ void __init ip_tunnel_core_init(void)
 	lwtunnel_encap_add_ops(&ip6_tun_lwt_ops, LWTUNNEL_ENCAP_IP6);
 }
 
-struct static_key ip_tunnel_metadata_cnt = STATIC_KEY_INIT_FALSE;
+DEFINE_STATIC_KEY_FALSE(ip_tunnel_metadata_cnt);
 EXPORT_SYMBOL(ip_tunnel_metadata_cnt);
 
 void ip_tunnel_need_metadata(void)
 {
-	static_key_slow_inc(&ip_tunnel_metadata_cnt);
+	static_branch_inc(&ip_tunnel_metadata_cnt);
 }
 EXPORT_SYMBOL_GPL(ip_tunnel_need_metadata);
 
 void ip_tunnel_unneed_metadata(void)
 {
-	static_key_slow_dec(&ip_tunnel_metadata_cnt);
+	static_branch_dec(&ip_tunnel_metadata_cnt);
 }
 EXPORT_SYMBOL_GPL(ip_tunnel_unneed_metadata);
+
+/* Returns either the correct skb->protocol value, or 0 if invalid. */
+__be16 ip_tunnel_parse_protocol(const struct sk_buff *skb)
+{
+	if (skb_network_header(skb) >= skb->head &&
+	    (skb_network_header(skb) + sizeof(struct iphdr)) <= skb_tail_pointer(skb) &&
+	    ip_hdr(skb)->version == 4)
+		return htons(ETH_P_IP);
+	if (skb_network_header(skb) >= skb->head &&
+	    (skb_network_header(skb) + sizeof(struct ipv6hdr)) <= skb_tail_pointer(skb) &&
+	    ipv6_hdr(skb)->version == 6)
+		return htons(ETH_P_IPV6);
+	return 0;
+}
+EXPORT_SYMBOL(ip_tunnel_parse_protocol);

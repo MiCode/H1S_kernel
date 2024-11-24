@@ -1,13 +1,6 @@
-/*
- * Copyright 2012 Sascha Hauer, Pengutronix <s.hauer@pengutronix.de>
- *
- * The code contained herein is licensed under the GNU General Public
- * License. You may obtain a copy of the GNU General Public License
- * Version 2 or later at the following locations:
- *
- * http://www.opensource.org/licenses/gpl-license.html
- * http://www.gnu.org/copyleft/gpl.html
- */
+// SPDX-License-Identifier: GPL-2.0+
+//
+// Copyright 2012 Sascha Hauer, Pengutronix <s.hauer@pengutronix.de>
 
 #include <dt-bindings/gpio/gpio.h>
 #include "imx25-pinfunc.h"
@@ -19,10 +12,8 @@
 	 * The decompressor and also some bootloaders rely on a
 	 * pre-existing /chosen node to be available to insert the
 	 * command line and merge other ATAGS info.
-	 * Also for U-Boot there must be a pre-existing /memory node.
 	 */
 	chosen {};
-	memory { device_type = "memory"; reg = <0 0>; };
 
 	aliases {
 		ethernet0 = &fec;
@@ -70,9 +61,6 @@
 	};
 
 	clocks {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
 		osc {
 			compatible = "fsl,imx-osc", "fixed-clock";
 			#clock-cells = <0>;
@@ -122,7 +110,7 @@
 			};
 
 			can1: can@43f88000 {
-				compatible = "fsl,imx25-flexcan", "fsl,p1010-flexcan";
+				compatible = "fsl,imx25-flexcan";
 				reg = <0x43f88000 0x4000>;
 				interrupts = <43>;
 				clocks = <&clks 75>, <&clks 75>;
@@ -131,7 +119,7 @@
 			};
 
 			can2: can@43f8c000 {
-				compatible = "fsl,imx25-flexcan", "fsl,p1010-flexcan";
+				compatible = "fsl,imx25-flexcan";
 				reg = <0x43f8c000 0x4000>;
 				interrupts = <44>;
 				clocks = <&clks 76>, <&clks 76>;
@@ -269,6 +257,7 @@
 				dmas = <&sdma 24 1 0>,
 				       <&sdma 25 1 0>;
 				dma-names = "rx", "tx";
+				fsl,fifo-depth = <15>;
 				status = "disabled";
 			};
 
@@ -329,6 +318,7 @@
 				dmas = <&sdma 28 1 0>,
 				       <&sdma 29 1 0>;
 				dma-names = "rx", "tx";
+				fsl,fifo-depth = <15>;
 				status = "disabled";
 			};
 
@@ -628,11 +618,13 @@
 		usbphy0: usb-phy@0 {
 			reg = <0>;
 			compatible = "usb-nop-xceiv";
+			#phy-cells = <0>;
 		};
 
 		usbphy1: usb-phy@1 {
 			reg = <1>;
 			compatible = "usb-nop-xceiv";
+			#phy-cells = <0>;
 		};
 	};
 };

@@ -7,8 +7,13 @@ MTK_PLATFORM := $(subst ",,$(CONFIG_MTK_PLATFORM))
 ifeq ($(CONFIG_SND_SOC_MTK_SCP_SMARTPA),y)
 subdir-ccflags-y += -I$(srctree)/sound/soc/mediatek/common
 subdir-ccflags-y += -I$(srctree)/sound/soc/mediatek/$(MTK_PLATFORM)/
-subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/audio_ipi/common/framework
-subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/audio_ipi/common/tasks/spkprotect
+ifeq ($(CONFIG_MACH_MT6779),y)
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/audio_ipi/common_v1/framework
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/audio_ipi/common_v1/tasks/spkprotect
+else
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/audio_ipi/common_v2/framework
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/audio_ipi/common_v2/tasks/spkprotect
+endif
 subdir-ccflags-y += -I$(srctree)/sound/soc/mediatek/scp_spk/$(MTK_PLATFORM)/
 subdir-ccflags-y += -I$(srctree)/sound/soc/mediatek/utility
 endif

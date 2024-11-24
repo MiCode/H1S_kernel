@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/kernel.h>
@@ -102,7 +94,13 @@ enum DDP_CLK_ID disp_pwm_get_clkid(unsigned int clk_req)
  * get disp pwm source mux node
  *
  */
-#define DTSI_TOPCKGEN "mediatek,topckgen"
+
+#if defined(CONFIG_MACH_MT6765)
+#define DTSI_TOPCKGEN "mediatek,mt6765-topckgen"
+#elif defined(CONFIG_MACH_MT6761)
+#define DTSI_TOPCKGEN "mediatek,mt6761-topckgen"
+#endif
+
 static int disp_pwm_get_muxbase(void)
 {
 	int ret = 0;
@@ -147,12 +145,11 @@ static unsigned int disp_pwm_get_pwmmux(void)
 int disp_pwm_set_pwmmux(unsigned int clk_req)
 {
 	unsigned int reg_before, reg_after;
-	int ret = 0;
 	enum DDP_CLK_ID clkid = -1;
 
 	clkid = disp_pwm_get_clkid(clk_req);
 
-	ret = disp_pwm_get_muxbase();
+	disp_pwm_get_muxbase();
 	reg_before = disp_pwm_get_pwmmux();
 
 	pr_debug("[PWM]clk_req=%d clkid=%d", clk_req, clkid);

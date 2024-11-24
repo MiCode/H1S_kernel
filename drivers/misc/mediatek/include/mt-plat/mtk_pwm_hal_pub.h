@@ -1,19 +1,6 @@
-/*****************************************************************************
- * mtk_pwm_hal_hub.h PWM Drvier
- *
- * Copyright (c) 2016, Media Teck.inc
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public Licence,
- * version 2, as publish by the Free Software Foundation.
- *
- * This program is distributed and in hope it will be useful, but WITHOUT
- * ANY WARRNTY; without even the implied warranty of MERCHANTABITLITY or
- * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
- * more details.
- *
- *
- *****************************************************************************
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __MT_PWM_HAL_PUB_H__
@@ -87,3 +74,4 @@ void mt_set_pwm_buf0_size_hal(uint32_t pwm_no, uint16_t size);
 int mt_get_pwm_clk_src(struct platform_device *pdev);
 void  mt_pwm_clk_sel_hal(u32 pwm, u32 clk_src);
 #endif
+

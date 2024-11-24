@@ -1,5 +1,5 @@
 /*
- * Copyright(c) 2015 - 2017 Intel Corporation.
+ * Copyright(c) 2015 - 2018 Intel Corporation.
  *
  * This file is provided under a dual BSD/GPLv2 license.  When using or
  * redistributing this file, you may do so under either license.
@@ -105,6 +105,17 @@ enum {
 	HFI1_HAS_GRH = (1 << 0),
 };
 
+#define LRH_16B_BYTES (FIELD_SIZEOF(struct hfi1_16b_header, lrh))
+#define LRH_16B_DWORDS (LRH_16B_BYTES / sizeof(u32))
+#define LRH_9B_BYTES (FIELD_SIZEOF(struct ib_header, lrh))
+#define LRH_9B_DWORDS (LRH_9B_BYTES / sizeof(u32))
+
+/* 24Bits for qpn, upper 8Bits reserved */
+struct opa_16b_mgmt {
+	__be32 dest_qpn;
+	__be32 src_qpn;
+};
+
 struct hfi1_16b_header {
 	u32 lrh[4];
 	union {
@@ -113,6 +124,7 @@ struct hfi1_16b_header {
 			struct ib_other_headers oth;
 		} l;
 		struct ib_other_headers oth;
+		struct opa_16b_mgmt mgmt;
 	} u;
 } __packed;
 
@@ -222,9 +234,7 @@ struct hfi1_ibdev {
 	/* per HFI symlinks to above */
 	struct dentry *hfi1_ibdev_link;
 #ifdef CONFIG_FAULT_INJECTION
-	struct fault_opcode *fault_opcode;
-	struct fault_packet *fault_packet;
-	bool fault_suppress_err;
+	struct fault *fault;
 #endif
 #endif
 };
@@ -243,17 +253,6 @@ static inline struct rvt_qp *iowait_to_qp(struct  iowait *s_iowait)
 
 	priv = container_of(s_iowait, struct hfi1_qp_priv, s_iowait);
 	return priv->owner;
-}
-
-/*
- * Send if not busy or waiting for I/O and either
- * a RC response is pending or we can process send work requests.
- */
-static inline int hfi1_send_ok(struct rvt_qp *qp)
-{
-	return !(qp->s_flags & (RVT_S_BUSY | RVT_S_ANY_WAIT_IO)) &&
-		(qp->s_hdrwords || (qp->s_flags & RVT_S_RESP_PENDING) ||
-		 !(qp->s_flags & RVT_S_ANY_WAIT_SEND));
 }
 
 /*
@@ -336,8 +335,6 @@ void hfi1_ud_rcv(struct hfi1_packet *packet);
 
 int hfi1_lookup_pkey_idx(struct hfi1_ibport *ibp, u16 pkey);
 
-int hfi1_rvt_get_rwqe(struct rvt_qp *qp, int wr_id_only);
-
 void hfi1_migrate_qp(struct rvt_qp *qp);
 
 int hfi1_check_modify_qp(struct rvt_qp *qp, struct ib_qp_attr *attr,
@@ -369,8 +366,7 @@ void hfi1_do_send(struct rvt_qp *qp, bool in_thread);
 void hfi1_send_complete(struct rvt_qp *qp, struct rvt_swqe *wqe,
 			enum ib_wc_status status);
 
-void hfi1_send_rc_ack(struct hfi1_ctxtdata *rcd, struct rvt_qp *qp,
-		      bool is_fecn);
+void hfi1_send_rc_ack(struct hfi1_packet *packet, bool is_fecn);
 
 int hfi1_make_rc_req(struct rvt_qp *qp, struct hfi1_pkt_state *ps);
 
@@ -414,6 +410,11 @@ static inline void cacheless_memcpy(void *dst, void *src, size_t n)
 	 * is not invoked.
 	 */
 	__copy_user_nocache(dst, (void __user *)src, n, 0);
+}
+
+static inline bool opa_bth_is_migration(struct ib_other_headers *ohdr)
+{
+	return ohdr->bth[1] & cpu_to_be32(OPA_BTH_MIG_REQ);
 }
 
 extern const enum ib_wc_opcode ib_hfi1_wc_opcode[];

@@ -25,7 +25,7 @@
 	};
 
 	chosen {
-		linux,stdout-path = &console;
+		stdout-path = &console;
 	};
 
 	cpus {
@@ -36,7 +36,7 @@
 		};
 	};
 
-	memory {
+	memory@0 {
 		reg = <0x00000000 0x08000000>;	// 128MB RAM
 	};
 

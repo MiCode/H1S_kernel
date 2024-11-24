@@ -144,32 +144,6 @@ static inline void _SMC_outw_align4(u16 val, void __iomem *ioaddr, int reg,
 
 #define SMC_IRQ_FLAGS		(0)
 
-#elif   defined(CONFIG_M32R)
-
-#define SMC_CAN_USE_8BIT	0
-#define SMC_CAN_USE_16BIT	1
-#define SMC_CAN_USE_32BIT	0
-
-#define SMC_inb(a, r)		inb(((u32)a) + (r))
-#define SMC_inw(a, r)		inw(((u32)a) + (r))
-#define SMC_outb(v, a, r)	outb(v, ((u32)a) + (r))
-#define SMC_outw(lp, v, a, r)	outw(v, ((u32)a) + (r))
-#define SMC_insw(a, r, p, l)	insw(((u32)a) + (r), p, l)
-#define SMC_outsw(a, r, p, l)	outsw(((u32)a) + (r), p, l)
-
-#define SMC_IRQ_FLAGS		(0)
-
-#define RPC_LSA_DEFAULT		RPC_LED_TX_RX
-#define RPC_LSB_DEFAULT		RPC_LED_100_10
-
-#elif defined(CONFIG_MN10300)
-
-/*
- * MN10300/AM33 configuration
- */
-
-#include <unit/smc91111.h>
-
 #elif defined(CONFIG_ATARI)
 
 #define SMC_CAN_USE_8BIT        1
@@ -212,8 +186,8 @@ static inline void mcf_outsw(void *a, unsigned char *p, int l)
 		writew(*wp++, a);
 }
 
-#define SMC_inw(a, r)		_swapw(readw((a) + (r)))
-#define SMC_outw(lp, v, a, r)	writew(_swapw(v), (a) + (r))
+#define SMC_inw(a, r)		ioread16be((a) + (r))
+#define SMC_outw(lp, v, a, r)	iowrite16be(v, (a) + (r))
 #define SMC_insw(a, r, p, l)	mcf_insw(a + r, p, l)
 #define SMC_outsw(a, r, p, l)	mcf_outsw(a + r, p, l)
 
@@ -327,7 +301,6 @@ struct smc_local {
  * as RX which can overrun memory and lose packets.
  */
 #include <linux/dma-mapping.h>
-#include <linux/dma/pxa-dma.h>
 
 #ifdef SMC_insl
 #undef SMC_insl

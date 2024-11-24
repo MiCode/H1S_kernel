@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/version.h>
@@ -22,22 +14,13 @@
 #include <linux/err.h>
 #include <linux/syscalls.h>
 #include "mt-plat/mtk_thermal_monitor.h"
-#ifdef CONFIG_MACH_MT8168
-#include <mtk_charger.h>
-#endif
 #include <linux/uidgid.h>
 #include <linux/notifier.h>
 #include <linux/fb.h>
 #include "mach/mtk_thermal.h"
-#if (CONFIG_MTK_GAUGE_VERSION == 30)
-#include <mt-plat/charger_type.h>
-#include <mt-plat/mtk_charger.h>
-#include <mt-plat/mtk_battery.h>
-#else
-#include <tmp_battery.h>
-#include <charging.h>
-#endif
 
+
+#define CONFIG_MTK_GAUGE_VERSION 30
 /* ************************************ */
 /* Weak functions */
 /* ************************************ */
@@ -47,12 +30,11 @@ get_bat_charging_current_level(void)
 	pr_notice("E_WF: %s doesn't exist\n", __func__);
 	return 500;
 }
-
-	enum charger_type __attribute__ ((weak))
+	int __attribute__ ((weak))
 mt_get_charger_type(void)
 {
 	pr_notice("E_WF: %s doesn't exist\n", __func__);
-	return STANDARD_HOST;
+	return 0;
 }
 
 	int __attribute__ ((weak))

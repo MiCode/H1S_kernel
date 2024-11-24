@@ -246,6 +246,7 @@ static bool access_gic_sgi(struct kvm_vcpu *vcpu,
 			   const struct coproc_reg *r)
 {
 	u64 reg;
+	bool g1;
 
 	if (!p->is_write)
 		return read_from_write_only(vcpu, p);
@@ -253,7 +254,25 @@ static bool access_gic_sgi(struct kvm_vcpu *vcpu,
 	reg = (u64)*vcpu_reg(vcpu, p->Rt2) << 32;
 	reg |= *vcpu_reg(vcpu, p->Rt1) ;
 
-	vgic_v3_dispatch_sgi(vcpu, reg);
+	/*
+	 * In a system where GICD_CTLR.DS=1, a ICC_SGI0R access generates
+	 * Group0 SGIs only, while ICC_SGI1R can generate either group,
+	 * depending on the SGI configuration. ICC_ASGI1R is effectively
+	 * equivalent to ICC_SGI0R, as there is no "alternative" secure
+	 * group.
+	 */
+	switch (p->Op1) {
+	default:		/* Keep GCC quiet */
+	case 0:			/* ICC_SGI1R */
+		g1 = true;
+		break;
+	case 1:			/* ICC_ASGI1R */
+	case 2:			/* ICC_SGI0R */
+		g1 = false;
+		break;
+	}
+
+	vgic_v3_dispatch_sgi(vcpu, reg, g1);
 
 	return true;
 }
@@ -266,6 +285,60 @@ static bool access_gic_sre(struct kvm_vcpu *vcpu,
 		return ignore_write(vcpu, p);
 
 	*vcpu_reg(vcpu, p->Rt1) = vcpu->arch.vgic_cpu.vgic_v3.vgic_sre;
+
+	return true;
+}
+
+static bool access_cntp_tval(struct kvm_vcpu *vcpu,
+			     const struct coproc_params *p,
+			     const struct coproc_reg *r)
+{
+	u64 now = kvm_phys_timer_read();
+	u64 val;
+
+	if (p->is_write) {
+		val = *vcpu_reg(vcpu, p->Rt1);
+		kvm_arm_timer_set_reg(vcpu, KVM_REG_ARM_PTIMER_CVAL, val + now);
+	} else {
+		val = kvm_arm_timer_get_reg(vcpu, KVM_REG_ARM_PTIMER_CVAL);
+		*vcpu_reg(vcpu, p->Rt1) = val - now;
+	}
+
+	return true;
+}
+
+static bool access_cntp_ctl(struct kvm_vcpu *vcpu,
+			    const struct coproc_params *p,
+			    const struct coproc_reg *r)
+{
+	u32 val;
+
+	if (p->is_write) {
+		val = *vcpu_reg(vcpu, p->Rt1);
+		kvm_arm_timer_set_reg(vcpu, KVM_REG_ARM_PTIMER_CTL, val);
+	} else {
+		val = kvm_arm_timer_get_reg(vcpu, KVM_REG_ARM_PTIMER_CTL);
+		*vcpu_reg(vcpu, p->Rt1) = val;
+	}
+
+	return true;
+}
+
+static bool access_cntp_cval(struct kvm_vcpu *vcpu,
+			     const struct coproc_params *p,
+			     const struct coproc_reg *r)
+{
+	u64 val;
+
+	if (p->is_write) {
+		val = (u64)*vcpu_reg(vcpu, p->Rt2) << 32;
+		val |= *vcpu_reg(vcpu, p->Rt1);
+		kvm_arm_timer_set_reg(vcpu, KVM_REG_ARM_PTIMER_CVAL, val);
+	} else {
+		val = kvm_arm_timer_get_reg(vcpu, KVM_REG_ARM_PTIMER_CVAL);
+		*vcpu_reg(vcpu, p->Rt1) = val;
+		*vcpu_reg(vcpu, p->Rt2) = val >> 32;
+	}
 
 	return true;
 }
@@ -410,6 +483,10 @@ static const struct coproc_reg cp15_regs[] = {
 	{ CRn(12), CRm( 0), Op1( 0), Op2( 0), is32,
 			NULL, reset_val, c12_VBAR, 0x00000000 },
 
+	/* ICC_ASGI1R */
+	{ CRm64(12), Op1( 1), is64, access_gic_sgi},
+	/* ICC_SGI0R */
+	{ CRm64(12), Op1( 2), is64, access_gic_sgi},
 	/* ICC_SRE */
 	{ CRn(12), CRm(12), Op1( 0), Op2(5), is32, access_gic_sre },
 
@@ -423,9 +500,16 @@ static const struct coproc_reg cp15_regs[] = {
 	{ CRn(13), CRm( 0), Op1( 0), Op2( 4), is32,
 			NULL, reset_unknown, c13_TID_PRIV },
 
+	/* CNTP */
+	{ CRm64(14), Op1( 2), is64, access_cntp_cval},
+
 	/* CNTKCTL: swapped by interrupt.S. */
 	{ CRn(14), CRm( 1), Op1( 0), Op2( 0), is32,
 			NULL, reset_val, c14_CNTKCTL, 0x00000000 },
+
+	/* CNTP */
+	{ CRn(14), CRm( 2), Op1( 0), Op2( 0), is32, access_cntp_tval },
+	{ CRn(14), CRm( 2), Op1( 0), Op2( 1), is32, access_cntp_ctl },
 
 	/* The Configuration Base Address Register. */
 	{ CRn(15), CRm( 0), Op1( 4), Op2( 0), is32, access_cbar},
@@ -574,13 +658,22 @@ int kvm_handle_cp14_64(struct kvm_vcpu *vcpu, struct kvm_run *run)
 }
 
 static void reset_coproc_regs(struct kvm_vcpu *vcpu,
-			      const struct coproc_reg *table, size_t num)
+			      const struct coproc_reg *table, size_t num,
+			      unsigned long *bmap)
 {
 	unsigned long i;
 
 	for (i = 0; i < num; i++)
-		if (table[i].reset)
+		if (table[i].reset) {
+			int reg = table[i].reg;
+
 			table[i].reset(vcpu, &table[i]);
+			if (reg > 0 && reg < NR_CP15_REGS) {
+				set_bit(reg, bmap);
+				if (table[i].is_64bit)
+					set_bit(reg + 1, bmap);
+			}
+		}
 }
 
 static struct coproc_params decode_32bit_hsr(struct kvm_vcpu *vcpu)
@@ -1355,17 +1448,15 @@ void kvm_reset_coprocs(struct kvm_vcpu *vcpu)
 {
 	size_t num;
 	const struct coproc_reg *table;
-
-	/* Catch someone adding a register without putting in reset entry. */
-	memset(vcpu->arch.ctxt.cp15, 0x42, sizeof(vcpu->arch.ctxt.cp15));
+	DECLARE_BITMAP(bmap, NR_CP15_REGS) = { 0, };
 
 	/* Generic chip reset first (so target could override). */
-	reset_coproc_regs(vcpu, cp15_regs, ARRAY_SIZE(cp15_regs));
+	reset_coproc_regs(vcpu, cp15_regs, ARRAY_SIZE(cp15_regs), bmap);
 
 	table = get_target_table(vcpu->arch.target, &num);
-	reset_coproc_regs(vcpu, table, num);
+	reset_coproc_regs(vcpu, table, num, bmap);
 
 	for (num = 1; num < NR_CP15_REGS; num++)
-		if (vcpu_cp15(vcpu, num) == 0x42424242)
-			panic("Didn't reset vcpu_cp15(vcpu, %zi)", num);
+		WARN(!test_bit(num, bmap),
+		     "Didn't reset vcpu_cp15(vcpu, %zi)", num);
 }

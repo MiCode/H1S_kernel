@@ -1,15 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
+
+/*****************************************************************************
+ * camera_fdvt.c - Linux FDVT Device Driver
+ *
+ * DESCRIPTION:
+ *     This file provid the other drivers FDVT relative functions
+ *
+ *****************************************************************************/
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -67,14 +67,14 @@
 #include <linux/pm_wakeup.h>
 #endif
 
-#ifdef CONFIG_PM_SLEEP
-struct wakeup_source fdvt_wake_lock;
+struct wakeup_source *fdvt_wake_lock;
+
+#define FDVT_SMI_READY
+#ifdef FDVT_SMI_READY
+#include <smi_public.h>
 #endif
 
-#include <smi_public.h>
-
 #include <m4u.h>
-
 #define FDVT_DEVNAME     "camera-fdvt"
 
 #define LOG_VRB(format, args...) \
@@ -515,25 +515,6 @@ void FDVT_basic_config(void)
 	FDVT_WR32(0x0190012C, FDVT_SRC_WD_HT);
 }
 
-/**************************************************************
- *
- **************************************************************/
-enum m4u_callback_ret_t FDVT_M4U_TranslationFault_callback(int port,
-	unsigned int mva, void *data)
-{
-	unsigned int u4RegValue = 0;
-	unsigned int u4Index = 0;
-
-	pr_info("[FDVT_M4U]fault call port=%d, mva=0x%x", port, mva);
-
-	for (u4Index = 0x0; u4Index < 0x180; u4Index += 4) {
-		u4RegValue = ioread32((void *)(FDVT_ADDR + u4Index));
-		LOG_DBG("+0x%x 0x%x\n", u4Index, u4RegValue);
-	}
-
-	return M4U_CALLBACK_HANDLED;
-}
-
 /***********************************************************
  * Clock to ms
  ************************************************************/
@@ -555,15 +536,13 @@ static unsigned long us_to_jiffies(unsigned long us)
 /*=======================================================================*/
 #if LDVT_EARLY_PORTING_NO_CCF
 #else
+#ifdef FDVT_SMI_READY
 static inline void FD_Prepare_Enable_ccf_clock(void)
 {
 	int ret;
 
-#if (MTK_FD_LARB == 2)
+	/* smi_bus_enable(SMI_LARB_IMGSYS1, "camera_fdvt"); */
 	smi_bus_prepare_enable(SMI_LARB2, "camera_fdvt");
-#else
-	smi_bus_prepare_enable(SMI_LARB5, "camera_fdvt");
-#endif
 
 	ret = clk_prepare_enable(fd_clk.CG_IMGSYS_FDVT);
 	if (ret)
@@ -575,12 +554,10 @@ static inline void FD_Prepare_Enable_ccf_clock(void)
 static inline void FD_Disable_Unprepare_ccf_clock(void)
 {
 	clk_disable_unprepare(fd_clk.CG_IMGSYS_FDVT);
-#if (MTK_FD_LARB == 2)
+	/* smi_bus_disable(SMI_LARB_IMGSYS1, "camera_fdvt"); */
 	smi_bus_disable_unprepare(SMI_LARB2, "camera_fdvt");
-#else
-	smi_bus_disable_unprepare(SMI_LARB5, "camera_fdvt");
-#endif
 }
+#endif
 #endif
 
 static int mt_fdvt_clk_ctrl(int en)
@@ -598,10 +575,13 @@ static int mt_fdvt_clk_ctrl(int en)
 		FDVT_WR32(setReg, CAMSYS_CONFIG_BASE+0x4);
 	}
 #else
+#ifdef FDVT_SMI_READY
 	if (en)
 		FD_Prepare_Enable_ccf_clock();
 	else
 		FD_Disable_Unprepare_ccf_clock();
+#else
+#endif
 #endif
 	return 0;
 }
@@ -814,8 +794,13 @@ static int FDVT_SetRegHW(FDVTRegIO *a_pstCfg)
 
 	pREGIO = (FDVTRegIO *)a_pstCfg;
 
-	if (pREGIO->u4Count > FDVT_DRAM_REGCNT) {
-		LOG_DBG("Buffer Size Exceeded!\n");
+	if (pREGIO == NULL) {
+		LOG_DBG("pREGIO is NULL!\n");
+		return -EFAULT;
+	}
+
+	if ((pREGIO->u4Count == 0) || (pREGIO->u4Count > FDVT_DRAM_REGCNT)) {
+		LOG_DBG("Abnormal Register Count!\n");
 		return -EFAULT;
 	}
 
@@ -830,7 +815,7 @@ static int FDVT_SetRegHW(FDVTRegIO *a_pstCfg)
 	if (copy_from_user(
 		(void *)pFDVTWriteBuffer.u4Data,
 		(void *) pREGIO->pData,
-		pREGIO->u4Count * sizeof(u32))) {
+		pREGIO->u4Count * sizeof(u32)) != 0) {
 		LOG_DBG("ioctl copy from user failed\n");
 		return -EFAULT;
 	}
@@ -888,7 +873,7 @@ static int FDVT_SetRegHW(FDVTRegIO *a_pstCfg)
 			secMemType2MVA = CMDQ_SAM_PH_2_MVA;
 		else
 			LOG_INF("Unknown Sec Mem Type\n");
-#if (MTK_FD_LARB == 2)
+
 		cmdqRecWriteSecure(handle,
 			FDVT_RSCON_BASE_ADR_HW,
 			secMemType2MVA,
@@ -1029,148 +1014,6 @@ static int FDVT_SetRegHW(FDVTRegIO *a_pstCfg)
 			0,
 			g_fdvt_secmeta.Learning_Data_Size[17],
 			M4U_PORT_CAM_FD_RB);
-#else
-		cmdqRecWriteSecure(handle,
-			FDVT_RSCON_BASE_ADR_HW,
-			secMemType2MVA,
-			g_fdvt_secmeta.RSConfig_Handler,
-			0,
-			g_fdvt_secmeta.RSConfigSize,
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FD_CON_BASE_ADR_HW,
-			secMemType2MVA,
-			g_fdvt_secmeta.FDConfig_Handler,
-			0,
-			g_fdvt_secmeta.FDConfigSize,
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_0_HW,
-			secMemType2MVA,
-			LearningData_Chosen[0],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[0],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_1_HW,
-			secMemType2MVA,
-			LearningData_Chosen[1],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[1],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_2_HW,
-			secMemType2MVA,
-			LearningData_Chosen[2],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[2],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_3_HW,
-			secMemType2MVA,
-			LearningData_Chosen[3],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[3],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_4_HW,
-			secMemType2MVA,
-			LearningData_Chosen[4],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[4],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_5_HW,
-			secMemType2MVA,
-			LearningData_Chosen[5],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[5],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_6_HW,
-			secMemType2MVA,
-			LearningData_Chosen[6],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[6],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_7_HW,
-			secMemType2MVA,
-			LearningData_Chosen[7],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[7],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_8_HW,
-			secMemType2MVA,
-			LearningData_Chosen[8],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[8],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_9_HW,
-			secMemType2MVA,
-			LearningData_Chosen[9],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[9],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_10_HW,
-			secMemType2MVA,
-			LearningData_Chosen[10],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[10],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_11_HW,
-			secMemType2MVA,
-			LearningData_Chosen[11],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[11],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_12_HW,
-			secMemType2MVA,
-			LearningData_Chosen[12],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[12],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_13_HW,
-			secMemType2MVA,
-			LearningData_Chosen[13],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[13],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_14_HW,
-			secMemType2MVA,
-			LearningData_Chosen[14],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[14],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_15_HW,
-			secMemType2MVA,
-			LearningData_Chosen[15],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[15],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_16_HW,
-			secMemType2MVA,
-			LearningData_Chosen[16],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[16],
-			M4U_PORT_CAM_FDVT_RB);
-		cmdqRecWriteSecure(handle,
-			FDVT_FF_BASE_ADR_17_HW,
-			secMemType2MVA,
-			LearningData_Chosen[17],
-			0,
-			g_fdvt_secmeta.Learning_Data_Size[17],
-			M4U_PORT_CAM_FDVT_RB);
-#endif
 
 		ret = cmdq_task_set_secure_meta(
 			handle,
@@ -1662,15 +1505,11 @@ static int FDVT_open(struct inode *inode, struct file *file)
 	g_drvOpened = 1;
 	spin_unlock(&g_spinLock);
 
-#ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&fdvt_wake_lock);
-#endif
+	__pm_stay_awake(fdvt_wake_lock);
 
 	mt_fdvt_clk_ctrl(1);
 
-#ifdef CONFIG_PM_SLEEP
-	__pm_relax(&fdvt_wake_lock);
-#endif
+	__pm_relax(fdvt_wake_lock);
 
 	if (pBuff != NULL)
 		LOG_DBG("pBuff is not null\n");
@@ -1683,6 +1522,7 @@ static int FDVT_open(struct inode *inode, struct file *file)
 		ret = -ENOMEM;
 	} else {
 		LOG_DBG(" ioctl allocate mem ok\n");
+		memset(pBuff, 0, buf_size);
 	}
 
 	pread_buf = kmalloc(buf_size, GFP_KERNEL);
@@ -1691,6 +1531,7 @@ static int FDVT_open(struct inode *inode, struct file *file)
 		ret = -ENOMEM;
 	} else {
 		LOG_DBG(" ioctl allocate mem ok\n");
+		memset(pread_buf, 0, buf_size);
 	}
 
 	if (ret < 0) {
@@ -1728,15 +1569,11 @@ static int FDVT_release(struct inode *inode, struct file *file)
 	FDVT_WR32(0x00000000, FDVT_INT_EN);
 	g_FDVTIRQ = ioread32((void *)FDVT_INT);
 
-#ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&fdvt_wake_lock);
-#endif
+	__pm_stay_awake(fdvt_wake_lock);
 
 	mt_fdvt_clk_ctrl(0);
 
-#ifdef CONFIG_PM_SLEEP
-	__pm_relax(&fdvt_wake_lock);
-#endif
+	__pm_relax(fdvt_wake_lock);
 
 	spin_lock(&g_spinLock);
 	g_drvOpened = 0;
@@ -1921,11 +1758,8 @@ static int FDVT_probe(struct platform_device *dev)
 	/* Initialize waitqueue */
 	init_waitqueue_head(&g_FDVTWQ);
 
-#ifdef CONFIG_PM_SLEEP
-	wakeup_source_init(
-		&fdvt_wake_lock,
-		"fdvt_lock_wakelock");
-#endif
+	fdvt_wake_lock =
+		wakeup_source_register(NULL, "fdvt_lock_wakelock");
 
 	LOG_DBG("[FDVT_DEBUG] Done\n");
 
@@ -1940,15 +1774,11 @@ static int FDVT_remove(struct platform_device *dev)
 	FDVT_WR32(0x00000000, FDVT_INT_EN);
 	g_FDVTIRQ = ioread32((void *)FDVT_INT);
 
-#ifdef CONFIG_PM_SLEEP
-	__pm_stay_awake(&fdvt_wake_lock);
-#endif
+	__pm_stay_awake(fdvt_wake_lock);
 
 	mt_fdvt_clk_ctrl(0);
 
-#ifdef CONFIG_PM_SLEEP
-	__pm_relax(&fdvt_wake_lock);
-#endif
+	__pm_relax(fdvt_wake_lock);
 
 	device_destroy(FDVT_class, FDVT_devno);
 	class_destroy(FDVT_class);
@@ -2058,22 +1888,7 @@ static int __init FDVT_driver_init(void)
 	register_early_suspend(&FDVT_early_suspend_desc);
 	#endif
 
-#if (MTK_FD_LARB == 2)
-	m4u_register_fault_callback(M4U_PORT_CAM_FD_RP,
-			FDVT_M4U_TranslationFault_callback, NULL);
-	m4u_register_fault_callback(M4U_PORT_CAM_FD_WR,
-			FDVT_M4U_TranslationFault_callback, NULL);
-	m4u_register_fault_callback(M4U_PORT_CAM_FD_RB,
-			FDVT_M4U_TranslationFault_callback, NULL);
-#else
-	m4u_register_fault_callback(M4U_PORT_CAM_FDVT_RP,
-			FDVT_M4U_TranslationFault_callback, NULL);
-	m4u_register_fault_callback(M4U_PORT_CAM_FDVT_WR,
-			FDVT_M4U_TranslationFault_callback, NULL);
-	m4u_register_fault_callback(M4U_PORT_CAM_FDVT_RB,
-			FDVT_M4U_TranslationFault_callback, NULL);
-#endif
-	LOG_DBG("[FDVT_DEBUG] Done\n");
+	LOG_DBG("[FDVT_DEBUG] FDVT driver init Done\n");
 
 	return 0;
 }

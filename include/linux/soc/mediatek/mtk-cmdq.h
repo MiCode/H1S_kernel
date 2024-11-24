@@ -24,6 +24,7 @@
 #define CMDQ_CPR_DISP_CNT		0x8001
 #define CMDQ_EVENT_MAX			0x3FF
 #define CMDQ_CPR_DDR_USR_CNT		0x8002
+#define CMDQ_CPR_SLP_GPR_MAX		0x8003
 
 #define CMDQ_GPR_CNT_ID			32
 #define CMDQ_CPR_STRAT_ID		0x8000
@@ -36,16 +37,10 @@
 #define CMDQ_TICK_TO_US(_t)		(do_div(_t, 26))
 
 extern int gce_shift_bit;
-#if IS_ENABLED(CONFIG_MACH_MT6771) || IS_ENABLED(CONFIG_MACH_MT8168) || \
-	IS_ENABLED(CONFIG_MACH_MT6768) || IS_ENABLED(CONFIG_MACH_MT6739) || \
-	IS_ENABLED(CONFIG_MACH_MT8167)
+
+
 #define CMDQ_REG_SHIFT_ADDR(addr)	((addr) >> gce_shift_bit)
 #define CMDQ_REG_REVERT_ADDR(addr)	((addr) << gce_shift_bit)
-#else
-#define CMDQ_REG_SHIFT_ADDR(addr)	((addr) >> 3)
-#define CMDQ_REG_REVERT_ADDR(addr)	((addr) << 3)
-#endif
-
 
 /* GCE provide 32/64 bit General Purpose Register (GPR)
  * use as data cache or address register
@@ -409,7 +404,7 @@ void cmdq_buf_print_wfe(char *text, u32 txt_sz,
 	u32 offset, void *inst);
 
 void cmdq_buf_cmd_parse(u64 *buf, u32 cmd_nr, dma_addr_t buf_pa,
-	dma_addr_t cur_pa, const char *info);
+	dma_addr_t cur_pa, const char *info, void *chan);
 
 s32 cmdq_pkt_dump_buf(struct cmdq_pkt *pkt, dma_addr_t curr_pa);
 

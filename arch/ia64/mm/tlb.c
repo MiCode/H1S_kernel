@@ -339,7 +339,7 @@ EXPORT_SYMBOL(flush_tlb_range);
 
 void ia64_tlb_init(void)
 {
-	ia64_ptce_info_t uninitialized_var(ptce_info); /* GCC be quiet */
+	ia64_ptce_info_t ptce_info;
 	u64 tr_pgbits;
 	long status;
 	pal_vm_info_1_u_t vm_info_1;
@@ -430,8 +430,9 @@ int ia64_itr_entry(u64 target_mask, u64 va, u64 pte, u64 log_size)
 	int cpu = smp_processor_id();
 
 	if (!ia64_idtrs[cpu]) {
-		ia64_idtrs[cpu] = kmalloc(2 * IA64_TR_ALLOC_MAX *
-				sizeof (struct ia64_tr_entry), GFP_KERNEL);
+		ia64_idtrs[cpu] = kmalloc_array(2 * IA64_TR_ALLOC_MAX,
+						sizeof(struct ia64_tr_entry),
+						GFP_KERNEL);
 		if (!ia64_idtrs[cpu])
 			return -ENOMEM;
 	}

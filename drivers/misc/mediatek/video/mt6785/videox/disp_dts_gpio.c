@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include "disp_dts_gpio.h"
 #include "disp_helper.h"
@@ -38,6 +29,10 @@ static const char *this_state_name[DTS_GPIO_STATE_MAX] = {
 	"mode_te_gpio",
 	"mode_te_te",
 	"mode_te1_te",
+#ifdef CONFIG_MTK_MT6382_BDG
+	"6382_rst_out1_gpio",
+	"6382_rst_out0_gpio",
+#endif
 };
 
 /* pinctrl implementation */

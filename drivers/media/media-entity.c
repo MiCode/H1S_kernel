@@ -64,22 +64,6 @@ static inline const char *intf_type(struct media_interface *intf)
 		return "v4l-swradio";
 	case MEDIA_INTF_T_V4L_TOUCH:
 		return "v4l-touch";
-	case MEDIA_INTF_T_ALSA_PCM_CAPTURE:
-		return "alsa-pcm-capture";
-	case MEDIA_INTF_T_ALSA_PCM_PLAYBACK:
-		return "alsa-pcm-playback";
-	case MEDIA_INTF_T_ALSA_CONTROL:
-		return "alsa-control";
-	case MEDIA_INTF_T_ALSA_COMPRESS:
-		return "alsa-compress";
-	case MEDIA_INTF_T_ALSA_RAWMIDI:
-		return "alsa-rawmidi";
-	case MEDIA_INTF_T_ALSA_HWDEP:
-		return "alsa-hwdep";
-	case MEDIA_INTF_T_ALSA_SEQUENCER:
-		return "alsa-sequencer";
-	case MEDIA_INTF_T_ALSA_TIMER:
-		return "alsa-timer";
 	default:
 		return "unknown-intf";
 	}
@@ -214,11 +198,19 @@ void media_gobj_destroy(struct media_gobj *gobj)
 	gobj->mdev = NULL;
 }
 
+/*
+ * TODO: Get rid of this.
+ */
+#define MEDIA_ENTITY_MAX_PADS		512
+
 int media_entity_pads_init(struct media_entity *entity, u16 num_pads,
 			   struct media_pad *pads)
 {
 	struct media_device *mdev = entity->graph_obj.mdev;
 	unsigned int i;
+
+	if (num_pads >= MEDIA_ENTITY_MAX_PADS)
+		return -E2BIG;
 
 	entity->num_pads = num_pads;
 	entity->pads = pads;
@@ -279,11 +271,6 @@ static struct media_entity *stack_pop(struct media_graph *graph)
 
 #define link_top(en)	((en)->stack[(en)->top].link)
 #define stack_top(en)	((en)->stack[(en)->top].entity)
-
-/*
- * TODO: Get rid of this.
- */
-#define MEDIA_ENTITY_MAX_PADS		512
 
 /**
  * media_graph_walk_init - Allocate resources for graph walk

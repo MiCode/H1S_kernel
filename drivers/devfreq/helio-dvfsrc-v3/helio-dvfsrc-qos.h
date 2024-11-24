@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __HELIO_DVFSRC_QOS_H
 #define __HELIO_DVFSRC_QOS_H
@@ -76,19 +68,19 @@ struct helio_dvfsrc {
 	void __iomem		*spm_regs;
 	void __iomem		*sram_regs;
 
-	struct notifier_block	pm_qos_memory_bw_nb;
-	struct notifier_block	pm_qos_cpu_memory_bw_nb;
-	struct notifier_block	pm_qos_gpu_memory_bw_nb;
-	struct notifier_block	pm_qos_mm_memory_bw_nb;
-	struct notifier_block	pm_qos_other_memory_bw_nb;
-	struct notifier_block	pm_qos_ddr_opp_nb;
-	struct notifier_block	pm_qos_vcore_opp_nb;
-	struct notifier_block	pm_qos_scp_vcore_request_nb;
-	struct notifier_block	pm_qos_power_model_ddr_request_nb;
-	struct notifier_block	pm_qos_power_model_vcore_request_nb;
-	struct notifier_block	pm_qos_vcore_dvfs_force_opp_nb;
-	struct notifier_block	pm_qos_isp_hrt_bw_nb;
-	struct notifier_block	pm_qos_apu_memory_bw_nb;
+	struct notifier_block	mtk_pm_qos_memory_bw_nb;
+	struct notifier_block	mtk_pm_qos_cpu_memory_bw_nb;
+	struct notifier_block	mtk_pm_qos_gpu_memory_bw_nb;
+	struct notifier_block	mtk_pm_qos_mm_memory_bw_nb;
+	struct notifier_block	mtk_pm_qos_other_memory_bw_nb;
+	struct notifier_block	mtk_pm_qos_ddr_opp_nb;
+	struct notifier_block	mtk_pm_qos_vcore_opp_nb;
+	struct notifier_block	mtk_pm_qos_scp_vcore_request_nb;
+	struct notifier_block	mtk_pm_qos_power_model_ddr_request_nb;
+	struct notifier_block	mtk_pm_qos_power_model_vcore_request_nb;
+	struct notifier_block	mtk_pm_qos_vcore_dvfs_force_opp_nb;
+	struct notifier_block	mtk_pm_qos_isp_hrt_bw_nb;
+	struct notifier_block	mtk_pm_qos_apu_memory_bw_nb;
 
 	struct reg_config	*init_config;
 
@@ -100,6 +92,8 @@ struct helio_dvfsrc {
 };
 
 extern int is_dvfsrc_enabled(void);
+extern int is_dvfsrc_qos_enabled(void);
+extern void helio_dvfsrc_qos_init_done(void);
 extern void helio_dvfsrc_enable(int dvfsrc_en);
 extern void helio_dvfsrc_flag_set(int flag);
 extern int helio_dvfsrc_flag_get(void);
@@ -128,8 +122,8 @@ extern int vcore_pmic_to_uv(int pmic_val);
 extern int vcore_uv_to_pmic(int vcore_uv);
 extern int helio_dvfsrc_level_mask_get(void);
 extern int helio_dvfsrc_level_mask_set(bool en, int level);
-extern void pm_qos_trace_dbg_show_request(int pm_qos_class);
-extern void pm_qos_trace_dbg_dump(int pm_qos_class);
+extern void mtk_pm_qos_trace_dbg_show_request(int mtk_pm_qos_class);
+extern void mtk_pm_qos_trace_dbg_dump(int mtk_pm_qos_class);
 
 #endif /* __HELIO_DVFSRC_QOS_H */
 

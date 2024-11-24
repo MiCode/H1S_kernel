@@ -592,16 +592,16 @@ static int s3c_camif_close(struct file *file)
 	return ret;
 }
 
-static unsigned int s3c_camif_poll(struct file *file,
+static __poll_t s3c_camif_poll(struct file *file,
 				   struct poll_table_struct *wait)
 {
 	struct camif_vp *vp = video_drvdata(file);
 	struct camif_dev *camif = vp->camif;
-	int ret;
+	__poll_t ret;
 
 	mutex_lock(&camif->lock);
 	if (vp->owner && vp->owner != file->private_data)
-		ret = -EBUSY;
+		ret = EPOLLERR;
 	else
 		ret = vb2_poll(&vp->vb_queue, file, wait);
 
@@ -943,7 +943,7 @@ static int s3c_camif_qbuf(struct file *file, void *priv,
 	if (vp->owner && vp->owner != priv)
 		return -EBUSY;
 
-	return vb2_qbuf(&vp->vb_queue, buf);
+	return vb2_qbuf(&vp->vb_queue, vp->vdev.v4l2_dev->mdev, buf);
 }
 
 static int s3c_camif_dqbuf(struct file *file, void *priv,
@@ -981,7 +981,7 @@ static int s3c_camif_prepare_buf(struct file *file, void *priv,
 				 struct v4l2_buffer *b)
 {
 	struct camif_vp *vp = video_drvdata(file);
-	return vb2_prepare_buf(&vp->vb_queue, b);
+	return vb2_prepare_buf(&vp->vb_queue, vp->vdev.v4l2_dev->mdev, b);
 }
 
 static int s3c_camif_g_selection(struct file *file, void *priv,
@@ -1142,12 +1142,12 @@ int s3c_camif_register_video_node(struct camif_dev *camif, int idx)
 
 	ret = vb2_queue_init(q);
 	if (ret)
-		goto err_vd_rel;
+		return ret;
 
 	vp->pad.flags = MEDIA_PAD_FL_SINK;
 	ret = media_entity_pads_init(&vfd->entity, 1, &vp->pad);
 	if (ret)
-		goto err_vd_rel;
+		return ret;
 
 	video_set_drvdata(vfd, vp);
 
@@ -1179,8 +1179,6 @@ err_ctrlh_free:
 	v4l2_ctrl_handler_free(&vp->ctrl_handler);
 err_me_cleanup:
 	media_entity_cleanup(&vfd->entity);
-err_vd_rel:
-	video_device_release(vfd);
 	return ret;
 }
 

@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _TYPEDEFS_H
 #define _TYPEDEFS_H
@@ -98,11 +90,20 @@ enum { RX, TX, NONE };
 #define DRV_WriteReg16(addr, data)  OUTREG16(addr, data)
 #define DRV_SetReg16(addr, data)    SETREG16(addr, data)
 #define DRV_ClrReg16(addr, data)    CLRREG16(addr, data)
-
+#if 0
+#ifndef DRV_Reg32
 #define DRV_Reg32(addr)             INREG32(addr)
+#endif
+#ifndef DRV_WriteReg32
 #define DRV_WriteReg32(addr, data)  OUTREG32(addr, data)
+#endif
+#ifndef DRV_SetReg32
 #define DRV_SetReg32(addr, data)    SETREG32(addr, data)
+#endif
+#ifndef DRV_ClrReg32
 #define DRV_ClrReg32(addr, data)    CLRREG32(addr, data)
+#endif
+#endif
 
 /* !!! DEPRECATED, WILL BE REMOVED LATER !!! */
 #define DRV_Reg(addr)               DRV_Reg16(addr)

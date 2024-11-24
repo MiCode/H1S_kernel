@@ -1,17 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2010 MediaTek, Inc.
- *
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- */
+* Copyright (C) 2021 MediaTek Inc.
+*/
 
 /*****************************************************************************
  *
@@ -54,6 +44,7 @@
 #include <linux/sched.h>
 #include <linux/types.h>
 #include <linux/reboot.h>
+#include <linux/of.h>
 #include <asm/div64.h>
 
 
@@ -70,8 +61,9 @@
 #include <mt-plat/mtk_boot_common.h>
 /* #include <linux/printk.h> */
 #include <mtk_reboot.h>
+// #include "../include/mt-plat/mtk_rtc.h"
 #ifdef CONFIG_MTK_CHARGER
-#include <mt-plat/mtk_charger.h>
+#include <mt-plat/v1/mtk_charger.h>
 #endif
 
 #define RTC_NAME	"mt-rtc"
@@ -97,6 +89,8 @@
 #define RTC_MIN_YEAR_OFFSET	(RTC_MIN_YEAR - 1900)
 #define AUTOBOOT_ON 0
 #define AUTOBOOT_OFF 1
+
+#define RTC_POFF_ALM_SET	_IOW('p', 0x15, struct rtc_time) /* Set alarm time  */
 
 /*
  * RTC_PDN1:
@@ -174,10 +168,17 @@ void __attribute__((weak)) arch_reset(char mode, const char *cmd)
 	pr_info("arch_reset is not ready\n");
 }
 
+struct tag_bootmode {
+	u32 size;
+	u32 tag;
+	u32 bootmode;
+	u32 boottype;
+};
 
 static int rtc_show_time;
 static int rtc_show_alarm = 1;
 static int alarm1m15s;
+static u32 bootmode;
 
 #if 1
 unsigned long rtc_read_hw_time(void)
@@ -601,8 +602,8 @@ static void rtc_handler(void)
 
 		/* power on */
 		if (now_time >= time - 1 && now_time <= time + 4) {
-			if (get_boot_mode() == KERNEL_POWER_OFF_CHARGING_BOOT
-			    || get_boot_mode() == LOW_POWER_OFF_CHARGING_BOOT) {
+			if (bootmode == KERNEL_POWER_OFF_CHARGING_BOOT
+			    || bootmode == LOW_POWER_OFF_CHARGING_BOOT) {
 				do {
 					now_time += 1;
 					rtc_time_to_tm(now_time, &tm);
@@ -632,6 +633,7 @@ static void rtc_handler(void)
 					}
 				} while (time <= now_time);
 				spin_unlock_irqrestore(&rtc_lock, flags);
+				rtc_mark_kpoc();
 				kernel_restart("kpoc");
 			} else {
 				hal_rtc_save_pwron_alarm();
@@ -708,6 +710,8 @@ static int rtc_ops_read_time(struct device *dev, struct rtc_time *tm)
 	tm->tm_year += RTC_MIN_YEAR_OFFSET;
 	tm->tm_mon--;
 	time = rtc_tm_to_time64(tm);
+	if (time > (unsigned long long)ULLONG_MAX)
+		return -EINVAL;
 #if RTC_OVER_TIME_RESET
 	if (unlikely(time > (unsigned long)LONG_MAX)) {
 		rtc_reset_to_deftime(tm);
@@ -822,30 +826,85 @@ static int rtc_ops_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	return 0;
 }
 
+int mtk_set_power_on(struct device *dev, struct rtc_wkalrm *alm)
+{
+	int err = 0;
+	struct rtc_time tm;
+	time64_t now, scheduled;
+
+	err = rtc_valid_tm(&alm->time);
+	if (err != 0)
+		return err;
+	scheduled = rtc_tm_to_time64(&alm->time);
+
+	err = rtc_ops_read_time(dev, &tm);
+	if (err != 0)
+		return err;
+	now = rtc_tm_to_time64(&tm);
+
+	if (scheduled <= now)
+		alm->enabled = 4;
+	else
+		alm->enabled = 3;
+
+	rtc_ops_set_alarm(dev, alm);
+
+	return err;
+}
+
 static int rtc_ops_ioctl(struct device *dev, unsigned int cmd,
 			 unsigned long arg)
 {
-	/* dump_stack(); */
+	void __user *uarg = (void __user *) arg;
+	int err = 0;
+	struct rtc_wkalrm alm;
+
 	rtc_xinfo("%s cmd=%d\n", __func__, cmd);
-#if 0
+
 	switch (cmd) {
-	case RTC_AUTOBOOT_ON:
-		{
-			hal_rtc_set_spare_register(RTC_AUTOBOOT, AUTOBOOT_ON);
-			rtc_xinfo("%s cmd=RTC_AUTOBOOT_ON\n", __func__);
-			return 0;
-		}
-	case RTC_AUTOBOOT_OFF:	/* IPO shutdown */
-		{
-			hal_rtc_set_spare_register(RTC_AUTOBOOT, AUTOBOOT_OFF);
-			rtc_xinfo("%s cmd=RTC_AUTOBOOT_OFF\n", __func__);
-			return 0;
-		}
+	case RTC_POFF_ALM_SET:
+		if (copy_from_user(&alm.time, uarg, sizeof(alm.time)))
+			return -EFAULT;
+		err = mtk_set_power_on(dev, &alm);
+		break;
 	default:
+		err = -EINVAL;
 		break;
 	}
-#endif
-	return -ENOIOCTLCMD;
+
+	return err;
+}
+
+static int rtc_get_boot_mode(void)
+{
+	struct device_node *np = NULL;
+	struct device_node *boot_node = NULL;
+	struct tag_bootmode *tag = NULL;
+
+	bootmode = 0;
+	np = of_find_node_by_name(NULL, "mt6357_rtc");
+	if (!np) {
+		rtc_xinfo("%s: of_find_node_by_name fail.\n", __func__);
+		return -ENXIO;
+	}
+
+	boot_node = of_parse_phandle(np, "bootmode", 0);
+	if (!boot_node) {
+		rtc_xinfo("%s: failed to get boot mode phandle\n", __func__);
+		return -ENXIO;
+	}
+
+	tag = (struct tag_bootmode *)of_get_property(boot_node, "atag,boot", NULL);
+	if (!tag) {
+		rtc_xinfo("%s: failed to get atag,boot\n", __func__);
+		return -ENXIO;
+	}
+
+	bootmode = tag->bootmode;
+
+	rtc_xinfo("%s: bootmode:%u\n", __func__, bootmode);
+
+	return 0;
 }
 
 static const struct rtc_class_ops rtc_ops = {
@@ -859,6 +918,7 @@ static const struct rtc_class_ops rtc_ops = {
 static int rtc_pdrv_probe(struct platform_device *pdev)
 {
 	unsigned long flags;
+	int ret;
 
 	/* only enable LPD interrupt in engineering build */
 	spin_lock_irqsave(&rtc_lock, flags);
@@ -874,6 +934,10 @@ static int rtc_pdrv_probe(struct platform_device *pdev)
 		pr_err("register rtc device failed (%ld)\n", PTR_ERR(rtc));
 		return PTR_ERR(rtc);
 	}
+
+	ret = rtc_get_boot_mode();
+	if (ret)
+		rtc_xinfo("%s: RTC get boot mode fail, but RTC can work\n", __func__);
 
 	pmic_register_interrupt_callback(INT_RTC, rtc_irq_handler);
 	pmic_enable_interrupt(INT_RTC, 1, "RTC");

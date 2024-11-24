@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -24,14 +16,10 @@
 #include <linux/uaccess.h>
 #include <linux/atomic.h>
 #include <linux/delay.h>
-#if defined(CONFIG_MACH_MT6758) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6885) || \
-	defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT8167) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6893)
-
+#if defined(CONFIG_MACH_MT6765) || defined(CONFIG_MACH_MT6761) || \
+	defined(CONFIG_MACH_MT6580) || defined(CONFIG_MACH_MT6779) || \
+	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6771) || \
+    defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT6785)
 #include <mtk_leds_drv.h>
 #else
 #define backlight_brightness_set(x) do { } while (0)
@@ -44,9 +32,7 @@
 #include <ddp_path.h>
 #include <primary_display.h>
 #include <disp_drv_platform.h>
-#ifdef CONFIG_MTK_DRE30_SUPPORT
 #include <disp_lowpower.h>
-#endif
 #ifdef CONFIG_MTK_SMI_EXT
 #include <mtk_smi.h>
 #include <smi_public.h>
@@ -59,12 +45,9 @@
 	defined(CONFIG_MACH_MT6759) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6739) || \
 	defined(CONFIG_MACH_MT6765) || defined(CONFIG_MACH_MT6761) || \
-	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT3967) || \
-	defined(CONFIG_MACH_MT8168) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6785) || \
-	defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) | \
-	defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
-
+	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6779) || \
+	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6771) || \
+    defined(CONFIG_MACH_MT6785)
 #include <ddp_clkmgr.h>
 #endif
 #endif
@@ -77,19 +60,16 @@
 #include <ddp_color.h>
 
 #if defined(CONFIG_MACH_MT6799)
-#include "mt-plat/mtk_chip.h"
+/* #include "mt-plat/mtk_chip.h" */
 #endif
 
 #if defined(CONFIG_MACH_ELBRUS) || defined(CONFIG_MACH_MT6757) || \
 	defined(CONFIG_MACH_KIBOPLUS) || defined(CONFIG_MACH_MT6799) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT8168) || defined(CONFIG_MACH_MT6885) || \
-	defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) || \
-	defined(CONFIG_MACH_MT6833)
+	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT3967) || \
+	defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6768) || \
+    defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT6785)
 #define AAL0_MODULE_NAMING (DISP_MODULE_AAL0)
 #else
 #define AAL0_MODULE_NAMING (DISP_MODULE_AAL)
@@ -97,12 +77,9 @@
 
 #if defined(CONFIG_MACH_MT6799) || defined(CONFIG_MACH_MT6763) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT8168) || defined(CONFIG_MACH_MT6885) || \
-	defined(CONFIG_MACH_MT6785) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) || \
-	defined(CONFIG_MACH_MT6833)
+	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT3967) || \
+	defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6768) || \
+    defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT6785)
 #define AAL0_CLK_NAMING (DISP0_DISP_AAL0)
 #else
 #define AAL0_CLK_NAMING (DISP0_DISP_AAL)
@@ -112,11 +89,9 @@
 	defined(CONFIG_MACH_MT6799) || defined(CONFIG_MACH_MT6763) || \
 	defined(CONFIG_MACH_MT6758) || defined(CONFIG_MACH_MT6739) || \
 	defined(CONFIG_MACH_MT6765) || defined(CONFIG_MACH_MT6761) || \
-	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT3967) || \
-	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6785) || \
-	defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) || \
-	defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
+	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6779) || \
+	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6771) || \
+    defined(CONFIG_MACH_MT6785)
 #define AAL_SUPPORT_PARTIAL_UPDATE
 #endif
 
@@ -129,6 +104,10 @@ int aal_dbg_en;
 #define AAL_DBG(fmt, arg...) \
 	do { if (aal_dbg_en) pr_debug("[AAL] %s: " fmt "\n", __func__, ##arg); \
 		} while (0)
+
+#ifndef AAL_SUPPORT_KERNEL_API
+#define AAL_SUPPORT_KERNEL_API
+#endif
 
 static int disp_aal_write_init_regs(enum DISP_MODULE_ENUM module, void *cmdq);
 static int disp_aal_write_param_to_reg(enum DISP_MODULE_ENUM module,
@@ -232,6 +211,7 @@ static u32 aal_sram_method = AAL_SRAM_EOF;
 #endif
 module_param(aal_sram_method, uint, 0644);
 MODULE_PARM_DESC(aal_sram_method, "aal config sram method");
+
 
 #else
 static struct DISP_AAL_HIST g_aal_hist_multi_pipe;
@@ -842,6 +822,10 @@ static void disp_aal_dre3_irq_handle(enum DISP_MODULE_ENUM module,
 	int update_method)
 {
 	bool config_success = false;
+	bool read_success = false;
+	unsigned long flags;
+	int dre_blk_x_num, dre_blk_y_num;
+	unsigned int read_value;
 	int hist_apb, hist_int;
 
 	/* Only process AAL0 in single module state */
@@ -1301,7 +1285,7 @@ void disp_aal_on_end_of_frame_by_module(enum disp_aal_id_t id)
 	}
 #endif
 
-	if (id < DISP_AAL0 || id >= DISP_AAL0 + AAL_TOTAL_MODULE_NUM)
+	if (id >= DISP_AAL0 + AAL_TOTAL_MODULE_NUM)
 		return;
 
 	if (atomic_read(&g_aal_force_relay) == 1) {
@@ -1397,7 +1381,9 @@ static void disp_aal_notify_backlight_log(int bl_1024)
 			pr_debug("disp_aal_notify_backlight_changed: %d/1023\n",
 				bl_1024);
 		} else {
-			sprintf(g_aal_log_buffer + strlen(g_aal_log_buffer),
+			scnprintf(g_aal_log_buffer + strlen(g_aal_log_buffer),
+				sizeof(g_aal_log_buffer) -
+				strlen(g_aal_log_buffer),
 				", %d/1023 %03lu.%03lu",
 				bl_1024, tsec, tusec);
 			pr_debug("%s\n", g_aal_log_buffer);
@@ -1405,12 +1391,14 @@ static void disp_aal_notify_backlight_log(int bl_1024)
 		}
 	} else {
 		if (g_aal_log_index == 0) {
-			sprintf(g_aal_log_buffer,
+			scnprintf(g_aal_log_buffer, sizeof(g_aal_log_buffer),
 			"disp_aal_notify_backlight_changed %d/1023 %03lu.%03lu",
 			bl_1024, tsec, tusec);
 			g_aal_log_index += 1;
 		} else {
-			sprintf(g_aal_log_buffer + strlen(g_aal_log_buffer),
+			scnprintf(g_aal_log_buffer + strlen(g_aal_log_buffer),
+				sizeof(g_aal_log_buffer) -
+				strlen(g_aal_log_buffer),
 				", %d/1023 %03lu.%03lu",
 				bl_1024, tsec, tusec);
 			g_aal_log_index += 1;
@@ -1801,11 +1789,8 @@ static int disp_aal_write_dre_to_reg(enum DISP_MODULE_ENUM module,
 	gain = param->DREGainFltStatus;
 #if defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) || \
-	defined(CONFIG_MACH_MT6833)
+	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6768) || \
+	defined(CONFIG_MACH_MT6771)
 	DISP_REG_MASK(cmdq, DISP_AAL_DRE_FLT_FORCE(0) + offset,
 	    DRE_REG_2(gain[0], 0, gain[1], 14), ~0);
 	DISP_REG_MASK(cmdq, DISP_AAL_DRE_FLT_FORCE(1) + offset,
@@ -1953,8 +1938,6 @@ static int aal_config(enum DISP_MODULE_ENUM module,
 #ifdef AAL_HAS_DRE3
 	int dre_alg_mode = 0;
 #endif
-	int width, height;
-	const int offset = aal_get_offset(module);
 
 	if (disp_aal_check_module(module, __func__, __LINE__) == false)
 		return 0;
@@ -1964,9 +1947,13 @@ static int aal_config(enum DISP_MODULE_ENUM module,
 		should_update = true;
 #endif
 
-	width = pConfig->dst_w;
-	height = pConfig->dst_h;
 	if (pConfig->dst_dirty) {
+		int width, height;
+		const int offset = aal_get_offset(module);
+
+		width = pConfig->dst_w;
+		height = pConfig->dst_h;
+
 #ifdef DISP_PLATFORM_HAS_SHADOW_REG
 		if (disp_helper_get_option(DISP_OPT_SHADOW_REGISTER)) {
 			unsigned long aal_shadow_ctl;
@@ -2035,7 +2022,7 @@ static int aal_config(enum DISP_MODULE_ENUM module,
 
 		DISP_REG_MASK(cmdq, DISP_AAL_EN + offset, 0x1, 0x1);
 
-		AAL_DBG("module:(%d), AAL_CFG=0x%x, AAL_SIZE=0x%x(%d, %d)",
+		AAL_DBG("module:(%d), AAL_CFG = 0x%x, AAL_SIZE = 0x%x(%d, %d)",
 			module, DISP_REG_GET(DISP_AAL_CFG + offset),
 			DISP_REG_GET(DISP_AAL_SIZE + offset), width, height);
 	}
@@ -2054,14 +2041,11 @@ static int aal_config(enum DISP_MODULE_ENUM module,
  *****************************************************************************/
 #if defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6785) || \
-	defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) || \
-	defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
+	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT3967) || \
+	defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6768) || \
+	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT6785)
 #define DRE_FLT_NUM	(13)
-#elif defined(CONFIG_MACH_MT6799) || defined(CONFIG_MACH_MT3967) || \
-	defined(CONFIG_MACH_MT6779)
+#elif defined(CONFIG_MACH_MT6799)
 #define DRE_FLT_NUM	(12)
 #else
 #define DRE_FLT_NUM	(11)
@@ -2154,11 +2138,8 @@ static void ddp_aal_dre_backup(void)
 
 #if defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
-	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6873) || \
-	defined(CONFIG_MACH_MT6853) || defined(CONFIG_MACH_MT6893) || \
-	defined(CONFIG_MACH_MT6833)
+	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6768) || \
+	defined(CONFIG_MACH_MT6771)
 	g_aal_backup.DRE_FLT_FORCE[11] =
 		DISP_REG_GET(DISP_AAL_DRE_FLT_FORCE_11);
 	g_aal_backup.DRE_FLT_FORCE[12] =
@@ -2271,11 +2252,8 @@ static void ddp_aal_dre_restore(enum DISP_MODULE_ENUM module, void *cmq_handle)
 
 #if defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6739) || defined(CONFIG_MACH_MT6765) || \
-	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6771) || \
 	defined(CONFIG_MACH_MT6761) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) || \
-	defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
+	defined(CONFIG_MACH_MT6771)
 	DISP_REG_SET(cmq_handle, DISP_AAL_DRE_FLT_FORCE_11 + offset,
 	    g_aal_backup.DRE_FLT_FORCE[11]);
 	DISP_REG_SET(cmq_handle, DISP_AAL_DRE_FLT_FORCE_12 + offset,
@@ -2324,9 +2302,8 @@ static void ddp_aal_restore(enum DISP_MODULE_ENUM module, void *cmq_handle)
 	ddp_aal_cabc_restore(module, cmq_handle);
 	ddp_aal_dre_restore(module, cmq_handle);
 
-	if (module == AAL0_MODULE_NAMING) {
+	if (module == AAL0_MODULE_NAMING)
 		ddp_aal_dre3_restore(cmq_handle);
-	}
 
 }
 
@@ -2341,12 +2318,9 @@ static int aal_clock_on(enum DISP_MODULE_ENUM module, void *cmq_handle)
 #elif defined(CONFIG_MACH_MT6759) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6739) || \
 	defined(CONFIG_MACH_MT6765) || defined(CONFIG_MACH_MT6761) || \
-	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT3967) || \
-	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT8168) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6785) || \
-	defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) || \
-	defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
-
+	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6779) || \
+	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6771) || \
+    defined(CONFIG_MACH_MT6785)
 	ddp_clk_prepare_enable(ddp_get_module_clk_id(module));
 #else
 #ifdef ENABLE_CLK_MGR
@@ -2403,12 +2377,9 @@ static int aal_clock_off(enum DISP_MODULE_ENUM module, void *cmq_handle)
 #elif defined(CONFIG_MACH_MT6759) || defined(CONFIG_MACH_MT6758) || \
 	defined(CONFIG_MACH_MT6763) || defined(CONFIG_MACH_MT6739) || \
 	defined(CONFIG_MACH_MT6765) || defined(CONFIG_MACH_MT6761) || \
-	defined(CONFIG_MACH_MT6771) || defined(CONFIG_MACH_MT3967) || \
-	defined(CONFIG_MACH_MT8168) || defined(CONFIG_MACH_MT6768) || \
-	defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6785) || \
-	defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) || \
-	defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
-
+	defined(CONFIG_MACH_MT3967) || defined(CONFIG_MACH_MT6779) || \
+	defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6771) || \
+    defined(CONFIG_MACH_MT6785)
 	ddp_clk_disable_unprepare(ddp_get_module_clk_id(module));
 #else
 #ifdef ENABLE_CLK_MGR
@@ -2981,16 +2952,10 @@ void aal_test(const char *cmd, char *debug_output)
 		int bypass = (cmd[7] == '1');
 
 		atomic_set(&g_aal_force_relay, bypass);
-#if 0
-		for (i = 0; i < config_module_num; i++) {
-			module += i;
-			aal_bypass(module, bypass);
-		}
-#else
 		disp_aal_trigger_refresh(AAL_REFRESH_17MS);
-#endif
 	} else if (strncmp(cmd, "getBypass:", 10) == 0) {
-		sprintf(debug_output, "AAL HW Relay: %d\n",
+		scnprintf(debug_output, 30,
+			"AAL HW Relay: %d\n",
 			atomic_read(&g_aal_force_relay));
 	} else if (strncmp(cmd, "ut:", 3) == 0) { /* debug command for UT */
 		aal_ut_cmd(cmd + 3);

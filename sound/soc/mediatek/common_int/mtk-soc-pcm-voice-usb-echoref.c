@@ -1,19 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
+
 /*******************************************************************************
  *
  * Filename:
@@ -402,11 +392,12 @@ static struct snd_pcm_ops mtk_usb_echoref_ops = {
 	.prepare = mtk_usb_echoref_prepare,
 	.trigger = mtk_usb_echoref_trigger,
 	.pointer = mtk_usb_echoref_pointer,
+	.copy_user = mtk_afe_pcm_copy,
 };
 
-static int mtk_usb_echoref_platform_probe(struct snd_soc_platform *platform)
+static int mtk_usb_echoref_component_probe(struct snd_soc_component *component)
 {
-	snd_soc_add_platform_controls(platform, speech_usb_controls,
+	snd_soc_add_component_controls(component, speech_usb_controls,
 				      ARRAY_SIZE(speech_usb_controls));
 	return 0;
 }
@@ -428,31 +419,36 @@ static void mtk_usb_echoref_pcm_free(struct snd_pcm *pcm)
 	snd_pcm_lib_preallocate_free_for_all(pcm);
 }
 
-static struct snd_soc_platform_driver mtk_soc_usb_echoref_platform = {
+static struct snd_soc_component_driver mtk_soc_usb_echoref_component = {
+	.name = AFE_PCM_NAME,
 	.ops = &mtk_usb_echoref_ops,
-	.probe = mtk_usb_echoref_platform_probe,
+	.probe = mtk_usb_echoref_component_probe,
 	.pcm_new = mtk_usb_echoref_pcm_new,
 	.pcm_free = mtk_usb_echoref_pcm_free,
 };
 
 static int mtk_usb_echoref_probe(struct platform_device *pdev)
 {
-	if (pdev->dev.of_node) {
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
+
+	if (!pdev->dev.dma_mask)
+		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
+
+	if (pdev->dev.of_node)
 		dev_set_name(&pdev->dev, "%s", MT_SOC_VOICE_USB_ECHOREF);
-		pdev->name = pdev->dev.kobj.name;
-	} else {
-		pr_debug("%s(), pdev->dev.of_node = NULL!!!\n", __func__);
-	}
+	pdev->name = pdev->dev.kobj.name;
 
 	pr_debug("%s: dev name %s\n", __func__, dev_name(&pdev->dev));
-	return snd_soc_register_platform(&pdev->dev,
-					 &mtk_soc_usb_echoref_platform);
+	return snd_soc_register_component(&pdev->dev,
+					  &mtk_soc_usb_echoref_component,
+					  NULL,
+					  0);
 }
 
 static int mtk_usb_echoref_remove(struct platform_device *pdev)
 {
 	pr_debug("%s()\n", __func__);
-	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 	return 0;
 }
 

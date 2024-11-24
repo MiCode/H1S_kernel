@@ -8,7 +8,7 @@
 #include <linux/hw_random.h>
 #include <linux/of.h>
 #include <linux/arm-smccc.h>
-#include <mt-plat/mtk_secure_api.h>
+#include <linux/soc/mediatek/mtk_sip_svc.h>
 
 #define PFX			KBUILD_MODNAME ": "
 #define MT67XX_RNG_MAGIC	0x74726e67

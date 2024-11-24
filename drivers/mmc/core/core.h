@@ -30,11 +30,11 @@ struct mmc_bus_ops {
 	int (*resume)(struct mmc_host *);
 	int (*runtime_suspend)(struct mmc_host *);
 	int (*runtime_resume)(struct mmc_host *);
-	int (*power_save)(struct mmc_host *);
-	int (*power_restore)(struct mmc_host *);
 	int (*alive)(struct mmc_host *);
 	int (*shutdown)(struct mmc_host *);
-	int (*reset)(struct mmc_host *);
+	int (*hw_reset)(struct mmc_host *);
+	int (*sw_reset)(struct mmc_host *);
+	bool (*cache_enabled)(struct mmc_host *);
 };
 
 void mmc_attach_bus(struct mmc_host *host, const struct mmc_bus_ops *ops);
@@ -51,7 +51,9 @@ void mmc_set_bus_mode(struct mmc_host *host, unsigned int mode);
 void mmc_set_bus_width(struct mmc_host *host, unsigned int width);
 u32 mmc_select_voltage(struct mmc_host *host, u32 ocr);
 int mmc_set_uhs_voltage(struct mmc_host *host, u32 ocr);
+int mmc_host_set_uhs_voltage(struct mmc_host *host);
 int mmc_set_signal_voltage(struct mmc_host *host, int signal_voltage);
+void mmc_set_initial_signal_voltage(struct mmc_host *host);
 void mmc_set_timing(struct mmc_host *host, unsigned int timing);
 void mmc_set_driver_type(struct mmc_host *host, unsigned int drv_type);
 int mmc_select_drive_strength(struct mmc_card *card, unsigned int max_dtr,
@@ -63,12 +65,10 @@ void mmc_set_initial_state(struct mmc_host *host);
 
 static inline void mmc_delay(unsigned int ms)
 {
-	if (ms < 1000 / HZ) {
-		cond_resched();
-		mdelay(ms);
-	} else {
+	if (ms <= 20)
+		usleep_range(ms * 1000, ms * 1250);
+	else
 		msleep(ms);
-	}
 }
 
 void mmc_rescan(struct work_struct *work);
@@ -92,8 +92,6 @@ void mmc_remove_host_debugfs(struct mmc_host *host);
 void mmc_add_card_debugfs(struct mmc_card *card);
 void mmc_remove_card_debugfs(struct mmc_card *card);
 
-void mmc_init_context_info(struct mmc_host *host);
-
 #ifdef CONFIG_MTK_EMMC_CQ_SUPPORT
 void mmc_wait_cmdq_empty(struct mmc_host *host);
 void mmc_do_check(struct mmc_host *host);
@@ -102,6 +100,8 @@ void mmc_do_status(struct mmc_host *host);
 void mmc_wait_cmdq_done(struct mmc_request *mrq);
 int mmc_run_queue_thread(void *data);
 #endif
+
+
 
 int mmc_execute_tuning(struct mmc_card *card);
 int mmc_hs200_to_hs400(struct mmc_card *card);
@@ -118,29 +118,7 @@ static inline void mmc_unregister_pm_notifier(struct mmc_host *host) { }
 void mmc_wait_for_req_done(struct mmc_host *host, struct mmc_request *mrq);
 bool mmc_is_req_done(struct mmc_host *host, struct mmc_request *mrq);
 
-struct mmc_async_req;
-#ifdef CONFIG_MTK_EMMC_HW_CQ
-struct mmc_cmdq_req;
-
-int mmc_cmdq_discard_queue(struct mmc_host *host, u32 tasks);
-int mmc_cmdq_halt(struct mmc_host *host, bool enable);
-int mmc_cmdq_halt_on_empty_queue(struct mmc_host *host);
-void mmc_cmdq_post_req(struct mmc_host *host, int tag, int err);
-int mmc_cmdq_start_req(struct mmc_host *host,
-			      struct mmc_cmdq_req *cmdq_req);
-int mmc_cmdq_prepare_flush(struct mmc_command *cmd);
-int mmc_cmdq_wait_for_dcmd(struct mmc_host *host,
-			struct mmc_cmdq_req *cmdq_req);
-int mmc_cmdq_erase(struct mmc_cmdq_req *cmdq_req,
-	      struct mmc_card *card, unsigned int from, unsigned int nr,
-	      unsigned int arg);
-void mmc_cmdq_up_rwsem(struct mmc_host *host);
-int mmc_cmdq_down_rwsem(struct mmc_host *host, struct request *rq);
-#endif
-
-struct mmc_async_req *mmc_start_areq(struct mmc_host *host,
-				     struct mmc_async_req *areq,
-				     enum mmc_blk_status *ret_stat);
+int mmc_start_request(struct mmc_host *host, struct mmc_request *mrq);
 
 int mmc_erase(struct mmc_card *card, unsigned int from, unsigned int nr,
 		unsigned int arg);
@@ -157,20 +135,12 @@ int mmc_set_blocklen(struct mmc_card *card, unsigned int blocklen);
 int mmc_set_blockcount(struct mmc_card *card, unsigned int blockcount,
 			bool is_rel_write);
 
-int __mmc_claim_host(struct mmc_host *host, atomic_t *abort);
+int __mmc_claim_host(struct mmc_host *host, struct mmc_ctx *ctx,
+		     atomic_t *abort);
 void mmc_release_host(struct mmc_host *host);
-void mmc_get_card(struct mmc_card *card);
-void mmc_put_card(struct mmc_card *card);
-int mmc_try_claim_host(struct mmc_host *host, unsigned int delay);
+void mmc_get_card(struct mmc_card *card, struct mmc_ctx *ctx);
+void mmc_put_card(struct mmc_card *card, struct mmc_ctx *ctx);
 
-#if defined(CONFIG_MMC_FFU)
-extern int mmc_reinit_oldcard(struct mmc_host *host);
-#endif
-
-#ifdef CONFIG_MTK_EMMC_HW_CQ
-void mmc_blk_cmdq_req_done(struct mmc_request *mrq);
-#endif
-extern int mmc_blk_cmdq_switch(struct mmc_card *card, int enable);
 /**
  *	mmc_claim_host - exclusively claim a host
  *	@host: mmc host to claim
@@ -179,7 +149,50 @@ extern int mmc_blk_cmdq_switch(struct mmc_card *card, int enable);
  */
 static inline void mmc_claim_host(struct mmc_host *host)
 {
-	__mmc_claim_host(host, NULL);
+	__mmc_claim_host(host, NULL, NULL);
+}
+
+int mmc_cqe_start_req(struct mmc_host *host, struct mmc_request *mrq);
+void mmc_cqe_post_req(struct mmc_host *host, struct mmc_request *mrq);
+int mmc_cqe_recovery(struct mmc_host *host);
+
+/**
+ *	mmc_pre_req - Prepare for a new request
+ *	@host: MMC host to prepare command
+ *	@mrq: MMC request to prepare for
+ *
+ *	mmc_pre_req() is called in prior to mmc_start_req() to let
+ *	host prepare for the new request. Preparation of a request may be
+ *	performed while another request is running on the host.
+ */
+static inline void mmc_pre_req(struct mmc_host *host, struct mmc_request *mrq)
+{
+	if (host->ops->pre_req)
+		host->ops->pre_req(host, mrq);
+}
+
+/**
+ *	mmc_post_req - Post process a completed request
+ *	@host: MMC host to post process command
+ *	@mrq: MMC request to post process for
+ *	@err: Error, if non zero, clean up any resources made in pre_req
+ *
+ *	Let the host post process a completed request. Post processing of
+ *	a request may be performed while another request is running.
+ */
+static inline void mmc_post_req(struct mmc_host *host, struct mmc_request *mrq,
+				int err)
+{
+	if (host->ops->post_req)
+		host->ops->post_req(host, mrq, err);
+}
+
+static inline bool mmc_cache_enabled(struct mmc_host *host)
+{
+	if (host->bus_ops->cache_enabled)
+		return host->bus_ops->cache_enabled(host);
+
+	return false;
 }
 
 #endif

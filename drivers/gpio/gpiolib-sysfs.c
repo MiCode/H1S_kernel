@@ -8,6 +8,7 @@
 #include <linux/interrupt.h>
 #include <linux/kdev_t.h>
 #include <linux/slab.h>
+#include <linux/ctype.h>
 
 #include "gpiolib.h"
 
@@ -106,8 +107,14 @@ static ssize_t value_show(struct device *dev,
 
 	mutex_lock(&data->mutex);
 
-	status = sprintf(buf, "%d\n", gpiod_get_value_cansleep(desc));
+	status = gpiod_get_value_cansleep(desc);
+	if (status < 0)
+		goto err;
 
+	buf[0] = '0' + status;
+	buf[1] = '\n';
+	status = 2;
+err:
 	mutex_unlock(&data->mutex);
 
 	return status;
@@ -118,7 +125,7 @@ static ssize_t value_store(struct device *dev,
 {
 	struct gpiod_data *data = dev_get_drvdata(dev);
 	struct gpio_desc *desc = data->desc;
-	ssize_t			status;
+	ssize_t status = 0;
 
 	mutex_lock(&data->mutex);
 
@@ -127,7 +134,11 @@ static ssize_t value_store(struct device *dev,
 	} else {
 		long		value;
 
-		status = kstrtol(buf, 0, &value);
+		if (size <= 2 && isdigit(buf[0]) &&
+		    (size == 1 || buf[1] == '\n'))
+			value = buf[0] - '0';
+		else
+			status = kstrtol(buf, 0, &value);
 		if (status == 0) {
 			gpiod_set_value_cansleep(desc, value);
 			status = size;
@@ -138,7 +149,7 @@ static ssize_t value_store(struct device *dev,
 
 	return status;
 }
-static DEVICE_ATTR_RW(value);
+static DEVICE_ATTR_PREALLOC(value, S_IWUSR | S_IRUGO, value_show, value_store);
 
 static irqreturn_t gpio_sysfs_irq(int irq, void *priv)
 {
@@ -451,6 +462,8 @@ static ssize_t export_store(struct class *class,
 	long			gpio;
 	struct gpio_desc	*desc;
 	int			status;
+	struct gpio_chip	*gc;
+	int			offset;
 
 	status = kstrtol(buf, 0, &gpio);
 	if (status < 0)
@@ -460,6 +473,12 @@ static ssize_t export_store(struct class *class,
 	/* reject invalid GPIOs */
 	if (!desc) {
 		pr_warn("%s: invalid GPIO %ld\n", __func__, gpio);
+		return -EINVAL;
+	}
+	gc = desc->gdev->chip;
+	offset = gpio_chip_hwgpio(desc);
+	if (!gpiochip_line_is_valid(gc, offset)) {
+		pr_warn("%s: GPIO %ld masked\n", __func__, gpio);
 		return -EINVAL;
 	}
 
@@ -474,6 +493,13 @@ static ssize_t export_store(struct class *class,
 			status = -ENODEV;
 		goto done;
 	}
+
+	status = gpiod_set_transitory(desc, false);
+	if (status) {
+		gpiod_free(desc);
+		goto done;
+	}
+
 	status = gpiod_export(desc, true);
 	if (status < 0)
 		gpiod_free(desc);

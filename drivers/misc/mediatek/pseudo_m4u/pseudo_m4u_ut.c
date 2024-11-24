@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 #define pr_fmt(fmt) "m4u_test: " fmt
 
@@ -65,8 +57,6 @@ struct test_buffer_info *m4u_test_start(size_t size, int port)
 	struct ion_client *client = NULL;
 	struct ion_handle *handle = NULL;
 	struct test_buffer_info *buf_info = NULL;
-	size_t mva_size = 0;
-	ion_phys_addr_t buffer_mva = 0;
 
 	memset((void *)&mm_data, 0, sizeof(mm_data));
 	if (!g_ion_device) {
@@ -87,25 +77,19 @@ struct test_buffer_info *m4u_test_start(size_t size, int port)
 		goto err;
 	}
 
-	mm_data.config_buffer_param.kernel_handle = handle;
-	mm_data.config_buffer_param.module_id = port;
-	mm_data.mm_cmd = ION_MM_CONFIG_BUFFER;
+	mm_data.get_phys_param.kernel_handle = handle;
+	mm_data.get_phys_param.module_id = port;
+	mm_data.mm_cmd = ION_MM_GET_IOVA;
 	if (ion_kernel_ioctl(client, ION_CMD_MULTIMEDIA,
 			     (unsigned long)&mm_data) < 0) {
 		pr_notice("m4u_test_drv: Config buffer failed.\n");
 		goto err;
 	}
 
-	ion_phys(client, handle, &buffer_mva, &mva_size);
-	if (buffer_mva == 0) {
-		pr_notice("Fatal Error, get mva failed\n");
-		goto err;
-	}
-
 	buf_info->client = client;
 	buf_info->handle = handle;
-	buf_info->mva = (dma_addr_t)buffer_mva;
-	buf_info->size = mva_size;
+	buf_info->mva = (dma_addr_t)mm_data.get_phys_param.phy_addr;
+	buf_info->size = (size_t)mm_data.get_phys_param.len;
 
 	pr_info("%s done mva:%pa, size:0x%zx, port:%s\n",
 		__func__, &buf_info->mva, buf_info->size,

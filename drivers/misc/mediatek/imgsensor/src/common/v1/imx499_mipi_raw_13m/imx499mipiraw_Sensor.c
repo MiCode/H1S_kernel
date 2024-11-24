@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 /************************************************************************
@@ -102,7 +94,7 @@ static struct imgsensor_info_struct imgsensor_info = {
 	.sensor_id = IMX499_SENSOR_ID,
 
 	/* checksum value for Camera Auto Test 2018.02.27 */
-	.checksum_value = 0xf50b67cd,
+	.checksum_value = 0xc3d800a0,
 
 	.pre = {/*data rate 840 Mbps/lane */
 		.pclk = 280000000,	/* VTP Pixel rate */
@@ -130,9 +122,9 @@ static struct imgsensor_info_struct imgsensor_info = {
 		.pclk = 564000000,/*VTP Pixel rate*/
 		.linelength = 5120,
 		.framelength = 3670,
-		.startx = 0,
-		.starty = 0,
-		.grabwindow_width = 4208,
+		.startx = 248,
+		.starty = 188,
+		.grabwindow_width = 4160,
 		.grabwindow_height = 3120,
 		.mipi_data_lp2hs_settle_dc = 85,	/* unit , ns */
 		.mipi_pixel_rate = 676800000,/*OP Pixel rate*/
@@ -265,7 +257,7 @@ static struct imgsensor_struct imgsensor = {
 	 */
 	.autoflicker_en = KAL_FALSE,
 
-	.test_pattern = KAL_FALSE,
+	.test_pattern = 0,
 
 	/* current scenario id */
 	.current_scenario_id = MSDK_SCENARIO_ID_CAMERA_PREVIEW,
@@ -280,7 +272,7 @@ static struct SENSOR_WINSIZE_INFO_STRUCT imgsensor_winsize_info[10] = {
 	0000, 0000, 2328, 1746, 0, 0, 2328, 1746},	/*Preview*/
 	{4656, 3496, 0, 0, 4656, 3496, 4656, 3496,
 #if Crop_to_13M
-	0000, 0000, 4656, 3496, 224, 188, 4208, 3120},	/*Capture*/
+	0000, 0000, 4656, 3496, 248, 188, 4160, 3120},	/*Capture*/
 #else
 	0000, 0000, 4656, 3496, 0, 2, 4656, 3492},	/*Capture*/
 #endif
@@ -298,19 +290,19 @@ static struct SENSOR_VC_INFO_STRUCT SENSOR_VC_INFO[3] = {
 	 {0x03, 0x0a, 0x00, 0x08, 0x40, 0x00,
 	  0x00, 0x2b, 0x0918, 0x06D2,/*VC0*/
 	  0x00, 0x00, 0x00, 0x00,/*VC1*/
-	  0x00, 0x31, 0x02BC, 0x019F*2,/*VC2 LPD+RPD*/
+	  0x00, 0x00, 0x0000, 0x0000,/*VC2 LPD+RPD*/
 	  0x03, 0x00, 0x0000, 0x0000},/*VC3*/
 	 /* Capture mode setting */
 	 {0x03, 0x0a, 0x00, 0x08, 0x40, 0x00,
 	  0x00, 0x2b, 0x1230, 0x0DA8,/*VC0*/
 	  0x00, 0x00, 0x00, 0x00,/*VC1*/
-	  0x00, 0x31, 0x02BC, 0x01A0*2,/*VC2 LPD+RPD*/
+	  0x00, 0x00, 0x0000, 0x0000,/*VC2 LPD+RPD*/
 	  0x03, 0x00, 0x0000, 0x0000},/*VC3*/
 	 /* Video mode setting */
 	 {0x02, 0x0a, 0x00, 0x08, 0x40, 0x00,
 	  0x00, 0x2b, 0x14E0, 0x0FB0,
 	  0x00, 0x00, 0x00, 0x00,
-	  0x00, 0x31, 0x02BC, 0x0144*2,
+	  0x00, 0x00, 0x0000, 0x0000,
 	  0x03, 0x00, 0x0000, 0x0000}
 };
 
@@ -784,12 +776,6 @@ static void imx499_apply_LRC(void)
 	char puSendCmd[75];
 	kal_uint32 tosend;
 
-#if 0
-	pr_debug("E  Is_Read_LRC_Data=%d", Is_Read_LRC_Data);
-
-	for (i = 0; i < 140; i++)
-		pr_debug("dump LRC[i]=%d", i, imx499_LRC_data[i]);
-#endif
 	tosend = 0;
 	puSendCmd[tosend++] = (char)(startL_reg >> 8);
 	puSendCmd[tosend++] = (char)(startL_reg & 0xFF);
@@ -1080,7 +1066,7 @@ static kal_uint16 set_gain(kal_uint16 gain)
 
 static void set_PD_pdc(kal_uint8 enable)
 {/*enable mean PD point->Pure RAW*/
-	pr_debug("%s = %d\n", __func__, enable);
+	pr_debug("PD_pdc = %d\n", enable);
 	if (enable) {
 		write_cmos_sensor(0x0101, 0x00);
 		write_cmos_sensor(0x0B00, 0x00);
@@ -1749,17 +1735,36 @@ static void slim_video_setting(void)
 	    sizeof(addr_data_pair_slim_video_imx499) / sizeof(kal_uint16));
 }
 
-static kal_uint32 set_test_pattern_mode(kal_bool enable)
+static kal_uint32 set_test_pattern_mode(kal_uint32 modes,
+	struct SET_SENSOR_PATTERN_SOLID_COLOR *pdata)
 {
-	pr_debug("enable: %d\n", enable);
+	kal_uint16 Color_R, Color_Gr, Color_Gb, Color_B;
 
-	if (enable)
-		write_cmos_sensor(0x0601, 0x02);
+	pr_debug("modes: %d\n", modes);
+	if (modes) {
+		write_cmos_sensor(0x0601, modes);
+		if (modes == 1 && (pdata != NULL)) { //Solid Color
+			pr_debug("R=0x%x,Gr=0x%x,B=0x%x,Gb=0x%x",
+				pdata->COLOR_R, pdata->COLOR_Gr, pdata->COLOR_B, pdata->COLOR_Gb);
+			Color_R = (pdata->COLOR_R >> 22) & 0x3FF; //10bits depth color
+			Color_Gr = (pdata->COLOR_Gr >> 22) & 0x3FF;
+			Color_B = (pdata->COLOR_B >> 22) & 0x3FF;
+			Color_Gb = (pdata->COLOR_Gb >> 22) & 0x3FF;
+			write_cmos_sensor(0x0602, (Color_R >> 8) & 0x3);
+			write_cmos_sensor(0x0603, Color_R & 0xFF);
+			write_cmos_sensor(0x0604, (Color_Gr >> 8) & 0x3);
+			write_cmos_sensor(0x0605, Color_Gr & 0xFF);
+			write_cmos_sensor(0x0606, (Color_B >> 8) & 0x3);
+			write_cmos_sensor(0x0607, Color_B & 0xFF);
+			write_cmos_sensor(0x0608, (Color_Gb >> 8) & 0x3);
+			write_cmos_sensor(0x0609, Color_Gb & 0xFF);
+		}
+	}
 	else
-		write_cmos_sensor(0x0601, 0x00);
+		write_cmos_sensor(0x0601, 0x00); /*No pattern*/
 
 	spin_lock(&imgsensor_drv_lock);
-	imgsensor.test_pattern = enable;
+	imgsensor.test_pattern = modes;
 	spin_unlock(&imgsensor_drv_lock);
 	return ERROR_NONE;
 }
@@ -1888,7 +1893,7 @@ static kal_uint32 open(void)
 	imgsensor.dummy_pixel = 0;
 	imgsensor.dummy_line = 0;
 	imgsensor.hdr_mode = 0;
-	imgsensor.test_pattern = KAL_FALSE;
+	imgsensor.test_pattern = 0;
 	imgsensor.current_fps = imgsensor_info.pre.max_framerate;
 	spin_unlock(&imgsensor_drv_lock);
 
@@ -2184,10 +2189,7 @@ static kal_uint32 get_info(enum MSDK_SCENARIO_ID_ENUM scenario_id,
 	sensor_info->SensorModeNum = imgsensor_info.sensor_mode_num;
 
 	/*0: NO PDAF, 1: PDAF Raw Data mode, 2:PDAF VC mode */
-	if (PDAF_RAW_mode == 1)
-		sensor_info->PDAF_Support = PDAF_SUPPORT_RAW_LEGACY;
-	else/*default*/
-		sensor_info->PDAF_Support = PDAF_SUPPORT_CAMSV;
+		sensor_info->PDAF_Support = PDAF_SUPPORT_NA;
 
 	sensor_info->SensorHorFOV = 63;
 	sensor_info->SensorVerFOV = 49;
@@ -2561,7 +2563,7 @@ static kal_uint32 get_sensor_temperature(void)
 
 	temperature = read_cmos_sensor(0x013a);
 
-	if (temperature >= 0x0 && temperature <= 0x4F)
+	if (temperature <= 0x4F)
 		temperature_convert = temperature;
 	else if (temperature >= 0x50 && temperature <= 0x7F)
 		temperature_convert = 80;
@@ -2674,7 +2676,8 @@ static kal_uint32 feature_control(MSDK_SENSOR_FEATURE_ENUM feature_id,
 		pr_debug("Please use EEPROM function\n");
 		break;
 	case SENSOR_FEATURE_SET_TEST_PATTERN:
-		set_test_pattern_mode((BOOL) (*feature_data));
+		set_test_pattern_mode((UINT32)*feature_data,
+		(struct SET_SENSOR_PATTERN_SOLID_COLOR *)(uintptr_t)(*(feature_data + 1)));
 		break;
 
 	/* for factory mode auto testing */
@@ -2795,11 +2798,11 @@ static kal_uint32 feature_control(MSDK_SENSOR_FEATURE_ENUM feature_id,
 #if Crop_to_13M
 			*(MUINT32 *) (uintptr_t) (*(feature_data + 1)) = 0;
 #else
-			*(MUINT32 *) (uintptr_t) (*(feature_data + 1)) = 1;
+			*(MUINT32 *) (uintptr_t) (*(feature_data + 1)) = 0;
 #endif
 			break;
 		case MSDK_SCENARIO_ID_VIDEO_PREVIEW:
-			*(MUINT32 *) (uintptr_t) (*(feature_data + 1)) = 1;
+			*(MUINT32 *) (uintptr_t) (*(feature_data + 1)) = 0;
 			break;
 		case MSDK_SCENARIO_ID_HIGH_SPEED_VIDEO:
 			*(MUINT32 *) (uintptr_t) (*(feature_data + 1)) = 0;
@@ -2808,12 +2811,7 @@ static kal_uint32 feature_control(MSDK_SENSOR_FEATURE_ENUM feature_id,
 			*(MUINT32 *) (uintptr_t) (*(feature_data + 1)) = 0;
 			break;
 		case MSDK_SCENARIO_ID_CAMERA_PREVIEW:
-			if (PDAF_RAW_mode)
-				*(MUINT32 *) (uintptr_t)
-					(*(feature_data + 1)) = 0;
-			else
-				*(MUINT32 *) (uintptr_t)
-					(*(feature_data + 1)) = 1;
+			*(MUINT32 *) (uintptr_t) (*(feature_data + 1)) = 0;
 			break;
 		default:
 			*(MUINT32 *) (uintptr_t) (*(feature_data + 1)) = 0;

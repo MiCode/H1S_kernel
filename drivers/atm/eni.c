@@ -473,7 +473,7 @@ static int do_rx_dma(struct atm_vcc *vcc,struct sk_buff *skb,
 		ENI_PRV_POS(skb) = eni_vcc->descr+size+1;
 		skb_queue_tail(&eni_dev->rx_queue,skb);
 		eni_vcc->last = skb;
-rx_enqueued++;
+		rx_enqueued++;
 	}
 	eni_vcc->descr = here;
 	eni_out(dma_wr,MID_DMA_WR_RX);
@@ -715,7 +715,7 @@ static void get_service(struct atm_dev *dev)
 			else eni_dev->slow = vcc;
 			eni_dev->last_slow = vcc;
 		}
-putting++;
+		putting++;
 		ENI_VCC(vcc)->servicing++;
 	}
 }
@@ -744,7 +744,7 @@ static void dequeue_rx(struct atm_dev *dev)
 		}
 		EVENT("dequeued (size=%ld,pos=0x%lx)\n",ENI_PRV_SIZE(skb),
 		    ENI_PRV_POS(skb));
-rx_dequeued++;
+		rx_dequeued++;
 		vcc = ATM_SKB(skb)->vcc;
 		eni_vcc = ENI_VCC(vcc);
 		first = 0;
@@ -1114,6 +1114,8 @@ DPRINTK("iovcnt = %d\n",skb_shinfo(skb)->nr_frags);
 	}
 	paddr = dma_map_single(&eni_dev->pci_dev->dev,skb->data,skb->len,
 			       DMA_TO_DEVICE);
+	if (dma_mapping_error(&eni_dev->pci_dev->dev, paddr))
+		return enq_next;
 	ENI_PRV_PADDR(skb) = paddr;
 	/* prepare DMA queue entries */
 	j = 0;
@@ -1174,7 +1176,7 @@ DPRINTK("doing direct send\n"); /* @@@ well, this doesn't work anyway */
 	DPRINTK("dma_wr set to %d, tx_pos is now %ld\n",dma_wr,tx->tx_pos);
 	eni_out(dma_wr,MID_DMA_WR_TX);
 	skb_queue_tail(&eni_dev->tx_queue,skb);
-queued++;
+	queued++;
 	return enq_ok;
 }
 
@@ -1195,7 +1197,7 @@ static void poll_tx(struct atm_dev *dev)
 				if (res == enq_ok) continue;
 				DPRINTK("re-queuing TX PDU\n");
 				skb_queue_head(&tx->backlog,skb);
-requeued++;
+				requeued++;
 				if (res == enq_jam) return;
 				break;
 			}
@@ -1232,7 +1234,7 @@ static void dequeue_tx(struct atm_dev *dev)
 		else dev_kfree_skb_irq(skb);
 		atomic_inc(&vcc->stats->tx);
 		wake_up(&eni_dev->tx_wait);
-dma_complete++;
+		dma_complete++;
 	}
 }
 
@@ -1555,7 +1557,7 @@ static void eni_tasklet(unsigned long data)
 	}
 	if (events & MID_TX_COMPLETE) {
 		EVENT("INT: TX COMPLETE\n",0,0);
-tx_complete++;
+		tx_complete++;
 		wake_up(&eni_dev->tx_wait);
 		/* poll_rx ? */
 	}
@@ -2069,14 +2071,14 @@ static int eni_send(struct atm_vcc *vcc,struct sk_buff *skb)
 		}
 		*(u32 *) skb->data = htonl(*(u32 *) skb->data);
 	}
-submitted++;
+	submitted++;
 	ATM_SKB(skb)->vcc = vcc;
 	tasklet_disable(&ENI_DEV(vcc->dev)->task);
 	res = do_tx(skb);
 	tasklet_enable(&ENI_DEV(vcc->dev)->task);
 	if (res == enq_ok) return 0;
 	skb_queue_tail(&ENI_VCC(vcc)->tx->backlog,skb);
-backlogged++;
+	backlogged++;
 	tasklet_schedule(&ENI_DEV(vcc->dev)->task);
 	return 0;
 }
@@ -2243,7 +2245,7 @@ static int eni_init_one(struct pci_dev *pci_dev,
 
 	rc = dma_set_mask_and_coherent(&pci_dev->dev, DMA_BIT_MASK(32));
 	if (rc < 0)
-		goto out;
+		goto err_disable;
 
 	rc = -ENOMEM;
 	eni_dev = kmalloc(sizeof(struct eni_dev), GFP_KERNEL);
@@ -2279,7 +2281,8 @@ out:
 	return rc;
 
 err_eni_release:
-	eni_do_release(dev);
+	dev->phy = NULL;
+	iounmap(ENI_DEV(dev)->ioaddr);
 err_unregister:
 	atm_dev_deregister(dev);
 err_free_consistent:

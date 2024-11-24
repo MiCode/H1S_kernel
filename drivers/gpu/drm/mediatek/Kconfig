@@ -26,6 +26,15 @@ config DRM_MEDIATEK_HDMI
 	help
 	  DRM/KMS HDMI driver for Mediatek SoCs
 
+config MTK_HDR_COLOR_GAIN_RGB
+	hex "Config CCORR parameters for HDR layers"
+	default 0
+	help
+	  This control color gain for hdr screen.
+	  0~11 bit for blue gain.
+	  12~23 bit for green gain.
+	  24~63 bit for red gain.
+
 config MTK_PQ_COLOR_MODE
 	string "Config PQ_COLOR_MODE (MDP & DISP COLOR on/off)"
 	default "DISP"
@@ -57,3 +66,29 @@ config DRM_MTK_DISABLE_AEE_LAYER
 	  if this value is y, will not produce AEE.
 	  if this value is n, will produce AEE.
 	  If you do not produce AEE, please set it to Y in xxx_defconfig.
+
+config MTK_MT6382_BDG
+	bool "Support Bridge IC 6382"
+	help
+	  This config decide if device with BridgeIC 6382
+	  BridgeIC 6382 can support VESA-1.2 DSC, compressing display framedata
+	  Normal project will disable it first
+	  If you are not sure about this, do not set it to y
+
+config MTK_SLD_SUPPORT
+	bool "Support subdued light display feature"
+	default n
+	help
+	  subdued light display feature support decrease picture brightness
+	  without changing backlight brightness.
+	  If you want to enable this feature, set Y.
+	  If unsure, set N.
+
+config MTK_HDMI_SUPPORT
+	bool "MTK_HDMI_SUPPORT"
+	default n
+	help
+	  DRM/KMS DPTX driver for Mediatek SoCs
+	  Choose this option if you want to enable
+	  DPTX driver, and this config depends on
+	  DRM_MEDIATEK.

@@ -93,7 +93,7 @@ unsigned qib_cc_table_size;
 module_param_named(cc_table_size, qib_cc_table_size, uint, S_IRUGO);
 MODULE_PARM_DESC(cc_table_size, "Congestion control table entries 0 (CCA disabled - default), min = 128, max = 1984");
 
-static void verify_interrupt(unsigned long);
+static void verify_interrupt(struct timer_list *);
 
 static struct idr qib_unit_table;
 u32 qib_cpulist_count;
@@ -233,8 +233,7 @@ int qib_init_pportdata(struct qib_pportdata *ppd, struct qib_devdata *dd,
 	spin_lock_init(&ppd->cc_shadow_lock);
 	init_waitqueue_head(&ppd->state_wait);
 
-	setup_timer(&ppd->symerr_clear_timer, qib_clear_symerror_on_linkup,
-		    (unsigned long)ppd);
+	timer_setup(&ppd->symerr_clear_timer, qib_clear_symerror_on_linkup, 0);
 
 	ppd->qib_wq = NULL;
 	ppd->ibport_data.pmastats =
@@ -370,11 +369,13 @@ static void init_shadow_tids(struct qib_devdata *dd)
 	struct page **pages;
 	dma_addr_t *addrs;
 
-	pages = vzalloc(dd->cfgctxts * dd->rcvtidcnt * sizeof(struct page *));
+	pages = vzalloc(array_size(sizeof(struct page *),
+				   dd->cfgctxts * dd->rcvtidcnt));
 	if (!pages)
 		goto bail;
 
-	addrs = vzalloc(dd->cfgctxts * dd->rcvtidcnt * sizeof(dma_addr_t));
+	addrs = vzalloc(array_size(sizeof(dma_addr_t),
+				   dd->cfgctxts * dd->rcvtidcnt));
 	if (!addrs)
 		goto bail_free;
 
@@ -428,8 +429,7 @@ static int loadtime_init(struct qib_devdata *dd)
 	qib_get_eeprom_info(dd);
 
 	/* setup time (don't start yet) to verify we got interrupt */
-	setup_timer(&dd->intrchk_timer, verify_interrupt,
-		    (unsigned long)dd);
+	timer_setup(&dd->intrchk_timer, verify_interrupt, 0);
 done:
 	return ret;
 }
@@ -493,9 +493,9 @@ static void enable_chip(struct qib_devdata *dd)
 	}
 }
 
-static void verify_interrupt(unsigned long opaque)
+static void verify_interrupt(struct timer_list *t)
 {
-	struct qib_devdata *dd = (struct qib_devdata *) opaque;
+	struct qib_devdata *dd = from_timer(dd, t, intrchk_timer);
 	u64 int_counter;
 
 	if (!dd)
@@ -680,11 +680,9 @@ int qib_init(struct qib_devdata *dd, int reinit)
 		lastfail = qib_create_rcvhdrq(dd, rcd);
 		if (!lastfail)
 			lastfail = qib_setup_eagerbufs(rcd);
-		if (lastfail) {
+		if (lastfail)
 			qib_dev_err(dd,
 				"failed to allocate kernel ctxt's rcvhdrq and/or egr bufs\n");
-			continue;
-		}
 	}
 
 	for (pidx = 0; pidx < dd->num_pports; ++pidx) {
@@ -753,8 +751,7 @@ done:
 				continue;
 			if (dd->flags & QIB_HAS_SEND_DMA)
 				ret = qib_setup_sdma(ppd);
-			setup_timer(&ppd->hol_timer, qib_hol_event,
-				    (unsigned long)ppd);
+			timer_setup(&ppd->hol_timer, qib_hol_event, 0);
 			ppd->hol_state = QIB_HOL_UP;
 		}
 
@@ -815,23 +812,19 @@ static void qib_stop_timers(struct qib_devdata *dd)
 	struct qib_pportdata *ppd;
 	int pidx;
 
-	if (dd->stats_timer.data) {
+	if (dd->stats_timer.function)
 		del_timer_sync(&dd->stats_timer);
-		dd->stats_timer.data = 0;
-	}
-	if (dd->intrchk_timer.data) {
+	if (dd->intrchk_timer.function)
 		del_timer_sync(&dd->intrchk_timer);
-		dd->intrchk_timer.data = 0;
-	}
 	for (pidx = 0; pidx < dd->num_pports; ++pidx) {
 		ppd = dd->pport + pidx;
-		if (ppd->hol_timer.data)
+		if (ppd->hol_timer.function)
 			del_timer_sync(&ppd->hol_timer);
-		if (ppd->led_override_timer.data) {
+		if (ppd->led_override_timer.function) {
 			del_timer_sync(&ppd->led_override_timer);
 			atomic_set(&ppd->led_override_timer_active, 0);
 		}
-		if (ppd->symerr_clear_timer.data)
+		if (ppd->symerr_clear_timer.function)
 			del_timer_sync(&ppd->symerr_clear_timer);
 	}
 }
@@ -1130,6 +1123,8 @@ struct qib_devdata *qib_alloc_devdata(struct pci_dev *pdev, size_t extra)
 			      "Could not allocate unit ID: error %d\n", -ret);
 		goto bail;
 	}
+	rvt_set_ibdev_name(&dd->verbs_dev.rdi, "%s%d", "qib", dd->unit);
+
 	dd->int_counter = alloc_percpu(u64);
 	if (!dd->int_counter) {
 		ret = -ENOMEM;
@@ -1141,8 +1136,8 @@ struct qib_devdata *qib_alloc_devdata(struct pci_dev *pdev, size_t extra)
 	if (!qib_cpulist_count) {
 		u32 count = num_online_cpus();
 
-		qib_cpulist = kzalloc(BITS_TO_LONGS(count) *
-				      sizeof(long), GFP_KERNEL);
+		qib_cpulist = kcalloc(BITS_TO_LONGS(count), sizeof(long),
+				      GFP_KERNEL);
 		if (qib_cpulist)
 			qib_cpulist_count = count;
 	}
@@ -1680,15 +1675,16 @@ int qib_setup_eagerbufs(struct qib_ctxtdata *rcd)
 	size = rcd->rcvegrbuf_size;
 	if (!rcd->rcvegrbuf) {
 		rcd->rcvegrbuf =
-			kzalloc_node(chunk * sizeof(rcd->rcvegrbuf[0]),
-				GFP_KERNEL, rcd->node_id);
+			kcalloc_node(chunk, sizeof(rcd->rcvegrbuf[0]),
+				     GFP_KERNEL, rcd->node_id);
 		if (!rcd->rcvegrbuf)
 			goto bail;
 	}
 	if (!rcd->rcvegrbuf_phys) {
 		rcd->rcvegrbuf_phys =
-			kmalloc_node(chunk * sizeof(rcd->rcvegrbuf_phys[0]),
-				GFP_KERNEL, rcd->node_id);
+			kmalloc_array_node(chunk,
+					   sizeof(rcd->rcvegrbuf_phys[0]),
+					   GFP_KERNEL, rcd->node_id);
 		if (!rcd->rcvegrbuf_phys)
 			goto bail_rcvegrbuf;
 	}

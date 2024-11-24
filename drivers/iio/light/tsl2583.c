@@ -350,6 +350,14 @@ static int tsl2583_als_calibrate(struct iio_dev *indio_dev)
 		return lux_val;
 	}
 
+	/* Avoid division by zero of lux_value later on */
+	if (lux_val == 0) {
+		dev_err(&chip->client->dev,
+			"%s: lux_val of 0 will produce out of range trim_value\n",
+			__func__);
+		return -ENODATA;
+	}
+
 	gain_trim_val = (unsigned int)(((chip->als_settings.als_cal_target)
 			* chip->als_settings.als_gain_trim) / lux_val);
 	if ((gain_trim_val < 250) || (gain_trim_val > 4000)) {
@@ -600,7 +608,7 @@ done:
 
 static IIO_CONST_ATTR(in_illuminance_calibscale_available, "1 8 16 111");
 static IIO_CONST_ATTR(in_illuminance_integration_time_available,
-		      "0.000050 0.000100 0.000150 0.000200 0.000250 0.000300 0.000350 0.000400 0.000450 0.000500 0.000550 0.000600 0.000650");
+		      "0.050 0.100 0.150 0.200 0.250 0.300 0.350 0.400 0.450 0.500 0.550 0.600 0.650");
 static IIO_DEVICE_ATTR_RW(in_illuminance_input_target, 0);
 static IIO_DEVICE_ATTR_WO(in_illuminance_calibrate, 0);
 static IIO_DEVICE_ATTR_RW(in_illuminance_lux_table, 0);
@@ -804,7 +812,6 @@ static int tsl2583_write_raw(struct iio_dev *indio_dev,
 
 static const struct iio_info tsl2583_info = {
 	.attrs = &tsl2583_attribute_group,
-	.driver_module = THIS_MODULE,
 	.read_raw = tsl2583_read_raw,
 	.write_raw = tsl2583_write_raw,
 };
@@ -859,7 +866,7 @@ static int tsl2583_probe(struct i2c_client *clientp,
 					 TSL2583_POWER_OFF_DELAY_MS);
 	pm_runtime_use_autosuspend(&clientp->dev);
 
-	ret = devm_iio_device_register(indio_dev->dev.parent, indio_dev);
+	ret = iio_device_register(indio_dev);
 	if (ret) {
 		dev_err(&clientp->dev, "%s: iio registration failed\n",
 			__func__);

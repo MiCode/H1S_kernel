@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <drm/drmP.h>
 #include <linux/clk.h>
@@ -301,8 +293,21 @@ static void mtk_rsz_addon_config(struct mtk_ddp_comp *comp,
 		return;
 	}
 
-	mtk_rsz_calc_tile_params(rsz_config->frm_in_w, rsz_config->frm_out_w,
-				 tile_mode, rsz_config->tw);
+	if (comp->mtk_crtc->is_dual_pipe) {
+		rsz_config->tw[tile_idx].in_len =
+			addon_config->addon_rsz_config.rsz_param.in_len;
+		rsz_config->tw[tile_idx].out_len =
+			addon_config->addon_rsz_config.rsz_param.out_len;
+		rsz_config->tw[tile_idx].step =
+			addon_config->addon_rsz_config.rsz_param.step;
+		rsz_config->tw[tile_idx].int_offset =
+			addon_config->addon_rsz_config.rsz_param.int_offset;
+		rsz_config->tw[tile_idx].sub_offset =
+			addon_config->addon_rsz_config.rsz_param.sub_offset;
+	} else {
+		mtk_rsz_calc_tile_params(rsz_config->frm_in_w, rsz_config->frm_out_w,
+					 tile_mode, rsz_config->tw);
+	}
 	mtk_rsz_calc_tile_params(rsz_config->frm_in_h, rsz_config->frm_out_h,
 				 tile_mode, rsz_config->th);
 
@@ -485,7 +490,9 @@ static void mtk_rsz_prepare(struct mtk_ddp_comp *comp)
 	}
 #else
 #if defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) \
-	|| defined(CONFIG_MACH_MT6833)
+	|| defined(CONFIG_MACH_MT6833) \
+	|| defined(CONFIG_MACH_MT6877) \
+	|| defined(CONFIG_MACH_MT6781)
 	/* Bypass shadow register and read shadow register */
 	mtk_ddp_write_mask_cpu(comp, RSZ_BYPASS_SHADOW,
 		DISP_REG_RSZ_SHADOW_CTRL, RSZ_BYPASS_SHADOW);
@@ -610,8 +617,18 @@ static const struct mtk_disp_rsz_data mt6853_rsz_driver_data = {
 	.support_shadow = false,
 };
 
+static const struct mtk_disp_rsz_data mt6877_rsz_driver_data = {
+	.tile_length = 1088, .in_max_height = 4096,
+	.support_shadow = false,
+};
+
 static const struct mtk_disp_rsz_data mt6833_rsz_driver_data = {
 	.tile_length = 1088, .in_max_height = 4096,
+	.support_shadow = false,
+};
+
+static const struct mtk_disp_rsz_data mt6781_rsz_driver_data = {
+	.tile_length = 1200, .in_max_height = 4096,
 	.support_shadow = false,
 };
 
@@ -624,8 +641,12 @@ static const struct of_device_id mtk_disp_rsz_driver_dt_match[] = {
 	 .data = &mt6873_rsz_driver_data},
 	{.compatible = "mediatek,mt6853-disp-rsz",
 	 .data = &mt6853_rsz_driver_data},
+	{.compatible = "mediatek,mt6877-disp-rsz",
+	 .data = &mt6877_rsz_driver_data},
 	{.compatible = "mediatek,mt6833-disp-rsz",
 	 .data = &mt6833_rsz_driver_data},
+	{.compatible = "mediatek,mt6781-disp-rsz",
+	 .data = &mt6781_rsz_driver_data},
 	{},
 };
 MODULE_DEVICE_TABLE(of, mtk_disp_rsz_driver_dt_match);

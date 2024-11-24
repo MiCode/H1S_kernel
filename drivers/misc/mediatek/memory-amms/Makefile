@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2015 MediaTek Inc.
+# Copyright (C) 2019 MediaTek Inc.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -15,6 +15,5 @@ obj-y += memory-amms.o
 MTK_TOP = $(srctree)/drivers/misc/mediatek/
 ccflags-y += -I$(srctree)/drivers/devfreq/
 ccflags-y += -I$(MTK_TOP)/base/power/include/
-ccflags-y += -I$(MTK_TOP)/base/power/$(MTK_PLATFORM)/
 ccflags-y += -I$(srctree)/drivers/misc/mediatek/include/mt-plat
 

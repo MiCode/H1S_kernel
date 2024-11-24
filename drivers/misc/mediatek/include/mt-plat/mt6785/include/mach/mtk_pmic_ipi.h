@@ -1,19 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
+
 
 #ifndef _MT_PMIC_IPI_H_
 #define _MT_PMIC_IPI_H_
 
+#if defined(CONFIG_MACH_MT6781)
+/* SSPM V2 */
+unsigned int pmic_ipi_config_interface(unsigned int RegNum, unsigned int val,
+				       unsigned int MASK, unsigned int SHIFT,
+				       unsigned char _unused);
+#else
 void pmic_ipi_write_test(void);
 
 #ifdef CONFIG_MTK_EXTBUCK
@@ -47,6 +46,6 @@ unsigned int pmic_regulator_profiling(unsigned char type);
 unsigned int sub_pmic_ipi_interface(unsigned int type, unsigned int ctrl);
 
 unsigned int mt6311_ipi_set_mode(unsigned char mode);
-
+#endif /* CONFIG_MACH_MT6781 */
 #endif /* _MT_PMIC_IPI_H_*/
 

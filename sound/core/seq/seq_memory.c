@@ -126,15 +126,19 @@ EXPORT_SYMBOL(snd_seq_dump_var_event);
  * expand the variable length event to linear buffer space.
  */
 
-static int seq_copy_in_kernel(char **bufptr, const void *src, int size)
+static int seq_copy_in_kernel(void *ptr, void *src, int size)
 {
+	char **bufptr = ptr;
+
 	memcpy(*bufptr, src, size);
 	*bufptr += size;
 	return 0;
 }
 
-static int seq_copy_in_user(char __user **bufptr, const void *src, int size)
+static int seq_copy_in_user(void *ptr, void *src, int size)
 {
+	char __user **bufptr = ptr;
+
 	if (copy_to_user(*bufptr, src, size))
 		return -EFAULT;
 	*bufptr += size;
@@ -163,8 +167,7 @@ int snd_seq_expand_var_event(const struct snd_seq_event *event, int count, char 
 		return newlen;
 	}
 	err = snd_seq_dump_var_event(event,
-				     in_kernel ? (snd_seq_dump_func_t)seq_copy_in_kernel :
-				     (snd_seq_dump_func_t)seq_copy_in_user,
+				     in_kernel ? seq_copy_in_kernel : seq_copy_in_user,
 				     &buf);
 	return err < 0 ? err : newlen;
 }
@@ -389,7 +392,8 @@ int snd_seq_pool_init(struct snd_seq_pool *pool)
 	if (snd_BUG_ON(!pool))
 		return -EINVAL;
 
-	cellptr = vmalloc(sizeof(struct snd_seq_event_cell) * pool->size);
+	cellptr = vmalloc(array_size(sizeof(struct snd_seq_event_cell),
+				     pool->size));
 	if (!cellptr)
 		return -ENOMEM;
 
@@ -502,18 +506,6 @@ int snd_seq_pool_delete(struct snd_seq_pool **ppool)
 	kfree(pool);
 	return 0;
 }
-
-/* initialize sequencer memory */
-int __init snd_sequencer_memory_init(void)
-{
-	return 0;
-}
-
-/* release sequencer memory */
-void __exit snd_sequencer_memory_done(void)
-{
-}
-
 
 /* exported to seq_clientmgr.c */
 void snd_seq_info_pool(struct snd_info_buffer *buffer,

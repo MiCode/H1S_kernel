@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/backlight.h>
 #include <linux/delay.h>
@@ -236,6 +228,16 @@ static int tianma_enable(struct drm_panel *panel)
 	return 0;
 }
 
+#if HFP_SUPPORT
+#define HFP_60HZ (983)
+#define HFP_90HZ (510)
+#define HSA (12)
+#define HBP (56)
+#define VFP (58)
+#define VSA (10)
+#define VBP (10)
+#define VAC (2400)
+#define HAC (1080)
 static const struct drm_display_mode default_mode = {
 	.clock = 306825,
 	.hdisplay = 1080,
@@ -261,6 +263,42 @@ static const struct drm_display_mode performance_mode = {
 	.vtotal = 2400 + 54 + 10 + 10,
 	.vrefresh = 90,
 };
+#else
+#define HFP (256)
+#define HSA (20)
+#define HBP (22)
+#define VFP_60HZ (1298)
+#define VFP_90HZ (58)
+#define VSA (10)
+#define VBP (10)
+#define VAC (2400)
+#define HAC (1080)
+static const struct drm_display_mode default_mode = {
+	.clock = 307404,
+	.hdisplay = HAC,
+	.hsync_start = HAC + HFP,
+	.hsync_end = HAC + HFP + HSA,
+	.htotal = HAC + HFP + HSA + HBP,
+	.vdisplay = VAC,
+	.vsync_start = VAC + VFP_60HZ,
+	.vsync_end = VAC + VFP_60HZ + VSA,
+	.vtotal = VAC + VFP_60HZ + VSA + VBP,
+	.vrefresh = 60,
+};
+
+static const struct drm_display_mode performance_mode = {
+	.clock = 307322,
+	.hdisplay = HAC,
+	.hsync_start = HAC + HFP,
+	.hsync_end = HAC + HFP + HSA,
+	.htotal = HAC + HFP + HSA + HBP,
+	.vdisplay = VAC,
+	.vsync_start = VAC + VFP_90HZ,
+	.vsync_end = VAC + VFP_90HZ + VSA,
+	.vtotal = VAC + VFP_90HZ + VSA + VBP,
+	.vrefresh = 90,
+};
+#endif
 
 #if defined(CONFIG_MTK_PANEL_EXT)
 static struct mtk_panel_params ext_params = {

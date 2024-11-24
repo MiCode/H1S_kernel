@@ -1,16 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- *  include header file for MediaTek MT6370 Charger
- *
- *  Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __LINUX_MFD_MT6370_PMU_H
@@ -274,24 +264,6 @@ static inline int mt6370_pmu_reg_clr_bit(struct mt6370_pmu_chip *chip, u8 addr,
 		u8 mask)
 {
 	return mt6370_pmu_reg_update_bits(chip, addr, mask, 0x00);
-}
-
-static inline int mt6370_pmu_reg_test_bit(
-	struct mt6370_pmu_chip *chip, u8 cmd, u8 shift, bool *is_one)
-{
-	int ret = 0;
-	u8 data = 0;
-
-	ret = mt6370_pmu_reg_read(chip, cmd);
-	if (ret < 0) {
-		*is_one = false;
-		return ret;
-	}
-
-	data = ret & (1 << shift);
-	*is_one = (data == 0 ? false : true);
-
-	return ret;
 }
 
 extern int mt6370_pmu_reg_block_read(struct mt6370_pmu_chip *chip, u8 addr,

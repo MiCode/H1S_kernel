@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef TCPC_EVENT_BUF_H_INCLUDED
@@ -28,7 +20,6 @@ struct pd_msg {
 	uint8_t frame_type;
 	uint16_t msg_hdr;
 	uint32_t payload[7];
-	unsigned long time_stamp;
 };
 
 struct pd_event {
@@ -38,41 +29,40 @@ struct pd_event {
 	struct pd_msg *pd_msg;
 };
 
-struct pd_msg *pd_alloc_msg(struct tcpc_device *tcpc_dev);
-void pd_free_msg(struct tcpc_device *tcpc_dev, struct pd_msg *pd_msg);
-bool pd_is_msg_empty(struct tcpc_device *tcpc_dev);
+struct pd_msg *pd_alloc_msg(struct tcpc_device *tcpc);
+void pd_free_msg(struct tcpc_device *tcpc, struct pd_msg *pd_msg);
 
-bool pd_get_event(struct tcpc_device *tcpc_dev, struct pd_event *pd_event);
-bool pd_put_event(struct tcpc_device *tcpc_dev,
+bool pd_get_event(struct tcpc_device *tcpc, struct pd_event *pd_event);
+bool pd_put_event(struct tcpc_device *tcpc,
 		const struct pd_event *pd_event, bool from_port_partner);
-void pd_free_event(struct tcpc_device *tcpc_dev, struct pd_event *pd_event);
+void pd_free_event(struct tcpc_device *tcpc, struct pd_event *pd_event);
 
-bool pd_get_vdm_event(struct tcpc_device *tcpc_dev, struct pd_event *pd_event);
-bool pd_put_vdm_event(struct tcpc_device *tcpc_dev,
+bool pd_get_vdm_event(struct tcpc_device *tcpc, struct pd_event *pd_event);
+bool pd_put_vdm_event(struct tcpc_device *tcpc,
 			struct pd_event *pd_event, bool from_port_partner);
 
-bool pd_put_last_vdm_event(struct tcpc_device *tcpc_dev);
+bool pd_put_last_vdm_event(struct tcpc_device *tcpc);
 
 bool pd_get_deferred_tcp_event(
-	struct tcpc_device *tcpc_dev, struct tcp_dpm_event *tcp_event);
+	struct tcpc_device *tcpc, struct tcp_dpm_event *tcp_event);
 bool pd_put_deferred_tcp_event(
-	struct tcpc_device *tcpc_dev, const struct tcp_dpm_event *tcp_event);
+	struct tcpc_device *tcpc, const struct tcp_dpm_event *tcp_event);
 
-extern int tcpci_event_init(struct tcpc_device *tcpc_dev);
-extern int tcpci_event_deinit(struct tcpc_device *tcpc_dev);
-extern void pd_event_buf_reset(struct tcpc_device *tcpc_dev);
+extern int tcpci_event_init(struct tcpc_device *tcpc);
+extern int tcpci_event_deinit(struct tcpc_device *tcpc);
+extern void pd_event_buf_reset(struct tcpc_device *tcpc);
 
-bool __pd_put_cc_attached_event(struct tcpc_device *tcpc_dev, uint8_t type);
-bool pd_put_cc_attached_event(struct tcpc_device *tcpc_dev, uint8_t type);
-void pd_put_cc_detached_event(struct tcpc_device *tcpc_dev);
-void pd_put_recv_hard_reset_event(struct tcpc_device *tcpc_dev);
-void pd_put_sent_hard_reset_event(struct tcpc_device *tcpc_dev);
-bool pd_put_pd_msg_event(struct tcpc_device *tcpc_dev, struct pd_msg *pd_msg);
-void pd_put_hard_reset_completed_event(struct tcpc_device *tcpc_dev);
-void pd_put_vbus_changed_event(struct tcpc_device *tcpc_dev, bool from_ic);
-void pd_put_vbus_safe0v_event(struct tcpc_device *tcpc_dev);
-void pd_put_vbus_stable_event(struct tcpc_device *tcpc_dev);
-void pd_put_vbus_present_event(struct tcpc_device *tcpc_dev);
+bool __pd_put_cc_attached_event(struct tcpc_device *tcpc, uint8_t type);
+bool pd_put_cc_attached_event(struct tcpc_device *tcpc, uint8_t type);
+void pd_put_cc_detached_event(struct tcpc_device *tcpc);
+void pd_put_recv_hard_reset_event(struct tcpc_device *tcpc);
+void pd_put_sent_hard_reset_event(struct tcpc_device *tcpc);
+bool pd_put_pd_msg_event(struct tcpc_device *tcpc, struct pd_msg *pd_msg);
+void pd_put_hard_reset_completed_event(struct tcpc_device *tcpc);
+void pd_put_vbus_changed_event(struct tcpc_device *tcpc, bool from_ic);
+void pd_put_vbus_safe0v_event(struct tcpc_device *tcpc);
+void pd_put_vbus_stable_event(struct tcpc_device *tcpc);
+void pd_put_vbus_present_event(struct tcpc_device *tcpc);
 
 enum pd_event_type {
 	PD_EVT_PD_MSG = 0,	/* either ctrl msg or data msg */
@@ -164,8 +154,8 @@ enum pd_msg_type {
 	PD_HW_VBUS_ABSENT,
 	PD_HW_VBUS_SAFE0V,
 	PD_HW_VBUS_STABLE,
-	PD_HW_TX_FAILED,	/* no good crc */
-	PD_HW_TX_DISCARD,	/* discard msg */
+	PD_HW_TX_FAILED,	/* no good crc or discard */
+	PD_HW_TX_DISCARD,	/* discard vdm msg */
 	PD_HW_RETRY_VDM,	/* discard vdm msg (retry) */
 #ifdef CONFIG_USB_PD_REV30_COLLISION_AVOID
 	PD_HW_SINK_TX_CHANGE,

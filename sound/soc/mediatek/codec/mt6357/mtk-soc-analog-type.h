@@ -1,20 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
-
 
 /*****************************************************************************
  *
@@ -190,6 +178,15 @@ struct mt6357_codec_priv {
 	int mAudio_Ana_Mux[AUDIO_ANALOG_MAX_MUX_TYPE];
 	int mAudio_Ana_DevicePower[AUDIO_ANALOG_DEVICE_MAX];
 	int mAudio_BackUpAna_DevicePower[AUDIO_ANALOG_DEVICE_MAX];
+};
+
+struct mt6357_priv {
+	struct device *dev;
+	struct regmap *regmap;
+	struct iio_channel *codec_auxadc, *accdet_auxadc;
+	struct nvmem_device *hp_efuse;
+	int mtkaif_protocol;
+
 };
 
 #endif

@@ -202,6 +202,24 @@ static const struct snd_kcontrol_new i2s3_out_mux_control =
 static const struct snd_kcontrol_new i2s5_out_mux_control =
 	SOC_DAPM_ENUM("I2S5 Out Select", i2s_out_mux_map_enum);
 
+/* i2s virtual mux to input widget */
+static const char * const i2s_in_mux_map[] = {
+	"Normal", "Input_Widget",
+};
+
+static int i2s_in_mux_map_value[] = {
+	0, 1,
+};
+
+static SOC_VALUE_ENUM_SINGLE_AUTODISABLE_DECL(i2s_in_mux_map_enum,
+					      SND_SOC_NOPM,
+					      0,
+					      1,
+					      i2s_in_mux_map,
+					      i2s_in_mux_map_value);
+static const struct snd_kcontrol_new i2s2_in_mux_control =
+	SOC_DAPM_ENUM("I2S2 In Select", i2s_in_mux_map_enum);
+
 /* i2s in lpbk */
 static const char * const i2s_lpbk_mux_map[] = {
 	"Normal", "Lpbk",
@@ -210,6 +228,9 @@ static const char * const i2s_lpbk_mux_map[] = {
 static int i2s_lpbk_mux_map_value[] = {
 	0, 1,
 };
+
+static const struct snd_kcontrol_new i2s0_in_mux_control  =
+	SOC_DAPM_ENUM("I2S0 In Select", i2s_in_mux_map_enum);
 
 static SOC_VALUE_ENUM_SINGLE_AUTODISABLE_DECL(i2s0_lpbk_mux_map_enum,
 					      AFE_I2S_CON,
@@ -498,6 +519,11 @@ static const struct snd_soc_dapm_widget mtk_dai_i2s_widgets[] = {
 			   mtk_i2s5_ch2_mix,
 			   ARRAY_SIZE(mtk_i2s5_ch2_mix)),
 
+	SND_SOC_DAPM_INPUT("I2S_DUMMY_IN"),
+	SND_SOC_DAPM_MUX("I2S2_In_Mux",
+			 SND_SOC_NOPM, 0, 0, &i2s2_in_mux_control),
+
+
 	/* i2s en*/
 	SND_SOC_DAPM_SUPPLY_S("I2S0_EN", SUPPLY_SEQ_I2S_EN,
 			      AFE_I2S_CON, I2S_EN_SFT, 0,
@@ -575,12 +601,15 @@ static const struct snd_soc_dapm_widget mtk_dai_i2s_widgets[] = {
 
 	/* allow i2s on without codec on */
 	SND_SOC_DAPM_OUTPUT("I2S_DUMMY_OUT"),
+	SND_SOC_DAPM_INPUT("I2S_DUMMY_IN"),
 	SND_SOC_DAPM_MUX("I2S1_Out_Mux",
 			 SND_SOC_NOPM, 0, 0, &i2s1_out_mux_control),
 	SND_SOC_DAPM_MUX("I2S3_Out_Mux",
 			 SND_SOC_NOPM, 0, 0, &i2s3_out_mux_control),
 	SND_SOC_DAPM_MUX("I2S5_Out_Mux",
 			 SND_SOC_NOPM, 0, 0, &i2s5_out_mux_control),
+	SND_SOC_DAPM_MUX("I2S0_In_Mux",
+			 SND_SOC_NOPM, 0, 0, &i2s0_in_mux_control),
 
 	/* i2s in lpbk */
 	SND_SOC_DAPM_MUX("I2S0_Lpbk_Mux",
@@ -837,6 +866,9 @@ static const struct snd_soc_dapm_route mtk_dai_i2s_routes[] = {
 	{"I2S3_CH1", "DL5_CH1", "DL5"},
 	{"I2S3_CH2", "DL5_CH2", "DL5"},
 
+	{"I2S3_CH1", "DL7_CH1", "DL7"},
+	{"I2S3_CH2", "DL7_CH2", "DL7"},
+
 	{"I2S3_CH1", "DL8_CH1", "DL8"},
 	{"I2S3_CH2", "DL8_CH2", "DL8"},
 
@@ -926,6 +958,13 @@ static const struct snd_soc_dapm_route mtk_dai_i2s_routes[] = {
 
 	{"I2S5_Out_Mux", "Output_Widget", "I2S5"},
 	{"I2S_DUMMY_OUT", NULL, "I2S5_Out_Mux"},
+
+	{"I2S2", NULL, "I2S2_In_Mux"},
+	{"I2S2_In_Mux", "Input_Widget", "I2S_DUMMY_IN"},
+
+	{"I2S0", NULL, "I2S0_In_Mux"},
+	{"I2S0_In_Mux", "Input_Widget", "I2S_DUMMY_IN"},
+
 
 	/* i2s in lpbk */
 	{"I2S0_Lpbk_Mux", "Lpbk", "I2S3"},
@@ -1327,7 +1366,11 @@ static const struct mtk_afe_i2s_priv mt6785_i2s_priv[DAI_I2S_NUM] = {
 		.id = MT6785_DAI_I2S_2,
 		.mclk_id = MT6785_I2S2_MCK,
 		.share_property_name = "i2s2-share",
+#if defined(CONFIG_SND_SOC_CS35L41)
+		.share_i2s_id = MT6785_DAI_I2S_1,
+#else
 		.share_i2s_id = -1,
+#endif
 	},
 	[DAI_I2S3] = {
 		.id = MT6785_DAI_I2S_3,

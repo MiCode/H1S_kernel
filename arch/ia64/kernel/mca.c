@@ -1513,7 +1513,7 @@ ia64_mca_cmc_int_caller(int cmc_irq, void *arg)
  *
  */
 static void
-ia64_mca_cmc_poll (unsigned long dummy)
+ia64_mca_cmc_poll (struct timer_list *unused)
 {
 	/* Trigger a CMC interrupt cascade  */
 	platform_send_ipi(cpumask_first(cpu_online_mask), IA64_CMCP_VECTOR,
@@ -1590,7 +1590,7 @@ ia64_mca_cpe_int_caller(int cpe_irq, void *arg)
  *
  */
 static void
-ia64_mca_cpe_poll (unsigned long dummy)
+ia64_mca_cpe_poll (struct timer_list *unused)
 {
 	/* Trigger a CPE interrupt cascade  */
 	platform_send_ipi(cpumask_first(cpu_online_mask), IA64_CPEP_VECTOR,
@@ -1860,7 +1860,7 @@ ia64_mca_cpu_init(void *cpu_data)
 			data = mca_bootmem();
 			first_time = 0;
 		} else
-			data = (void *)__get_free_pages(GFP_KERNEL,
+			data = (void *)__get_free_pages(GFP_ATOMIC,
 							get_order(sz));
 		if (!data)
 			panic("Could not allocate MCA memory for cpu %d\n",
@@ -2098,7 +2098,7 @@ ia64_mca_late_init(void)
 		return 0;
 
 	/* Setup the CMCI/P vector and handler */
-	setup_timer(&cmc_poll_timer, ia64_mca_cmc_poll, 0UL);
+	timer_setup(&cmc_poll_timer, ia64_mca_cmc_poll, 0);
 
 	/* Unmask/enable the vector */
 	cmc_polling_enabled = 0;
@@ -2109,7 +2109,7 @@ ia64_mca_late_init(void)
 #ifdef CONFIG_ACPI
 	/* Setup the CPEI/P vector and handler */
 	cpe_vector = acpi_request_vector(ACPI_INTERRUPT_CPEI);
-	setup_timer(&cpe_poll_timer, ia64_mca_cpe_poll, 0UL);
+	timer_setup(&cpe_poll_timer, ia64_mca_cpe_poll, 0);
 
 	{
 		unsigned int irq;

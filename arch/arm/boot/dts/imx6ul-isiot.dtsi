@@ -45,7 +45,8 @@
 #include "imx6ul.dtsi"
 
 / {
-	memory {
+	memory@80000000 {
+		device_type = "memory";
 		reg = <0x80000000 0x20000000>;
 	};
 
@@ -142,6 +143,7 @@
 	sgtl5000: codec@a {
 		compatible = "fsl,sgtl5000";
 		reg = <0x0a>;
+		#sound-dai-cells = <0>;
 		clocks = <&clks IMX6UL_CLK_OSC>;
 		clock-names = "mclk";
 		VDDA-supply = <&reg_3p3v>;
@@ -152,8 +154,6 @@
 	stmpe811: gpio-expander@44 {
 		compatible = "st,stmpe811";
 		reg = <0x44>;
-		#address-cells = <1>;
-		#size-cells = <0>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&pinctrl_stmpe>;
 		interrupt-parent = <&gpio1>;

@@ -46,18 +46,7 @@ struct thread_info {
 #ifdef CONFIG_SHADOW_CALL_STACK
 	void			*shadow_call_stack;
 #endif
-	void			*regs_on_excp;	/* aee */
-	int			cpu_excp;	/* aee */
 };
-
-#define INIT_THREAD_INFO(tsk)						\
-{									\
-	.preempt_count	= INIT_PREEMPT_COUNT,				\
-	.addr_limit	= KERNEL_DS,					\
-	.cpu_excp = 0,	/* aee */					\
-}
-
-#define init_stack		(init_thread_union.stack)
 
 #define thread_saved_pc(tsk)	\
 	((unsigned long)(tsk->thread.cpu_context.pc))
@@ -68,6 +57,8 @@ struct thread_info {
 
 void arch_setup_new_exec(void);
 #define arch_setup_new_exec     arch_setup_new_exec
+
+void arch_release_task_struct(struct task_struct *tsk);
 
 #endif
 
@@ -98,8 +89,10 @@ void arch_setup_new_exec(void);
 #define TIF_RESTORE_SIGMASK	20
 #define TIF_SINGLESTEP		21
 #define TIF_32BIT		22	/* 32bit process */
-#define TIF_SSBD		23	/* Wants SSB mitigation */
-#define TIF_TAGGED_ADDR		24	/* Allow tagged user addresses */
+#define TIF_SVE			23	/* Scalable Vector Extension in use */
+#define TIF_SVE_VL_INHERIT	24	/* Inherit sve_vl_onexec across exec */
+#define TIF_SSBD		25	/* Wants SSB mitigation */
+#define TIF_TAGGED_ADDR		26	/* Allow tagged user addresses */
 
 #define _TIF_SIGPENDING		(1 << TIF_SIGPENDING)
 #define _TIF_NEED_RESCHED	(1 << TIF_NEED_RESCHED)
@@ -112,7 +105,9 @@ void arch_setup_new_exec(void);
 #define _TIF_SECCOMP		(1 << TIF_SECCOMP)
 #define _TIF_UPROBE		(1 << TIF_UPROBE)
 #define _TIF_FSCHECK		(1 << TIF_FSCHECK)
+#define _TIF_SINGLESTEP		(1 << TIF_SINGLESTEP)
 #define _TIF_32BIT		(1 << TIF_32BIT)
+#define _TIF_SVE		(1 << TIF_SVE)
 
 #define _TIF_WORK_MASK		(_TIF_NEED_RESCHED | _TIF_SIGPENDING | \
 				 _TIF_NOTIFY_RESUME | _TIF_FOREIGN_FPSTATE | \
@@ -121,6 +116,13 @@ void arch_setup_new_exec(void);
 #define _TIF_SYSCALL_WORK	(_TIF_SYSCALL_TRACE | _TIF_SYSCALL_AUDIT | \
 				 _TIF_SYSCALL_TRACEPOINT | _TIF_SECCOMP | \
 				 _TIF_NOHZ)
+
+#define INIT_THREAD_INFO(tsk)						\
+{									\
+	.flags		= _TIF_FOREIGN_FPSTATE,				\
+	.preempt_count	= INIT_PREEMPT_COUNT,				\
+	.addr_limit	= KERNEL_DS,					\
+}
 
 #endif /* __KERNEL__ */
 #endif /* __ASM_THREAD_INFO_H */

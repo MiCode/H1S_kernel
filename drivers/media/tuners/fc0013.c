@@ -574,11 +574,10 @@ exit:
 
 static const struct dvb_tuner_ops fc0013_tuner_ops = {
 	.info = {
-		.name		= "Fitipower FC0013",
+		.name		  = "Fitipower FC0013",
 
-		.frequency_min	= 37000000,	/* estimate */
-		.frequency_max	= 1680000000,	/* CHECK */
-		.frequency_step	= 0,
+		.frequency_min_hz =   37 * MHz,	/* estimate */
+		.frequency_max_hz = 1680 * MHz,	/* CHECK */
 	},
 
 	.release	= fc0013_release,
@@ -619,7 +618,7 @@ struct dvb_frontend *fc0013_attach(struct dvb_frontend *fe,
 
 	return fe;
 }
-EXPORT_SYMBOL(fc0013_attach);
+EXPORT_SYMBOL_GPL(fc0013_attach);
 
 MODULE_DESCRIPTION("Fitipower FC0013 silicon tuner driver");
 MODULE_AUTHOR("Hans-Frieder Vogt <hfvogt@gmx.net>");

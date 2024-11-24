@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/spinlock.h>
@@ -316,6 +308,12 @@ void m4u_mvaGraph_dump(void)
 		nr = MVA_GET_NR(index);
 		size = nr << MVA_BLOCK_SIZE_ORDER;
 		end = start + size - 1;
+		/* DO NOT call aee here directly to avoid recursive dump. */
+		if (nr == 0 || end <= start) {
+			M4ULOG_HIGH("%s err: nr=%d, start=0x08x\n",
+				    __func__, nr, start);
+			break;
+		}
 		if (MVA_IS_BUSY(index)) {
 			is_busy = 1;
 			if (MVA_IS_RESERVED(index))

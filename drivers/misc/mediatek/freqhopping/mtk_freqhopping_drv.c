@@ -1,18 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2011 MediaTek, Inc.
- *
- * Author: Holmes Chiou <holmes.chiou@mediatek.com>
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -27,6 +16,11 @@
 #include <linux/dma-mapping.h>
 #include <linux/seq_file.h>
 #include "mtk_freqhopping_drv.h"
+
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
 
 #define SUPPORT_SLT_TEST 0
 #define FREQ_HOPPING_DEVICE "mt-freqhopping"

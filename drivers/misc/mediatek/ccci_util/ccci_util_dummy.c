@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 
 #include <linux/cdev.h>
@@ -31,10 +23,6 @@ void __weak spm_ap_mdsrc_req(u8 lock)
 	pr_notice("[ccci/dummy] %s is not supported!\n", __func__);
 }
 
-void __weak ccci_power_off(void)
-{
-
-}
 int __weak exec_ccci_kern_func_by_md_id(int md_id, unsigned int id, char *buf,
 	unsigned int len)
 {

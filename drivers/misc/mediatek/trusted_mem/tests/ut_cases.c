@@ -1,14 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define TMEM_UT_TEST_FMT
@@ -364,7 +357,8 @@ static enum UT_RET_STATE profile_dump_all(struct ut_params *params,
 #endif
 
 #if defined(CONFIG_MTK_SECURE_MEM_SUPPORT)                                     \
-	&& defined(CONFIG_MTK_CAM_SECURITY_SUPPORT)
+	&& defined(CONFIG_MTK_CAM_SECURITY_SUPPORT)	\
+	&& !defined(CONFIG_MTK_SVP_ON_MTEE_SUPPORT)
 #define PROT_TEST_PA_ADDR64_START (0x180000000ULL)
 #define PROT_TEST_PA_ADDR64_ZERO (0x0ULL)
 #define PROT_TEST_POOL_SIZE_NORMAL SIZE_256M
@@ -754,7 +748,8 @@ static struct test_case test_cases[] = {
 #endif
 
 #if defined(CONFIG_MTK_SECURE_MEM_SUPPORT)                                     \
-	&& defined(CONFIG_MTK_CAM_SECURITY_SUPPORT)
+	&& defined(CONFIG_MTK_CAM_SECURITY_SUPPORT)	\
+	&& !defined(CONFIG_MTK_SVP_ON_MTEE_SUPPORT)
 	CASE(FR_UT_PROC_CONFIG_PROT_REGION, "Set TEE Protect Region Test", 0, 0,
 	     0, config_tee_prot_region_test),
 #endif
@@ -772,7 +767,7 @@ static struct test_case test_cases[] = {
 
 #define TEST_CASE_COUNT ARRAY_SIZE(test_cases)
 
-static int __init tmem_ut_cases_init(void)
+int tmem_ut_cases_init(void)
 {
 	int idx;
 
@@ -791,13 +786,7 @@ static int __init tmem_ut_cases_init(void)
 	return TMEM_OK;
 }
 
-static void __exit tmem_ut_cases_exit(void)
+void tmem_ut_cases_exit(void)
 {
 }
 
-module_init(tmem_ut_cases_init);
-module_exit(tmem_ut_cases_exit);
-
-MODULE_AUTHOR("MediaTek Inc.");
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("MediaTek Trusted Memory Test Cases");

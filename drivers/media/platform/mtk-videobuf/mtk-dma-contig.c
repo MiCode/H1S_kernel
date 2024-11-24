@@ -1,15 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2016 MediaTek Inc.
+ * Copyright (c) 2019 MediaTek Inc.
  * Author: Rick Chang <rick.chang@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/dma-buf.h>
@@ -18,6 +10,9 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/dma-mapping.h>
+
+#include <media/videobuf2-v4l2.h>
+#include <media/videobuf2-memops.h>
 
 #include "mtk-dma-contig.h"
 
@@ -139,6 +134,7 @@ static int vb2_dc_map_dmabuf(void *mem_priv)
 
 	/* checking if dmabuf is big enough to store contiguous chunk */
 	contig_size = vb2_dc_get_contiguous_size(sgt);
+
 	if (contig_size < buf->size && mtk_secure_mode != 1) {
 #ifdef CONFIG_MTK_IOMMU_V2
 		dprintk(CRITICAL,
@@ -169,17 +165,17 @@ static void vb2_dc_unmap_dmabuf(void *mem_priv)
 		return;
 	}
 
-		if (WARN_ON(!sgt)) {
-			dprintk(CRITICAL,
-				"dmabuf buffer is already unpinned\n");
-			return;
-		}
+	if (WARN_ON(!sgt)) {
+		dprintk(CRITICAL,
+			"dmabuf buffer is already unpinned\n");
+		return;
+	}
 
-		if (buf->vaddr) {
-			dma_buf_vunmap(buf->db_attach->dmabuf, buf->vaddr);
+	if (buf->vaddr) {
+		dma_buf_vunmap(buf->db_attach->dmabuf, buf->vaddr);
 			buf->vaddr = NULL;
-		}
-		dma_buf_unmap_attachment(buf->db_attach, sgt, buf->dma_dir);
+	}
+	dma_buf_unmap_attachment(buf->db_attach, sgt, buf->dma_dir);
 
 	buf->dma_addr = 0;
 	buf->dma_sgt = NULL;

@@ -395,7 +395,7 @@ static const struct bond_option bond_opts[BOND_OPT_LAST] = {
 		.id = BOND_OPT_TLB_DYNAMIC_LB,
 		.name = "tlb_dynamic_lb",
 		.desc = "Enable dynamic flow shuffling",
-		.unsuppmodes = BOND_MODE_ALL_EX(BIT(BOND_MODE_TLB)),
+		.unsuppmodes = BOND_MODE_ALL_EX(BIT(BOND_MODE_TLB) | BIT(BOND_MODE_ALB)),
 		.values = bond_tlb_dynamic_lb_tbl,
 		.flags = BOND_OPTFLAG_IFDOWN,
 		.set = bond_option_tlb_dynamic_lb_set,
@@ -1074,9 +1074,9 @@ static int bond_option_arp_ip_targets_set(struct bonding *bond,
 	__be32 target;
 
 	if (newval->string) {
-		if (!in4_pton(newval->string+1, -1, (u8 *)&target, -1, NULL)) {
-			netdev_err(bond->dev, "invalid ARP target %pI4 specified\n",
-				   &target);
+		if (strlen(newval->string) < 1 ||
+		    !in4_pton(newval->string + 1, -1, (u8 *)&target, -1, NULL)) {
+			netdev_err(bond->dev, "invalid ARP target specified\n");
 			return ret;
 		}
 		if (newval->string[0] == '+')
@@ -1382,7 +1382,7 @@ static int bond_option_slaves_set(struct bonding *bond,
 	switch (command[0]) {
 	case '+':
 		netdev_dbg(bond->dev, "Adding slave %s\n", dev->name);
-		ret = bond_enslave(bond->dev, dev);
+		ret = bond_enslave(bond->dev, dev, NULL);
 		break;
 
 	case '-':
@@ -1430,20 +1430,16 @@ static int bond_option_ad_actor_system_set(struct bonding *bond,
 {
 	u8 macaddr[ETH_ALEN];
 	u8 *mac;
-	int i;
 
 	if (newval->string) {
-		i = sscanf(newval->string, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-			   &macaddr[0], &macaddr[1], &macaddr[2],
-			   &macaddr[3], &macaddr[4], &macaddr[5]);
-		if (i != ETH_ALEN)
+		if (!mac_pton(newval->string, macaddr))
 			goto err;
 		mac = macaddr;
 	} else {
 		mac = (u8 *)&newval->value;
 	}
 
-	if (!is_valid_ether_addr(mac))
+	if (is_multicast_ether_addr(mac))
 		goto err;
 
 	netdev_dbg(bond->dev, "Setting ad_actor_system to %pM\n", mac);

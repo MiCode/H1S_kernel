@@ -17,7 +17,7 @@ This is a introduction for flashlight chip MT6336
 	* Flash mode watchdog timer
 	* Torch mode watchdog timer
 	* Flash/Torch timeout
-	* Flash mode step up/down timeing (default: 10 us)
+	* Flash mode step up/down timing (default: 10 us)
 	* Flash mode output regulation voltage (default: 5.0 V)
 
 - Channel decouple:

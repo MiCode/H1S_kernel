@@ -1,18 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Flashlight Core
- *
- * Copyright (C) 2015 MediaTek Inc.
- *
- * Author: Simon Wang <Simon-TCH.Wang@mediatek.com>
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": %s: " fmt, __func__
@@ -64,8 +52,8 @@ fl_async_bound(struct v4l2_async_notifier *notifier,
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(pfdev->asd); i++) {
-		if (pfdev->asd[i]->match.fwnode.fwnode ==
-			asd[0].match.fwnode.fwnode) {
+		if (pfdev->asd[i]->match.fwnode ==
+			asd[0].match.fwnode) {
 			pfdev->sd[i] = subdev;
 			found = true;
 			break;
@@ -163,7 +151,7 @@ mtk_get_pdata(struct platform_device *pdev,
 		pr_debug("rem %p, pdata[i] %p, name %s, full_name %s\n",
 				rem, pdata[i], rem->name, rem->full_name);
 		pdata[i]->match_type = V4L2_ASYNC_MATCH_FWNODE;
-		pdata[i]->match.fwnode.fwnode = of_fwnode_handle(rem);
+		pdata[i]->match.fwnode = of_fwnode_handle(rem);
 		of_node_put(rem);
 		notifier->num_subdevs++;
 		pfdev->asd[i] = pdata[i];
@@ -183,6 +171,11 @@ static void mtk_composite_unregister_entities(
 	v4l2_device_unregister(&isp->v4l2_dev);
 	media_device_unregister(&isp->media_dev);
 }
+
+static const struct v4l2_async_notifier_operations fl_async_notify_ops = {
+	.bound = fl_async_bound,
+	.complete = fl_async_complete,
+};
 
 static int mtk_composite_probe(struct platform_device *dev)
 {
@@ -258,8 +251,7 @@ static int mtk_composite_probe(struct platform_device *dev)
 	}
 
 	pfdev->notifier.subdevs = pfdev->asd;
-	pfdev->notifier.bound = fl_async_bound;
-	pfdev->notifier.complete = fl_async_complete;
+	pfdev->notifier.ops = &fl_async_notify_ops;
 
 	rc = v4l2_async_notifier_register(&pfdev->v4l2_dev, &pfdev->notifier);
 	if (rc) {

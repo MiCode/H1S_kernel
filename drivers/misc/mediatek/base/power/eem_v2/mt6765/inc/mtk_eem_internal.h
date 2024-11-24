@@ -1,15 +1,6 @@
-
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2016 MediaTek Inc.
  */
 
 #ifndef _MTK_EEM_INTERNAL_H_
@@ -44,21 +35,11 @@
  * LOG
  */
 #define EEM_TAG	 "[xxxxEEM] "
-#if 1
 	#define eem_error(fmt, args...)		pr_notice(EEM_TAG fmt, ##args)
 	#define eem_warning(fmt, args...)
 	#define eem_notice(fmt, args...)
 	#define eem_info(fmt, args...)
 	#define eem_debug(fmt, args...)
-#else
-	#define eem_error(fmt, args...)	 pr_debug(EEM_TAG fmt, ##args)
-	#define eem_warning(fmt, args...)   pr_debug(EEM_TAG fmt, ##args)
-	#define eem_notice(fmt, args...)	pr_debug(EEM_TAG fmt, ##args)
-	#define eem_info(fmt, args...)	  pr_debug(EEM_TAG fmt, ##args)
-	#define eem_debug(fmt, args...)	\
-		pr_debug(EEM_TAG"(%d)" fmt, __LINE__, ##args)
-		/* pr_debug(EEM_TAG fmt, ##args) */
-#endif
 
 #if EN_ISR_LOG /* For Interrupt use */
 	#define eem_isr_info(fmt, args...)  eem_debug(fmt, ##args)

@@ -246,7 +246,7 @@ necessary information about the device.
         this->eccmode = NAND_ECC_SOFT;
 
         /* Scan to find existence of the device */
-        if (nand_scan (board_mtd, 1)) {
+        if (nand_scan (this, 1)) {
             err = -ENXIO;
             goto out_ior;
         }
@@ -374,7 +374,7 @@ The nand driver supports three different types of hardware ECC.
 
 -  NAND_ECC_HW8_512
 
-   Hardware ECC generator providing 6 bytes ECC per 512 byte.
+   Hardware ECC generator providing 8 bytes ECC per 512 byte.
 
 If your hardware generator has a different functionality add it at the
 appropriate place in nand_base.c
@@ -889,7 +889,7 @@ Use these constants to select the ECC algorithm::
     #define NAND_ECC_HW3_512    3
     /* Hardware ECC 6 byte ECC per 512 Byte data */
     #define NAND_ECC_HW6_512    4
-    /* Hardware ECC 6 byte ECC per 512 Byte data */
+    /* Hardware ECC 8 byte ECC per 512 Byte data */
     #define NAND_ECC_HW8_512    6
 
 
@@ -967,10 +967,10 @@ API functions which are exported. Each function has a short description
 which is marked with an [XXX] identifier. See the chapter "Documentation
 hints" for an explanation.
 
-.. kernel-doc:: drivers/mtd/nand/nand_base.c
+.. kernel-doc:: drivers/mtd/nand/raw/nand_base.c
    :export:
 
-.. kernel-doc:: drivers/mtd/nand/nand_ecc.c
+.. kernel-doc:: drivers/mtd/nand/raw/nand_ecc.c
    :export:
 
 Internal Functions Provided
@@ -982,10 +982,10 @@ marked with an [XXX] identifier. See the chapter "Documentation hints"
 for an explanation. The functions marked with [DEFAULT] might be
 relevant for a board driver developer.
 
-.. kernel-doc:: drivers/mtd/nand/nand_base.c
+.. kernel-doc:: drivers/mtd/nand/raw/nand_base.c
    :internal:
 
-.. kernel-doc:: drivers/mtd/nand/nand_bbt.c
+.. kernel-doc:: drivers/mtd/nand/raw/nand_bbt.c
    :internal:
 
 Credits

@@ -10,9 +10,11 @@ obj-$(CONFIG_MMU)		+= fault-armv.o flush.o idmap.o ioremap.o \
 
 ifneq ($(CONFIG_MMU),y)
 obj-y				+= nommu.o
+obj-$(CONFIG_ARM_MPU)		+= pmsa-v7.o pmsa-v8.o
 endif
 
-obj-$(CONFIG_ARM_PTDUMP)	+= dump.o
+obj-$(CONFIG_ARM_PTDUMP_CORE)	+= dump.o
+obj-$(CONFIG_ARM_PTDUMP_DEBUGFS)	+= ptdump_debugfs.o
 
 ifneq ($(CONFIG_ARM_LPAE),y)
 ifeq ($(CONFIG_ARCH_HAS_PTE_SPECIAL),y)
@@ -110,13 +112,11 @@ AFLAGS_proc-v6.o	:=-Wa,-march=armv6
 AFLAGS_proc-v7.o	:=-Wa,-march=armv7-a
 
 obj-$(CONFIG_OUTER_CACHE)	+= l2c-common.o
+obj-$(CONFIG_CACHE_B15_RAC)	+= cache-b15-rac.o
 obj-$(CONFIG_CACHE_FEROCEON_L2)	+= cache-feroceon-l2.o
 obj-$(CONFIG_CACHE_L2X0)	+= cache-l2x0.o l2c-l2x0-resume.o
 obj-$(CONFIG_CACHE_L2X0_PMU)	+= cache-l2x0-pmu.o
 obj-$(CONFIG_CACHE_XSC3L2)	+= cache-xsc3l2.o
 obj-$(CONFIG_CACHE_TAUROS2)	+= cache-tauros2.o
 obj-$(CONFIG_CACHE_UNIPHIER)	+= cache-uniphier.o
-
-KBUILD_CPPFLAGS += -I$(srctree)/drivers/misc/mediatek/include
-
 obj-$(CONFIG_MEDIATEK_SOLUTION)	+= cache-mtk-v7.o

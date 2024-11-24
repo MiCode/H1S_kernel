@@ -1,15 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
+
 
 #ifndef __ECCCI_INTERNAL_OPTION__
 #define __ECCCI_INTERNAL_OPTION__
@@ -17,7 +10,11 @@
 /* platform info */
 #define MD_GENERATION       (6295)
 #define MD_PLATFORM_INFO    "6295"
+#ifdef CCCI_PLATFORM_MT6781
+#define AP_PLATFORM_INFO    "MT6781"
+#else
 #define AP_PLATFORM_INFO    "MT6785"
+#endif
 #define CCCI_DRIVER_VER     0x20110118
 
 /* buffer management customization */
@@ -36,7 +33,11 @@
 /* CCIF dump offset in MD SS debug region */
 #define CCCI_EE_OFFSET_CCIF_SRAM (1024 - CCCI_EE_SIZE_CCIF_SRAM)
 /* flag to tell WDT is triggered by EPON or not, in MD SS debug region */
+#ifdef CCCI_PLATFORM_MT6781
+#define CCCI_EE_OFFSET_EPON_MD1 (0x24)
+#else
 #define CCCI_EE_OFFSET_EPON_MD1 (0x1C24)
+#endif
 #define CCCI_EE_OFFSET_EPON_MD3 (0x464)
 /* flag to enable MD power off checking or not, in MD SS debug region */
 #define CCCI_EE_OFFSET_EPOF_MD1 (7*1024+0x234)
@@ -48,6 +49,11 @@
 #define CCCI_SMEM_SIZE_DBM_GUARD (8)
 
 #define IPC_L4C_MSG_ID_LEN   (0x40)
+
+#ifdef CCCI_PLATFORM_MT6781
+/* only bringup need BY_PASS_MD_BROM, normal load no need */
+//#define BY_PASS_MD_BROM
+#endif
 
 /* feature option, always try using platform info first! */
 #ifdef CONFIG_MTK_TINYSYS_SCP_SUPPORT

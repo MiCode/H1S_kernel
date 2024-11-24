@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef _DISP_LOWPOWER_H_
@@ -55,8 +47,11 @@ unsigned int is_mipi_enterulps(void);
 /* read dsi regs to calculate clk */
 unsigned int get_mipi_clk(void);
 
+void hrt_bw_sync_idx(unsigned int cur_idx);
 int primary_display_request_dvfs_perf(
-	int scenario, int req);
+	int scenario, int req, unsigned int freq_req);
+unsigned long long disp_lp_set_idle_check_interval(
+	unsigned long long new_interval);
 
 #if defined(CONFIG_MTK_DUAL_DISPLAY_SUPPORT) && \
 	(CONFIG_MTK_DUAL_DISPLAY_SUPPORT == 2)

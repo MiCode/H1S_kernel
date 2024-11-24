@@ -264,7 +264,7 @@ out:
 	return status;
 }
 
-static struct cache_detail rsi_cache_template = {
+static const struct cache_detail rsi_cache_template = {
 	.owner		= THIS_MODULE,
 	.hash_size	= RSI_HASHMAX,
 	.name           = "auth.rpcsec.init",
@@ -525,7 +525,7 @@ out:
 	return status;
 }
 
-static struct cache_detail rsc_cache_template = {
+static const struct cache_detail rsc_cache_template = {
 	.owner		= THIS_MODULE,
 	.hash_size	= RSC_HASHMAX,
 	.name		= "auth.rpcsec.context",
@@ -858,11 +858,13 @@ unwrap_integ_data(struct svc_rqst *rqstp, struct xdr_buf *buf, u32 seq, struct g
 		return stat;
 	if (integ_len > buf->len)
 		return stat;
-	if (xdr_buf_subsegment(buf, &integ_buf, 0, integ_len))
-		BUG();
+	if (xdr_buf_subsegment(buf, &integ_buf, 0, integ_len)) {
+		WARN_ON_ONCE(1);
+		return stat;
+	}
 	/* copy out mic... */
 	if (read_u32_from_xdr_buf(buf, integ_len, &mic.len))
-		BUG();
+		return stat;
 	if (mic.len > RPC_MAX_AUTH_SIZE)
 		return stat;
 	mic.data = kmalloc(mic.len, GFP_KERNEL);
@@ -1054,37 +1056,77 @@ gss_read_verf(struct rpc_gss_wire_cred *gc,
 	return 0;
 }
 
-/* Ok this is really heavily depending on a set of semantics in
- * how rqstp is set up by svc_recv and pages laid down by the
- * server when reading a request. We are basically guaranteed that
- * the token lays all down linearly across a set of pages, starting
- * at iov_base in rq_arg.head[0] which happens to be the first of a
- * set of pages stored in rq_pages[].
- * rq_arg.head[0].iov_base will provide us the page_base to pass
- * to the upcall.
- */
-static inline int
-gss_read_proxy_verf(struct svc_rqst *rqstp,
-		    struct rpc_gss_wire_cred *gc, __be32 *authp,
-		    struct xdr_netobj *in_handle,
-		    struct gssp_in_token *in_token)
+static void gss_free_in_token_pages(struct gssp_in_token *in_token)
+{
+	int i;
+
+	i = 0;
+	while (in_token->pages[i])
+		put_page(in_token->pages[i++]);
+	kfree(in_token->pages);
+	in_token->pages = NULL;
+}
+
+static int gss_read_proxy_verf(struct svc_rqst *rqstp,
+			       struct rpc_gss_wire_cred *gc, __be32 *authp,
+			       struct xdr_netobj *in_handle,
+			       struct gssp_in_token *in_token)
 {
 	struct kvec *argv = &rqstp->rq_arg.head[0];
-	u32 inlen;
-	int res;
+	unsigned int length, pgto_offs, pgfrom_offs;
+	int pages, i, res, pgto, pgfrom;
+	size_t inlen, to_offs, from_offs;
 
 	res = gss_read_common_verf(gc, argv, authp, in_handle);
 	if (res)
 		return res;
 
 	inlen = svc_getnl(argv);
-	if (inlen > (argv->iov_len + rqstp->rq_arg.page_len))
+	if (inlen > (argv->iov_len + rqstp->rq_arg.page_len)) {
+		kfree(in_handle->data);
 		return SVC_DENIED;
+	}
 
-	in_token->pages = rqstp->rq_pages;
-	in_token->page_base = (ulong)argv->iov_base & ~PAGE_MASK;
+	pages = DIV_ROUND_UP(inlen, PAGE_SIZE);
+	in_token->pages = kcalloc(pages + 1, sizeof(struct page *), GFP_KERNEL);
+	if (!in_token->pages) {
+		kfree(in_handle->data);
+		return SVC_DENIED;
+	}
+	in_token->page_base = 0;
 	in_token->page_len = inlen;
+	for (i = 0; i < pages; i++) {
+		in_token->pages[i] = alloc_page(GFP_KERNEL);
+		if (!in_token->pages[i]) {
+			kfree(in_handle->data);
+			gss_free_in_token_pages(in_token);
+			return SVC_DENIED;
+		}
+	}
 
+	length = min_t(unsigned int, inlen, argv->iov_len);
+	memcpy(page_address(in_token->pages[0]), argv->iov_base, length);
+	inlen -= length;
+
+	to_offs = length;
+	from_offs = rqstp->rq_arg.page_base;
+	while (inlen) {
+		pgto = to_offs >> PAGE_SHIFT;
+		pgfrom = from_offs >> PAGE_SHIFT;
+		pgto_offs = to_offs & ~PAGE_MASK;
+		pgfrom_offs = from_offs & ~PAGE_MASK;
+
+		length = min_t(unsigned int, inlen,
+			 min_t(unsigned int, PAGE_SIZE - pgto_offs,
+			       PAGE_SIZE - pgfrom_offs));
+		memcpy(page_address(in_token->pages[pgto]) + pgto_offs,
+		       page_address(rqstp->rq_arg.pages[pgfrom]) + pgfrom_offs,
+		       length);
+
+		to_offs += length;
+		from_offs += length;
+		inlen -= length;
+	}
 	return 0;
 }
 
@@ -1263,8 +1305,11 @@ static int svcauth_gss_proxy_init(struct svc_rqst *rqstp,
 		break;
 	case GSS_S_COMPLETE:
 		status = gss_proxy_save_rsc(sn->rsc_cache, &ud, &handle);
-		if (status)
+		if (status) {
+			pr_info("%s: gss_proxy_save_rsc failed (%d)\n",
+				__func__, status);
 			goto out;
+		}
 		cli_handle.data = (u8 *)&handle;
 		cli_handle.len = sizeof(handle);
 		break;
@@ -1275,15 +1320,20 @@ static int svcauth_gss_proxy_init(struct svc_rqst *rqstp,
 
 	/* Got an answer to the upcall; use it: */
 	if (gss_write_init_verf(sn->rsc_cache, rqstp,
-				&cli_handle, &ud.major_status))
+				&cli_handle, &ud.major_status)) {
+		pr_info("%s: gss_write_init_verf failed\n", __func__);
 		goto out;
+	}
 	if (gss_write_resv(resv, PAGE_SIZE,
 			   &cli_handle, &ud.out_token,
-			   ud.major_status, ud.minor_status))
+			   ud.major_status, ud.minor_status)) {
+		pr_info("%s: gss_write_resv failed\n", __func__);
 		goto out;
+	}
 
 	ret = SVC_COMPLETE;
 out:
+	gss_free_in_token_pages(&ud.in_token);
 	gssp_free_upcall_data(&ud);
 	return ret;
 }
@@ -1379,7 +1429,7 @@ static int create_use_gss_proxy_proc_entry(struct net *net)
 	struct proc_dir_entry **p = &sn->use_gssp_proc;
 
 	sn->use_gss_proxy = -1;
-	*p = proc_create_data("use-gss-proxy", S_IFREG|S_IRUSR|S_IWUSR,
+	*p = proc_create_data("use-gss-proxy", S_IFREG | 0600,
 			      sn->proc_net_rpc,
 			      &use_gss_proxy_ops, net);
 	if (!*p)
@@ -1393,7 +1443,7 @@ static void destroy_use_gss_proxy_proc_entry(struct net *net)
 	struct sunrpc_net *sn = net_generic(net, sunrpc_net_id);
 
 	if (sn->use_gssp_proc) {
-		remove_proc_entry("use-gss-proxy", sn->proc_net_rpc); 
+		remove_proc_entry("use-gss-proxy", sn->proc_net_rpc);
 		clear_gssp_clnt(sn);
 	}
 }
@@ -1618,8 +1668,10 @@ svcauth_gss_wrap_resp_integ(struct svc_rqst *rqstp)
 	BUG_ON(integ_len % 4);
 	*p++ = htonl(integ_len);
 	*p++ = htonl(gc->gc_seq);
-	if (xdr_buf_subsegment(resbuf, &integ_buf, integ_offset, integ_len))
-		BUG();
+	if (xdr_buf_subsegment(resbuf, &integ_buf, integ_offset, integ_len)) {
+		WARN_ON_ONCE(1);
+		goto out_err;
+	}
 	if (resbuf->tail[0].iov_base == NULL) {
 		if (resbuf->head[0].iov_len + RPC_MAX_AUTH_SIZE > PAGE_SIZE)
 			goto out_err;
@@ -1713,11 +1765,14 @@ static int
 svcauth_gss_release(struct svc_rqst *rqstp)
 {
 	struct gss_svc_data *gsd = (struct gss_svc_data *)rqstp->rq_auth_data;
-	struct rpc_gss_wire_cred *gc = &gsd->clcred;
+	struct rpc_gss_wire_cred *gc;
 	struct xdr_buf *resbuf = &rqstp->rq_res;
 	int stat = -EINVAL;
 	struct sunrpc_net *sn = net_generic(SVC_NET(rqstp), sunrpc_net_id);
 
+	if (!gsd)
+		goto out;
+	gc = &gsd->clcred;
 	if (gc->gc_proc != RPC_GSS_PROC_DATA)
 		goto out;
 	/* Release can be called twice, but we only wrap once. */
@@ -1758,10 +1813,10 @@ out_err:
 	if (rqstp->rq_cred.cr_group_info)
 		put_group_info(rqstp->rq_cred.cr_group_info);
 	rqstp->rq_cred.cr_group_info = NULL;
-	if (gsd->rsci)
+	if (gsd && gsd->rsci) {
 		cache_put(&gsd->rsci->h, sn->rsc_cache);
-	gsd->rsci = NULL;
-
+		gsd->rsci = NULL;
+	}
 	return stat;
 }
 
@@ -1858,7 +1913,7 @@ gss_svc_init_net(struct net *net)
 		goto out2;
 	return 0;
 out2:
-	destroy_use_gss_proxy_proc_entry(net);
+	rsi_cache_destroy_net(net);
 out1:
 	rsc_cache_destroy_net(net);
 	return rv;

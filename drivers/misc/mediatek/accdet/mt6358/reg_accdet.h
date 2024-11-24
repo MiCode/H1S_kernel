@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+* Copyright (C) 2021 MediaTek Inc.
+*/
 
 #ifndef _REG_ACCDET_H_
 #define _REG_ACCDET_H_
@@ -126,10 +118,15 @@
 #define RG_AUD_MICBIAS1_LOWP_EN		(1<<2)
 
 /* AUDENC_ANA_CON11: */
+#ifdef CONFIG_ACCDET_EINT
+#define RG_ACCDET_MODE_ANA11_MODE1	(0x0007)
+#define RG_ACCDET_MODE_ANA11_MODE2	(0x0087)
+#define RG_ACCDET_MODE_ANA11_MODE6	(0x0087)
+#else
 #define RG_ACCDET_MODE_ANA11_MODE1	(0x0807)
 #define RG_ACCDET_MODE_ANA11_MODE2	(0x0887)
 #define RG_ACCDET_MODE_ANA11_MODE6	(0x0887)
-
+#endif
 /* ------Register_AUXADC_REG  Bit Define------ */
 /* AUXADC_ADC5:  Auxadc CH5 read data */
 #define AUXADC_DATA_RDY_CH5		(1<<15)

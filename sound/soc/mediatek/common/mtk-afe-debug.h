@@ -1,8 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * mtk-afe-debug.h  --  Mediatek AFE Debug definition
- *
- * Copyright (c) 2018 MediaTek Inc.
+ * Copyright (c) 2019 MediaTek Inc.
  * Author: Kai Chieh Chuang <kaichieh.chuang@mediatek.com>
  */
 

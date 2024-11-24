@@ -1,15 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 #include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -213,8 +206,8 @@ static int tskinTransient(int tpcb)
 		rhs[i] = div_s64(CapMatrix[i] * tn_1[i], SCALE_UNIT_CAP);
 		tn[i] = 0;
 	}
-	rhs[TSKINNODE] += tamb_coef * tamb;
-	rhs[TPCBNODE]  += tpcb_coef * tpcb;
+	rhs[TSKINNODE] += (long long)tamb_coef * tamb;
+	rhs[TPCBNODE]  += (long long)tpcb_coef * tpcb;
 
 	for (i = 0; i < ACNZ; i++)
 		tn[AcMatrixNzRow[i]] += AcMatrixNz[i] *

@@ -1,20 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- *
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- * You should have received a copy of the GNU General Public License
- * along with this program
- * If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Michael Hsiao <michael.hsiao@mediatek.com>
  */
+
 /*****************************************************************************
  *
  * Filename:
@@ -55,17 +44,22 @@
 
 #include <linux/delay.h>
 #include <linux/spinlock.h>
+
+#ifndef ASOC_TEMP_BYPASS
 #if defined(_MT_IDLE_HEADER) && !defined(CONFIG_FPGA_EARLY_PORTING)
 #include <mtk_idle.h>
+#endif
 #endif
 #include <linux/err.h>
 #include <linux/platform_device.h>
 
+#ifndef ASOC_TEMP_BYPASS
 #define _MT_SPM_RESOURCE
 #if defined(_MT_SPM_RESOURCE) && !defined(CONFIG_FPGA_EARLY_PORTING)
 #include "mtk_spm_resource_req.h"
 bool spm_resource_req(unsigned int user, unsigned int req_mask)
 	__attribute__((weak));
+#endif
 #endif
 /*****************************************************************************
  *                         D A T A   T Y P E S
@@ -228,47 +222,20 @@ int AudDrv_Clk_probe(void *dev)
 	if (ret)
 		return ret;
 
-	for (i = 0; i < ARRAY_SIZE(aud_clks); i++) {
-#ifdef MT6739_scp
-		if (i == CLOCK_SCP_SYS_AUD) /* CLOCK_SCP_SYS_AUD is MTCMOS */
-			continue;
-#endif
-		if (aud_clks[i].clk_status) {
-			ret = clk_prepare(aud_clks[i].clock);
-			if (ret) {
-				pr_debug("%s clk_prepare %s fail %d\n",
-					 __func__,
-					 aud_clks[i].name, ret);
-			} else {
-				aud_clks[i].clk_prepare = true;
-			}
-		}
-	}
 	return ret;
 }
 
 void AudDrv_Clk_Deinit(void *dev)
 {
-	size_t i;
-
-	pr_debug("%s\n", __func__);
-	for (i = 0; i < ARRAY_SIZE(aud_clks); i++) {
-#ifdef MT6739_scp
-		if (i == CLOCK_SCP_SYS_AUD) /* CLOCK_SCP_SYS_AUD is MTCMOS */
-			continue;
-#endif
-		if (aud_clks[i].clock && !IS_ERR(aud_clks[i].clock) &&
-		    aud_clks[i].clk_prepare) {
-			clk_unprepare(aud_clks[i].clock);
-			aud_clks[i].clk_prepare = false;
-		}
-	}
 }
+#ifndef ASOC_TEMP_BYPASS
 #if defined(_MT_IDLE_HEADER) && !defined(CONFIG_FPGA_EARLY_PORTING)
 static int audio_idle_notify_call(struct notifier_block *nfb,
 				  unsigned long id,
 				  void *arg)
 {
+	if (!aud_clks[CLOCK_MUX_AUDIOINTBUS].clk_prepare)
+		return NOTIFY_OK;
 
 	switch (id) {
 	case NOTIFY_DPIDLE_ENTER:
@@ -310,6 +277,7 @@ static struct notifier_block audio_idle_nfb = {
 	.notifier_call = audio_idle_notify_call,
 };
 #endif
+#endif
 void AudDrv_Clk_Global_Variable_Init(void)
 {
 	APLL1Counter = 0;
@@ -318,8 +286,10 @@ void AudDrv_Clk_Global_Variable_Init(void)
 	Aud_APLL_DIV_APLL2_cntr = 0;
 	MCLKFS = 128;
 	MCLKFS_HDMI = 256;
+#ifndef ASOC_TEMP_BYPASS
 #if defined(_MT_IDLE_HEADER) && !defined(CONFIG_FPGA_EARLY_PORTING)
 	mtk_idle_notifier_register(&audio_idle_nfb);
+#endif
 #endif
 }
 
@@ -330,9 +300,6 @@ void AudDrv_Bus_Init(void)
 void AudDrv_AUDINTBUS_Sel(int parentidx)
 {
 #if !defined(CONFIG_FPGA_EARLY_PORTING)
-
-	int ret = 0;
-
 	if (!aud_clks[CLOCK_MUX_AUDIOINTBUS].clk_prepare ||
 	    !aud_clks[CLOCK_TOP_SYSPLL1_D4].clk_prepare ||
 	    !aud_clks[CLOCK_CLK26M].clk_prepare) {
@@ -340,26 +307,9 @@ void AudDrv_AUDINTBUS_Sel(int parentidx)
 		goto EXIT;
 	}
 
-	/* pr_debug("+AudDrv_AUDINTBUS_Sel, parentidx = %d\n", parentidx); */
-	if (parentidx == 1) {
-		ret = clk_set_parent(aud_clks[CLOCK_MUX_AUDIOINTBUS].clock,
-				     aud_clks[CLOCK_TOP_SYSPLL1_D4].clock);
-		if (ret) {
-			pr_debug("%s clk_set_parent %s-%s fail %d\n", __func__,
-				 aud_clks[CLOCK_MUX_AUDIOINTBUS].name,
-				 aud_clks[CLOCK_TOP_SYSPLL1_D4].name, ret);
-			goto EXIT;
-		}
-	} else if (parentidx == 0) {
-		ret = clk_set_parent(aud_clks[CLOCK_MUX_AUDIOINTBUS].clock,
-				     aud_clks[CLOCK_CLK26M].clock);
-		if (ret) {
-			pr_debug("%s clk_set_parent %s-%s fail %d\n", __func__,
-				 aud_clks[CLOCK_MUX_AUDIOINTBUS].name,
-				 aud_clks[CLOCK_CLK26M].name, ret);
-			goto EXIT;
-		}
-	}
+	clksys_set_reg(AUDIO_CLK_CFG_4_CLR, 0x3, 0x3);
+	clksys_set_reg(AUDIO_CLK_CFG_4_SET, parentidx, 0x3);
+
 EXIT:
 	/* pr_debug("-%s()\n", __func__); */
 	return;
@@ -527,12 +477,26 @@ void AudDrv_Clk_On(void)
 {
 #if !defined(CONFIG_FPGA_EARLY_PORTING)
 	int ret = 0;
+	size_t i;
 
 	pr_debug("AudDrv_Clk_On, Aud_AFE_Clk_cntr:%d\n",
 		 Aud_AFE_Clk_cntr);
 	mutex_lock(&auddrv_clk_mutex);
 	Aud_AFE_Clk_cntr++;
 	if (Aud_AFE_Clk_cntr == 1) {
+		for (i = 0; i < ARRAY_SIZE(aud_clks); i++) {
+			if (aud_clks[i].clk_status) {
+				ret = clk_prepare(aud_clks[i].clock);
+				if (ret) {
+					pr_debug("%s clk_prepare %s fail %d\n",
+						 __func__,
+						 aud_clks[i].name, ret);
+				} else {
+					aud_clks[i].clk_prepare = true;
+				}
+			}
+		}
+
 #ifdef PM_MANAGER_API
 #ifdef MT6739_scp
 		if (aud_clks[CLOCK_SCP_SYS_AUD].clk_status) {
@@ -594,6 +558,8 @@ EXPORT_SYMBOL(AudDrv_Clk_On);
 
 void AudDrv_Clk_Off(void)
 {
+	size_t i;
+
 #if !defined(CONFIG_FPGA_EARLY_PORTING)
 	pr_debug("!! AudDrv_Clk_Off, Aud_AFE_Clk_cntr:%d\n",
 		 Aud_AFE_Clk_cntr);
@@ -636,6 +602,15 @@ void AudDrv_Clk_Off(void)
 		Afe_Set_Reg(AUDIO_TOP_CON0, 0x06000044, 0x06000044);
 /* bit25=1, with 133m mastesr and 66m slave bus clock cg gating */
 #endif
+
+		for (i = 0; i < ARRAY_SIZE(aud_clks); i++) {
+			if (aud_clks[i].clock && !IS_ERR(aud_clks[i].clock)
+				&& aud_clks[i].clk_prepare) {
+				clk_unprepare(aud_clks[i].clock);
+				aud_clks[i].clk_prepare = false;
+			}
+		}
+
 	} else if (Aud_AFE_Clk_cntr < 0) {
 		pr_debug("!! AudDrv_Clk_Off, Aud_AFE_Clk_cntr<0 (%d)\n",
 			 Aud_AFE_Clk_cntr);
@@ -1144,7 +1119,7 @@ void AudDrv_APLL2Tuner_Clk_On(void)
 #else
 		Afe_Set_Reg(AUDIO_TOP_CON0, 0x0 << 18, 0x1 << 18);
 #endif
-		SetApmixedCfg(AP_PLL_CON3, 0x0, 0x1);
+		SetApmixedCfg(AP_PLL_CON3, 0x1, 0x1);
 	}
 	Aud_APLL2_Tuner_cntr++;
 EXIT:
@@ -1223,9 +1198,11 @@ void AudDrv_Emi_Clk_On(void)
 #if !defined(CONFIG_FPGA_EARLY_PORTING)
 	mutex_lock(&auddrv_pmic_mutex);
 	if (Aud_EMI_cntr == 0) {
+#ifndef ASOC_TEMP_BYPASS
 #if defined(_MT_IDLE_HEADER)
 		/* mutex is used in these api */
 		spm_resource_req(SPM_RESOURCE_USER_AUDIO, SPM_RESOURCE_DRAM);
+#endif
 #endif
 	}
 	Aud_EMI_cntr++;
@@ -1239,10 +1216,12 @@ void AudDrv_Emi_Clk_Off(void)
 	mutex_lock(&auddrv_pmic_mutex);
 	Aud_EMI_cntr--;
 	if (Aud_EMI_cntr == 0) {
+#ifndef ASOC_TEMP_BYPASS
 #if defined(_MT_IDLE_HEADER)
 		/* mutex is used in these api */
 		spm_resource_req(SPM_RESOURCE_USER_AUDIO,
 				 SPM_RESOURCE_RELEASE);
+#endif
 #endif
 	}
 

@@ -211,12 +211,12 @@ static int ioapic_set_irq(struct kvm_ioapic *ioapic, unsigned int irq,
 
 	old_irr = ioapic->irr;
 	ioapic->irr |= mask;
-	if (edge)
+	if (edge) {
 		ioapic->irr_delivered &= ~mask;
-	if ((edge && old_irr == ioapic->irr) ||
-	    (!edge && entry.fields.remote_irr)) {
-		ret = 0;
-		goto out;
+		if (old_irr == ioapic->irr) {
+			ret = 0;
+			goto out;
+		}
 	}
 
 	ret = ioapic_service(ioapic, irq, line_status);
@@ -341,7 +341,9 @@ static int ioapic_service(struct kvm_ioapic *ioapic, int irq, bool line_status)
 	struct kvm_lapic_irq irqe;
 	int ret;
 
-	if (entry->fields.mask)
+	if (entry->fields.mask ||
+	    (entry->fields.trig_mode == IOAPIC_LEVEL_TRIG &&
+	    entry->fields.remote_irr))
 		return -1;
 
 	ioapic_debug("dest=%x dest_mode=%x delivery_mode=%x "

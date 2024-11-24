@@ -1,45 +1,34 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2019 MediaTek Inc.
  */
+
 #include <linux/module.h>
 #include <linux/rbtree.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/cpumask.h>
+#include <linux/topology.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
 #include <linux/timer.h>
 #include <linux/workqueue.h>
 #include <linux/preempt.h>
+#include <linux/sched/clock.h>
+#include <sched/sched.h>
 #include <linux/trace_events.h>
 #include <trace/events/fpsgo.h>
-#include <linux/sched/sched.h>
-#include <linux/sched/clock.h>
-#include <linux/sched/topology.h>
-#include <linux/sched/energy.h>
 
 #include <ap_thermal_limit.h>
 #include "mtk_ppm_platform.h"
 #include "mtk_ppm_internal.h"
-#include "mtk_upower.h"
 #include "mtk_gpufreq.h"
 #include "thermal_base.h"
 
 #ifdef CONFIG_MTK_PERF_OBSERVER
 #include <mt-plat/mtk_perfobserver.h>
 #endif
+#include "thermal_budget_platform.h"
 #include "thermal_budget.h"
 
 #ifdef MAX
@@ -115,24 +104,12 @@
 #define REPLACE_FRAME_COUNT 3
 #define STABLE_TH 5
 #define BYPASS_TH 3
-#define CPU_OPP_NUM 16
-
 #define TIME_MAX(a, b) ((a) >= (b) ? (a) : (b))
 #define DIFF_ABS(a, b) (((a) >= (b)) ? ((a) - (b)) : ((b) - (a)))
+#define ACT_CORE(cluster)	(active_core[CLUSTER_##cluster])
+#define CORE_LIMIT(cluster)	(core_limit[CLUSTER_##cluster])
 #define for_each_clusters(i)	for (i = 0; i < g_cluster_num; i++)
 #define CORE_CAP(cls, opp)	(cpu_dvfs_tbl[cls].capacity_ratio[opp])
-#define NEXT_CLS(cluster) \
-	((max_cluster > min_cluster) \
-	? (cluster + 1) : (cluster - 1))
-#define PREV_CLS(cluster) \
-	((max_cluster > min_cluster) \
-	? (cluster - 1) : (cluster + 1))
-#define IS_VALID_CLS_IDX(i) \
-	(i < g_cluster_num && i >= 0)
-#define for_each_cls_incr(i) \
-	for (i = min_cluster; IS_VALID_CLS_IDX(i); i = NEXT_CLS(i))
-#define for_each_cls_decr(i) \
-	for (i = max_cluster; IS_VALID_CLS_IDX(i); i = PREV_CLS(i))
 
 static void wq_func(struct work_struct *data);
 static void thrm_pb_turn_record_locked(int ready);
@@ -226,8 +203,6 @@ static int g_cluster_num;
 static int g_modules_num;
 static int g_gpu_opp_num;
 static int g_max_gpu_opp_idx;
-static int g_nr_cpus;
-static int max_cluster, min_cluster;
 
 static int is_enable;
 static int is_throttling;
@@ -466,7 +441,7 @@ exit:
 	mutex_unlock(&thrm_lock);
 }
 
-static void timer_func(unsigned long data)
+static void timer_func(struct timer_list *t)
 {
 	if (wq)
 		queue_work(wq, &eara_thrm_work);
@@ -1180,389 +1155,6 @@ static int get_perf(enum ppm_cluster cluster, unsigned int core,
 #define IS_ABLE_OFF_CORE(core, opp) \
 	(core > 0 && opp == (PPM_COBRA_MAX_FREQ_IDX - 1))
 
-static void reallocate_up(int delta_power,
-		int *active_core, int *opp, int *core_limit,
-		int *out_cl_cap,
-		int cpu_time, int cur_cap, int cur_sys_cap,
-		int vpu_time, int vpu_opp, int mdla_time, int mdla_opp)
-{
-	int i;
-	int new_cpu_time, frame_time;
-
-	while (1) {
-		int ChoosenCl = -1, MaxPerf = 0, ChoosenPwr = 0;
-		int target_delta_pwr, target_perf;
-		int ChoosenModule = -1;
-#ifdef EARA_THERMAL_VPU_SUPPORT
-		int new_vpu_time = 0;
-#endif
-#ifdef EARA_THERMAL_MDLA_SUPPORT
-		int new_mdla_time = 0;
-#endif
-
-		/* increase core limit */
-		for_each_cls_incr(i) {
-			int next = NEXT_CLS(i);
-
-			if (IS_VALID_CLS_IDX(next))
-				break;
-
-			if (opp[THRM_CPU_OFFSET + i] != 0
-				|| active_core[next] != 0)
-				continue;
-
-			target_delta_pwr =
-				get_delta_pwr(THRM_CPU_OFFSET + next, 1,
-						CPU_OPP_NUM-1);
-
-			if (target_delta_pwr > delta_power)
-				continue;
-
-			active_core[next] = 1;
-			delta_power -= target_delta_pwr;
-			opp[THRM_CPU_OFFSET + next] = CPU_OPP_NUM - 1;
-		}
-
-		/* increase frequency limit */
-		for_each_cls_decr(i) {
-			if (active_core[i] <= 0
-				|| opp[THRM_CPU_OFFSET + i] <= 0)
-				continue;
-
-			target_delta_pwr = get_delta_pwr(THRM_CPU_OFFSET + i,
-						active_core[i],
-						opp[THRM_CPU_OFFSET + i] - 1);
-			target_perf = get_perf(i, active_core[i],
-					opp[THRM_CPU_OFFSET + i] - 1);
-
-			if (delta_power >= target_delta_pwr
-				&& MaxPerf <= target_perf) {
-				MaxPerf = target_perf;
-				ChoosenCl = i;
-				ChoosenPwr = target_delta_pwr;
-			}
-		}
-
-		if (!vpu_time && !mdla_time && ChoosenCl != -1) {
-			opp[THRM_CPU_OFFSET + ChoosenCl] -= 1;
-			goto prepare_next_round;
-		}
-
-		if (ChoosenCl != -1) {
-			ChoosenModule = THRM_CPU;
-			opp[THRM_CPU_OFFSET + ChoosenCl] -= 1;
-			for_each_clusters(i) {
-				out_cl_cap[i] = CORE_CAP(i,
-						opp[THRM_CPU_OFFSET + i]);
-				EARA_THRM_LOGI("C%d: cap %d opp %d core %d\n",
-						i, out_cl_cap[i],
-						opp[THRM_CPU_OFFSET + i],
-						core_limit[i]);
-			}
-			new_cpu_time = cal_cpu_time(cpu_time, cur_cap,
-					cur_sys_cap, out_cl_cap, core_limit);
-			opp[THRM_CPU_OFFSET + ChoosenCl] += 1;
-		} else
-			new_cpu_time = cpu_time;
-
-		frame_time = new_cpu_time + vpu_time + mdla_time;
-
-#ifdef EARA_THERMAL_VPU_SUPPORT
-		if (vpu_time && opp[THRM_VPU] != -1
-			&& opp[THRM_VPU] > 0 && g_vpu_opp_num) {
-			target_delta_pwr = get_delta_pwr(
-						THRM_VPU, 1, opp[THRM_VPU]-1);
-			if (delta_power >= target_delta_pwr) {
-				new_vpu_time = cal_xpu_time(vpu_time,
-						vpu_dvfs_tbl.cap[vpu_opp],
-						vpu_dvfs_tbl.cap[
-							opp[THRM_VPU]-1]);
-				if (frame_time > cpu_time + new_vpu_time
-							+ mdla_time) {
-					ChoosenCl = -1;
-					ChoosenModule = THRM_VPU;
-					ChoosenPwr = target_delta_pwr;
-					frame_time = cpu_time
-							+ new_vpu_time
-							+ mdla_time;
-				}
-			}
-		}
-#endif
-
-#ifdef EARA_THERMAL_MDLA_SUPPORT
-		if (mdla_time && opp[THRM_MDLA] != -1
-			&& opp[THRM_MDLA] > 0 && g_mdla_opp_num) {
-			target_delta_pwr = get_delta_pwr(
-					THRM_MDLA, 1, opp[THRM_MDLA]-1);
-			if (delta_power >= target_delta_pwr) {
-				new_mdla_time = cal_xpu_time(
-						mdla_time,
-						mdla_dvfs_tbl.cap[mdla_opp],
-						mdla_dvfs_tbl.cap[
-							opp[THRM_MDLA]-1]);
-				if (frame_time >
-				(cpu_time + vpu_time + new_mdla_time)) {
-					ChoosenCl = -1;
-					ChoosenModule = THRM_MDLA;
-					ChoosenPwr = target_delta_pwr;
-				}
-			}
-		}
-#endif
-
-		if (ChoosenCl != -1) {
-			opp[THRM_CPU_OFFSET + ChoosenCl] -= 1;
-			cpu_time = new_cpu_time;
-			cur_cap = __eara_arr_max(out_cl_cap,
-						g_cluster_num);
-			cur_sys_cap = cal_system_capacity(out_cl_cap,
-						core_limit);
-			goto prepare_next_round;
-		}
-#ifdef EARA_THERMAL_AI_SUPPORT
-		else if (ChoosenModule != -1) {
-			opp[ChoosenModule] -= 1;
-#ifdef EARA_THERMAL_VPU_SUPPORT
-			if (ChoosenModule == THRM_VPU) {
-				vpu_time = new_vpu_time;
-				vpu_opp = opp[ChoosenModule];
-			}
-#endif
-#ifdef EARA_THERMAL_MDLA_SUPPORT
-			if (ChoosenModule == THRM_MDLA) {
-				mdla_time = new_mdla_time;
-				mdla_opp = opp[ChoosenModule];
-			}
-#endif
-			goto prepare_next_round;
-		}
-#endif
-		/*give remain budget */
-		for_each_cls_decr(i) {
-			while (core_limit[i] < get_cluster_max_cpu_core(i)) {
-				target_delta_pwr = get_delta_pwr(
-						THRM_CPU_OFFSET + i,
-						core_limit[i]+1,
-						CPU_OPP_NUM-1);
-				if (delta_power < target_delta_pwr)
-					break;
-
-				delta_power -= target_delta_pwr;
-				core_limit[i] = core_limit[i] + 1;
-			}
-		}
-
-		EARA_THRM_LOGI("[+]ChoosenCl=-1! delta=%d\n", delta_power);
-		EARA_THRM_LOGI("[+]opp=V %d,M %d\n",
-				opp[THRM_VPU], opp[THRM_MDLA]);
-		for_each_clusters(i)
-			EARA_THRM_LOGI("[+]C%d (opp, act, lmt)=(%d,%d,%d)\n",
-					i, opp[THRM_CPU_OFFSET + i],
-					active_core[i], core_limit[i]);
-		break;
-
-prepare_next_round:
-		delta_power -= ChoosenPwr;
-
-		EARA_THRM_LOGI("[+](delta/Cl/Mod/Pwr)=(%d,%d,%d,%d)\n",
-				delta_power, ChoosenCl, ChoosenModule,
-				ChoosenPwr);
-		EARA_THRM_LOGI("[+]opp=V %d,M %d\n",
-				opp[THRM_VPU], opp[THRM_MDLA]);
-		for_each_clusters(i)
-			EARA_THRM_LOGI("[+]C%d opp=%d\n",
-					i, opp[THRM_CPU_OFFSET + i]);
-	}
-}
-
-static void reallocate_down(int delta_power,
-		int *active_core, int curr_power, int *opp, int *core_limit,
-		int *out_cl_cap,
-		int cpu_time, int cur_cap, int cur_sys_cap,
-		int vpu_time, int vpu_opp, int mdla_time, int mdla_opp,
-		struct thrm_pb_realloc *out_st)
-{
-	int i;
-	int new_cpu_time, frame_time;
-
-	while (delta_power < 0) {
-		int ChoosenCl = -1;
-		int ChoosenModule = -1;
-		int MinPerf = INT_MAX;
-		int ChoosenPwr = 0;
-		int target_perf;
-#ifdef EARA_THERMAL_VPU_SUPPORT
-		int new_vpu_time = 0;
-#endif
-#ifdef EARA_THERMAL_MDLA_SUPPORT
-		int new_mdla_time = 0;
-#endif
-
-		for_each_cls_decr(i) {
-			if (!IS_ABLE_DOWN_GEAR(core_limit[i],
-					opp[THRM_CPU_OFFSET + i]))
-				continue;
-
-			target_perf = get_perf(i, core_limit[i],
-						opp[THRM_CPU_OFFSET + i]);
-
-			if (MinPerf > target_perf) {
-				MinPerf = target_perf;
-				ChoosenCl = i;
-				ChoosenPwr = get_delta_pwr(THRM_CPU_OFFSET + i,
-						core_limit[i],
-						opp[THRM_CPU_OFFSET + i]);
-			}
-		}
-
-		frame_time = 0;
-
-		if (!vpu_time && !mdla_time && (ChoosenCl != -1)) {
-			/* change opp of cluster */
-			opp[THRM_CPU_OFFSET + ChoosenCl] += 1;
-			goto prepare_next_round_down;
-		}
-
-		if (ChoosenCl != -1) {
-			ChoosenModule = THRM_CPU;
-			opp[THRM_CPU_OFFSET + ChoosenCl] += 1;
-			for_each_clusters(i) {
-				out_cl_cap[i] = CORE_CAP(i,
-						opp[THRM_CPU_OFFSET + i]);
-				EARA_THRM_LOGI("C%d: cap %d opp %d core %d\n",
-						i, out_cl_cap[i],
-						opp[THRM_CPU_OFFSET + i],
-						core_limit[i]);
-			}
-			new_cpu_time = cal_cpu_time(cpu_time, cur_cap,
-					cur_sys_cap, out_cl_cap, core_limit);
-			opp[THRM_CPU_OFFSET + ChoosenCl] -= 1;
-			frame_time = new_cpu_time + vpu_time + mdla_time;
-		} else {
-			new_cpu_time = cpu_time;
-			frame_time = INT_MAX;
-		}
-
-#ifdef EARA_THERMAL_VPU_SUPPORT
-		if (vpu_time && opp[THRM_VPU] != -1
-			&& opp[THRM_VPU] < g_vpu_opp_num - 1) {
-			new_vpu_time = cal_xpu_time(vpu_time,
-					vpu_dvfs_tbl.cap[vpu_opp],
-					vpu_dvfs_tbl.cap[opp[THRM_VPU]+1]);
-			if (frame_time > cpu_time + new_vpu_time + mdla_time) {
-				ChoosenCl = -1;
-				ChoosenModule = THRM_VPU;
-				ChoosenPwr = get_delta_pwr(THRM_VPU, 1,
-						opp[THRM_VPU]);
-				frame_time = cpu_time + new_vpu_time
-							+ mdla_time;
-			}
-		}
-#endif
-
-#ifdef EARA_THERMAL_MDLA_SUPPORT
-		if (mdla_time && opp[THRM_MDLA] != -1
-			&& opp[THRM_MDLA] < g_mdla_opp_num - 1) {
-			new_mdla_time = cal_xpu_time(mdla_time,
-						mdla_dvfs_tbl.cap[mdla_opp],
-						mdla_dvfs_tbl.cap[
-						opp[THRM_MDLA]+1]);
-			if (frame_time > cpu_time + vpu_time + new_mdla_time) {
-				ChoosenCl = -1;
-				ChoosenModule = THRM_MDLA;
-				ChoosenPwr = get_delta_pwr(THRM_MDLA,
-							1, opp[THRM_MDLA]);
-				frame_time = cpu_time + vpu_time
-							+ new_mdla_time;
-			}
-		}
-#endif
-
-		if (ChoosenCl != -1) {
-			opp[THRM_CPU_OFFSET + ChoosenCl] += 1;
-			cpu_time = new_cpu_time;
-			cur_cap = __eara_arr_max(out_cl_cap,
-						g_cluster_num);
-			cur_sys_cap = cal_system_capacity(out_cl_cap,
-						core_limit);
-			goto prepare_next_round_down;
-		}
-#ifdef EARA_THERMAL_AI_SUPPORT
-		else if (ChoosenModule != -1) {
-			opp[ChoosenModule] += 1;
-#ifdef EARA_THERMAL_VPU_SUPPORT
-			if (ChoosenModule == THRM_VPU) {
-				vpu_time = new_vpu_time;
-				vpu_opp = opp[ChoosenModule];
-			}
-#endif
-#ifdef EARA_THERMAL_MDLA_SUPPORT
-			if (ChoosenModule == THRM_MDLA) {
-				mdla_time = new_mdla_time;
-				mdla_opp = opp[ChoosenModule];
-			}
-#endif
-			goto prepare_next_round_down;
-		}
-#endif
-		EARA_THRM_LOGI("No lower OPP!\n");
-		EARA_THRM_LOGI("delta/cur=(%d/%d)\n", delta_power, curr_power);
-		EARA_THRM_LOGI("opp=V %d,M %d\n",
-				opp[THRM_VPU], opp[THRM_MDLA]);
-		for_each_clusters(i)
-			EARA_THRM_LOGI("[%d](opp, act, lmt)=(%d,%d,%d)\n",
-					i, opp[THRM_CPU_OFFSET + i],
-					active_core[i], core_limit[i]);
-
-		frame_time = 0;
-
-		for_each_cls_incr(i) {
-			if (i == min_cluster &&
-				core_limit[i] <= eara_thrm_keep_little_core())
-				continue;
-
-			if (IS_ABLE_OFF_CORE(core_limit[i],
-					opp[THRM_CPU_OFFSET + i])) {
-				ChoosenPwr = get_delta_pwr(
-						THRM_CPU_OFFSET + i,
-						core_limit[i],
-						PPM_COBRA_MAX_FREQ_IDX - 1);
-				--core_limit[i];
-				break;
-			}
-		}
-
-		if (i != g_cluster_num)
-			goto prepare_next_round_down;
-
-		EARA_THRM_LOGI("No way to lower power!\n");
-		EARA_THRM_LOGI("(delta/cur)=(%d/%d)\n",
-				delta_power, curr_power);
-		EARA_THRM_LOGI("opp=V %d,M %d\n",
-				opp[THRM_VPU], opp[THRM_MDLA]);
-		for_each_clusters(i)
-			EARA_THRM_LOGI("[%d](opp, act, lmt)=(%d,%d,%d)\n",
-					i, opp[THRM_CPU_OFFSET + i],
-					active_core[i], core_limit[i]);
-		break;
-
-prepare_next_round_down:
-		delta_power += ChoosenPwr;
-		curr_power -= ChoosenPwr;
-		out_st->frame_time = frame_time;
-
-		EARA_THRM_LOGI("[-](delta/Cl/Pwr/Prf)=(%d,%d,%d,%d)\n",
-				delta_power, ChoosenCl, ChoosenPwr, MinPerf);
-		EARA_THRM_LOGI("[-]opp=V %d,M %d\n",
-				opp[THRM_VPU], opp[THRM_MDLA]);
-		for_each_clusters(i)
-			EARA_THRM_LOGI("[-][%d](opp, act, lmt)=(%d,%d,%d)\n",
-					i, opp[THRM_CPU_OFFSET + i],
-					active_core[i], core_limit[i]);
-	}
-}
-
 static int reallocate_perf_first(int remain_budget,
 		struct ppm_cluster_status *cl_status,
 		int *active_core, int curr_power, int *opp, int *core_limit,
@@ -1573,38 +1165,439 @@ static int reallocate_perf_first(int remain_budget,
 {
 	int i;
 	int delta_power;
+	int new_cpu_time, frame_time;
 
 	if (!out_cl_cap || !cl_status || !active_core
 		|| !core_limit || !opp || !out_st) {
-		EARA_THRM_LOGI("%s:%d\n", __func__, __LINE__);
+		EARA_THRM_LOGI("%s:%d\n",
+			__func__, __LINE__);
 		return NO_CHANGE;
 	}
 
 	delta_power = remain_budget - curr_power;
+	EARA_THRM_LOGI("E %s: remain %d, curr_power %d, delta_power %d, ",
+			__func__, remain_budget, curr_power, delta_power);
+	EARA_THRM_LOGI("opp (%d, %d, %d, %d), lmt (%d, %d)\n",
+			opp[THRM_CPU_OFFSET + CLUSTER_L],
+			opp[THRM_CPU_OFFSET + CLUSTER_B],
+			opp[THRM_VPU], opp[THRM_MDLA],
+			CORE_LIMIT(L), CORE_LIMIT(B));
+
 	if (unlikely(!delta_power))
 		return NO_CHANGE;
 
-	EARA_THRM_LOGI("in: remain %d, curr %d, delta %d",
-			remain_budget, curr_power, delta_power);
-	EARA_THRM_LOGI("in: vpu %d, mdla %d", opp[THRM_VPU], opp[THRM_MDLA]);
-	for_each_clusters(i) {
-		EARA_THRM_LOGI("in: C%d: opp %d, core %d)\n", i,
-			opp[THRM_CPU_OFFSET + i], core_limit[i]);
-	}
+	/* increase ferquency limit */
+	if (delta_power >= 0) {
+		while (1) {
+			int ChoosenCl = -1, MaxPerf = 0, ChoosenPwr = 0;
+			int target_delta_pwr, target_perf;
+			int ChoosenModule = -1;
+#ifdef EARA_THERMAL_VPU_SUPPORT
+			int new_vpu_time = 0;
+#endif
+#ifdef EARA_THERMAL_MDLA_SUPPORT
+			int new_mdla_time = 0;
+#endif
 
-	if (delta_power >= 0)
-		reallocate_up(delta_power,
-			active_core, opp, core_limit,
-			out_cl_cap,
-			cpu_time, cur_cap, cur_sys_cap,
-			vpu_time, vpu_opp, mdla_time, mdla_opp);
-	else
-		reallocate_down(delta_power,
-			active_core, curr_power, opp, core_limit,
-			out_cl_cap,
-			cpu_time, cur_cap, cur_sys_cap,
-			vpu_time, vpu_opp, mdla_time, mdla_opp,
-			out_st);
+			if (opp[THRM_CPU_OFFSET + CLUSTER_L] == 0
+				&& ACT_CORE(B) == 0) {
+				target_delta_pwr = get_delta_pwr(
+					THRM_CPU_OFFSET + CLUSTER_B, 1,
+					CPU_OPP_NUM-1);
+				if (delta_power >= target_delta_pwr) {
+					ACT_CORE(B) = 1;
+					delta_power -= target_delta_pwr;
+					opp[THRM_CPU_OFFSET + CLUSTER_B] =
+						CPU_OPP_NUM - 1;
+				}
+			}
+
+			/* B-cluster */
+			if (ACT_CORE(B) > 0
+				&& opp[THRM_CPU_OFFSET + CLUSTER_B] > 0) {
+				target_delta_pwr = get_delta_pwr(
+					THRM_CPU_OFFSET + CLUSTER_B,
+					ACT_CORE(B),
+					opp[THRM_CPU_OFFSET + CLUSTER_B]-1);
+				if (delta_power >= target_delta_pwr) {
+					MaxPerf = get_perf(CLUSTER_B,
+						ACT_CORE(B),
+						opp[THRM_CPU_OFFSET +
+						CLUSTER_B] - 1);
+					ChoosenCl = CLUSTER_B;
+					ChoosenPwr = target_delta_pwr;
+				}
+			}
+
+			/* L-cluster */
+			if (ACT_CORE(L) > 0
+				&& opp[THRM_CPU_OFFSET + CLUSTER_L] > 0) {
+				target_delta_pwr = get_delta_pwr(
+					THRM_CPU_OFFSET + CLUSTER_L,
+					ACT_CORE(L),
+					opp[THRM_CPU_OFFSET + CLUSTER_L]-1);
+				target_perf = get_perf(CLUSTER_L, ACT_CORE(L),
+					opp[THRM_CPU_OFFSET + CLUSTER_L]-1);
+				if (delta_power >= target_delta_pwr
+					&& MaxPerf <= target_perf) {
+					MaxPerf = target_perf;
+					ChoosenCl = CLUSTER_L;
+					ChoosenPwr = target_delta_pwr;
+				}
+			}
+
+			if (!vpu_time && !mdla_time) {
+				if (ChoosenCl != -1) {
+					opp[THRM_CPU_OFFSET + ChoosenCl] -= 1;
+					goto prepare_next_round;
+				}
+			}
+
+			if (ChoosenCl != -1) {
+				ChoosenModule = THRM_CPU;
+				opp[THRM_CPU_OFFSET + ChoosenCl] -= 1;
+				for_each_clusters(i) {
+					out_cl_cap[i] = CORE_CAP(i,
+						opp[THRM_CPU_OFFSET + i]);
+					EARA_THRM_LOGI(
+						"cl[%d] cap %d opp %d core %d\n",
+						i, out_cl_cap[i],
+						opp[THRM_CPU_OFFSET + i],
+						core_limit[i]);
+				}
+				new_cpu_time = cal_cpu_time(cpu_time, cur_cap,
+					cur_sys_cap, out_cl_cap, core_limit);
+				opp[THRM_CPU_OFFSET + ChoosenCl] += 1;
+			} else
+				new_cpu_time = cpu_time;
+
+			frame_time = new_cpu_time + vpu_time + mdla_time;
+
+#ifdef EARA_THERMAL_VPU_SUPPORT
+			if (vpu_time && opp[THRM_VPU] != -1
+				&& opp[THRM_VPU] > 0 && g_vpu_opp_num) {
+				target_delta_pwr = get_delta_pwr(
+						THRM_VPU, 1, opp[THRM_VPU]-1);
+				if (delta_power >= target_delta_pwr) {
+					new_vpu_time = cal_xpu_time(vpu_time,
+						vpu_dvfs_tbl.cap[vpu_opp],
+						vpu_dvfs_tbl.cap[
+							opp[THRM_VPU]-1]);
+					if (frame_time > cpu_time + new_vpu_time
+							+ mdla_time) {
+						ChoosenCl = -1;
+						ChoosenModule = THRM_VPU;
+						ChoosenPwr = target_delta_pwr;
+						frame_time = cpu_time
+							+ new_vpu_time
+							+ mdla_time;
+					}
+				}
+			}
+#endif
+
+#ifdef EARA_THERMAL_MDLA_SUPPORT
+			if (mdla_time && opp[THRM_MDLA] != -1
+				&& opp[THRM_MDLA] > 0 && g_mdla_opp_num) {
+				target_delta_pwr = get_delta_pwr(
+					THRM_MDLA, 1, opp[THRM_MDLA]-1);
+				if (delta_power >= target_delta_pwr) {
+					new_mdla_time = cal_xpu_time(
+						mdla_time,
+						mdla_dvfs_tbl.cap[mdla_opp],
+						mdla_dvfs_tbl.cap[
+							opp[THRM_MDLA]-1]);
+					if (frame_time >
+						cpu_time + vpu_time
+						+ new_mdla_time) {
+						ChoosenCl = -1;
+						ChoosenModule = THRM_MDLA;
+						ChoosenPwr = target_delta_pwr;
+					}
+				}
+			}
+#endif
+
+			if (ChoosenCl != -1) {
+				opp[THRM_CPU_OFFSET + ChoosenCl] -= 1;
+				cpu_time = new_cpu_time;
+				cur_cap = __eara_arr_max(out_cl_cap,
+						g_cluster_num);
+				cur_sys_cap = cal_system_capacity(out_cl_cap,
+						core_limit);
+				goto prepare_next_round;
+			}
+#ifdef EARA_THERMAL_AI_SUPPORT
+			else if (ChoosenModule != -1) {
+				opp[ChoosenModule] -= 1;
+#ifdef EARA_THERMAL_VPU_SUPPORT
+				if (ChoosenModule == THRM_VPU) {
+					vpu_time = new_vpu_time;
+					vpu_opp = opp[ChoosenModule];
+				}
+#endif
+#ifdef EARA_THERMAL_MDLA_SUPPORT
+				if (ChoosenModule == THRM_MDLA) {
+					mdla_time = new_mdla_time;
+					mdla_opp = opp[ChoosenModule];
+				}
+#endif
+				goto prepare_next_round;
+			}
+#endif
+			/* give budget to B */
+			while (CORE_LIMIT(B) <
+				get_cluster_max_cpu_core(CLUSTER_B)) {
+				target_delta_pwr = get_delta_pwr(
+					THRM_CPU_OFFSET + CLUSTER_B,
+					CORE_LIMIT(B)+1, CPU_OPP_NUM-1);
+				if (delta_power < target_delta_pwr)
+					break;
+
+				delta_power -= target_delta_pwr;
+				core_limit[CLUSTER_B] =
+					core_limit[CLUSTER_B] + 1;
+			}
+
+			/* give budget to L */
+			while (CORE_LIMIT(L) <
+				get_cluster_max_cpu_core(CLUSTER_L)) {
+				target_delta_pwr = get_delta_pwr(
+					THRM_CPU_OFFSET + CLUSTER_L,
+					CORE_LIMIT(L)+1, CPU_OPP_NUM-1);
+				if (delta_power < target_delta_pwr)
+					break;
+
+				delta_power -= target_delta_pwr;
+				core_limit[CLUSTER_L] =
+					core_limit[CLUSTER_L] + 1;
+			}
+
+			EARA_THRM_LOGI("[+]ChoosenCl=-1! delta=%d\n",
+					delta_power);
+			EARA_THRM_LOGI("[+](opp)=(%d,%d,%d,%d)\n",
+					opp[THRM_CPU_OFFSET + CLUSTER_L],
+					opp[THRM_CPU_OFFSET + CLUSTER_B],
+					opp[THRM_VPU], opp[THRM_MDLA]);
+			EARA_THRM_LOGI("[+](act/c_lmt)=(%d,%d/%d,%d)\n",
+					ACT_CORE(L), ACT_CORE(B),
+					CORE_LIMIT(L), CORE_LIMIT(B));
+
+			break;
+
+prepare_next_round:
+			delta_power -= ChoosenPwr;
+
+			EARA_THRM_LOGI("[+](delta/Cl/Mod/Pwr)=(%d,%d,%d,%d)\n",
+				delta_power, ChoosenCl, ChoosenModule,
+				ChoosenPwr);
+			EARA_THRM_LOGI("[+]opp=%d,%d,%d,%d\n",
+				opp[THRM_CPU_OFFSET + CLUSTER_L],
+				opp[THRM_CPU_OFFSET + CLUSTER_B],
+				opp[THRM_VPU],
+				opp[THRM_MDLA]);
+		}
+	} else {
+		while (delta_power < 0) {
+			int ChoosenCl = -1;
+			int ChoosenModule = -1;
+			int MinPerf = INT_MAX;
+			int ChoosenPwr = 0;
+			int target_perf;
+#ifdef EARA_THERMAL_VPU_SUPPORT
+			int new_vpu_time = 0;
+#endif
+#ifdef EARA_THERMAL_MDLA_SUPPORT
+			int new_mdla_time = 0;
+#endif
+
+			/* B-cluster */
+			if (IS_ABLE_DOWN_GEAR(CORE_LIMIT(B),
+					opp[THRM_CPU_OFFSET + CLUSTER_B])) {
+				MinPerf = get_perf(CLUSTER_B, CORE_LIMIT(B),
+						opp[THRM_CPU_OFFSET
+							+ CLUSTER_B]);
+				ChoosenCl = CLUSTER_B;
+				ChoosenPwr = get_delta_pwr(
+						THRM_CPU_OFFSET + CLUSTER_B,
+						CORE_LIMIT(B),
+						opp[THRM_CPU_OFFSET
+							+ CLUSTER_B]);
+			}
+
+			/* L-cluster */
+			if (IS_ABLE_DOWN_GEAR(CORE_LIMIT(L),
+					opp[THRM_CPU_OFFSET + CLUSTER_L])) {
+				target_perf = get_perf(CLUSTER_L,
+						CORE_LIMIT(L),
+						opp[THRM_CPU_OFFSET
+							+ CLUSTER_L]);
+				if (MinPerf > target_perf) {
+					MinPerf = target_perf;
+					ChoosenCl = CLUSTER_L;
+					ChoosenPwr = get_delta_pwr(
+						THRM_CPU_OFFSET + CLUSTER_L,
+						CORE_LIMIT(L),
+						opp[THRM_CPU_OFFSET
+							+ CLUSTER_L]);
+				}
+			}
+
+			frame_time = 0;
+
+			if (!vpu_time && !mdla_time) {
+				if (ChoosenCl != -1) {
+					/* change opp of cluster */
+					opp[THRM_CPU_OFFSET + ChoosenCl] += 1;
+					goto prepare_next_round_down;
+				}
+			}
+
+			if (ChoosenCl != -1) {
+				ChoosenModule = THRM_CPU;
+				opp[THRM_CPU_OFFSET + ChoosenCl] += 1;
+				for_each_clusters(i) {
+					out_cl_cap[i] = CORE_CAP(i,
+						opp[THRM_CPU_OFFSET + i]);
+					EARA_THRM_LOGI(
+						"cl[%d] cap %d opp %d core %d\n",
+						i, out_cl_cap[i],
+						opp[THRM_CPU_OFFSET + i],
+						core_limit[i]);
+				}
+				new_cpu_time = cal_cpu_time(cpu_time, cur_cap,
+					cur_sys_cap, out_cl_cap, core_limit);
+				opp[THRM_CPU_OFFSET + ChoosenCl] -= 1;
+				frame_time = new_cpu_time + vpu_time
+						+ mdla_time;
+			} else {
+				new_cpu_time = cpu_time;
+				frame_time = INT_MAX;
+			}
+
+#ifdef EARA_THERMAL_VPU_SUPPORT
+			if (vpu_time && opp[THRM_VPU] != -1
+				&& opp[THRM_VPU] < g_vpu_opp_num - 1) {
+				new_vpu_time = cal_xpu_time(vpu_time,
+					vpu_dvfs_tbl.cap[vpu_opp],
+					vpu_dvfs_tbl.cap[opp[THRM_VPU]+1]);
+				if (frame_time >
+					cpu_time + new_vpu_time + mdla_time) {
+					ChoosenCl = -1;
+					ChoosenModule = THRM_VPU;
+					ChoosenPwr = get_delta_pwr(THRM_VPU, 1,
+						opp[THRM_VPU]);
+					frame_time = cpu_time + new_vpu_time
+							+ mdla_time;
+				}
+			}
+#endif
+
+#ifdef EARA_THERMAL_MDLA_SUPPORT
+			if (mdla_time && opp[THRM_MDLA] != -1
+				&& opp[THRM_MDLA] < g_mdla_opp_num - 1) {
+				new_mdla_time = cal_xpu_time(mdla_time,
+						mdla_dvfs_tbl.cap[mdla_opp],
+						mdla_dvfs_tbl.cap[
+						opp[THRM_MDLA]+1]);
+				if (frame_time > cpu_time + vpu_time +
+						new_mdla_time) {
+					ChoosenCl = -1;
+					ChoosenModule = THRM_MDLA;
+					ChoosenPwr = get_delta_pwr(THRM_MDLA,
+							1, opp[THRM_MDLA]);
+					frame_time = cpu_time + vpu_time
+							+ new_mdla_time;
+				}
+			}
+#endif
+
+			if (ChoosenCl != -1) {
+				opp[THRM_CPU_OFFSET + ChoosenCl] += 1;
+				cpu_time = new_cpu_time;
+				cur_cap = __eara_arr_max(out_cl_cap,
+						g_cluster_num);
+				cur_sys_cap = cal_system_capacity(out_cl_cap,
+						core_limit);
+				goto prepare_next_round_down;
+			}
+#ifdef EARA_THERMAL_AI_SUPPORT
+			else if (ChoosenModule != -1) {
+				opp[ChoosenModule] += 1;
+#ifdef EARA_THERMAL_VPU_SUPPORT
+				if (ChoosenModule == THRM_VPU) {
+					vpu_time = new_vpu_time;
+					vpu_opp = opp[ChoosenModule];
+				}
+#endif
+#ifdef EARA_THERMAL_MDLA_SUPPORT
+				if (ChoosenModule == THRM_MDLA) {
+					mdla_time = new_mdla_time;
+					mdla_opp = opp[ChoosenModule];
+				}
+#endif
+				goto prepare_next_round_down;
+			}
+#endif
+			EARA_THRM_LOGI("No lower OPP!\n");
+			EARA_THRM_LOGI("(bgt/delta/cur)=(%d/%d/%d)\n",
+				remain_budget, delta_power, curr_power);
+			EARA_THRM_LOGI("(opp)=(%d,%d,%d,%d)\n",
+				opp[THRM_CPU_OFFSET + CLUSTER_L],
+				opp[THRM_CPU_OFFSET + CLUSTER_B],
+				opp[THRM_VPU], opp[THRM_MDLA]);
+			EARA_THRM_LOGI("(act/c_lmt)=(%d,%d/%d,%d)\n",
+				ACT_CORE(L), ACT_CORE(B),
+				CORE_LIMIT(L), CORE_LIMIT(B));
+
+			frame_time = 0;
+
+			if (CORE_LIMIT(L) > KEEP_L_CORE &&
+				IS_ABLE_OFF_CORE(CORE_LIMIT(L),
+					opp[THRM_CPU_OFFSET + CLUSTER_L])) {
+				ChoosenPwr = get_delta_pwr(
+						THRM_CPU_OFFSET + CLUSTER_L,
+						CORE_LIMIT(L),
+						PPM_COBRA_MAX_FREQ_IDX - 1);
+				--CORE_LIMIT(L);
+			} else if (IS_ABLE_OFF_CORE(CORE_LIMIT(B),
+					opp[THRM_CPU_OFFSET + CLUSTER_B])) {
+				ChoosenPwr = get_delta_pwr(
+						THRM_CPU_OFFSET + CLUSTER_B,
+						CORE_LIMIT(B),
+						PPM_COBRA_MAX_FREQ_IDX - 1);
+				--CORE_LIMIT(B);
+			} else {
+				EARA_THRM_LOGI("No way to lower power!\n");
+				EARA_THRM_LOGI("(bgt/delta/cur)=(%d/%d/%d)\n",
+					remain_budget, delta_power,
+					curr_power);
+				EARA_THRM_LOGI("(opp)=(%d,%d,%d,%d)\n",
+					opp[THRM_CPU_OFFSET + CLUSTER_L],
+					opp[THRM_CPU_OFFSET + CLUSTER_B],
+					opp[THRM_VPU], opp[THRM_MDLA]);
+				EARA_THRM_LOGI("(act/c_lmt)=(%d,%d/%d,%d)\n",
+					ACT_CORE(L), ACT_CORE(B),
+					CORE_LIMIT(L), CORE_LIMIT(B));
+				break;
+			}
+
+prepare_next_round_down:
+			delta_power += ChoosenPwr;
+			curr_power -= ChoosenPwr;
+			out_st->frame_time = frame_time;
+
+			EARA_THRM_LOGI("[-](delta/Cl/Pwr/Prf)=(%d,%d,%d,%d)\n",
+				delta_power, ChoosenCl, ChoosenPwr, MinPerf);
+			EARA_THRM_LOGI("[-](opp)=(%d,%d,%d,%d)\n",
+				opp[THRM_CPU_OFFSET + CLUSTER_L],
+				opp[THRM_CPU_OFFSET + CLUSTER_B],
+				opp[THRM_VPU], opp[THRM_MDLA]);
+			EARA_THRM_LOGI("[-](act/c_lmt)=(%d,%d/%d,%d)\n",
+				ACT_CORE(L), ACT_CORE(B),
+				CORE_LIMIT(L), CORE_LIMIT(B));
+		}
+	}
 
 	for_each_clusters(i) {
 		if (opp[THRM_CPU_OFFSET + i] != cl_status[i].freq_idx)
@@ -1615,13 +1608,13 @@ static int reallocate_perf_first(int remain_budget,
 
 	if (i == g_cluster_num &&
 		vpu_opp == opp[THRM_VPU] && mdla_opp == opp[THRM_MDLA]) {
-		EARA_THRM_LOGI("out: no change\n");
+		EARA_THRM_LOGI("L %s: no change\n", __func__);
 		return NO_CHANGE;
 	}
 
 	for_each_clusters(i) {
 		out_cl_cap[i] = CORE_CAP(i, opp[THRM_CPU_OFFSET + i]);
-		EARA_THRM_LOGI("out: C%d: cap %d, opp %d, core %d",
+		EARA_THRM_LOGI("out: %d: cap %d, opp %d, core %d\n",
 			i, out_cl_cap[i], opp[THRM_CPU_OFFSET + i],
 			core_limit[i]);
 	}
@@ -2021,7 +2014,7 @@ void eara_thrm_pb_enqueue_end(int pid, unsigned long long bufid,
 
 		if (!realloc_st.frame_time)
 			realloc_st.frame_time = cal_cpu_time(cpu_time, cur_cap,
-				cur_sys_cap, g_cl_cap, g_core_limit);
+			cur_sys_cap, g_cl_cap, g_core_limit);
 
 		temp = (long long)(realloc_st.frame_time) * 100;
 		do_div(temp, new_gpu_time);
@@ -2215,10 +2208,11 @@ EXPORT_SYMBOL(mtk_eara_thermal_pb_handle);
 static void update_cpu_info(void)
 {
 	int cluster, opp;
-	unsigned int max_cap = 0, min_cap = UINT_MAX;
+	int cpu;
+	unsigned long long cap_orig = 0ULL;
+	unsigned long long cap = 0ULL;
 
-	g_cluster_num = arch_get_nr_clusters();
-	g_nr_cpus = num_possible_cpus();
+	g_cluster_num = arch_nr_clusters();
 
 	cpu_dvfs_tbl =
 		kcalloc(g_cluster_num, sizeof(struct cpu_dvfs_info),
@@ -2227,54 +2221,27 @@ static void update_cpu_info(void)
 		return;
 
 	for (cluster = 0; cluster < g_cluster_num ; cluster++) {
-		struct cpumask cluster_cpus;
-		int cpu;
-		const struct sched_group_energy *core_energy = NULL;
-
-		arch_get_cluster_cpus(&cluster_cpus, cluster);
-		for_each_cpu(cpu, &cluster_cpus) {
-			core_energy = cpu_core_energy(cpu);
-			break; /* only needs once for each cluster */
+		for_each_possible_cpu(cpu) {
+			if (arch_cpu_cluster_id(cpu) == cluster)
+				cap_orig = capacity_orig_of(cpu);
 		}
 
-		if (!core_energy)
-			break;
-
 		for (opp = 0; opp < CPU_OPP_NUM; opp++) {
-			unsigned long long cap = 0ULL;
 			unsigned int temp;
 
 			cpu_dvfs_tbl[cluster].power[opp] =
 				mt_cpufreq_get_freq_by_idx(cluster, opp);
 
-#ifdef CONFIG_NONLINEAR_FREQ_CTL
-			cap = core_energy->cap_states[
-					CPU_OPP_NUM - opp - 1].cap;
-#else
-			cap = core_energy->cap_states[CPU_OPP_NUM - 1].cap;
-			cap = cap * cpu_dvfs_tbl[cluster].power[opp];
+			cap = cap_orig * cpu_dvfs_tbl[cluster].power[opp];
 			if (cpu_dvfs_tbl[cluster].power[0])
 				do_div(cap, cpu_dvfs_tbl[cluster].power[0]);
-#endif
+
 			cap = (cap * 100) >> 10;
 			temp = (unsigned int)cap;
 			temp = clamp(temp, 1U, 100U);
 			cpu_dvfs_tbl[cluster].capacity_ratio[opp] = temp;
 		}
-
-		if (cpu_dvfs_tbl[cluster].capacity_ratio[0] > max_cap) {
-			max_cap = cpu_dvfs_tbl[cluster].capacity_ratio[0];
-			max_cluster = cluster;
-		}
-
-		if (cpu_dvfs_tbl[cluster].capacity_ratio[0] < min_cap) {
-			min_cap = cpu_dvfs_tbl[cluster].capacity_ratio[0];
-			min_cluster = cluster;
-		}
 	}
-
-	max_cluster = clamp(max_cluster, 0, g_cluster_num - 1);
-	min_cluster = clamp(min_cluster, 0, g_cluster_num - 1);
 
 	get_cobra_tbl();
 }
@@ -2414,7 +2381,7 @@ static ssize_t ctable_power_show(struct kobject *kobj,
 
 	length = scnprintf(temp + posi,
 		EARA_SYSFS_MAX_BUFF_SIZE - posi,
-		"#core %d, #opp %d\n", g_nr_cpus, CPU_OPP_NUM);
+		"#core %d, #opp %d\n", CPU_CORE_NUM, CPU_OPP_NUM);
 	posi += length;
 
 	get_cobra_tbl();
@@ -2427,7 +2394,7 @@ static ssize_t ctable_power_show(struct kobject *kobj,
 		EARA_SYSFS_MAX_BUFF_SIZE - posi,
 		"\n(power, perf)\n");
 	posi += length;
-	for (i = 0; i < g_nr_cpus; i++) {
+	for (i = 0; i < CPU_CORE_NUM; i++) {
 		for (j = 0; j < CPU_OPP_NUM; j++) {
 			length = scnprintf(temp + posi,
 				EARA_SYSFS_MAX_BUFF_SIZE - posi,
@@ -2457,8 +2424,7 @@ static ssize_t ctable_cap_show(struct kobject *kobj,
 
 	length = scnprintf(temp + posi,
 		EARA_SYSFS_MAX_BUFF_SIZE - posi,
-		"#cluster %d\tmax %d\tmin %d\n",
-		g_cluster_num, max_cluster, min_cluster);
+		"#cluster %d\n", g_cluster_num);
 	posi += length;
 
 	if (!cpu_dvfs_tbl) {
@@ -2831,9 +2797,7 @@ static int __init eara_thrm_pb_init(void)
 	get_power_tbl();
 	prepare_mem();
 
-	g_timer.function = timer_func;
-	g_timer.data = 0UL;
-	init_timer_deferrable(&g_timer);
+	timer_setup(&g_timer, timer_func, TIMER_DEFERRABLE);
 
 	wq = create_singlethread_workqueue("eara_thrm");
 

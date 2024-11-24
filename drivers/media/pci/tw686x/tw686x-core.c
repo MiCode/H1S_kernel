@@ -126,9 +126,9 @@ void tw686x_enable_channel(struct tw686x_dev *dev, unsigned int channel)
  * channels "too fast" which makes some TW686x devices very
  * angry and freeze the CPU (see note 1).
  */
-static void tw686x_dma_delay(unsigned long data)
+static void tw686x_dma_delay(struct timer_list *t)
 {
-	struct tw686x_dev *dev = (struct tw686x_dev *)data;
+	struct tw686x_dev *dev = from_timer(dev, t, dma_delay_timer);
 	unsigned long flags;
 
 	spin_lock_irqsave(&dev->lock, flags);
@@ -318,15 +318,7 @@ static int tw686x_probe(struct pci_dev *pci_dev,
 
 	spin_lock_init(&dev->lock);
 
-	err = request_irq(pci_dev->irq, tw686x_irq, IRQF_SHARED,
-			  dev->name, dev);
-	if (err < 0) {
-		dev_err(&pci_dev->dev, "unable to request interrupt\n");
-		goto iounmap;
-	}
-
-	setup_timer(&dev->dma_delay_timer,
-		    tw686x_dma_delay, (unsigned long) dev);
+	timer_setup(&dev->dma_delay_timer, tw686x_dma_delay, 0);
 
 	/*
 	 * This must be set right before initializing v4l2_dev.
@@ -337,18 +329,23 @@ static int tw686x_probe(struct pci_dev *pci_dev,
 	err = tw686x_video_init(dev);
 	if (err) {
 		dev_err(&pci_dev->dev, "can't register video\n");
-		goto free_irq;
+		goto iounmap;
 	}
 
 	err = tw686x_audio_init(dev);
 	if (err)
 		dev_warn(&pci_dev->dev, "can't register audio\n");
 
+	err = request_irq(pci_dev->irq, tw686x_irq, IRQF_SHARED,
+			  dev->name, dev);
+	if (err < 0) {
+		dev_err(&pci_dev->dev, "unable to request interrupt\n");
+		goto iounmap;
+	}
+
 	pci_set_drvdata(pci_dev, dev);
 	return 0;
 
-free_irq:
-	free_irq(pci_dev->irq, dev);
 iounmap:
 	pci_iounmap(pci_dev, dev->mmio);
 free_region:

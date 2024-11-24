@@ -7,7 +7,7 @@
 #define __MTK_DBG_COMMON_H__
 
 /* For sysfs get the last wake status */
-enum mt6885_spm_wake_status_enum {
+enum mt_spm_wake_status_enum {
 	WAKE_STA_R12,
 	WAKE_STA_R12_EXT,
 	WAKE_STA_RAW_STA,
@@ -60,27 +60,9 @@ struct dbg_ctrl {
 	u32 duration;
 };
 
-/* MD sleep status */
-struct md_sleep_status {
-	u64 sleep_wall_clk;
-	u64 sleep_cnt;
-	u64 sleep_cnt_reserve;
-	u64 sleep_time;
-};
+int mtk_dbg_common_fs_init(void);
 
-/* Determine for operand bit */
-#define MTK_DUMP_LP_GOLDEN	(1 << 0L)
-#define MTK_DUMP_GPIO		(1 << 1L)
+void mtk_dbg_common_fs_exit(void);
 
-#define PCM_32K_TICKS_PER_SEC		(32768)
-#define PCM_TICK_TO_SEC(TICK)	(TICK / PCM_32K_TICKS_PER_SEC)
 
-extern void mtk_suspend_gpio_dbg(void);
-extern void mtk_suspend_clk_dbg(void);
-extern u32 mt_irq_get_pending(unsigned int irq);
-
-extern u64 spm_26M_off_count;
-extern u64 spm_26M_off_duration;
-extern u64 ap_pd_count;
-extern u64 ap_slp_duration;
 #endif /* __MTK_DBG_COMMON_H__ */

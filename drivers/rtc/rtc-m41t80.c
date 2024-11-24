@@ -73,7 +73,6 @@
 #define M41T80_FEATURE_WD	BIT(3)	/* Extra watchdog resolution */
 #define M41T80_FEATURE_SQ_ALT	BIT(4)	/* RSx bits are in reg 4 */
 
-static DEFINE_MUTEX(m41t80_rtc_mutex);
 static const struct i2c_device_id m41t80_id[] = {
 	{ "m41t62", M41T80_FEATURE_SQ | M41T80_FEATURE_SQ_ALT },
 	{ "m41t65", M41T80_FEATURE_HT | M41T80_FEATURE_WD },
@@ -199,9 +198,9 @@ static irqreturn_t m41t80_handle_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int m41t80_get_datetime(struct i2c_client *client,
-			       struct rtc_time *tm)
+static int m41t80_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
+	struct i2c_client *client = to_i2c_client(dev);
 	unsigned char buf[8];
 	int err, flags;
 
@@ -230,12 +229,12 @@ static int m41t80_get_datetime(struct i2c_client *client,
 
 	/* assume 20YY not 19YY, and ignore the Century Bit */
 	tm->tm_year = bcd2bin(buf[M41T80_REG_YEAR]) + 100;
-	return rtc_valid_tm(tm);
+	return 0;
 }
 
-/* Sets the given date and time to the real time clock. */
-static int m41t80_set_datetime(struct i2c_client *client, struct rtc_time *tm)
+static int m41t80_rtc_set_time(struct device *dev, struct rtc_time *tm)
 {
+	struct i2c_client *client = to_i2c_client(dev);
 	struct m41t80_data *clientdata = i2c_get_clientdata(client);
 	unsigned char buf[8];
 	int err, flags;
@@ -296,16 +295,6 @@ static int m41t80_rtc_proc(struct device *dev, struct seq_file *seq)
 			   (reg & M41T80_FLAGS_BATT_LOW) ? "exhausted" : "ok");
 	}
 	return 0;
-}
-
-static int m41t80_rtc_read_time(struct device *dev, struct rtc_time *tm)
-{
-	return m41t80_get_datetime(to_i2c_client(dev), tm);
-}
-
-static int m41t80_rtc_set_time(struct device *dev, struct rtc_time *tm)
-{
-	return m41t80_set_datetime(to_i2c_client(dev), tm);
 }
 
 static int m41t80_alarm_irq_enable(struct device *dev, unsigned int enabled)
@@ -598,6 +587,7 @@ static struct clk *m41t80_sqw_register_clk(struct m41t80_data *m41t80)
  *
  *****************************************************************************
  */
+static DEFINE_MUTEX(m41t80_rtc_mutex);
 static struct i2c_client *save_client;
 
 /* Default margin */
@@ -947,7 +937,7 @@ static int m41t80_probe(struct i2c_client *client,
 
 	if (rc >= 0 && rc & M41T80_ALHOUR_HT) {
 		if (m41t80_data->features & M41T80_FEATURE_HT) {
-			m41t80_get_datetime(client, &tm);
+			m41t80_rtc_read_time(&client->dev, &tm);
 			dev_info(&client->dev, "HT bit was set!\n");
 			dev_info(&client->dev,
 				 "Power Down at %04i-%02i-%02i %02i:%02i:%02i\n",

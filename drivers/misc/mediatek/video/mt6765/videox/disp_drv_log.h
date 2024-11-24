@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __DISP_DRV_LOG_H__
@@ -83,8 +75,8 @@
 
 #ifdef CONFIG_MTK_AEE_FEATURE
 #define disp_aee_print(string, args...) do {	\
-	char disp_name[100] = {0};			\
-	snprintf(disp_name, 100, "[DISP]"string, ##args); \
+	char disp_name[100];						\
+	(void)snprintf(disp_name, 100, "[DISP]"string, ##args); \
 	aee_kernel_warning_api(__FILE__, __LINE__, \
 		DB_OPT_DEFAULT | DB_OPT_MMPROFILE_BUFFER | \
 		DB_OPT_DISPLAY_HANG_DUMP | DB_OPT_DUMP_DISPLAY, \
@@ -93,8 +85,8 @@
 } while (0)
 #else
 #define disp_aee_print(string, args...) do {				\
-	char disp_name[100] = {0};			\
-	snprintf(disp_name, 100, "[DISP]"string, ##args);		\
+	char disp_name[100];						\
+	(void)snprintf(disp_name, 100, "[DISP]"string, ##args);		\
 	pr_info("DISP error: "string, ##args);				\
 } while (0)
 #endif

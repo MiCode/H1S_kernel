@@ -118,22 +118,26 @@ void unregister_vlan_dev(struct net_device *dev, struct list_head *head)
 }
 
 int vlan_check_real_dev(struct net_device *real_dev,
-			__be16 protocol, u16 vlan_id)
+			__be16 protocol, u16 vlan_id,
+			struct netlink_ext_ack *extack)
 {
 	const char *name = real_dev->name;
 
 	if (real_dev->features & NETIF_F_VLAN_CHALLENGED) {
 		pr_info("VLANs not supported on %s\n", name);
+		NL_SET_ERR_MSG_MOD(extack, "VLANs not supported on device");
 		return -EOPNOTSUPP;
 	}
 
-	if (vlan_find_dev(real_dev, protocol, vlan_id) != NULL)
+	if (vlan_find_dev(real_dev, protocol, vlan_id) != NULL) {
+		NL_SET_ERR_MSG_MOD(extack, "VLAN device already exists");
 		return -EEXIST;
+	}
 
 	return 0;
 }
 
-int register_vlan_dev(struct net_device *dev)
+int register_vlan_dev(struct net_device *dev, struct netlink_ext_ack *extack)
 {
 	struct vlan_dev_priv *vlan = vlan_dev_priv(dev);
 	struct net_device *real_dev = vlan->real_dev;
@@ -169,7 +173,7 @@ int register_vlan_dev(struct net_device *dev)
 	if (err < 0)
 		goto out_uninit_mvrp;
 
-	err = netdev_upper_dev_link(real_dev, dev);
+	err = netdev_upper_dev_link(real_dev, dev, extack);
 	if (err)
 		goto out_unregister_netdev;
 
@@ -215,7 +219,8 @@ static int register_vlan_device(struct net_device *real_dev, u16 vlan_id)
 	if (vlan_id >= VLAN_VID_MASK)
 		return -ERANGE;
 
-	err = vlan_check_real_dev(real_dev, htons(ETH_P_8021Q), vlan_id);
+	err = vlan_check_real_dev(real_dev, htons(ETH_P_8021Q), vlan_id,
+				  NULL);
 	if (err < 0)
 		return err;
 
@@ -265,14 +270,15 @@ static int register_vlan_device(struct net_device *real_dev, u16 vlan_id)
 	vlan->flags = VLAN_FLAG_REORDER_HDR;
 
 	new_dev->rtnl_link_ops = &vlan_link_ops;
-	err = register_vlan_dev(new_dev);
+	err = register_vlan_dev(new_dev, NULL);
 	if (err < 0)
 		goto out_free_newdev;
 
 	return 0;
 
 out_free_newdev:
-	if (new_dev->reg_state == NETREG_UNINITIALIZED)
+	if (new_dev->reg_state == NETREG_UNINITIALIZED ||
+	    new_dev->reg_state == NETREG_UNREGISTERED)
 		free_netdev(new_dev);
 	return err;
 }
@@ -323,6 +329,9 @@ static void vlan_transfer_features(struct net_device *dev,
 	vlandev->fcoe_ddp_xid = dev->fcoe_ddp_xid;
 #endif
 
+	vlandev->priv_flags &= ~IFF_XMIT_DST_RELEASE;
+	vlandev->priv_flags |= (vlan->real_dev->priv_flags & IFF_XMIT_DST_RELEASE);
+
 	netdev_update_features(vlandev);
 }
 
@@ -357,6 +366,7 @@ static int vlan_device_event(struct notifier_block *unused, unsigned long event,
 	struct vlan_dev_priv *vlan;
 	bool last = false;
 	LIST_HEAD(list);
+	int err;
 
 	if (is_vlan_dev(dev)) {
 		int err = __vlan_device_event(dev, event);
@@ -485,6 +495,26 @@ static int vlan_device_event(struct notifier_block *unused, unsigned long event,
 		/* Propagate to vlan devices */
 		vlan_group_for_each_dev(grp, i, vlandev)
 			call_netdevice_notifiers(event, vlandev);
+		break;
+
+	case NETDEV_CVLAN_FILTER_PUSH_INFO:
+		err = vlan_filter_push_vids(vlan_info, htons(ETH_P_8021Q));
+		if (err)
+			return notifier_from_errno(err);
+		break;
+
+	case NETDEV_CVLAN_FILTER_DROP_INFO:
+		vlan_filter_drop_vids(vlan_info, htons(ETH_P_8021Q));
+		break;
+
+	case NETDEV_SVLAN_FILTER_PUSH_INFO:
+		err = vlan_filter_push_vids(vlan_info, htons(ETH_P_8021AD));
+		if (err)
+			return notifier_from_errno(err);
+		break;
+
+	case NETDEV_SVLAN_FILTER_DROP_INFO:
+		vlan_filter_drop_vids(vlan_info, htons(ETH_P_8021AD));
 		break;
 	}
 

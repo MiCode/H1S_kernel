@@ -1,16 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * Power Delivery Process Event for TCP
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "inc/pd_core.h"
@@ -118,10 +108,8 @@ static inline int pd_handle_tcp_event_cable_softreset(struct pd_port *pd_port)
 
 	role_check = pd_port->data_role == PD_ROLE_DFP;
 
-#ifdef CONFIG_USB_PD_REV30
 	if (pd_check_rev30(pd_port))
 		role_check = pd_port->vconn_role;
-#endif	/* CONFIG_USB_PD_REV30 */
 
 	if (!role_check)
 		return TCP_DPM_RET_DENIED_WRONG_DATA_ROLE;

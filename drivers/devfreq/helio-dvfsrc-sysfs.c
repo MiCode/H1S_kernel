@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2018 MediaTek Inc.
  */
 
 #include <linux/device.h>
@@ -80,7 +72,7 @@ static ssize_t opp_table_show(struct device *dev,
 	return p - buf;
 }
 
-static DEVICE_ATTR(opp_table, 0444, opp_table_show, NULL);
+static DEVICE_ATTR_RO(opp_table);
 
 static ssize_t dvfsrc_debug_show(struct device *dev,
 				 struct device_attribute *attr,
@@ -245,7 +237,7 @@ static ssize_t dvfsrc_debug_store(struct device *dev,
 	return count;
 }
 
-static DEVICE_ATTR(dvfsrc_debug, 0644, dvfsrc_debug_show, dvfsrc_debug_store);
+static DEVICE_ATTR_RW(dvfsrc_debug);
 
 static ssize_t dvfsrc_enable_show(struct device *dev,
 				  struct device_attribute *attr,
@@ -284,7 +276,7 @@ static ssize_t dvfsrc_enable_store(struct device *dev,
 	return count;
 }
 static
-DEVICE_ATTR(dvfsrc_enable, 0644, dvfsrc_enable_show, dvfsrc_enable_store);
+DEVICE_ATTR_RW(dvfsrc_enable);
 
 static struct attribute *helio_dvfsrc_attrs[] = {
 	&dev_attr_dvfsrc_debug.attr,

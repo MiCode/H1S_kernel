@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2020 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef HDCP_TX_H
 #define HDCP_TX_H
@@ -67,7 +59,7 @@
 #define HDCP2_REPAUTHSTREAMRDY_WDT          100      // 100 ms
 
 //Patch for QD980 LLCTS
-#define HDCP2_TX_RETRY_CNT      1
+#define HDCP2_TX_RETRY_CNT      3
 #define HDCP2_TX_LC_RETRY_CNT   1023
 #define HDCP2_STREAM_MANAGE_RETRY_CNT   8
 

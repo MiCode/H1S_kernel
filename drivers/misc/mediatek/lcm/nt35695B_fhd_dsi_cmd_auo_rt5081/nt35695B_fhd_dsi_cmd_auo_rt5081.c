@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "LCM"
@@ -1197,36 +1189,6 @@ static struct LCM_setting_table init_setting_vdo[] = {
 	{0x55, 1, {0x00} },
 };
 
-#if 0
-static struct LCM_setting_table lcm_set_window[] = {
-	{0x2A, 4, {0x00, 0x00, (FRAME_WIDTH >> 8), (FRAME_WIDTH & 0xFF)} },
-	{0x2B, 4, {0x00, 0x00, (FRAME_HEIGHT >> 8), (FRAME_HEIGHT & 0xFF)} },
-	{REGFLAG_END_OF_TABLE, 0x00, {} }
-};
-#endif
-#if 0
-static struct LCM_setting_table lcm_sleep_out_setting[] = {
-	/* Sleep Out */
-	{0x11, 1, {0x00} },
-	{REGFLAG_DELAY, 120, {} },
-
-	/* Display ON */
-	{0x29, 1, {0x00} },
-	{REGFLAG_DELAY, 20, {} },
-	{REGFLAG_END_OF_TABLE, 0x00, {} }
-};
-
-static struct LCM_setting_table lcm_deep_sleep_mode_in_setting[] = {
-	/* Display off sequence */
-	{0x28, 1, {0x00} },
-	{REGFLAG_DELAY, 20, {} },
-
-	/* Sleep Mode On */
-	{0x10, 1, {0x00} },
-	{REGFLAG_DELAY, 120, {} },
-	{REGFLAG_END_OF_TABLE, 0x00, {} }
-};
-#endif
 static struct LCM_setting_table bl_level[] = {
 	{0x51, 1, {0xFF} },
 	{REGFLAG_END_OF_TABLE, 0x00, {} }

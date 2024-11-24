@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef TCPM_PD_H_
@@ -274,8 +266,6 @@ struct pd_country_info {
 
 /* SDB, Status */
 
-#define PD_SDB_SIZE	6
-
 #define PD_STATUS_INPUT_EXT_POWER	(1<<1)
 #define PD_STATUS_INPUT_EXT_POWER_FROM_AC	(1<<2)
 #define PD_STATUS_INPUT_INT_POWER_BAT		(1<<3)
@@ -299,11 +289,14 @@ struct pd_country_info {
 struct pd_status {
 	uint8_t internal_temp;	/* 0 means no support */
 	uint8_t present_input;	/* bit filed */
-	uint8_t present_battey_input; /* bit filed */
+	uint8_t present_battery_input;
 	uint8_t event_flags;	/* bit filed */
 	uint8_t temp_status;	/* bit filed */
 	uint8_t power_status;	/* bit filed */
+	uint8_t power_state_change;
 };
+
+#define PD_SDB_SIZE	sizeof(struct pd_status)
 
 /* PPSSDB, PPSStatus */
 

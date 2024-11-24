@@ -380,14 +380,8 @@ out:
  */
 static int lpddr2_nvm_erase(struct mtd_info *mtd, struct erase_info *instr)
 {
-	int ret = lpddr2_nvm_do_block_op(mtd, instr->addr, instr->len,
-		LPDDR2_NVM_ERASE);
-	if (!ret) {
-		instr->state = MTD_ERASE_DONE;
-		mtd_erase_callback(instr);
-	}
-
-	return ret;
+	return lpddr2_nvm_do_block_op(mtd, instr->addr, instr->len,
+				      LPDDR2_NVM_ERASE);
 }
 
 /*
@@ -407,6 +401,17 @@ static int lpddr2_nvm_lock(struct mtd_info *mtd, loff_t start_add,
 {
 	return lpddr2_nvm_do_block_op(mtd, start_add, len, LPDDR2_NVM_LOCK);
 }
+
+static const struct mtd_info lpddr2_nvm_mtd_info = {
+	.type		= MTD_RAM,
+	.writesize	= 1,
+	.flags		= (MTD_CAP_NVRAM | MTD_POWERUP_LOCK),
+	._read		= lpddr2_nvm_read,
+	._write		= lpddr2_nvm_write,
+	._erase		= lpddr2_nvm_erase,
+	._unlock	= lpddr2_nvm_unlock,
+	._lock		= lpddr2_nvm_lock,
+};
 
 /*
  * lpddr2_nvm driver probe method
@@ -437,6 +442,8 @@ static int lpddr2_nvm_probe(struct platform_device *pdev)
 
 	/* lpddr2_nvm address range */
 	add_range = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!add_range)
+		return -ENODEV;
 
 	/* Populate map_info data structure */
 	*map = (struct map_info) {
@@ -448,6 +455,7 @@ static int lpddr2_nvm_probe(struct platform_device *pdev)
 		.pfow_base	= OW_BASE_ADDRESS,
 		.fldrv_priv	= pcm_data,
 	};
+
 	if (IS_ERR(map->virt))
 		return PTR_ERR(map->virt);
 
@@ -459,22 +467,13 @@ static int lpddr2_nvm_probe(struct platform_device *pdev)
 		return PTR_ERR(pcm_data->ctl_regs);
 
 	/* Populate mtd_info data structure */
-	*mtd = (struct mtd_info) {
-		.dev		= { .parent = &pdev->dev },
-		.name		= pdev->dev.init_name,
-		.type		= MTD_RAM,
-		.priv		= map,
-		.size		= resource_size(add_range),
-		.erasesize	= ERASE_BLOCKSIZE * pcm_data->bus_width,
-		.writesize	= 1,
-		.writebufsize	= WRITE_BUFFSIZE * pcm_data->bus_width,
-		.flags		= (MTD_CAP_NVRAM | MTD_POWERUP_LOCK),
-		._read		= lpddr2_nvm_read,
-		._write		= lpddr2_nvm_write,
-		._erase		= lpddr2_nvm_erase,
-		._unlock	= lpddr2_nvm_unlock,
-		._lock		= lpddr2_nvm_lock,
-	};
+	*mtd = lpddr2_nvm_mtd_info;
+	mtd->dev.parent		= &pdev->dev;
+	mtd->name		= pdev->dev.init_name;
+	mtd->priv		= map;
+	mtd->size		= resource_size(add_range);
+	mtd->erasesize		= ERASE_BLOCKSIZE * pcm_data->bus_width;
+	mtd->writebufsize	= WRITE_BUFFSIZE * pcm_data->bus_width;
 
 	/* Verify the presence of the device looking for PFOW string */
 	if (!lpddr2_nvm_pfow_present(map)) {
@@ -482,7 +481,7 @@ static int lpddr2_nvm_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 	/* Parse partitions and register the MTD device */
-	return mtd_device_parse_register(mtd, NULL, NULL, NULL, 0);
+	return mtd_device_register(mtd, NULL, 0);
 }
 
 /*

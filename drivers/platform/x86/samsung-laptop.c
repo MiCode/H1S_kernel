@@ -1125,8 +1125,6 @@ static void kbd_led_set(struct led_classdev *led_cdev,
 
 	if (value > samsung->kbd_led.max_brightness)
 		value = samsung->kbd_led.max_brightness;
-	else if (value < 0)
-		value = 0;
 
 	samsung->kbd_led_wk = value;
 	queue_work(samsung->led_workqueue, &samsung->kbd_led_work);
@@ -1216,8 +1214,7 @@ static umode_t samsung_sysfs_is_visible(struct kobject *kobj,
 					struct attribute *attr, int idx)
 {
 	struct device *dev = container_of(kobj, struct device, kobj);
-	struct platform_device *pdev = to_platform_device(dev);
-	struct samsung_laptop *samsung = platform_get_drvdata(pdev);
+	struct samsung_laptop *samsung = dev_get_drvdata(dev);
 	bool ok = true;
 
 	if (attr == &dev_attr_performance_level.attr)
@@ -1252,7 +1249,7 @@ static int __init samsung_sysfs_init(struct samsung_laptop *samsung)
 
 }
 
-static int show_call(struct seq_file *m, void *data)
+static int samsung_laptop_call_show(struct seq_file *m, void *data)
 {
 	struct samsung_laptop *samsung = m->private;
 	struct sabi_data *sdata = &samsung->debug.data;
@@ -1274,19 +1271,7 @@ static int show_call(struct seq_file *m, void *data)
 		   sdata->d0, sdata->d1, sdata->d2, sdata->d3);
 	return 0;
 }
-
-static int samsung_debugfs_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, show_call, inode->i_private);
-}
-
-static const struct file_operations samsung_laptop_call_io_ops = {
-	.owner = THIS_MODULE,
-	.open = samsung_debugfs_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(samsung_laptop_call);
 
 static void samsung_debugfs_exit(struct samsung_laptop *samsung)
 {
@@ -1351,7 +1336,7 @@ static int samsung_debugfs_init(struct samsung_laptop *samsung)
 
 	dent = debugfs_create_file("call", S_IFREG | S_IRUGO,
 				   samsung->debug.root, samsung,
-				   &samsung_laptop_call_io_ops);
+				   &samsung_laptop_call_fops);
 	if (!dent)
 		goto error_debugfs;
 

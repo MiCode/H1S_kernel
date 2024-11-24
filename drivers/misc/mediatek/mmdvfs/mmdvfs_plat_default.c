@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/string.h>
@@ -38,3 +30,15 @@ inline s32 get_md_hrt_bw(void)
 
 inline s32 dram_write_weight(s32 val)
 { return val; }
+
+inline s32 emi_occ_ratio(void)
+{ return 500; }
+
+inline s32 emi_occ_ui_only(void)
+{ return 500; }
+
+inline s32 cam_occ_ratio(void)
+{ return 1000; }
+
+inline s32 disp_occ_ratio(void)
+{ return 1000; }

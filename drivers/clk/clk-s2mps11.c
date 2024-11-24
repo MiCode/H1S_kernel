@@ -147,8 +147,8 @@ static int s2mps11_clk_probe(struct platform_device *pdev)
 	if (!s2mps11_clks)
 		return -ENOMEM;
 
-	clk_data = devm_kzalloc(&pdev->dev, sizeof(*clk_data) +
-				sizeof(*clk_data->hws) * S2MPS11_CLKS_NUM,
+	clk_data = devm_kzalloc(&pdev->dev,
+				struct_size(clk_data, hws, S2MPS11_CLKS_NUM),
 				GFP_KERNEL);
 	if (!clk_data)
 		return -ENOMEM;
@@ -211,6 +211,7 @@ static int s2mps11_clk_probe(struct platform_device *pdev)
 	return ret;
 
 err_reg:
+	of_node_put(s2mps11_clks[0].clk_np);
 	while (--i >= 0)
 		clkdev_drop(s2mps11_clks[i].lookup);
 

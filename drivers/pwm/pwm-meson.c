@@ -415,6 +415,24 @@ static const struct meson_pwm_data pwm_gxbb_ao_data = {
 	.num_parents = ARRAY_SIZE(pwm_gxbb_ao_parent_names),
 };
 
+static const char * const pwm_axg_ee_parent_names[] = {
+	"xtal", "fclk_div5", "fclk_div4", "fclk_div3"
+};
+
+static const struct meson_pwm_data pwm_axg_ee_data = {
+	.parent_names = pwm_axg_ee_parent_names,
+	.num_parents = ARRAY_SIZE(pwm_axg_ee_parent_names),
+};
+
+static const char * const pwm_axg_ao_parent_names[] = {
+	"xtal", "axg_ao_clk81", "fclk_div4", "fclk_div5"
+};
+
+static const struct meson_pwm_data pwm_axg_ao_data = {
+	.parent_names = pwm_axg_ao_parent_names,
+	.num_parents = ARRAY_SIZE(pwm_axg_ao_parent_names),
+};
+
 static const struct of_device_id meson_pwm_matches[] = {
 	{
 		.compatible = "amlogic,meson8b-pwm",
@@ -427,6 +445,14 @@ static const struct of_device_id meson_pwm_matches[] = {
 	{
 		.compatible = "amlogic,meson-gxbb-ao-pwm",
 		.data = &pwm_gxbb_ao_data
+	},
+	{
+		.compatible = "amlogic,meson-axg-ee-pwm",
+		.data = &pwm_axg_ee_data
+	},
+	{
+		.compatible = "amlogic,meson-axg-ao-pwm",
+		.data = &pwm_axg_ao_data
 	},
 	{},
 };
@@ -518,8 +544,8 @@ static int meson_pwm_probe(struct platform_device *pdev)
 	meson->data = of_device_get_match_data(&pdev->dev);
 	meson->inverter_mask = BIT(meson->chip.npwm) - 1;
 
-	channels = devm_kcalloc(&pdev->dev, meson->chip.npwm, sizeof(*meson),
-				GFP_KERNEL);
+	channels = devm_kcalloc(&pdev->dev, meson->chip.npwm,
+				sizeof(*channels), GFP_KERNEL);
 	if (!channels)
 		return -ENOMEM;
 

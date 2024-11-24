@@ -31,7 +31,7 @@ static inline struct arphdr *arp_hdr(const struct sk_buff *skb)
 	return (struct arphdr *)skb_network_header(skb);
 }
 
-static inline int arp_hdr_len(struct net_device *dev)
+static inline unsigned int arp_hdr_len(const struct net_device *dev)
 {
 	switch (dev->type) {
 #if IS_ENABLED(CONFIG_FIREWIRE_NET)
@@ -55,6 +55,11 @@ static inline bool dev_is_mac_header_xmit(const struct net_device *dev)
 	case ARPHRD_VOID:
 	case ARPHRD_NONE:
 	case ARPHRD_RAWIP:
+	case ARPHRD_PIMREG:
+	/* PPP adds its l2 header automatically in ppp_start_xmit().
+	 * This makes it look like an l3 device to __bpf_redirect() and tcf_mirred_init().
+	 */
+	case ARPHRD_PPP:
 		return false;
 	default:
 		return true;

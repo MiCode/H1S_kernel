@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef _APUSYS_POWER_H_
@@ -39,6 +31,7 @@ extern int apu_power_callback_device_register(enum POWER_CALLBACK_USER user,
 					void (*power_on_callback)(void *para),
 					void (*power_off_callback)(void *para));
 extern void apu_power_callback_device_unregister(enum POWER_CALLBACK_USER user);
+extern int apusys_opp_to_boost_value(enum DVFS_USER user, uint8_t opp);
 extern uint8_t apusys_boost_value_to_opp
 				(enum DVFS_USER user, uint8_t boost_value);
 extern enum DVFS_FREQ apusys_opp_to_freq(enum DVFS_USER user, uint8_t opp);

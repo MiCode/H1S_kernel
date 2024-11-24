@@ -40,8 +40,8 @@
 #include <linux/vmalloc.h>
 #include <linux/init.h>
 
-#include "dmxdev.h"
-#include "dvbdev.h"
+#include <media/dmxdev.h>
+#include <media/dvbdev.h>
 #include "bt878.h"
 #include "dst_priv.h"
 
@@ -493,6 +493,9 @@ static int bt878_probe(struct pci_dev *dev, const struct pci_device_id *pci_id)
 	bt878_make_risc(bt);
 	btwrite(0, BT878_AINT_MASK);
 	bt878_num++;
+
+	if (!bt->tasklet.func)
+		tasklet_disable(&bt->tasklet);
 
 	return 0;
 

@@ -27,6 +27,7 @@
 #include <linux/firmware.h>
 #include <linux/export.h>
 #include <linux/ctype.h>
+#include <linux/kernel.h>
 
 #include "sas_internal.h"
 
@@ -758,7 +759,7 @@ retry:
 	spin_unlock_irq(shost->host_lock);
 
 	SAS_DPRINTK("Enter %s busy: %d failed: %d\n",
-		    __func__, atomic_read(&shost->host_busy), shost->host_failed);
+		    __func__, scsi_host_busy(shost), shost->host_failed);
 	/*
 	 * Deal with commands that still have SAS tasks (i.e. they didn't
 	 * complete via the normal sas_task completion mechanism),
@@ -800,7 +801,7 @@ out:
 		goto retry;
 
 	SAS_DPRINTK("--- Exit %s: busy: %d failed: %d tries: %d\n",
-		    __func__, atomic_read(&shost->host_busy),
+		    __func__, scsi_host_busy(shost),
 		    shost->host_failed, tries);
 }
 
@@ -925,7 +926,7 @@ void sas_task_abort(struct sas_task *task)
 			return;
 		if (!del_timer(&slow->timer))
 			return;
-		slow->timer.function(slow->timer.data);
+		slow->timer.function(&slow->timer);
 		return;
 	}
 
@@ -941,6 +942,14 @@ void sas_task_abort(struct sas_task *task)
 	}
 }
 
+int sas_slave_alloc(struct scsi_device *sdev)
+{
+	if (dev_is_sata(sdev_to_domain_dev(sdev)) && sdev->lun)
+		return -ENXIO;
+
+	return 0;
+}
+
 void sas_target_destroy(struct scsi_target *starget)
 {
 	struct domain_device *found_dev = starget->hostdata;
@@ -950,21 +959,6 @@ void sas_target_destroy(struct scsi_target *starget)
 
 	starget->hostdata = NULL;
 	sas_put_device(found_dev);
-}
-
-static void sas_parse_addr(u8 *sas_addr, const char *p)
-{
-	int i;
-	for (i = 0; i < SAS_ADDR_SIZE; i++) {
-		u8 h, l;
-		if (!*p)
-			break;
-		h = isdigit(*p) ? *p-'0' : toupper(*p)-'A'+10;
-		p++;
-		l = isdigit(*p) ? *p-'0' : toupper(*p)-'A'+10;
-		p++;
-		sas_addr[i] = (h<<4) | l;
-	}
 }
 
 #define SAS_STRING_ADDR_SIZE	16
@@ -983,7 +977,9 @@ int sas_request_addr(struct Scsi_Host *shost, u8 *addr)
 		goto out;
 	}
 
-	sas_parse_addr(addr, fw->data);
+	res = hex2bin(addr, fw->data, strnlen(fw->data, SAS_ADDR_SIZE * 2) / 2);
+	if (res)
+		goto out;
 
 out:
 	release_firmware(fw);
@@ -1000,5 +996,6 @@ EXPORT_SYMBOL_GPL(sas_task_abort);
 EXPORT_SYMBOL_GPL(sas_phy_reset);
 EXPORT_SYMBOL_GPL(sas_eh_device_reset_handler);
 EXPORT_SYMBOL_GPL(sas_eh_target_reset_handler);
+EXPORT_SYMBOL_GPL(sas_slave_alloc);
 EXPORT_SYMBOL_GPL(sas_target_destroy);
 EXPORT_SYMBOL_GPL(sas_ioctl);

@@ -1,14 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
+ * Copyright (c) 2016 MediaTek Inc.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
+ * Author: Ya-Wen Hsu <Ya-Wen.Hsu@mediatek.com>
  *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 /*****************************************************************************
@@ -84,6 +79,7 @@
 #if IS_ENABLED(CONFIG_MTK_CAM_SECURITY_SUPPORT)
 #ifdef CMDQ_MTEE
 #include <linux/atomic.h>
+#include "tz_m4u.h"
 static atomic_t m4u_gz_init = ATOMIC_INIT(0);
 #endif
 #endif
@@ -290,7 +286,7 @@ static struct tasklet_table fdvt_tasklet[FDVT_IRQ_TYPE_AMOUNT] = {
 
 //struct wake_lock fdvt_wake_lock;
 #ifdef CONFIG_PM_SLEEP
-struct wakeup_source fdvt_wake_lock;
+//struct wakeup_source fdvt_wake_lock;
 #endif /* CONFIG_PM_SLEEP */
 
 static DEFINE_MUTEX(fdvt_mutex);
@@ -382,7 +378,11 @@ static struct FDVT_REQUEST_RING_STRUCT fdvt_req_ring;
 static struct FDVT_CONFIG_STRUCT fdvt_enq_req;
 static struct FDVT_CONFIG_STRUCT fdvt_deq_req;
 static struct cmdq_client *fdvt_clt;
+#if IS_ENABLED(CONFIG_MTK_CAM_SECURITY_SUPPORT)
+#ifdef CMDQ_MTEE
 static struct cmdq_client *fdvt_secure_clt;
+#endif
+#endif
 static s32 fdvt_event_id;
 
 /*****************************************************************************
@@ -1655,7 +1655,7 @@ static signed int config_secure_fdvt_hw(struct fdvt_config *basic_config)
 #if !BYPASS_REG
 {
 #if IS_ENABLED(CONFIG_MTK_CAM_SECURITY_SUPPORT)
-
+#ifdef CMDQ_MTEE
 #ifdef FDVT_USE_GCE
 	struct cmdq_pkt *pkt;
 #endif /* FDVT_USE_GCE */
@@ -1699,7 +1699,7 @@ static signed int config_secure_fdvt_hw(struct fdvt_config *basic_config)
 			CMDQ_SEC_ISP_FDVT,
 			CMDQ_METAEX_FD);
 #ifdef CMDQ_MTEE
-		cmdq_sec_pkt_set_mtee(pkt, true);
+		cmdq_sec_pkt_set_mtee(pkt, true, SEC_ID_SEC_CAM);
 		if (atomic_cmpxchg(&m4u_gz_init, 0, 1) == 0)
 			m4u_gz_sec_init(0);
 #endif
@@ -1749,27 +1749,32 @@ static signed int config_secure_fdvt_hw(struct fdvt_config *basic_config)
 		cmdq_pkt_write(pkt, NULL, FDVT_LOOP_HW, 0x00006002,
 			       CMDQ_REG_MASK);
 		cmdq_pkt_write(pkt, NULL, FDVT_INT_EN_HW, 0x0, CMDQ_REG_MASK);
+#ifdef CMDQ_MTEE
 		cmdq_sec_pkt_write_reg(pkt,
 			FDVT_RS_CON_BASE_ADR_HW,
 			basic_config->FDVT_RSCON_BASE_ADR,
 			CMDQ_IWC_PH_2_MVA,
 			0,
 			basic_config->FDVT_RSCON_BUFSIZE,
-			M4U_PORT_L20_IPE_FDVT_RDA_DISP);
+			M4U_PORT_L20_IPE_FDVT_RDA_DISP,
+			SEC_ID_SEC_CAM);
 		cmdq_sec_pkt_write_reg(pkt,
 			FDVT_FD_CON_BASE_ADR_HW,
 			basic_config->FDVT_FD_CON_BASE_ADR,
 			CMDQ_IWC_PH_2_MVA,
 			0,
 			basic_config->FDVT_FD_CON_BUFSIZE,
-			M4U_PORT_L20_IPE_FDVT_RDA_DISP);
+			M4U_PORT_L20_IPE_FDVT_RDA_DISP,
+			SEC_ID_SEC_CAM);
 		cmdq_sec_pkt_write_reg(pkt,
 			FDVT_YUV2RGB_CON_BASE_ADR_HW,
 			basic_config->FDVT_YUV2RGBCON_BASE_ADR,
 			CMDQ_IWC_PH_2_MVA,
 			0,
 			basic_config->FDVT_YUV2RGBCON_BUFSIZE,
-			M4U_PORT_L20_IPE_FDVT_RDA_DISP);
+			M4U_PORT_L20_IPE_FDVT_RDA_DISP,
+			SEC_ID_SEC_CAM);
+#endif
 		cmdq_sec_pkt_set_payload(pkt, 1, sizeof(basic_config->FDVT_METADATA_TO_GCE), (unsigned int *)&basic_config->FDVT_METADATA_TO_GCE);
 
 		cmdq_pkt_write(pkt, NULL, FDVT_START_HW, 0x1, CMDQ_REG_MASK);
@@ -1784,15 +1789,16 @@ static signed int config_secure_fdvt_hw(struct fdvt_config *basic_config)
 			       CMDQ_REG_MASK);
 
 		cmdq_pkt_write(pkt, NULL, FDVT_INT_EN_HW, 0x1, CMDQ_REG_MASK);
-
+#ifdef CMDQ_MTEE
 		cmdq_sec_pkt_write_reg(pkt,
 			FDVT_FD_CON_BASE_ADR_HW,
 			basic_config->FDVT_FD_POSE_CON_BASE_ADR,
 			CMDQ_IWC_PH_2_MVA,
 			0,
 			basic_config->FDVT_FD_POSE_CON_BUFSIZE,
-			M4U_PORT_L20_IPE_FDVT_RDA_DISP);
-
+			M4U_PORT_L20_IPE_FDVT_RDA_DISP,
+			SEC_ID_SEC_CAM);
+#endif
 		cmdq_pkt_write(pkt, NULL, FDVT_START_HW, 0x1, CMDQ_REG_MASK);
 
 		cmdq_pkt_wfe(pkt, fdvt_event_id);
@@ -1805,29 +1811,32 @@ static signed int config_secure_fdvt_hw(struct fdvt_config *basic_config)
 		cmdq_pkt_write(pkt, NULL, FDVT_LOOP_HW, 0x00001A00,
 			       CMDQ_REG_MASK);
 		cmdq_pkt_write(pkt, NULL, FDVT_INT_EN_HW, 0x1, CMDQ_REG_MASK);
-
+#ifdef CMDQ_MTEE
 		cmdq_sec_pkt_write_reg(pkt,
 			FDVT_RS_CON_BASE_ADR_HW,
 			basic_config->FDVT_RSCON_BASE_ADR,
 			CMDQ_IWC_PH_2_MVA,
 			0,
 			basic_config->FDVT_RSCON_BUFSIZE,
-			M4U_PORT_L20_IPE_FDVT_RDA_DISP);
+			M4U_PORT_L20_IPE_FDVT_RDA_DISP,
+			SEC_ID_SEC_CAM);
 		cmdq_sec_pkt_write_reg(pkt,
 			FDVT_FD_CON_BASE_ADR_HW,
 			basic_config->FDVT_FD_CON_BASE_ADR,
 			CMDQ_IWC_PH_2_MVA,
 			0,
 			basic_config->FDVT_FD_CON_BUFSIZE,
-			M4U_PORT_L20_IPE_FDVT_RDA_DISP);
+			M4U_PORT_L20_IPE_FDVT_RDA_DISP,
+			SEC_ID_SEC_CAM);
 		cmdq_sec_pkt_write_reg(pkt,
 			FDVT_YUV2RGB_CON_BASE_ADR_HW,
 			basic_config->FDVT_YUV2RGBCON_BASE_ADR,
 			CMDQ_IWC_PH_2_MVA,
 			0,
 			basic_config->FDVT_YUV2RGBCON_BUFSIZE,
-			M4U_PORT_L20_IPE_FDVT_RDA_DISP);
-
+			M4U_PORT_L20_IPE_FDVT_RDA_DISP,
+			SEC_ID_SEC_CAM);
+#endif
 		cmdq_pkt_write(pkt, NULL, FDVT_START_HW, 0x1, CMDQ_REG_MASK);
 
 		cmdq_pkt_wfe(pkt, fdvt_event_id);
@@ -1874,6 +1883,7 @@ static signed int config_secure_fdvt_hw(struct fdvt_config *basic_config)
 #endif /* __FDVT_KERNEL_PERFORMANCE_MEASURE__ */
 
 #endif
+#endif /* CMDQ_MTEE */
 #endif /* IS_ENABLED(CONFIG_MTK_CAM_SECURITY_SUPPORT) */
 	return 0;
 }
@@ -2234,9 +2244,8 @@ static void fdvt_enable_clock(bool En)
 #endif
 
 	if (En) { /* Enable clock. */
-		/* log_dbg("Dpe clock enbled. clock_enable_count: %d.",
-		 * clock_enable_count);
-		 */
+		log_inf("FDVT clock enbled. clock_enable_count: %d.",
+		clock_enable_count);
 		mutex_lock(&fdvt_clk_mutex);
 		switch (clock_enable_count) {
 		case 0:
@@ -2266,6 +2275,7 @@ static void fdvt_enable_clock(bool En)
 		default:
 			break;
 		}
+
 		clock_enable_count++;
 		mutex_unlock(&fdvt_clk_mutex);
 #ifdef CONFIG_MTK_IOMMU_V2
@@ -2277,9 +2287,9 @@ static void fdvt_enable_clock(bool En)
 #endif
 	} else { /* Disable clock. */
 
-		/* log_dbg("Dpe clock disabled. clock_enable_count: %d.",
-		 * clock_enable_count);
-		 */
+		log_inf("FDVT clock disabled. clock_enable_count: %d.",
+		clock_enable_count);
+
 		mutex_lock(&fdvt_clk_mutex);
 		clock_enable_count--;
 		switch (clock_enable_count) {
@@ -2313,154 +2323,6 @@ static void fdvt_enable_clock(bool En)
 		}
 		mutex_unlock(&fdvt_clk_mutex);
 	}
-}
-
-/*****************************************************************************
- *
- *****************************************************************************/
-static signed int fdvt_read_reg(FDVT_REG_IO_STRUCT *pRegIo)
-{
-	unsigned int i;
-	signed int ret = 0;
-	/*  */
-	FDVT_REG_STRUCT reg;
-	/* unsigned int* pData = (unsigned int*)pRegIo->Data; */
-	FDVT_REG_STRUCT *pData = (FDVT_REG_STRUCT *)pRegIo->pData;
-
-	if (!pRegIo->pData ||
-	    pRegIo->count == 0 ||
-	    pRegIo->count > (FDVT_REG_RANGE >> 2)) {
-		log_err("%s pRegIo->pData is NULL, count:%d!!",
-			__func__, pRegIo->count);
-		ret = -EFAULT;
-		goto EXIT;
-	}
-
-	for (i = 0; i < pRegIo->count; i++) {
-		if (get_user(reg.addr, (unsigned int *)&pData->addr) != 0) {
-			log_err("get_user failed");
-			ret = -EFAULT;
-			goto EXIT;
-		}
-		/* pData++; */
-		/*  */
-		if (ISP_FDVT_BASE + reg.addr >= ISP_FDVT_BASE
-			&& reg.addr < FDVT_REG_RANGE
-			&& (reg.addr & 0x3) == 0) {
-			reg.val = FDVT_RD32(ISP_FDVT_BASE + reg.addr);
-		} else {
-			log_err("Wrong address(0x%p), FDVT_BASE(0x%p), addr(0x%lx)",
-				(ISP_FDVT_BASE + reg.addr),
-				ISP_FDVT_BASE,
-				(unsigned long)reg.addr);
-			reg.val = 0;
-		}
-		/*  */
-
-		if (put_user(reg.val, (unsigned int *)&pData->val) != 0) {
-			log_err("put_user failed");
-			ret = -EFAULT;
-			goto EXIT;
-		}
-		pData++;
-		/*  */
-	}
-	/*  */
-EXIT:
-	return ret;
-}
-
-/*****************************************************************************
- *
- *****************************************************************************/
-/* Can write sensor's test model only,
- * if need write to other modules, need modify current code flow
- */
-static signed int fdvt_write_reg_to_hw(FDVT_REG_STRUCT *pReg,
-				       unsigned int count)
-{
-	signed int ret = 0;
-	unsigned int i;
-	bool dbgWriteReg;
-
-	/* Use local variable to store fdvt_info.debug_mask &
-	 * FDVT_DBG_WRITE_REG for saving lock time
-	 */
-	spin_lock(&fdvt_info.spinlock_fdvt);
-	dbgWriteReg = fdvt_info.debug_mask & FDVT_DBG_WRITE_REG;
-	spin_unlock(&fdvt_info.spinlock_fdvt);
-
-	/*  */
-	if (dbgWriteReg)
-		log_dbg("- E.\n");
-
-	/*  */
-	for (i = 0; i < count; i++) {
-		if (dbgWriteReg) {
-			log_dbg("addr(0x%lx), val(0x%x)\n",
-				(unsigned long)(ISP_FDVT_BASE + pReg[i].addr),
-				(unsigned int)(pReg[i].val));
-		}
-
-		if (pReg[i].addr < FDVT_REG_RANGE &&
-		    ((pReg[i].addr & 0x3) == 0)) {
-			FDVT_WR32(ISP_FDVT_BASE + pReg[i].addr, pReg[i].val);
-		} else {
-			log_err("wrong address(0x%p), FDVT_BASE(0x%p), addr(0x%lx)\n",
-				(ISP_FDVT_BASE + pReg[i].addr),
-				ISP_FDVT_BASE,
-				(unsigned long)pReg[i].addr);
-		}
-	}
-
-	/*  */
-	return ret;
-}
-
-/*****************************************************************************
- *
- *****************************************************************************/
-static signed int fdvt_write_reg(FDVT_REG_IO_STRUCT *pRegIo)
-{
-	signed int ret = 0;
-	/* unsigned char* pData = NULL; */
-	FDVT_REG_STRUCT *pData = NULL;
-	/* */
-	if (fdvt_info.debug_mask & FDVT_DBG_WRITE_REG)
-		log_dbg(
-		"Data(0x%p), count(%d)\n",
-		(pRegIo->pData),
-		(pRegIo->count));
-
-	if (!pRegIo->pData || pRegIo->count == 0 ||
-	    pRegIo->count > (FDVT_REG_RANGE >> 2)) {
-		log_err("ERROR: pRegIo->pData is NULL or count:%d\n",
-			pRegIo->count);
-		ret = -EFAULT;
-		goto EXIT;
-	}
-	/* pData = (unsigned char*)kmalloc(
-	 * (pRegIo->count)*sizeof(FDVT_REG_STRUCT), GFP_ATOMIC);
-	 */
-	pData = kmalloc((pRegIo->count) * sizeof(FDVT_REG_STRUCT), GFP_KERNEL);
-	if (!pData) {
-		ret = -ENOMEM;
-		goto EXIT;
-	}
-
-	if (copy_from_user
-		(pData, (void __user *)pRegIo->pData,
-		pRegIo->count * sizeof(FDVT_REG_STRUCT)) != 0) {
-		log_err("copy_from_user failed\n");
-		ret = -EFAULT;
-		goto EXIT;
-	}
-	/*  */
-	ret = fdvt_write_reg_to_hw(pData, pRegIo->count);
-	/*  */
-EXIT:
-	kfree(pData);
-	return ret;
 }
 
 /*****************************************************************************
@@ -2688,7 +2550,6 @@ static long FDVT_ioctl(struct file *pFile,
 	signed int ret = 0;
 
 	/*unsigned int pid = 0;*/
-	FDVT_REG_IO_STRUCT RegIo;
 	FDVT_WAIT_IRQ_STRUCT irq_info;
 	FDVT_CLEAR_IRQ_STRUCT ClearIrq;
 	struct fdvt_config fdvt_FdvtConfig;
@@ -2744,45 +2605,12 @@ static long FDVT_ioctl(struct file *pFile,
 				_LOG_ERR);
 		break;
 	}
-	case FDVT_READ_REGISTER:
-	{
-		if (copy_from_user(&RegIo, (void *)Param,
-		    sizeof(FDVT_REG_IO_STRUCT)) == 0) {
-			/* 2nd layer behavoir
-			 * of copy from user
-			 * is implemented in
-			 * fdvt_read_reg(...)
-			 */
-			ret = fdvt_read_reg(&RegIo);
-		} else {
-			log_err("FDVT_READ_REGISTER copy_from_user failed");
-			ret = -EFAULT;
-		}
-		break;
-	}
-	case FDVT_WRITE_REGISTER:
-	{
-		if (copy_from_user(&RegIo, (void *)Param,
-		    sizeof(FDVT_REG_IO_STRUCT)) == 0) {
-			/* 2nd layer behavoir
-			 * of copy from user
-			 * is implemented in
-			 * fdvt_write_reg(...)
-			 */
-			ret = fdvt_write_reg(&RegIo);
-		} else {
-			log_err("FDVT_WRITE_REGISTER copy_from_user failed");
-			ret = -EFAULT;
-		}
-		break;
-	}
 	case FDVT_WAIT_IRQ:
 	{
 		if (copy_from_user(&irq_info, (void *)Param,
 		    sizeof(FDVT_WAIT_IRQ_STRUCT)) == 0) {
 			/*  */
-			if (irq_info.type >= FDVT_IRQ_TYPE_AMOUNT ||
-			    irq_info.type < 0) {
+			if (irq_info.type >= FDVT_IRQ_TYPE_AMOUNT) {
 				ret = -EFAULT;
 				log_err("invalid type(%d)", irq_info.type);
 				goto EXIT;
@@ -2822,8 +2650,7 @@ static long FDVT_ioctl(struct file *pFile,
 		    sizeof(FDVT_CLEAR_IRQ_STRUCT)) == 0) {
 			log_dbg("FDVT_CLEAR_IRQ type(%d)", ClearIrq.type);
 
-			if (ClearIrq.type >= FDVT_IRQ_TYPE_AMOUNT ||
-			    ClearIrq.type < 0) {
+			if (ClearIrq.type >= FDVT_IRQ_TYPE_AMOUNT) {
 				ret = -EFAULT;
 				log_err("invalid type(%d)", ClearIrq.type);
 				goto EXIT;
@@ -2861,18 +2688,19 @@ static long FDVT_ioctl(struct file *pFile,
 					[fdvt_req_ring.write_idx];
 			if (FDVT_REQUEST_STATE_EMPTY ==
 				request->state) {
+				if (enqueNum >
+					MAX_FDVT_FRAME_REQUEST || enqueNum < 0) {
+					log_err(
+					"FDVT Enque Num is bigger than enqueNum or negtive:%d\n",
+					enqueNum);
+					break;
+				}
 				spin_lock_irqsave(spinlock_lrq_ptr, flags);
 				request->process_id =
 					pUserInfo->pid;
 				request->enque_req_num =
 					enqueNum;
 				spin_unlock_irqrestore(spinlock_lrq_ptr, flags);
-				if (enqueNum >
-					MAX_FDVT_FRAME_REQUEST) {
-					log_err(
-					"FDVT Enque Num is bigger than enqueNum:%d\n",
-					enqueNum);
-				}
 				log_dbg("FDVT_ENQNUE_NUM:%d\n",
 					enqueNum);
 			} else {
@@ -3479,6 +3307,7 @@ static signed int FDVT_open(struct inode *pInode, struct file *pFile)
 	fdvt_req_ring.hw_process_idx = 0x0;
 
 	/* Enable clock */
+	log_inf("open enable clk\n");
 	fdvt_enable_clock(MTRUE);
 
 	fdvt_count = 0;
@@ -3543,6 +3372,7 @@ static signed int FDVT_release(struct inode *pInode, struct file *pFile)
 		current->tgid);
 
 	/* Disable clock. */
+	log_inf("disable clk\n");
 	fdvt_enable_clock(MFALSE);
 	log_dbg("FDVT release clock_enable_count: %d", clock_enable_count);
 	/*  */
@@ -3833,13 +3663,15 @@ static signed int FDVT_probe(struct platform_device *pDev)
 		log_err("cmdq mbox create fail\n");
 	else
 		log_inf("cmdq mbox create done\n");
-
+#if IS_ENABLED(CONFIG_MTK_CAM_SECURITY_SUPPORT)
+#ifdef CMDQ_MTEE
 	fdvt_secure_clt = cmdq_mbox_create(FDVT_dev->dev, 1);
 	if (!fdvt_secure_clt)
 		log_err("cmdq mbox create fail\n");
 	else
 		log_inf("cmdq mbox create done\n");
-
+#endif
+#endif
 	of_property_read_u32(pDev->dev.of_node, "fdvt_frame_done",
 			     &fdvt_event_id);
 	log_inf("fdvt event id is %d\n", fdvt_event_id);
@@ -3970,7 +3802,7 @@ static signed int FDVT_probe(struct platform_device *pDev)
 		INIT_WORK(&fdvt_info.schedule_fdvt_work, fdvt_schedule_work);
 
 #ifdef CONFIG_PM_SLEEP
-		wakeup_source_init(&fdvt_wake_lock, "fdvt_lock_wakelock");
+		//wakeup_source_init(&fdvt_wake_lock, "fdvt_lock_wakelock");
 #endif
 		// wake_lock_init(
 		// &fdvt_wake_lock, WAKE_LOCK_SUSPEND, "fdvt_lock_wakelock");
@@ -4072,6 +3904,7 @@ static signed int FDVT_suspend(struct platform_device *pDev, pm_message_t Mesg)
 	bPass1_On_In_Resume_TG1 = 0;
 
 	if (clock_enable_count > 0) {
+		log_inf("suspend enable clk\n");
 		fdvt_enable_clock(MFALSE);
 		fdvt_count++;
 	}
@@ -4086,6 +3919,7 @@ static signed int FDVT_resume(struct platform_device *pDev)
 	log_dbg("bPass1_On_In_Resume_TG1(%d).\n", bPass1_On_In_Resume_TG1);
 
 	if (fdvt_count > 0) {
+		log_inf("resume enable clk\n");
 		fdvt_enable_clock(MTRUE);
 		fdvt_count--;
 	}

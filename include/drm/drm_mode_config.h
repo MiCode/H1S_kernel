@@ -27,6 +27,7 @@
 #include <linux/types.h>
 #include <linux/idr.h>
 #include <linux/workqueue.h>
+#include <linux/llist.h>
 
 #include <drm/drm_modeset_lock.h>
 
@@ -35,6 +36,7 @@ struct drm_device;
 struct drm_atomic_state;
 struct drm_mode_fb_cmd2;
 struct drm_format_info;
+struct drm_display_mode;
 
 /**
  * struct drm_mode_config_funcs - basic driver provided mode setting functions
@@ -99,6 +101,17 @@ struct drm_mode_config_funcs {
 	 * there's no reason this is a core function.
 	 */
 	void (*output_poll_changed)(struct drm_device *dev);
+
+	/**
+	 * @mode_valid:
+	 *
+	 * Device specific validation of display modes. Can be used to reject
+	 * modes that can never be supported. Only device wide constraints can
+	 * be checked here. crtc/encoder/bridge/connector specific constraints
+	 * should be checked in the .mode_valid() hook for each specific object.
+	 */
+	enum drm_mode_status (*mode_valid)(struct drm_device *dev,
+					   const struct drm_display_mode *mode);
 
 	/**
 	 * @atomic_check:
@@ -268,6 +281,9 @@ struct drm_mode_config_funcs {
 	 * state easily. If this hook is implemented, drivers must also
 	 * implement @atomic_state_clear and @atomic_state_free.
 	 *
+	 * Subclassing of &drm_atomic_state is deprecated in favour of using
+	 * &drm_private_state and &drm_private_obj.
+	 *
 	 * RETURNS:
 	 *
 	 * A new &drm_atomic_state on success or NULL on failure.
@@ -289,6 +305,9 @@ struct drm_mode_config_funcs {
 	 *
 	 * Drivers that implement this must call drm_atomic_state_default_clear()
 	 * to clear common state.
+	 *
+	 * Subclassing of &drm_atomic_state is deprecated in favour of using
+	 * &drm_private_state and &drm_private_obj.
 	 */
 	void (*atomic_state_clear)(struct drm_atomic_state *state);
 
@@ -301,16 +320,19 @@ struct drm_mode_config_funcs {
 	 *
 	 * Drivers that implement this must call
 	 * drm_atomic_state_default_release() to release common resources.
+	 *
+	 * Subclassing of &drm_atomic_state is deprecated in favour of using
+	 * &drm_private_state and &drm_private_obj.
 	 */
 	void (*atomic_state_free)(struct drm_atomic_state *state);
 };
 
 /**
  * struct drm_mode_config - Mode configuration control structure
- * @min_width: minimum pixel width on this device
- * @min_height: minimum pixel height on this device
- * @max_width: maximum pixel width on this device
- * @max_height: maximum pixel height on this device
+ * @min_width: minimum fb pixel width on this device
+ * @min_height: minimum fb pixel height on this device
+ * @max_width: maximum fb pixel width on this device
+ * @max_height: maximum fb pixel height on this device
  * @funcs: core driver provided mode setting functions
  * @fb_base: base address of the framebuffer
  * @poll_enabled: track polling support for this device
@@ -393,7 +415,7 @@ struct drm_mode_config {
 
 	/**
 	 * @connector_list_lock: Protects @num_connector and
-	 * @connector_list.
+	 * @connector_list and @connector_free_list.
 	 */
 	spinlock_t connector_list_lock;
 	/**
@@ -414,6 +436,21 @@ struct drm_mode_config {
 	 */
 	struct list_head connector_list;
 	/**
+	 * @connector_free_list:
+	 *
+	 * List of connector objects linked with &drm_connector.free_head.
+	 * Protected by @connector_list_lock. Used by
+	 * drm_for_each_connector_iter() and
+	 * &struct drm_connector_list_iter to savely free connectors using
+	 * @connector_free_work.
+	 */
+	struct llist_head connector_free_list;
+	/**
+	 * @connector_free_work: Work to clean up @connector_free_list.
+	 */
+	struct work_struct connector_free_work;
+
+	/**
 	 * @num_encoder:
 	 *
 	 * Number of encoders on this device. This is invariant over the
@@ -429,19 +466,6 @@ struct drm_mode_config {
 	 */
 	struct list_head encoder_list;
 
-	/**
-	 * @num_overlay_plane:
-	 *
-	 * Number of overlay planes on this device, excluding primary and cursor
-	 * planes.
-	 *
-	 * Track number of overlay planes separately from number of total
-	 * planes.  By default we only advertise overlay planes to userspace; if
-	 * userspace sets the "universal plane" capability bit, we'll go ahead
-	 * and expose all planes. This is invariant over the lifetime of a
-	 * device and hence doesn't need any locks.
-	 */
-	int num_overlay_plane;
 	/**
 	 * @num_total_plane:
 	 *
@@ -703,6 +727,11 @@ struct drm_mode_config {
 	 */
 	struct drm_property *aspect_ratio_property;
 	/**
+	 * @content_type_property: Optional connector property to control the
+	 * HDMI infoframe content type setting.
+	 */
+	struct drm_property *content_type_property;
+	/**
 	 * @degamma_lut_property: Optional CRTC property to set the LUT used to
 	 * convert the framebuffer's colors to linear gamma.
 	 */
@@ -740,6 +769,20 @@ struct drm_mode_config {
 	 * the position of the output on the host's screen.
 	 */
 	struct drm_property *suggested_y_property;
+
+	/**
+	 * @non_desktop_property: Optional connector property with a hint
+	 * that device isn't a standard display, and the console/desktop,
+	 * should not be displayed on it.
+	 */
+	struct drm_property *non_desktop_property;
+
+	/**
+	 * @panel_orientation_property: Optional connector property indicating
+	 * how the lcd-panel is mounted inside the casing (e.g. normal or
+	 * upside-down).
+	 */
+	struct drm_property *panel_orientation_property;
 
 	/**
 	 * @writeback_fb_id_property: Property for writeback connectors, storing
@@ -781,13 +824,30 @@ struct drm_mode_config {
 	bool allow_fb_modifiers;
 
 	/**
-	 * @modifiers: Plane property to list support modifier/format
+	 * @normalize_zpos:
+	 *
+	 * If true the drm core will call drm_atomic_normalize_zpos() as part of
+	 * atomic mode checking from drm_atomic_helper_check()
+	 */
+	bool normalize_zpos;
+
+	/**
+	 * @modifiers_property: Plane property to list support modifier/format
 	 * combination.
 	 */
 	struct drm_property *modifiers_property;
 
 	/* cursor size */
 	uint32_t cursor_width, cursor_height;
+
+	/**
+	 * @suspend_state:
+	 *
+	 * Atomic state when suspended.
+	 * Set by drm_mode_config_helper_suspend() and cleared by
+	 * drm_mode_config_helper_resume().
+	 */
+	struct drm_atomic_state *suspend_state;
 
 	const struct drm_mode_config_helper_funcs *helper_private;
 };

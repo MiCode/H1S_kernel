@@ -1,21 +1,21 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "DEBUG"
 
 #include <linux/string.h>
 #include <linux/uaccess.h>
+
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 #include <linux/debugfs.h>
+#endif
+
+#if IS_ENABLED(CONFIG_PROC_FS)
+#include <linux/proc_fs.h>
+#endif
+
 /* #include "mt-plat/aee.h" */
 #include "disp_assert_layer.h"
 #include <linux/dma-mapping.h>
@@ -50,16 +50,31 @@
 #include "disp_lowpower.h"
 #include "disp_drv_log.h"
 #include "disp_recovery.h"
-#include "disp_cust.h"
 
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+// file: /d/dispsys
 static struct dentry *debugfs;
+//dir: /d/disp/
 static struct dentry *debugDir;
-
-
+//file: /d/disp/dump
 static struct dentry *debugfs_dump;
+static int debug_init;
+#endif
+
+#if IS_ENABLED(CONFIG_PROC_FS)
+//file: /proc/dispsys
+static struct proc_dir_entry *dispsys_procfs;
+//dir: /proc/disp/
+static struct proc_dir_entry *disp_dir_procfs;
+//file: /proc/disp/dump
+static struct proc_dir_entry *disp_dump_procfs;
+//file: /proc/disp/lowpowermode
+static struct proc_dir_entry *disp_lpmode_procfs;
+static int debug_procfs_init;
+#endif
+
 
 static const long int DEFAULT_LOG_FPS_WND_SIZE = 30;
-static int debug_init;
 
 
 unsigned char pq_debug_flag;
@@ -115,192 +130,77 @@ unsigned int get_backup_vfp(void)
 
 void _ddic_test_read(void)
 {
-	unsigned int i = 0;
-	unsigned int j = 0;
-	unsigned int ret_dlen = 0;
+	struct ddp_lcm_read_cmd_table read_table;
+		memset(&read_table, 0,
+		sizeof(struct ddp_lcm_read_cmd_table));
+	read_table.cmd[0] = 0x0A;
+	read_table.cmd[1] = 0x0A;
+	read_table.cmd[2] = 0x0A;
 
-	struct dsi_cmd_desc cmd_tab[3];
+	do_lcm_vdo_lp_read(&read_table);
 
-	memset(&cmd_tab, 0, 3 * sizeof(struct dsi_cmd_desc));
+	DDPMSG("after b0 %x, b1 %x, b2 %x, b3 = %x\n",
+		read_table.data[0].byte0,
+		read_table.data[0].byte1,
+		read_table.data[0].byte2,
+		read_table.data[0].byte3);
+	DDPMSG("after b0 %x, b1 %x, b2 %x, b3 = %x\n",
+		read_table.data[1].byte0,
+		read_table.data[1].byte1,
+		read_table.data[1].byte2,
+		read_table.data[1].byte3);
+	DDPMSG("after b0 %x, b1 %x, b2 %x, b3 = %x\n",
+		read_table.data[2].byte0,
+		read_table.data[2].byte1,
+		read_table.data[2].byte2,
+		read_table.data[2].byte3);
 
-	/*read display power mode*/
-	cmd_tab[0].dtype = 0x0A;
-	cmd_tab[0].payload = vmalloc(4 * sizeof(unsigned char));
-	memset(cmd_tab[0].payload, 0, 4);
-	cmd_tab[0].dlen = 4;
-
-
-	/*read ID2 Value*/
-	cmd_tab[1].dtype = 0xDB;
-	cmd_tab[1].payload = vmalloc(4 * sizeof(unsigned char));
-	memset(cmd_tab[1].payload, 0, 4);
-	cmd_tab[1].dlen = 4;
-
-	/*read display id*/
-	cmd_tab[2].dtype = 0x04;
-	cmd_tab[2].payload = vmalloc(4 * sizeof(unsigned char));
-	memset(cmd_tab[2].payload, 0, 4);
-	cmd_tab[2].dlen = 4;
-
-
-	do_lcm_vdo_lp_read(cmd_tab, 3);
-
-	for (i = 0; i < 3; i++) {
-		ret_dlen = cmd_tab[i].dlen;
-		DISPMSG("read lcm addr:0x%x--dlen:%d\n",
-		cmd_tab[i].dtype, ret_dlen);
-		for (j = 0; j < ret_dlen; j++) {
-			DISPMSG("read lcm addr:0x%x--byte:%d,val:0x%x\n",
-			cmd_tab[i].dtype, j, *(cmd_tab[i].payload + j));
-		}
-	}
-
-	for (i = 0; i < 3; i++)
-		vfree(cmd_tab[i].payload);
 }
-
-void _ddic_test_read_v1(void)
-{
-	unsigned int j = 0;
-	unsigned int ret_dlen = 0;
-	int ret;
-	struct dsi_cmd_desc *cmd_tab = vmalloc(sizeof(struct dsi_cmd_desc));
-
-	DISPMSG("%s start +\n", __func__);
-
-	/*read display power mode, normal value = 0x9c*/
-	cmd_tab->dtype = 0x0A;
-	cmd_tab->payload = vmalloc(4 * sizeof(unsigned char));
-	memset(cmd_tab->payload, 0, 4);
-	cmd_tab->dlen = 4;
-	cmd_tab->cmd = 0x06;
-
-	#if 0
-	/*read ID2 Value*/
-	cmd_tab->dtype = 0xDB;
-	cmd_tab->payload = vmalloc(4 * sizeof(unsigned char));
-	memset(cmd_tab->payload, 0, 4);
-	cmd_tab->dlen = 12;
-	cmd_tab->cmd = 0x06;
-
-	/*read display id*/
-	cmd_tab->dtype = 0x04;
-	cmd_tab->payload = vmalloc(4 * sizeof(unsigned char));
-	memset(cmd_tab->payload, 0, 4);
-	cmd_tab->dlen = 4;
-	cmd_tab->cmd = 0x06;
-	#endif
-
-	ret = do_lcm_vdo_lp_read_v1(cmd_tab);
-	if (ret == -1) {
-		DISPERR("do_lcm_vdo_lp_read_v1 error\n");
-		goto  done;
-	}
-
-	ret_dlen = cmd_tab->dlen;
-	DISPMSG("read lcm addr:0x%x--dlen:%d\n",
-		cmd_tab->dtype, ret_dlen);
-	for (j = 0; j < ret_dlen; j++) {
-		DISPMSG("read lcm addr:0x%x--byte:%d,val:0x%x\n",
-			cmd_tab->dtype, j, *(cmd_tab->payload + j));
-	}
-
-done:
-	vfree(cmd_tab->payload);
-	DISPMSG("%s end -\n", __func__);
-}
-
 void _ddic_test_write(void)
 {
-	unsigned int i;
+	struct ddp_lcm_write_cmd_table write_table[5] = {
+		{0xB6, 1, {0x01} },
+		{0xC8, 1, {0x83} },
+		{0xF0, 5, {0x55, 0xAA, 0x52, 0x08, 0x01} },/*page 1*/
+		{0xB0, 2, {0x0F, 0x0F} },
+		{0xB1, 2, {0x0F, 0x0F } },
+		};
 
-	struct dsi_cmd_desc cmd_tab[5];
-
-	for (i = 0; i < 5; i++) {
-		cmd_tab[i].payload = vmalloc(5*sizeof(char));
-		cmd_tab[i].vc = 0;
-		cmd_tab[i].link_state = 1;
-	}
-	cmd_tab[0].dtype = 0xB6;
-	cmd_tab[1].dtype = 0xC8;
-	cmd_tab[2].dtype = 0xF0;
-	cmd_tab[3].dtype = 0xB0;
-	cmd_tab[4].dtype = 0xB1;
-
-	cmd_tab[0].dlen = 1;
-	cmd_tab[1].dlen = 1;
-	cmd_tab[2].dlen = 5;
-	cmd_tab[3].dlen = 2;
-	cmd_tab[4].dlen = 2;
-
-	*(cmd_tab[0].payload) = 0x01;
-	*(cmd_tab[1].payload) = 0x83;
-	(cmd_tab[2].payload)[0] = 0x55;
-	(cmd_tab[2].payload)[1] = 0xAA;
-	(cmd_tab[2].payload)[2] = 0x52;
-	(cmd_tab[2].payload)[3] = 0x08;
-	(cmd_tab[2].payload)[4] = 0x01;
-	(cmd_tab[3].payload)[0] = 0x0F;
-	(cmd_tab[3].payload)[1] = 0x0F;
-	(cmd_tab[4].payload)[0] = 0x0F;
-	(cmd_tab[4].payload)[1] = 0x0F;
-
-	do_lcm_vdo_lp_write(cmd_tab, 5);
-
-	for (i = 0; i < 5; i++)
-		vfree(cmd_tab[i].payload);
+	do_lcm_vdo_lp_write(write_table, 5);
 
 }
 
 void _ddic_test_read_write(void)
 {
-	unsigned int i = 0;
-	unsigned int j = 0;
-	unsigned int ret_dlen = 0;
-	struct dsi_cmd_desc read_tab[3];
-	struct dsi_cmd_desc write_table1[3];
-
-	memset(&read_tab, 0, 3 * sizeof(struct dsi_cmd_desc));
-	read_tab[0].dtype = 0x52;
-	read_tab[1].dtype = 0x54;
-	read_tab[2].dtype = 0x5F;
-
-	for (i = 0; i < 3; i++) {
-		write_table1[i].payload = vmalloc(sizeof(unsigned char));
-		write_table1[i].vc = 0;
-		write_table1[i].dlen = 1;
-		write_table1[i].link_state = 1;
-
-		read_tab[i].payload = vmalloc(4 * sizeof(unsigned char));
-		memset(read_tab[i].payload, 0, 4);
-		read_tab[i].dlen = 4;
-	}
-
-	write_table1[0].dtype = 0x51;
-	write_table1[1].dtype = 0x53;
-	write_table1[2].dtype = 0x5E;
-
-	*(write_table1[0].payload) = 0xFE;
-	*(write_table1[1].payload) = 0xff;
-	*(write_table1[2].payload) = 0x45;
+	struct ddp_lcm_write_cmd_table write_table1[3] = {
+		{0x51, 1, {0xFE} },
+		{0x53, 1, {0xff} },
+		{0x5E, 1, {0x45} },
+	};
+	struct ddp_lcm_read_cmd_table read_table1;
 
 	do_lcm_vdo_lp_write(write_table1, 3);
-	do_lcm_vdo_lp_read(read_tab, 3);
-
-	for (i = 0; i < 3; i++) {
-		ret_dlen = read_tab[i].dlen;
-		DDPMSG("read lcm addr:0x%x--dlen:%d\n",
-		read_tab[i].dtype, ret_dlen);
-		for (j = 0; j < ret_dlen; j++) {
-			DDPMSG("read lcm addr:0x%x--byte:%d,val:0x%x\n",
-			read_tab[i].dtype, j, *(read_tab[i].payload + j));
-		}
-	}
-
-	for (i = 0; i < 3; i++) {
-		vfree(read_tab[i].payload);
-		vfree(write_table1[i].payload);
-	}
+	memset(&read_table1, 0,
+		sizeof(struct ddp_lcm_read_cmd_table));
+	read_table1.cmd[0] = 0x52;
+	read_table1.cmd[1] = 0x54;
+	read_table1.cmd[2] = 0x5F;
+	do_lcm_vdo_lp_read(&read_table1);
+	DDPMSG("after b0 %x, b1 %x, b2 %x, b3 = %x\n",
+		read_table1.data[0].byte0,
+		read_table1.data[0].byte1,
+		read_table1.data[0].byte2,
+		read_table1.data[0].byte3);
+	DDPMSG("after b0 %x, b1 %x, b2 %x, b3 = %x\n",
+		read_table1.data[1].byte0,
+		read_table1.data[1].byte1,
+		read_table1.data[1].byte2,
+		read_table1.data[1].byte3);
+	DDPMSG("after b0 %x, b1 %x, b2 %x, b3 = %x\n",
+		read_table1.data[2].byte0,
+		read_table1.data[2].byte1,
+		read_table1.data[2].byte2,
+		read_table1.data[2].byte3);
 
 }
 
@@ -448,8 +348,8 @@ static void process_dbg_opt(const char *opt)
 			return;
 		}
 		ddp_init_met_tag(met_on, rdma0_mode, rdma1_mode);
-		DDPMSG("%s: met_on=%d,rdma0_mode %d, rdma1 %d\n",
-			__func__, met_on, rdma0_mode, rdma1_mode);
+		DDPMSG("process_dbg_opt, met_on=%d,rdma0_mode %d, rdma1 %d\n",
+			met_on, rdma0_mode, rdma1_mode);
 		sprintf(buf, "met_on:%d,rdma0_mode:%d,rdma1_mode:%d\n",
 			met_on, rdma0_mode,	rdma1_mode);
 	} else if (strncmp(opt, "backlight:", 10) == 0) {
@@ -478,14 +378,12 @@ static void process_dbg_opt(const char *opt)
 			return;
 		}
 
-		if (test_type == 0) {
+		if (test_type < 1) {
 			_ddic_test_read();
-		} else if (test_type == 1) {
+		} else if (test_type > 1 && test_type < 5) {
 			_ddic_test_write();
-		} else if (test_type == 2) {
+		} else if (test_type > 10) {
 			_ddic_test_read_write();
-		} else if (test_type == 3) {
-			_ddic_test_read_v1();
 		}
 
 	} else if (strncmp(opt, "partial:", 8) == 0) {
@@ -496,7 +394,7 @@ static void process_dbg_opt(const char *opt)
 			snprintf(buf, 50, "error to parse cmd %s\n", opt);
 			return;
 		}
-		DDPMSG("%s: partial force=%d (%d,%d,%d,%d)\n", __func__,
+		DDPMSG("process_dbg_opt, partial force=%d (%d,%d,%d,%d)\n",
 			dbg_force_roi, dbg_partial_x, dbg_partial_y,
 			dbg_partial_w, dbg_partial_h);
 	} else if (strncmp(opt, "partial_s:", 10) == 0) {
@@ -505,7 +403,7 @@ static void process_dbg_opt(const char *opt)
 			snprintf(buf, 50, "error to parse cmd %s\n", opt);
 			return;
 		}
-		DDPMSG("%s: partial_s:%d\n", __func__, dbg_partial_statis);
+		DDPMSG("process_dbg_opt, partial_s:%d\n", dbg_partial_statis);
 	} else if (strncmp(opt, "pwm0:", 5) == 0 ||
 			strncmp(opt, "pwm1:", 5) == 0) {
 		char *p = (char *)opt + 5;
@@ -608,7 +506,7 @@ static void process_dbg_opt(const char *opt)
 			return;
 		}
 
-		DDPMSG("%s: module=%d\n", __func__, module);
+		DDPMSG("process_dbg_opt, module=%d\n", module);
 		if (module < DISP_MODULE_NUM) {
 			ddp_dump_reg(module);
 			sprintf(buf, "dump_reg: %d\n", module);
@@ -626,7 +524,7 @@ static void process_dbg_opt(const char *opt)
 			return;
 		}
 
-		DDPMSG("%s: path mutex=%d\n", __func__, mutex_idx);
+		DDPMSG("process_dbg_opt, path mutex=%d\n", mutex_idx);
 		dpmgr_debug_path_status(mutex_idx);
 		sprintf(buf, "dump_path: %d\n", mutex_idx);
 
@@ -744,58 +642,6 @@ static void process_dbg_opt(const char *opt)
 			tmp += snprintf(buf + tmp, buf_size_left - tmp,
 				"para[%d]=0x%x,", i, para[i]);
 		DISPMSG("%s\n", buf);
-	} else if (strncmp(opt, "set_customer_cmd:", 17) == 0) {
-		int cmd;
-		int hs;
-		int para_cnt, i;
-		char para[15] = {0};
-		struct LCM_setting_table_V3 test;
-		static char fmt[256] = "set_customer_cmd:0x%x, %d";
-
-		for (i = 0; i < ARRAY_SIZE(para); i++)
-			strncat(fmt, ",0x%hhx", sizeof(fmt) - strlen(fmt) - 1);
-
-		strncat(fmt, "\n", sizeof(fmt) - strlen(fmt) - 1);
-
-		ret = sscanf(opt, fmt, &cmd,
-			&hs, &para[0], &para[1], &para[2], &para[3], &para[4],
-			&para[5], &para[6], &para[7], &para[8], &para[9],
-			&para[10], &para[11], &para[12], &para[13], &para[14]);
-
-		if (ret < 1 || ret > ARRAY_SIZE(para) + 1) {
-			snprintf(buf, 50, "error to parse cmd %s\n", opt);
-			return;
-		}
-
-		para_cnt = ret - 2;
-		test.id = REGFLAG_ESCAPE_ID;
-		test.cmd = cmd;
-		test.count = para_cnt;
-		for (i = 0; i < 15; i++)
-			test.para_list[i] = para[i];
-		pr_info("set_dsi_cmd cmd=0x%x\n", cmd);
-		for (i = 0; i < para_cnt; i++)
-			pr_info("para[%d] = 0x%x\n", i, para[i]);
-		set_lcm(&test, 1, hs);
-
-	} else if (strncmp(opt, "read_customer_cmd:", 18) == 0) {
-		int cmd;
-		int size, i;
-		char para[15] = {0};
-		int sendhs;
-
-		ret = sscanf(opt, "read_customer_cmd:0x%x, %d, %d\n",
-						&cmd, &size, &sendhs);
-
-		if (ret != 3 || size > ARRAY_SIZE(para)) {
-			snprintf(buf, 50, "error to parse cmd %s\n", opt);
-			return;
-		}
-		pr_info(" read_lcm: 0x%x, size= %d %d\n", cmd, size, sendhs);
-		read_lcm(cmd, para, size, sendhs);
-
-		for (i = 0; i < size; i++)
-			pr_info("para[%d] = 0x%x\n", i, para[i]);
 	} else {
 		dbg_buf[0] = '\0';
 		goto Error;
@@ -806,6 +652,7 @@ static void process_dbg_opt(const char *opt)
 Error:
 	DDPERR("parse command error!\n%s\n\n%s", opt, STR_HELP);
 }
+
 
 static void process_dbg_cmd(char *cmd)
 {
@@ -927,6 +774,7 @@ static const struct file_operations debug_fops_dump = {
 
 void ddp_debug_init(void)
 {
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 	struct dentry *d;
 
 	if (debug_init)
@@ -934,7 +782,7 @@ void ddp_debug_init(void)
 
 	debug_init = 1;
 	debugfs = debugfs_create_file("dispsys",
-		S_IFREG | 0444, NULL, (void *)0, &debug_fops);
+		S_IFREG | 0440, NULL, (void *)0, &debug_fops);
 
 
 	debugDir = debugfs_create_dir("disp", NULL);
@@ -942,9 +790,57 @@ void ddp_debug_init(void)
 		return;
 
 	debugfs_dump = debugfs_create_file("dump",
-		S_IFREG | 0444, debugDir, NULL, &debug_fops_dump);
-	d = debugfs_create_file("lowpowermode", S_IFREG | 0444,
+		S_IFREG | 0440, debugDir, NULL, &debug_fops_dump);
+	d = debugfs_create_file("lowpowermode", S_IFREG | 0440,
 		debugDir, NULL, &low_power_cust_fops);
+#endif
+
+#if IS_ENABLED(CONFIG_PROC_FS)
+	if (debug_procfs_init)
+		return;
+	debug_procfs_init = 1;
+
+	dispsys_procfs = proc_create("dispsys",
+				S_IFREG | 0440,
+				NULL,
+				&debug_fops);
+	if (!dispsys_procfs) {
+		pr_info("[%s %d]failed to create dispsys in /proc/\n",
+			__func__, __LINE__);
+		goto out;
+	}
+
+	disp_dir_procfs = proc_mkdir("disp", NULL);
+	if (!disp_dir_procfs) {
+		pr_info("[%s %d]failed to create dir disp in /proc/\n",
+			__func__, __LINE__);
+		goto out;
+	}
+
+	disp_dump_procfs = proc_create("dump",
+				S_IFREG | 0440,
+				disp_dir_procfs,
+				&debug_fops_dump);
+	if (!disp_dump_procfs) {
+		pr_info("[%s %d]failed to create dump in /proc/disp/\n",
+			__func__, __LINE__);
+		goto out;
+	}
+
+	disp_lpmode_procfs = proc_create("lowpowermode",
+				S_IFREG | 0440,
+				disp_dir_procfs,
+				&low_power_cust_fops);
+	if (!disp_lpmode_procfs) {
+		pr_info("[%s %d]failed to create lowpowermode in /proc/disp/\n",
+			__func__, __LINE__);
+		goto out;
+	}
+
+out:
+	return;
+#endif
+
 }
 
 unsigned int ddp_debug_analysis_to_buffer(void)
@@ -994,9 +890,23 @@ int ddp_debug_force_roi_h(void)
 
 void ddp_debug_exit(void)
 {
+#if IS_ENABLED(CONFIG_DEBUG_FS)
 	debugfs_remove(debugfs);
-	debugfs_remove(debugfs_dump);
+	debugfs_remove(debugDir);
 	debug_init = 0;
+#endif
+
+#if IS_ENABLED(CONFIG_PROC_FS)
+	if (dispsys_procfs) {
+		proc_remove(dispsys_procfs);
+		dispsys_procfs = NULL;
+	}
+	if (disp_dir_procfs) {
+		proc_remove(disp_dir_procfs);
+		disp_dir_procfs = NULL;
+	}
+	debug_procfs_init = 0;
+#endif
 }
 
 int ddp_mem_test(void)

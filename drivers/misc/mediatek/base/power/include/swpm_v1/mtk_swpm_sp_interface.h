@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2020 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTK_SWPM_SP_INTERFACE_H__
 #define __MTK_SWPM_SP_INTERFACE_H__
@@ -47,6 +39,7 @@ struct ddr_ip_bc_stats {
 	struct ddr_bc_stats *bc_stats;
 };
 
+extern int32_t sync_latest_data(void);
 extern int32_t get_ddr_act_times(int32_t freq_num,
 				 struct ddr_act_times *ddr_times);
 extern int32_t get_ddr_sr_pd_times(struct ddr_sr_pd_times *ddr_times);

@@ -1,15 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
+
 
 #include <linux/init.h>
 #include <linux/module.h>
@@ -240,17 +233,11 @@ unsigned int _golden_read_reg(unsigned int addr)
 	if (_is_pmic_addr(addr))
 		reg_val = gs_pmic_read(addr);
 	else {
-#if 0
-		io_base = ioremap_nocache(base, REMAP_SIZE_MASK+1);
-		reg_val = ioread32(io_base + offset);
-		iounmap(io_base);
-#else
 		io_base = _get_virt_base_from_table(base);
 		if (io_base)
 			reg_val = ioread32(io_base + offset);
 		else
 			reg_val = 0;
-#endif
 	}
 
 	return reg_val;

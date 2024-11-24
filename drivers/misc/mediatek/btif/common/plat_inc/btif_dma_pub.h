@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __HAL_BTIFD_DMA_PUB_H_
@@ -194,6 +186,7 @@ int hal_rx_dma_irq_handler(struct _MTK_DMA_INFO_STR_ *p_dma_info,
  *****************************************************************************/
 int hal_dma_dump_reg(struct _MTK_DMA_INFO_STR_ *p_dma_info,
 		     enum _ENUM_BTIF_REG_ID_ flag);
+void hal_dma_dump_vfifo(struct _MTK_DMA_INFO_STR_ *p_dma_info);
 
 int hal_dma_pm_ops(struct _MTK_DMA_INFO_STR_ *p_dma_info,
 		   enum _MTK_BTIF_PM_OPID_ opid);

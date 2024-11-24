@@ -38,9 +38,12 @@ int adis_update_scan_mode(struct iio_dev *indio_dev,
 	if (!adis->xfer)
 		return -ENOMEM;
 
-	adis->buffer = kzalloc(indio_dev->scan_bytes * 2, GFP_KERNEL);
-	if (!adis->buffer)
+	adis->buffer = kcalloc(indio_dev->scan_bytes, 2, GFP_KERNEL);
+	if (!adis->buffer) {
+		kfree(adis->xfer);
+		adis->xfer = NULL;
 		return -ENOMEM;
+	}
 
 	rx = adis->buffer;
 	tx = rx + scan_count;
@@ -79,9 +82,6 @@ static irqreturn_t adis_trigger_handler(int irq, void *p)
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct adis *adis = iio_device_get_drvdata(indio_dev);
 	int ret;
-
-	if (!adis->buffer)
-		return -ENOMEM;
 
 	if (adis->data->has_paging) {
 		mutex_lock(&adis->txrx_lock);

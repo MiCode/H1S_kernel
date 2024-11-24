@@ -6,26 +6,26 @@
 #ifndef LINUX_MMC_CQHCI_CRYPTO_H
 #define LINUX_MMC_CQHCI_CRYPTO_H
 
-#include "cmdq_hci.h"
+#include "cqhci.h"
 
 #ifdef CONFIG_MMC_CRYPTO
 
-bool cqhci_crypto_enable(struct cmdq_host *host);
+bool cqhci_crypto_enable(struct cqhci_host *host);
 
-int cqhci_host_init_crypto(struct cmdq_host *host);
+int cqhci_host_init_crypto(struct cqhci_host *host);
 
 int cqhci_prep_crypto_desc(struct mmc_request *mrq, __le64 *task_desc);
 
-void cqhci_crypto_recovery_finish(struct cmdq_host *host);
+void cqhci_crypto_recovery_finish(struct cqhci_host *host);
 
 #else /* CONFIG_MMC_CRYPTO */
 
-static inline bool cqhci_crypto_enable(struct cmdq_host *host)
+static inline bool cqhci_crypto_enable(struct cqhci_host *host)
 {
 	return false;
 }
 
-static inline int cqhci_host_init_crypto(struct cmdq_host *host)
+static inline int cqhci_host_init_crypto(struct cqhci_host *host)
 {
 	return 0;
 }
@@ -36,7 +36,7 @@ static inline int cqhci_prep_crypto_desc(struct mmc_request *mrq,
 	return 0;
 }
 
-static inline void cqhci_crypto_recovery_finish(struct cmdq_host *host) { }
+static inline void cqhci_crypto_recovery_finish(struct cqhci_host *host) { }
 
 #endif /* CONFIG_MMC_CRYPTO */
 

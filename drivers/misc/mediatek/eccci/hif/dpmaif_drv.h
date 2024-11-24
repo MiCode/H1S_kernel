@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __MODEM_DPMAIF_DRV_H__
@@ -31,7 +23,7 @@ unsigned int  drv_dpmaif_dl_get_wridx(unsigned char q_num);
 void drv_dpmaif_mask_dl_interrupt(unsigned char q_num);
 void drv_dpmaif_unmask_dl_interrupt(unsigned char q_num);
 int drv_dpmaif_dl_all_queue_en(bool enable);
-unsigned int drv_dpmaif_dl_idle_check(void);
+int drv_dpmaif_dl_idle_check(void);
 
 /* == TX part == */
 void drv_dpmaif_mask_ul_que_interrupt(unsigned char q_num);
@@ -107,7 +99,7 @@ void drv_dpmaif_ul_update_drb_base_addr(unsigned char q_num,
 void drv_dpmaif_ul_rdy_en(unsigned char q_num, bool ready);
 void drv_dpmaif_ul_arb_en(unsigned char q_num, bool enable);
 void drv_dpmaif_ul_all_queue_en(bool enable);
-unsigned int drv_dpmaif_ul_idle_check(void);
+int drv_dpmaif_ul_idle_check(void);
 
 /* suspend resume */
 bool drv_dpmaif_check_power_down(void);

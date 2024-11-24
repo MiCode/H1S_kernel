@@ -1,18 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/delay.h>
 #include <linux/sched.h>
+#include <uapi/linux/sched/types.h>
 #include <linux/semaphore.h>
 #include <linux/module.h>
 #include <linux/wait.h>
@@ -24,7 +17,6 @@
 #include <linux/of_irq.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
-#include <uapi/linux/sched/types.h>
 #include "ion_drv.h"
 #include "mtk_ion.h"
 #ifdef CONFIG_MTK_M4U
@@ -46,7 +38,9 @@
 #include "ddp_manager.h"
 #include "disp_lcm.h"
 #include "ddp_clkmgr.h"
-/* #include "mmdvfs_mgr.h" */
+#ifdef CONFIG_MTK_SMI_EXT
+#include "mmdvfs_mgr.h"
+#endif
 #include "disp_drv_log.h"
 #include "ddp_log.h"
 #include "disp_lowpower.h"
@@ -68,8 +62,6 @@
 #include "disp_recovery.h"
 #include "disp_partial.h"
 #include "ddp_dsi.h"
-#include "ddp_reg_dsi.h"
-
 
 /* For abnormal check */
 static struct task_struct *primary_display_check_task;
@@ -122,8 +114,7 @@ unsigned int _can_switch_check_mode(void)
 
 	params = primary_get_lcm()->params;
 	if (params->dsi.customization_esd_check_enable == 0 &&
-	    params->dsi.lcm_esd_check_table[0].cmd != 0 &&
-	    disp_helper_get_option(DISP_OPT_ESD_CHECK_SWITCH))
+	    params->dsi.lcm_esd_check_table[0].cmd != 0)
 		ret = 1;
 	return ret;
 }
@@ -181,7 +172,7 @@ int _esd_check_config_handle_cmd(struct cmdqRecStruct *qhandle)
 	ret = cmdqRecFlush(qhandle);
 	dprec_logger_done(DPREC_LOGGER_ESD_CMDQ, 0, 0);
 
-	DISPINFO("[ESD]%s ret=%d\n", __func__, ret);
+	DISPINFO("[ESD]_esd_check_config_handle_cmd ret=%d\n", ret);
 
 	if (ret)
 		ret = 1;
@@ -234,7 +225,7 @@ int _esd_check_config_handle_vdo(struct cmdqRecStruct *qhandle)
 	ret = cmdqRecFlush(qhandle);
 	dprec_logger_done(DPREC_LOGGER_ESD_CMDQ, 0, 0);
 
-	DISPINFO("[ESD]%s ret=%d\n", __func__, ret);
+	DISPINFO("[ESD]_esd_check_config_handle_vdo ret=%d\n", ret);
 
 	if (ret)
 		ret = 1;
@@ -247,7 +238,6 @@ static irqreturn_t _esd_check_ext_te_irq_handler(int irq, void *data)
 	mmprofile_log_ex(ddp_mmp_get_events()->esd_vdo_eint,
 		MMPROFILE_FLAG_PULSE, 0, 0);
 	atomic_set(&esd_ext_te_event, 1);
-	DISPINFO("[ESD]%s\n", __func__);
 	wake_up_interruptible(&esd_ext_te_wq);
 	return IRQ_HANDLED;
 }
@@ -267,11 +257,7 @@ void primary_display_switch_esd_mode(int mode)
 int do_esd_check_eint(void)
 {
 	int ret = 0;
-	mmp_event mmp_te = ddp_mmp_get_events()->esd_extte;
 
-	DISPINFO("[ESD]ESD check eint\n");
-	mmprofile_log_ex(mmp_te, MMPROFILE_FLAG_PULSE,
-		primary_display_is_video_mode(), GPIO_EINT_MODE);
 	primary_display_switch_esd_mode(GPIO_EINT_MODE);
 
 	if (wait_event_interruptible_timeout(esd_ext_te_wq,
@@ -303,18 +289,8 @@ int do_esd_check_dsi_te(void)
 int do_esd_check_read(void)
 {
 	int ret = 0;
-	struct cmdqRecStruct *qhandle = NULL;
+	struct cmdqRecStruct *qhandle;
 	disp_path_handle phandle = primary_get_dpmgr_handle();
-	mmp_event mmp_te = ddp_mmp_get_events()->esd_extte;
-
-	DISPCHECK("[ESD]ESD check read\n");
-	mmprofile_log_ex(mmp_te, MMPROFILE_FLAG_PULSE,
-		primary_display_is_video_mode(), GPIO_DSI_MODE);
-
-	/* only cmd mode read & with disable mmsys clk will kick */
-	if (disp_helper_get_option(DISP_OPT_IDLEMGR_ENTER_ULPS) &&
-	    !primary_display_is_video_mode())
-		primary_display_idlemgr_kick((char *)__func__, 1);
 
 	/* 0.create esd check cmdq */
 	ret = cmdqRecCreate(CMDQ_SCENARIO_DISP_ESD_CHECK, &qhandle);
@@ -365,64 +341,29 @@ destroy_cmdq:
 	return ret;
 }
 
-int do_lcm_vdo_lp_read(struct dsi_cmd_desc *cmd_tab, unsigned int count)
+int do_lcm_vdo_lp_read(struct ddp_lcm_read_cmd_table *read_table)
 {
 	int ret = 0;
 	int i = 0;
-	int h = 0;
 	struct cmdqRecStruct *handle;
-	/*static cmdqBackupSlotHandle read_Slot;*/
-	cmdqBackupSlotHandle hSlot[4] = {0, 0, 0, 0};
-	struct DSI_RX_DATA_REG read_data0 = {0, 0, 0, 0};
-	struct DSI_RX_DATA_REG read_data1 = {0, 0, 0, 0};
-	struct DSI_RX_DATA_REG read_data2 = {0, 0, 0, 0};
-	struct DSI_RX_DATA_REG read_data3 = {0, 0, 0, 0};
-	unsigned char packet_type;
-	unsigned int recv_data_cnt = 0;
+	static cmdqBackupSlotHandle read_Slot;
 
 	primary_display_manual_lock();
 
 	if (primary_get_state() == DISP_SLEPT) {
-		DISPERR("primary display path is slept?? -- skip read\n");
-
-		for (i = 0; i < count; i++) {
-			if ((cmd_tab + i) != NULL)
-				cmd_tab[i].dlen = 0;
-		}
-
-		primary_display_manual_unlock();
-		return -1;
-	}
-
-	if (!primary_display_is_video_mode()) {
-
-		DISPERR("Not support cmd mode\n");
-
-		for (i = 0; i < count; i++) {
-			if ((cmd_tab + i) != NULL)
-				cmd_tab[i].dlen = 0;
-		}
-
+		DISPINFO("primary display path is slept?? -- skip read\n");
 		primary_display_manual_unlock();
 		return -1;
 	}
 
 	/* 0.create esd check cmdq */
-	ret = cmdqRecCreate(CMDQ_SCENARIO_DISP_ESD_CHECK, &handle);
-	if (ret) {
-		DISPERR("%s:%d, create cmdq handle fail!ret=%d\n",
-			__func__, __LINE__, ret);
-		return -1;
-	}
-	/*cmdqBackupAllocateSlot(&read_Slot, count);*/
-	/*allocate 4 slot memory for each cmd */
-	for (h = 0; h < 4; h++) {
-		cmdqBackupAllocateSlot(&hSlot[h], count);
-		for (i = 0; i < count; i++)
-			cmdqBackupWriteSlot(hSlot[h], i, 0xff00ff00);
-	}
+	cmdqRecCreate(CMDQ_SCENARIO_DISP_ESD_CHECK, &handle);
+	cmdqBackupAllocateSlot(&read_Slot, 3);
+	for (i = 0; i < 3; i++)
+		cmdqBackupWriteSlot(read_Slot, i, 0xff00ff00);
 
 	/* 1.use cmdq to read from lcm */
+	if (primary_display_is_video_mode()) {
 
 	/* 1.reset */
 	cmdqRecReset(handle);
@@ -436,7 +377,7 @@ int do_lcm_vdo_lp_read(struct dsi_cmd_desc *cmd_tab, unsigned int count)
 		handle, CMDQ_STOP_VDO_MODE, 0);
 
 	/* 3.read from lcm */
-	ddp_dsi_read_lcm_cmdq(DISP_MODULE_DSI0, hSlot, handle, cmd_tab, count);
+	ddp_dsi_read_lcm_cmdq(DISP_MODULE_DSI0, &read_Slot, handle, read_table);
 
 	/* 4.start dsi vdo mode */
 	dpmgr_path_build_cmdq(primary_get_dpmgr_handle(),
@@ -455,6 +396,9 @@ int do_lcm_vdo_lp_read(struct dsi_cmd_desc *cmd_tab, unsigned int count)
 	/* 6.flush instruction */
 	ret = cmdqRecFlush(handle);
 
+	} else {
+		DISPINFO("Not support cmd mode\n");
+	}
 
 	if (ret == 1) {	/* cmdq fail */
 		if (need_wait_esd_eof()) {
@@ -465,127 +409,17 @@ int do_lcm_vdo_lp_read(struct dsi_cmd_desc *cmd_tab, unsigned int count)
 		/* do dsi reset */
 		dpmgr_path_build_cmdq(primary_get_dpmgr_handle(), handle,
 			 CMDQ_DSI_RESET, 0);
-
-		for (i = 0; i < count; i++) {
-			if ((cmd_tab + i) != NULL)
-				cmd_tab[i].dlen = 0;
-		}
 		goto DISPTORY;
 	}
 
-	/*parse packet and return payload data*/
-	for (i = 0; i < count; i++) {
-		if (cmd_tab[i].dtype == 0)
-			continue;
-
-		if (cmd_tab[i].payload == 0) {
-			DISPERR("cmd_tab[%d].payload is NULL\n", i);
-			continue;
-		}
-
-		/* read data */
-		if (hSlot[0] && hSlot[1] && hSlot[2] && hSlot[3]) {
-			/* read from slot */
-			cmdqBackupReadSlot(hSlot[0], i,
-				(uint32_t *)&read_data0);
-			cmdqBackupReadSlot(hSlot[1], i,
-				(uint32_t *)&read_data1);
-			cmdqBackupReadSlot(hSlot[2], i,
-				(uint32_t *)&read_data2);
-			cmdqBackupReadSlot(hSlot[3], i,
-				(uint32_t *)&read_data3);
-		}
-		DISPDBG("%s: read_data0 byte0~1=0x%x~0x%x\n",
-				__func__, read_data0.byte0, read_data0.byte1);
-		DISPDBG("%s: read_data0 byte2~3=0x%x~0x%x\n",
-			__func__, read_data0.byte2, read_data0.byte3);
-		DISPDBG("%s: read_data1 byte0~1=0x%x~0x%x\n",
-			__func__, read_data1.byte0, read_data1.byte1);
-		DISPDBG("%s: read_data1 byte2~3=0x%x~0x%x\n",
-			__func__, read_data1.byte2, read_data1.byte3);
-		DISPDBG("%s: read_data2 byte0~1=0x%x~0x%x\n",
-			__func__, read_data2.byte0, read_data2.byte1);
-		DISPDBG("%s: read_data2 byte2~3=0x%x~0x%x\n",
-			__func__, read_data2.byte2, read_data2.byte3);
-		DISPDBG("%s: read_data3 byte0~1=0x%x~0x%x\n",
-			__func__, read_data3.byte0, read_data3.byte1);
-		DISPDBG("%s: read_data3 byte2~3=0x%x~0x%x\n",
-			__func__, read_data3.byte2, read_data3.byte3);
-
-		/*parse packet*/
-		packet_type = read_data0.byte0;
-		/* 0x02: acknowledge & error report */
-		/* 0x11: generic short read response(1 byte return) */
-		/* 0x12: generic short read response(2 byte return) */
-		/* 0x1a: generic long read response */
-		/* 0x1c: dcs long read response */
-		/* 0x21: dcs short read response(1 byte return) */
-		/* 0x22: dcs short read response(2 byte return) */
-		if (packet_type == 0x1A || packet_type == 0x1C) {
-			recv_data_cnt = read_data0.byte1
-				+ read_data0.byte2 * 16;
-
-			if (recv_data_cnt > RT_MAX_NUM) {
-				DISPDBG
-		("DSI read long packet data exceeds 10 bytes\n");
-				recv_data_cnt = RT_MAX_NUM;
-			}
-			if (recv_data_cnt > cmd_tab[i].dlen)
-				recv_data_cnt = cmd_tab[i].dlen;
-
-			DISPCHECK("DSI read long packet size: %d\n",
-				recv_data_cnt);
-			if (recv_data_cnt <= 4) {
-				memcpy((void *)cmd_tab[i].payload,
-				(void *)&read_data1, recv_data_cnt);
-			} else if (recv_data_cnt <= 8) {
-				memcpy((void *)cmd_tab[i].payload,
-				(void *)&read_data1, 4);
-				memcpy((void *)(cmd_tab[i].payload + 4),
-				(void *)&read_data2, recv_data_cnt - 4);
-			} else {
-				memcpy((void *)cmd_tab[i].payload,
-					(void *)&read_data1, 4);
-				memcpy((void *)(cmd_tab[i].payload + 4),
-					(void *)&read_data2, 4);
-				memcpy((void *)(cmd_tab[i].payload + 8),
-				(void *)&read_data3, recv_data_cnt - 8);
-			}
-
-		} else if (packet_type == 0x11 || packet_type == 0x21) {
-			recv_data_cnt = 1;
-			memcpy((void *)cmd_tab[i].payload,
-			(void *)&read_data0.byte1, recv_data_cnt);
-
-		} else if (packet_type == 0x12 || packet_type == 0x22) {
-			recv_data_cnt = 2;
-			if (recv_data_cnt > cmd_tab[i].dlen)
-				recv_data_cnt = cmd_tab[i].dlen;
-
-			memcpy((void *)cmd_tab[i].payload,
-			(void *)&read_data0.byte1, recv_data_cnt);
-
-		} else if (packet_type == 0x02) {
-			DISPCHECK
-				("read return type is 0x02, re-read\n");
-		} else {
-			DISPCHECK
-		("read return type is non-recognite, type = 0x%x\n",
-				packet_type);
-		}
-		cmd_tab[i].dlen = recv_data_cnt;
-		DISPDBG("[DSI]packet_type~recv_data_cnt = 0x%x~0x%x\n",
-			packet_type, recv_data_cnt);
-
-	}
+	for (i = 0; i < 3; i++)
+		cmdqBackupReadSlot(read_Slot, i,
+		(uint32_t *)&read_table->data[i]);
 
 DISPTORY:
-
-	for (h = 0; h < 4; h++) {
-		if (hSlot[h]) {
-			cmdqBackupFreeSlot(hSlot[h]);
-			hSlot[h] = 0;
-		}
+	if (read_Slot) {
+		cmdqBackupFreeSlot(read_Slot);
+		read_Slot = 0;
 	}
 
 	/* 7.destroy esd config thread */
@@ -595,324 +429,66 @@ DISPTORY:
 	return ret;
 }
 
-int do_lcm_vdo_lp_read_v1(struct dsi_cmd_desc *cmd_tab)
+int do_lcm_vdo_lp_write(struct ddp_lcm_write_cmd_table *write_table,
+			unsigned int count)
 {
 	int ret = 0;
-	int h = 0;
+	int i = 0;
 	struct cmdqRecStruct *handle;
-	/*static cmdqBackupSlotHandle read_Slot;*/
-	cmdqBackupSlotHandle hSlot[4] = {0, 0, 0, 0};
-	struct DSI_RX_DATA_REG read_data0 = {0, 0, 0, 0};
-	struct DSI_RX_DATA_REG read_data1 = {0, 0, 0, 0};
-	struct DSI_RX_DATA_REG read_data2 = {0, 0, 0, 0};
-	struct DSI_RX_DATA_REG read_data3 = {0, 0, 0, 0};
-	unsigned char packet_type;
-	unsigned int recv_data_cnt = 0;
-
-	DISPMSG("%s start +\n", __func__);
 
 	primary_display_manual_lock();
 
 	if (primary_get_state() == DISP_SLEPT) {
-		DISPERR("primary display path is slept -- skip read\n");
+		DISPINFO("primary display path is slept?? -- skip read\n");
 		primary_display_manual_unlock();
 		return -1;
-	}
-
-	if (!primary_display_is_video_mode()) {
-
-		DISPERR("Not support cmd mode\n");
-		primary_display_manual_unlock();
-		return -1;
-	}
-
-	if (cmd_tab->payload == 0 || cmd_tab->dlen == 0
-		|| cmd_tab->cmd == 0) {
-
-		DISPERR("%s: payload is %s, dlen is %d, cmd is %d\n",
-			__func__, cmd_tab->payload,
-			cmd_tab->dlen, cmd_tab->cmd);
-		primary_display_manual_unlock();
-		return -1;
-	}
-
-	if (cmd_tab->cmd != 0x06 && cmd_tab->cmd != 0x14) {
-		DISPERR(" %s: cmd is 0x%x", __func__,  cmd_tab->cmd);
-		primary_display_manual_unlock();
-		return -1;
-	}
-
-	if (cmd_tab->dlen > RT_MAX_NUM) {
-		DISPMSG("%s: only supprt read 10 bytes params\n", __func__);
-		cmd_tab->dlen = RT_MAX_NUM;
 	}
 
 	/* 0.create esd check cmdq */
-	ret = cmdqRecCreate(CMDQ_SCENARIO_DISP_ESD_CHECK, &handle);
-	if (ret) {
-		DISPERR("%s:%d, create cmdq handle fail!ret=%d\n",
-			__func__, __LINE__, ret);
-		return -1;
-	}
+	cmdqRecCreate(CMDQ_SCENARIO_DISP_ESD_CHECK, &handle);
 
-	/*cmdqBackupAllocateSlot(&read_Slot, count);*/
-	/*allocate 4 slot memory for each cmd */
-	for (h = 0; h < 4; h++) {
-		cmdqBackupAllocateSlot(&hSlot[h], 1);
-		cmdqBackupWriteSlot(hSlot[h], 0, 0xff00ff00);
-	}
-
-	if (!hSlot[0] || !hSlot[1] || !hSlot[2] || !hSlot[3]) {
-		DISPERR("[DSI]alloc cmdq slot fail\n");
-		ret = -1;
-		goto DISPTORY;
-	}
 	/* 1.use cmdq to read from lcm */
+	if (primary_display_is_video_mode()) {
 
 	/* 1.reset */
 	cmdqRecReset(handle);
 
 	/* wait stream eof first */
-	/*cmdqRecWait(handle, CMDQ_EVENT_DISP_RDMA0_EOF);*/
 	cmdqRecWait(handle, CMDQ_EVENT_MUTEX0_STREAM_EOF);
 
 	/* 2.stop dsi vdo mode */
-	ret = dpmgr_path_build_cmdq(primary_get_dpmgr_handle(),
-		handle, CMDQ_STOP_VDO_MODE, 0);
-	if (ret) {
-		DISPERR("%s:%d, fail!ret=%d\n",
-			__func__, __LINE__, ret);
-		return -1;
-	}
+	dpmgr_path_build_cmdq(primary_get_dpmgr_handle(),
+				handle, CMDQ_STOP_VDO_MODE, 0);
 
-	/* 3.read from lcm */
-	ret = ddp_dsi_read_lcm_cmdq_v1(DISP_MODULE_DSI0,
-		hSlot, handle, cmd_tab);
-	if (ret) {
-		DISPERR("%s:%d, fail!ret=%d\n",
-			__func__, __LINE__, ret);
-		return -1;
+	/* 3.write instruction */
+	for (i = 0; i < count; i++) {
+		ret = ddp_dsi_write_lcm_cmdq(DISP_MODULE_DSI0,
+			handle, write_table[i].cmd,
+			write_table[i].count,
+			write_table[i].para_list);
+		if (ret)
+			break;
 	}
 
 	/* 4.start dsi vdo mode */
-	ret = dpmgr_path_build_cmdq(primary_get_dpmgr_handle(),
+	dpmgr_path_build_cmdq(primary_get_dpmgr_handle(),
 		handle, CMDQ_START_VDO_MODE, 0);
-	if (ret) {
-		DISPERR("%s:%d, fail!ret=%d\n",
-			__func__, __LINE__, ret);
-		return -1;
-	}
 
 	cmdqRecClearEventToken(handle, CMDQ_EVENT_MUTEX0_STREAM_EOF);
 
 	/* 5. trigger path */
-	ret = dpmgr_path_trigger(primary_get_dpmgr_handle(),
-		handle, CMDQ_ENABLE);
-	if (ret) {
-		DISPERR("%s:%d, fail!ret=%d\n",
-			__func__, __LINE__, ret);
-		return -1;
-	}
+	dpmgr_path_trigger(primary_get_dpmgr_handle(), handle, CMDQ_ENABLE);
 
 	/*	mutex sof wait*/
-	ret = ddp_mutex_set_sof_wait(
-		dpmgr_path_get_mutex(primary_get_dpmgr_handle()),
-		handle, 0);
-	if (ret) {
-		DISPERR("%s:%d, fail!ret=%d\n",
-			__func__, __LINE__, ret);
-		return -1;
-	}
+	ddp_mutex_set_sof_wait(dpmgr_path_get_mutex(
+		primary_get_dpmgr_handle()), handle, 0);
 
 
 	/* 6.flush instruction */
 	ret = cmdqRecFlush(handle);
-	if (ret == 1) {/* cmdq fail */
-		if (need_wait_esd_eof()) {
-			/* Need set esd check eof */
-			/*synctoken to let trigger loop go. */
-			cmdqCoreSetEvent(CMDQ_SYNC_TOKEN_ESD_EOF);
-		}
-		/* do dsi reset */
-		dpmgr_path_build_cmdq(primary_get_dpmgr_handle(), handle,
-			 CMDQ_DSI_RESET, 0);
 
-		ret = -1;
-		goto DISPTORY;
-	}
-
-	/* read data */
-	if (hSlot[0] && hSlot[1] && hSlot[2] && hSlot[3]) {
-		/* read from slot */
-		cmdqBackupReadSlot(hSlot[0], 0,
-			(uint32_t *)&read_data0);
-		cmdqBackupReadSlot(hSlot[1], 0,
-			(uint32_t *)&read_data1);
-		cmdqBackupReadSlot(hSlot[2], 0,
-			(uint32_t *)&read_data2);
-		cmdqBackupReadSlot(hSlot[3], 0,
-			(uint32_t *)&read_data3);
-	}
-	DISPDBG("%s: read_data0 byte0~1=0x%x~0x%x\n",
-		__func__, read_data0.byte0, read_data0.byte1);
-	DISPDBG("%s: read_data0 byte2~3=0x%x~0x%x\n",
-		__func__, read_data0.byte2, read_data0.byte3);
-	DISPDBG("%s: read_data1 byte0~1=0x%x~0x%x\n",
-		__func__, read_data1.byte0, read_data1.byte1);
-	DISPDBG("%s: read_data1 byte2~3=0x%x~0x%x\n",
-		__func__, read_data1.byte2, read_data1.byte3);
-	DISPDBG("%s: read_data2 byte0~1=0x%x~0x%x\n",
-		__func__, read_data2.byte0, read_data2.byte1);
-	DISPDBG("%s: read_data2 byte2~3=0x%x~0x%x\n",
-		__func__, read_data2.byte2, read_data2.byte3);
-	DISPDBG("%s: read_data3 byte0~1=0x%x~0x%x\n",
-		__func__, read_data3.byte0, read_data3.byte1);
-	DISPDBG("%s: read_data3 byte2~3=0x%x~0x%x\n",
-		__func__, read_data3.byte2, read_data3.byte3);
-
-	/*parse packet*/
-	packet_type = read_data0.byte0;
-		/* 0x02: acknowledge & error report */
-		/* 0x11: generic short read response(1 byte return) */
-		/* 0x12: generic short read response(2 byte return) */
-		/* 0x1a: generic long read response */
-		/* 0x1c: dcs long read response */
-		/* 0x21: dcs short read response(1 byte return) */
-		/* 0x22: dcs short read response(2 byte return) */
-	if (packet_type == 0x1A || packet_type == 0x1C) {
-		recv_data_cnt = read_data0.byte1
-				+ read_data0.byte2 * 16;
-
-		if (recv_data_cnt > RT_MAX_NUM) {
-			DISPDBG("DSI read long packet data exceeds 10 bytes\n");
-				recv_data_cnt = RT_MAX_NUM;
-		}
-		if (recv_data_cnt > cmd_tab->dlen)
-			recv_data_cnt = cmd_tab->dlen;
-
-		DISPCHECK("DSI read long packet size: %d\n",
-			recv_data_cnt);
-		if (recv_data_cnt <= 4) {
-			memcpy((void *)cmd_tab->payload,
-				(void *)&read_data1, recv_data_cnt);
-		} else if (recv_data_cnt <= 8) {
-			memcpy((void *)cmd_tab->payload,
-				(void *)&read_data1, 4);
-			memcpy((void *)(cmd_tab->payload + 4),
-				(void *)&read_data2, recv_data_cnt - 4);
-		} else {
-			memcpy((void *)cmd_tab->payload,
-					(void *)&read_data1, 4);
-			memcpy((void *)(cmd_tab->payload + 4),
-					(void *)&read_data2, 4);
-			memcpy((void *)(cmd_tab->payload + 8),
-				(void *)&read_data3, recv_data_cnt - 8);
-		}
-
-	} else if (packet_type == 0x11 || packet_type == 0x21) {
-		recv_data_cnt = 1;
-		memcpy((void *)cmd_tab->payload,
-			(void *)&read_data0.byte1, recv_data_cnt);
-
-	} else if (packet_type == 0x12 || packet_type == 0x22) {
-		recv_data_cnt = 2;
-		if (recv_data_cnt > cmd_tab->dlen)
-			recv_data_cnt = cmd_tab->dlen;
-
-		memcpy((void *)cmd_tab->payload,
-			(void *)&read_data0.byte1, recv_data_cnt);
-
-	} else if (packet_type == 0x02) {
-		DISPCHECK("read return type is 0x02, re-read\n");
 	} else {
-		DISPCHECK("read return type is non-recognite, type = 0x%x\n",
-				packet_type);
-	}
-	cmd_tab->dlen = recv_data_cnt;
-	DISPDBG("[DSI]packet_type~recv_data_cnt = 0x%x~0x%x\n",
-			packet_type, recv_data_cnt);
-
-DISPTORY:
-
-	for (h = 0; h < 4; h++) {
-		if (hSlot[h]) {
-			cmdqBackupFreeSlot(hSlot[h]);
-			hSlot[h] = 0;
-		}
-	}
-
-	/* 7.destroy esd config thread */
-	cmdqRecDestroy(handle);
-	primary_display_manual_unlock();
-	DISPMSG("%s end -\n", __func__);
-	return ret;
-}
-
-int do_lcm_vdo_lp_write(struct dsi_cmd_desc *write_table,
-			unsigned int count)
-{
-	int ret = 0;
-	int i = 0;
-	struct cmdqRecStruct *handle = NULL;
-
-	primary_display_manual_lock();
-
-	if (primary_get_state() == DISP_SLEPT) {
-		DISPERR("primary display path is slept?? -- skip read\n");
-		primary_display_manual_unlock();
-		return -1;
-	}
-
-	/* 0.create esd check cmdq */
-	ret = cmdqRecCreate(CMDQ_SCENARIO_DISP_ESD_CHECK, &handle);
-	if (ret) {
-		DISPERR("%s:%d, create cmdq handle fail!ret=%d\n",
-			__func__, __LINE__, ret);
-		return -1;
-	}
-
-	/* 1.use cmdq to read from lcm */
-	if (primary_display_is_video_mode()) {
-		/* 1.reset */
-		cmdqRecReset(handle);
-
-		/* wait stream eof first */
-		cmdqRecWait(handle, CMDQ_EVENT_MUTEX0_STREAM_EOF);
-
-		/* 2.stop dsi vdo mode */
-		dpmgr_path_build_cmdq(primary_get_dpmgr_handle(),
-					handle, CMDQ_STOP_VDO_MODE, 0);
-
-		/* 3.write instruction */
-		for (i = 0; i < count; i++) {
-			ret = ddp_dsi_write_lcm_cmdq(DISP_MODULE_DSI0,
-				handle, write_table[i].dtype,
-				write_table[i].dlen,
-				write_table[i].payload);
-			if (ret)
-				break;
-		}
-
-		/* 4.start dsi vdo mode */
-		dpmgr_path_build_cmdq(primary_get_dpmgr_handle(),
-			handle, CMDQ_START_VDO_MODE, 0);
-
-		cmdqRecClearEventToken(handle,
-			CMDQ_EVENT_MUTEX0_STREAM_EOF);
-
-		/* 5. trigger path */
-		dpmgr_path_trigger(primary_get_dpmgr_handle(),
-			handle, CMDQ_ENABLE);
-
-		/*	mutex sof wait*/
-		ddp_mutex_set_sof_wait(dpmgr_path_get_mutex(
-			primary_get_dpmgr_handle()), handle, 0);
-
-
-		/* 6.flush instruction */
-		ret = cmdqRecFlush(handle);
-	} else {
-		DISPERR("Not support cmd mode\n");
+		DISPINFO("Not support cmd mode\n");
 	}
 
 	if (ret == 1) {	/* cmdq fail */
@@ -943,11 +519,11 @@ DISPTORY:
 int primary_display_esd_check(void)
 {
 	int ret = 0;
-	unsigned int mode = 0;
+	unsigned int mode;
 	mmp_event mmp_te = ddp_mmp_get_events()->esd_extte;
 	mmp_event mmp_rd = ddp_mmp_get_events()->esd_rdlcm;
 	mmp_event mmp_chk = ddp_mmp_get_events()->esd_check_t;
-	struct LCM_PARAMS *params = NULL;
+	struct LCM_PARAMS *params;
 
 	dprec_logger_start(DPREC_LOGGER_ESD_CHECK, 0, 0);
 	mmprofile_log_ex(mmp_chk, MMPROFILE_FLAG_START, 0, 0);
@@ -962,12 +538,11 @@ int primary_display_esd_check(void)
 	}
 	primary_display_manual_unlock();
 
-	/* Esd Check: EXT TE */
+	/*  Esd Check : EXT TE */
 	params = primary_get_lcm()->params;
 	if (params->dsi.customization_esd_check_enable == 0) {
-		/* use TE for esd check */
+		/* use te for esd check */
 		mmprofile_log_ex(mmp_te, MMPROFILE_FLAG_START, 0, 0);
-
 		if (primary_display_is_video_mode()) {
 			mode = get_esd_check_mode();
 			if (mode == GPIO_EINT_MODE) {
@@ -981,13 +556,11 @@ int primary_display_esd_check(void)
 			}
 		} else
 			ret = do_esd_check_eint();
-
 		mmprofile_log_ex(mmp_te, MMPROFILE_FLAG_END, 0, ret);
-
 		goto done;
 	}
 
-	/* Esd Check: Read from lcm */
+	/*  Esd Check : Read from lcm */
 	mmprofile_log_ex(mmp_rd, MMPROFILE_FLAG_START,
 			 0, primary_display_cmdq_enabled());
 
@@ -1001,12 +574,16 @@ int primary_display_esd_check(void)
 			 0, primary_display_is_video_mode());
 
 	/* only cmd mode read & with disable mmsys clk will kick */
+	if (disp_helper_get_option(DISP_OPT_IDLEMGR_ENTER_ULPS) &&
+	    !primary_display_is_video_mode())
+		primary_display_idlemgr_kick((char *)__func__, 1);
+
 	ret = do_esd_check_read();
 
 	mmprofile_log_ex(mmp_rd, MMPROFILE_FLAG_END, 0, ret);
 
 done:
-	DISPINFO("[ESD]ESD check %s\n", ret ? "fail" : "pass");
+	DISPCHECK("[ESD]ESD check end, ret = %d\n", ret);
 	mmprofile_log_ex(mmp_chk, MMPROFILE_FLAG_END, 0, ret);
 	dprec_logger_done(DPREC_LOGGER_ESD_CHECK, 0, 0);
 	return ret;
@@ -1224,6 +801,7 @@ void primary_display_requset_eint(void)
 {
 	struct LCM_PARAMS *params;
 	struct device_node *node;
+	u32 ints[2] = { 0, 0 };
 
 	params = primary_get_lcm()->params;
 	if (params->dsi.customization_esd_check_enable == 0) {
@@ -1237,6 +815,9 @@ void primary_display_requset_eint(void)
 		}
 
 		/* 1.register irq handler */
+		of_property_read_u32_array(node, "debounce",
+					   ints, ARRAY_SIZE(ints));
+
 		te_irq = irq_of_parse_and_map(node, 0);
 		if (request_irq(te_irq, _esd_check_ext_te_irq_handler,
 				IRQF_TRIGGER_RISING, "DSI_TE-eint", NULL)) {
@@ -1249,7 +830,6 @@ void primary_display_requset_eint(void)
 
 		/* 3.set DSI_TE GPIO to TE MODE */
 		disp_dts_gpio_select_state(DTS_GPIO_STATE_TE_MODE_TE);
-
 	}
 }
 
@@ -1269,9 +849,6 @@ void primary_display_check_recovery_init(void)
 			primary_display_requset_eint();
 			set_esd_check_mode(GPIO_EINT_MODE);
 			primary_display_esd_check_enable(1);
-		} else {
-			atomic_set(&_check_task_wakeup, 1);
-			wake_up_interruptible(&_check_task_wq);
 		}
 	}
 }

@@ -122,6 +122,8 @@ enum ipu_color_space ipu_pixelformat_to_colorspace(u32 pixelformat)
 	case V4L2_PIX_FMT_NV16:
 	case V4L2_PIX_FMT_NV61:
 		return IPUV3_COLORSPACE_YUV;
+	case V4L2_PIX_FMT_XRGB32:
+	case V4L2_PIX_FMT_XBGR32:
 	case V4L2_PIX_FMT_RGB32:
 	case V4L2_PIX_FMT_BGR32:
 	case V4L2_PIX_FMT_RGB24:
@@ -190,6 +192,8 @@ int ipu_stride_to_bytes(u32 pixel_stride, u32 pixelformat)
 		return (24 * pixel_stride) >> 3;
 	case V4L2_PIX_FMT_BGR32:
 	case V4L2_PIX_FMT_RGB32:
+	case V4L2_PIX_FMT_XBGR32:
+	case V4L2_PIX_FMT_XRGB32:
 		return (32 * pixel_stride) >> 3;
 	default:
 		break;
@@ -1089,7 +1093,7 @@ static void ipu_irq_handler(struct irq_desc *desc)
 {
 	struct ipu_soc *ipu = irq_desc_get_handler_data(desc);
 	struct irq_chip *chip = irq_desc_get_chip(desc);
-	const int int_reg[] = { 0, 1, 2, 3, 10, 11, 12, 13, 14};
+	static const int int_reg[] = { 0, 1, 2, 3, 10, 11, 12, 13, 14};
 
 	chained_irq_enter(chip, desc);
 
@@ -1102,7 +1106,7 @@ static void ipu_err_irq_handler(struct irq_desc *desc)
 {
 	struct ipu_soc *ipu = irq_desc_get_handler_data(desc);
 	struct irq_chip *chip = irq_desc_get_chip(desc);
-	const int int_reg[] = { 4, 5, 8, 9};
+	static const int int_reg[] = { 4, 5, 8, 9};
 
 	chained_irq_enter(chip, desc);
 
@@ -1234,6 +1238,7 @@ static int ipu_add_client_devices(struct ipu_soc *ipu, unsigned long ipu_base)
 		pdev = platform_device_alloc(reg->name, id++);
 		if (!pdev) {
 			ret = -ENOMEM;
+			of_node_put(of_node);
 			goto err_register;
 		}
 

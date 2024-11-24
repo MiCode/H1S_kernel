@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "kd_imgsensor.h"
@@ -23,6 +15,16 @@
  *     mediatek\custom\common\hal\imgsensor\src\sensorlist.cpp
  */
 struct IMGSENSOR_INIT_FUNC_LIST kdSensorList[MAX_NUM_OF_SUPPORT_SENSOR] = {
+#if defined(S5K4H7_MIPI_RAW)
+	{S5K4H7_SENSOR_ID,
+	SENSOR_DRVNAME_S5K4H7_MIPI_RAW,
+	S5K4H7_MIPI_RAW_SensorInit},
+#endif
+#if defined(S5K4H7SUB_MIPI_RAW)
+	{S5K4H7SUB_SENSOR_ID,
+	SENSOR_DRVNAME_S5K4H7SUB_MIPI_RAW,
+	S5K4H7SUB_MIPI_RAW_SensorInit},
+#endif
 	/*IMX*/
 #if defined(IMX519_MIPI_RAW)
 	{IMX519_SENSOR_ID,
@@ -160,10 +162,10 @@ struct IMGSENSOR_INIT_FUNC_LIST kdSensorList[MAX_NUM_OF_SUPPORT_SENSOR] = {
 	SENSOR_DRVNAME_OV13855_MIPI_RAW,
 	OV13855_MIPI_RAW_SensorInit},
 #endif
-#if defined(OV13855SUB_MIPI_RAW)
-	{OV13855SUB_SENSOR_ID,
-	SENSOR_DRVNAME_OV13855SUB_MIPI_RAW,
-	OV13855SUB_MIPI_RAW_SensorInit},
+#if defined(OV13B10_MIPI_RAW)
+	{OV13B10_SENSOR_ID,
+	SENSOR_DRVNAME_OV13B10_MIPI_RAW,
+	OV13B10_MIPI_RAW_SensorInit},
 #endif
 #if defined(OV13870_MIPI_RAW)
 	{OV13870_SENSOR_ID, SENSOR_DRVNAME_OV13870_MIPI_RAW,
@@ -273,11 +275,6 @@ struct IMGSENSOR_INIT_FUNC_LIST kdSensorList[MAX_NUM_OF_SUPPORT_SENSOR] = {
 	{OV5647_SENSOR_ID,
 	SENSOR_DRVNAME_OV5647_RAW,
 	OV5647SensorInit},
-#endif
-#if defined(OV5645_MIPI_RAW)
-	{OV5645MIPI_SENSOR_ID,
-	SENSOR_DRVNAME_OV5645_MIPI_RAW,
-	OV5645_MIPI_RAW_SensorInit},
 #endif
 #if defined(OV5645_MIPI_YUV)
 	{OV5645MIPI_SENSOR_ID,
@@ -389,6 +386,11 @@ struct IMGSENSOR_INIT_FUNC_LIST kdSensorList[MAX_NUM_OF_SUPPORT_SENSOR] = {
 	{S5K2L7_SENSOR_ID,
 	SENSOR_DRVNAME_S5K2L7_MIPI_RAW,
 	S5K2L7_MIPI_RAW_SensorInit},
+#endif
+#if defined(S5K3L6_MIPI_RAW)
+	{S5K3L6_SENSOR_ID,
+	SENSOR_DRVNAME_S5K3L6_MIPI_RAW,
+	S5K3L6_MIPI_RAW_SensorInit},
 #endif
 #if defined(S5K3L8_MIPI_RAW)
 	{S5K3L8_SENSOR_ID,
@@ -603,9 +605,16 @@ struct IMGSENSOR_INIT_FUNC_LIST kdSensorList[MAX_NUM_OF_SUPPORT_SENSOR] = {
 	MT9V115_YUV_SensorInit},
 #endif
 	/*GC*/
-#if defined(GC2375_MIPI_RAW)
-	{GC2375_SENSOR_ID, SENSOR_DRVNAME_GC2375_MIPI_RAW,
-		GC2375_MIPI_RAW_SensorInit},
+#if defined(GC5035_MIPI_RAW)
+	{GC5035_SENSOR_ID,
+	SENSOR_DRVNAME_GC5035MIPI_RAW,
+	GC5035MIPI_RAW_SensorInit},
+#endif
+
+#if defined(GC2375H_MIPI_RAW)
+	{GC2375H_SENSOR_ID,
+	SENSOR_DRVNAME_GC2375H_MIPI_RAW,
+	GC2375H_MIPI_RAW_SensorInit},
 #endif
 #if defined(GC2365_MIPI_RAW)
 	{GC2365_SENSOR_ID, SENSOR_DRVNAME_GC2365_MIPI_RAW,
@@ -650,11 +659,21 @@ struct IMGSENSOR_INIT_FUNC_LIST kdSensorList[MAX_NUM_OF_SUPPORT_SENSOR] = {
 	SENSOR_DRVNAME_GC0310_YUV,
 	GC0310_YUV_SensorInit},
 #endif
+#if defined(GC8C34_MIPI_RAW)
+	{GC8C34_SENSOR_ID,
+	SENSOR_DRVNAME_GC8C34_MIPI_RAW,
+	GC8C34_MIPI_RAW_SensorInit},
+#endif
+#if defined(GC8034_MIPI_RAW)
+	{GC8034_SENSOR_ID,
+	SENSOR_DRVNAME_GC8034_MIPI_RAW,
+	GC8034_MIPI_RAW_SensorInit},
+#endif
 	/*SP*/
-#if defined(SP2509_MIPI_RAW)
-	{SP2509_SENSOR_ID,
-	SENSOR_DRVNAME_SP2509_MIPI_RAW,
-	SP2509_MIPI_RAW_SensorInit},
+#if defined(SP250A_MIPI_RAW)
+	{SP250A_SENSOR_ID,
+	SENSOR_DRVNAME_SP250A_MIPI_RAW,
+	SP250A_MIPI_RAW_SensorInit},
 #endif
 #if defined(SP0A19_YUV)
 	{SP0A19_YUV_SENSOR_ID,
@@ -730,31 +749,11 @@ struct IMGSENSOR_INIT_FUNC_LIST kdSensorList[MAX_NUM_OF_SUPPORT_SENSOR] = {
 	T8EV5_YUV_SensorInit},
 #endif
 	/*Test*/
-#if defined(OV13870_MIPI_RAW_5MP)
-	{OV13870_SENSOR_ID, SENSOR_DRVNAME_OV13870_MIPI_RAW_5MP,
-		OV13870_MIPI_RAW_SensorInit},
-#endif
 #if defined(OV8856_MIPI_RAW_5MP)
 	{OV8856_SENSOR_ID, SENSOR_DRVNAME_OV8856_MIPI_RAW_5MP,
 		OV8856_MIPI_RAW_SensorInit},
 #endif
 
-#if defined(IMX214_MIPI_RAW)
-	{IMX214_SENSOR_ID, SENSOR_DRVNAME_IMX214_MIPI_RAW,
-		IMX214_MIPI_RAW_SensorInit},
-#endif
-#if defined(GC8034_MIPI_RAW)
-	{GC8034MIPI_SENSOR_ID, SENSOR_DRVNAME_GC8034_MIPI_RAW,
-		GC8034MIPI_RAW_SensorInit},
-#endif
-#if defined(AR0543_MIPI_RAW)
-	{AR0543MIPI_SENSOR_ID, SENSOR_DRVNAME_AR0543_MIPI_RAW,
-		AR0543MIPI_RAW_SensorInit},
-#endif
-#if defined(GC5025_MIPI_RAW)
-	{GC5025MIPI_SENSOR_ID, SENSOR_DRVNAME_GC5025_MIPI_RAW,
-		GC5025MIPI_RAW_SensorInit},
-#endif
 	/*  ADD sensor driver before this line */
 	{0, {0}, NULL}, /* end of list */
 };

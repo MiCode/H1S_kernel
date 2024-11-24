@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __MODEM_CD_H__
@@ -20,31 +12,25 @@
 #include <linux/interrupt.h>
 #include <linux/hrtimer.h>
 #include <linux/skbuff.h>
-#include <mt-plat/mtk_ccci_common.h>
+#include "mt-plat/mtk_ccci_common.h"
 
 #include "ccci_config.h"
+#include "ccci_common_config.h"
 #include "ccci_bm.h"
 #include "ccci_hif_internal.h"
+#include "modem_sys.h"
+#include "ccci_cldma_plat.h"
 /*
  * hardcode, max queue number should be synced with port array in port_cfg.c
  * and macros in ccci_core.h following number should sync with MAX_TXQ/RXQ_NUM
  * in ccci_core.h and bitmask in modem_cldma.c
  */
-#if MD_GENERATION >= (6293)
 #define CLDMA_TXQ_NUM 4
 #define CLDMA_RXQ_NUM 1
 #define NET_TXQ_NUM 4
 #define NET_RXQ_NUM 1
 #define NORMAL_TXQ_NUM 0
 #define NORMAL_RXQ_NUM 0
-#else
-#define CLDMA_TXQ_NUM 8
-#define CLDMA_RXQ_NUM 8
-#define NET_TXQ_NUM 4
-#define NET_RXQ_NUM 4
-#define NORMAL_TXQ_NUM 5
-#define NORMAL_RXQ_NUM 5
-#endif
 
 #define MAX_BD_NUM (MAX_SKB_FRAGS + 1)
 #define TRAFFIC_MONITOR_INTERVAL 10	/* seconds */
@@ -66,6 +52,18 @@
 /* #define ENABLE_CLDMA_TIMER */
 #endif
 #define CLDMA_NET_TX_BD
+
+#define ccci_read32(b, a)               ioread32((void __iomem *)((b)+(a)))
+
+enum hif_cldma_state {
+	HIF_CLDMA_STATE_NONE = 0,
+	HIF_CLDMA_STATE_INIT,
+	HIF_CLDMA_STATE_PWROFF,
+	HIF_CLDMA_STATE_PWRON,
+	HIF_CLDMA_STATE_EXCEPTION,
+	HIF_CLDMA_STATE_MAX,
+};
+
 
 struct cldma_request {
 	void *gpd;		/* virtual address for CPU */
@@ -123,6 +121,13 @@ struct ccci_fast_header {
 	u32 reserved;
 };
 #endif
+
+struct cldma_hw_info {
+	unsigned long cldma_ap_ao_base;
+	unsigned long cldma_ap_pdn_base;
+	unsigned int cldma_irq_id;
+	unsigned long cldma_irq_flags;
+};
 
 static inline struct cldma_request *cldma_ring_step_forward(
 	struct cldma_ring *ring, struct cldma_request *req)
@@ -229,6 +234,13 @@ struct md_cd_queue {
 
 #define QUEUE_LEN(a) (sizeof(a)/sizeof(struct md_cd_queue))
 
+struct  ccci_hif_cldma_val {
+	struct regmap *infra_ao_base;
+	unsigned int md_gen;
+	unsigned long offset_epof_md1;
+	void __iomem *md_plat_info;
+};
+
 struct md_cd_ctrl {
 	struct md_cd_queue txq[CLDMA_TXQ_NUM];
 	struct md_cd_queue rxq[CLDMA_RXQ_NUM];
@@ -279,6 +291,11 @@ struct md_cd_ctrl {
 
 	unsigned long cldma_irq_flags;
 	struct ccci_hif_ops *ops;
+	struct ccci_hif_cldma_val plat_val;
+	enum hif_cldma_state cldma_state;
+	int cldma_platform;
+
+	struct ccci_cldma_plat_ops cldma_plat_ops;
 };
 
 struct cldma_tgpd {
@@ -367,6 +384,7 @@ static inline void md_cd_queue_struct_init(struct md_cd_queue *queue,
 #endif
 }
 
+
 static inline int ccci_cldma_hif_send_skb(unsigned char hif_id, int tx_qno,
 	struct sk_buff *skb, int from_pool, int blocking)
 {
@@ -405,13 +423,14 @@ static inline int ccci_cldma_hif_give_more(unsigned char hif_id, int rx_qno)
 }
 
 static inline int ccci_cldma_hif_dump_status(unsigned char hif_id,
-	enum MODEM_DUMP_FLAG dump_flag, int length)
+	enum MODEM_DUMP_FLAG dump_flag, void *buff, int length)
 {
 	struct md_cd_ctrl *md_ctrl =
 		(struct md_cd_ctrl *)ccci_hif_get_by_id(hif_id);
 
 	if (md_ctrl)
-		return md_ctrl->ops->dump_status(hif_id, dump_flag, length);
+		return md_ctrl->ops->dump_status(hif_id, dump_flag,
+			buff, length);
 	else
 		return -1;
 
@@ -429,24 +448,25 @@ static inline int ccci_cldma_hif_set_wakeup_src(unsigned char hif_id,
 		return -1;
 
 }
+int md_cd_clear_all_queue(unsigned char hif_id, enum DIRECTION dir);
+int cldma_stop_for_ee(unsigned char hif_id);
+int md_cldma_allQreset_work(unsigned char hif_id);
+int md_cldma_clear(unsigned char hif_id);
 
-int ccci_cldma_hif_init(unsigned char hif_id, unsigned char md_id);
-int md_cd_late_init(unsigned char hif_id);
-/*API for modem sys1*/
-void cldma_start(unsigned char hif_id);
-void cldma_stop(unsigned char hif_id);
-void cldma_stop_for_ee(unsigned char hif_id);
-void md_cldma_clear(unsigned char hif_id);
-void cldma_reset(unsigned char hif_id);
-void md_cd_clear_all_queue(unsigned char hif_id, enum DIRECTION dir);
-void md_cd_ccif_allQreset_work(unsigned char hif_id);
-#ifdef CONFIG_MTK_GIC_V3_EXT
-extern void mt_irq_dump_status(int irq);
-#endif
-extern unsigned int ccci_get_md_debug_mode(struct ccci_modem *md);
+extern struct regmap *syscon_regmap_lookup_by_phandle(struct device_node *np,
+	const char *property);
+
+extern int regmap_read(struct regmap *map, unsigned int reg, unsigned int *val);
+
 
 /* used for throttling feature - start */
 extern unsigned long ccci_modem_boot_count[];
 /* used for throttling feature - end */
+
+extern struct md_cd_ctrl *cldma_ctrl;
+extern struct ccci_clk_node cldma_clk_table[];
+
+extern int regmap_write(struct regmap *map, unsigned int reg, unsigned int val);
+extern int regmap_read(struct regmap *map, unsigned int reg, unsigned int *val);
 
 #endif				/* __MODEM_CD_H__ */

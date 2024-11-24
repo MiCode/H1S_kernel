@@ -141,6 +141,8 @@ static void snd_gf1_dma_interrupt(struct snd_gus_card * gus)
 	}
 	block = snd_gf1_dma_next_block(gus);
 	spin_unlock(&gus->dma_lock);
+	if (!block)
+		return;
 	snd_gf1_dma_program(gus, block->addr, block->buf_addr, block->count, (unsigned short) block->cmd);
 	kfree(block);
 #if 0
@@ -201,10 +203,9 @@ int snd_gf1_dma_transfer_block(struct snd_gus_card * gus,
 	struct snd_gf1_dma_block *block;
 
 	block = kmalloc(sizeof(*block), atomic ? GFP_ATOMIC : GFP_KERNEL);
-	if (block == NULL) {
-		snd_printk(KERN_ERR "gf1: DMA transfer failure; not enough memory\n");
+	if (!block)
 		return -ENOMEM;
-	}
+
 	*block = *__block;
 	block->next = NULL;
 

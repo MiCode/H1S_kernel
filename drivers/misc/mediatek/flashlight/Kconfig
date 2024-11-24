@@ -8,16 +8,28 @@ config MTK_FLASHLIGHT
 	  This is flashlight driver for camera.
 
 	  Say Y here if you want a flashlight core to handle flashlight devices.
-	  If you have any questions about this, say Y here, only say N
-	  if you know exactly what you are doing.
+	  If you have any questions about this, say Y here,
+	  only say N if you know exactly what you are doing.
+
 
 config MTK_V4L2_FLASHLIGHT
-	bool "Mediatek V4L2 flashlight driver"
+	tristate "Mediatek V4L2 flashlight driver"
 	help
 	  Say Y to enable V4L2 flashlight device
 	  This Framework is good for
 	  controling flashlight Leds.
 	  Say N to disable V4L2 flashlight.
+
+config MTK_FLASHLIGHT_AW3644
+	tristate "Mediatek flashlight with driver IC (AW3644)"
+	depends on MTK_FLASHLIGHT
+	help
+	  This is for the flashlight driver IC (AW3644).
+
+	  Say Y here if you want a flashlight driver IC AW3644.
+	  Select this only if your board has this IC.
+
+	  Say M here if you want to compile this driver as a module.
 
 config MTK_FLASHLIGHT_LED191
 	tristate "Mediatek flashlight led191 gpio driver"
@@ -118,6 +130,17 @@ config MTK_FLASHLIGHT_MT6360
 
 	  Say M here if you want to compile this driver as a module.
 
+config MTK_FLASHLIGHT_SYWT78
+	tristate "Mediatek flashlight sywt78 gpio driver"
+	depends on MTK_FLASHLIGHT
+	help
+	  This is flashlight sywt78 gpio driver for camera.
+
+	  Say Y here if you want a driver IC with GPIO interface.
+	  Select this only if your board has this IC.
+
+	  Say M here if you want to compile this driver as a module.
+
 config MTK_FLASHLIGHT_DUMMY
 	tristate "Mediatek flashlight dummy driver"
 	depends on MTK_FLASHLIGHT
@@ -172,7 +195,7 @@ config MTK_FLASHLIGHT_PT
 	  change flash mode to torch mode.
 
 config MTK_FLASHLIGHT_PT_STRICT
-    bool "Mediatek flashlight power throttling (strict)"
+	bool "Mediatek flashlight power throttling (strict)"
 	depends on MTK_FLASHLIGHT_PT
 	help
 	  This is for flashlight strict power throttling.
@@ -182,7 +205,7 @@ config MTK_FLASHLIGHT_PT_STRICT
 	  situations.
 
 config MTK_FLASHLIGHT_DLPT
-    bool "Mediatek flashlight dynamic low power throttling"
+	bool "Mediatek flashlight dynamic low power throttling"
 	depends on MTK_FLASHLIGHT
 	help
 	  This is for flashlight dynamic low power throttling.

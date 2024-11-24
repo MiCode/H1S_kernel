@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 
 #ifndef __CCCI_FSM_INTERNAL_H__
@@ -90,6 +82,7 @@ enum {
 	SCP_CCCI_STATE_INVALID = 0,
 	SCP_CCCI_STATE_BOOTING = 1,
 	SCP_CCCI_STATE_RBREADY = 2,
+	SCP_CCCI_STATE_STOP = 3,
 };
 
 enum CCCI_MD_MSG {
@@ -244,7 +237,7 @@ struct ccci_fsm_ctl {
 	struct task_struct *fsm_thread;
 	atomic_t fs_ongoing;
 	char wakelock_name[32];
-	struct wakeup_source wakelock;
+	struct wakeup_source *wakelock;
 
 	unsigned long boot_count; /* for throttling feature */
 

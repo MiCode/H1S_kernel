@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2020 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #include <linux/mutex.h>
@@ -24,6 +16,7 @@
 #include <linux/kthread.h>
 #include <linux/uaccess.h>
 #include <linux/atomic.h>
+#include <linux/vmalloc.h>
 #ifdef CONFIG_PM_SLEEP
 #include <linux/device.h>
 #include <linux/pm_wakeup.h>
@@ -40,6 +33,8 @@ struct mdw_rsc_mgr {
 	unsigned long dev_avl_bmp[BITS_TO_LONGS(APUSYS_DEVICE_MAX)];
 	unsigned long cmd_avl_bmp[BITS_TO_LONGS(APUSYS_DEVICE_MAX)];
 	struct mdw_rsc_tab **tabs;
+
+	uint32_t preempt_policy;
 
 	struct list_head r_list;
 	struct mutex mtx;
@@ -236,7 +231,7 @@ uint64_t mdw_rsc_get_avl_bmp(void)
 
 	bitmap_and(bmp, rsc_mgr.cmd_avl_bmp,
 		rsc_mgr.dev_avl_bmp, APUSYS_DEVICE_MAX);
-	bitmap_to_u32array((uint32_t *)&b, 2, bmp, APUSYS_DEVICE_MAX);
+	bitmap_to_arr32((uint32_t *)&b, bmp, APUSYS_DEVICE_MAX);
 	mdw_flw_debug("bmp(0x%llx)\n", b);
 
 	return b;
@@ -270,9 +265,9 @@ void mdw_rsc_update_avl_bmp(int type)
 	else
 		bitmap_clear(rsc_mgr.cmd_avl_bmp, type, 1);
 
-	bitmap_to_u32array((uint32_t *)&cb, 2,
+	bitmap_to_arr32((uint32_t *)&cb,
 		rsc_mgr.cmd_avl_bmp, APUSYS_DEVICE_MAX);
-	bitmap_to_u32array((uint32_t *)&db, 2,
+	bitmap_to_arr32((uint32_t *)&db,
 		rsc_mgr.dev_avl_bmp, APUSYS_DEVICE_MAX);
 
 	mdw_flw_debug("bmp: dev(0x%llx) cmd(0x%llx)\n", db, cb);
@@ -507,7 +502,23 @@ static int mdw_rsc_sec_off(struct mdw_dev_info *d)
 
 static int mdw_rsc_suspend(struct mdw_dev_info *d)
 {
-	return d->dev->send_cmd(APUSYS_CMD_SUSPEND, NULL, d->dev);
+	struct mdw_rsc_tab *t = mdw_rsc_get_tab(d->type);
+	int ret = 0;
+
+	if (!t)
+		return -ENODEV;
+
+	mutex_lock(&t->mtx);
+	if (d->state != MDW_DEV_INFO_STATE_IDLE) {
+		mdw_drv_warn("dev(%s%d) busy(%d)\n", d->name, d->idx, d->state);
+		ret = -EBUSY;
+		goto out;
+	}
+
+	ret = d->dev->send_cmd(APUSYS_CMD_SUSPEND, NULL, d->dev);
+out:
+	mutex_unlock(&t->mtx);
+	return ret;
 }
 
 static int mdw_rsc_resume(struct mdw_dev_info *d)
@@ -748,11 +759,41 @@ static struct mdw_dev_info *mdw_rsc_get_dev_sq(int type)
 	return d;
 }
 
+static int mdw_rsc_get_norm_prio(struct mdw_dev_info *in)
+{
+	struct mdw_rsc_tab *tab = NULL;
+	struct mdw_dev_info *d = NULL;
+	struct mdw_apu_sc *sc = NULL;
+	int type = 0, prio = -ENOENT;
+
+	if (in->idx >= MDW_RSC_TAB_DEV_MAX || in->idx < 0)
+		return -EINVAL;
+
+	type = in->type % APUSYS_DEVICE_RT;
+	tab = mdw_rsc_get_tab(type);
+	if (!tab)
+		return -ENODEV;
+
+	d = tab->array[in->idx];
+	if (!d)
+		return -ENODEV;
+
+	mutex_lock(&d->mtx);
+	if (d->sc) {
+		sc = (struct mdw_apu_sc *)d->sc;
+		prio = sc->parent->hdr->priority;
+	}
+	mutex_unlock(&d->mtx);
+
+	return prio;
+}
+
 static struct mdw_dev_info *mdw_rsc_get_dev_rr(int type)
 {
 	struct list_head *tmp = NULL, *list_ptr = NULL;
 	struct mdw_rsc_tab *tab = NULL;
-	struct mdw_dev_info *d = NULL;
+	struct mdw_dev_info *d = NULL, *d_tmp = NULL;
+	int prio = 0, tmp_prio = 0;
 
 	tab = mdw_rsc_get_tab(type);
 	if (!tab)
@@ -763,14 +804,38 @@ static struct mdw_dev_info *mdw_rsc_get_dev_rr(int type)
 		d = list_entry(list_ptr, struct mdw_dev_info, t_item);
 		if (!mdw_rsc_check_dev_state(d))
 			break;
+
+		/* record if executing sc prio lower */
+		tmp_prio = mdw_rsc_get_norm_prio(d);
+		if (prio < tmp_prio) {
+			prio = tmp_prio;
+			d_tmp = d;
+		}
+
 		d = NULL;
 	}
 
-	/* no idle device, get first device */
-	if (!d)
+	if (d)
+		goto lock_dev;
+
+	/* no idle device, get device by current plcy*/
+	switch (rsc_mgr.preempt_policy) {
+	case MDW_PREEMPT_PLCY_RR_PRIORITY:
+		if (d_tmp)
+			d = d_tmp;
+		else
+			d = list_first_entry_or_null(&tab->list,
+				struct mdw_dev_info, t_item);
+		break;
+
+	case MDW_PREEMPT_PLCY_RR_SIMPLE:
+	default:
 		d = list_first_entry_or_null(&tab->list,
 			struct mdw_dev_info, t_item);
+		break;
+	}
 
+lock_dev:
 	if (d) {
 		tab->avl_num--;
 		list_del(&d->t_item);
@@ -779,6 +844,27 @@ static struct mdw_dev_info *mdw_rsc_get_dev_rr(int type)
 	}
 
 	return d;
+}
+
+static void mdw_rsc_req_add(struct mdw_rsc_req *req)
+{
+	list_add_tail(&req->r_item, &rsc_mgr.r_list);
+}
+
+static void mdw_rsc_req_delete(struct mdw_rsc_req *req)
+{
+	struct list_head *tmp = NULL, *list_ptr = NULL;
+	struct mdw_rsc_req *tmp_req = NULL;
+
+	list_for_each_safe(list_ptr, tmp, &rsc_mgr.r_list) {
+		tmp_req = list_entry(list_ptr, struct mdw_rsc_req, r_item);
+		if (tmp_req == req) {
+			list_del(&req->r_item);
+			return;
+		}
+	}
+	mdw_drv_warn("req(%u/0x%llx) not in list\n",
+		req->num[APUSYS_DEVICE_VPU], req->acq_bmp);
 }
 
 static void mdw_rsc_req_done(struct kref *ref)
@@ -791,7 +877,7 @@ static void mdw_rsc_req_done(struct kref *ref)
 
 	mdw_flw_debug("req(%p)\n", req);
 
-	list_del(&req->r_item);
+	mdw_rsc_req_delete(req);
 	complete(&req->complt);
 
 	if (req->cb_async)
@@ -898,18 +984,24 @@ int mdw_rsc_get_dev(struct mdw_rsc_req *req)
 	if (req->mode == MDW_DEV_INFO_GET_MODE_TRY) {
 		if (!get_total)
 			ret = -ENODEV;
+		mutex_unlock(&rsc_mgr.mtx);
 		goto out;
 	}
 
 	if (req->acq_bmp) {
 		/* add to rsc list */
 		req->in_list = true;
-		list_add_tail(&req->r_item, &rsc_mgr.r_list);
+		mdw_rsc_req_add(req);
 		/* wait if sync mode */
 		if (req->mode == MDW_DEV_INFO_GET_MODE_SYNC) {
 			mutex_unlock(&rsc_mgr.mtx);
-			wait_for_completion_interruptible(&req->complt);
+			ret = wait_for_completion_interruptible(&req->complt);
 			mutex_lock(&rsc_mgr.mtx);
+			if (ret) {
+				mdw_drv_warn("wait sync completion(%d)\n", ret);
+				mdw_rsc_req_delete(req);
+				goto fail_wait_sync;
+			}
 		}
 		if (req->mode == MDW_DEV_INFO_GET_MODE_ASYNC)
 			ret = -EAGAIN;
@@ -919,18 +1011,20 @@ int mdw_rsc_get_dev(struct mdw_rsc_req *req)
 			req->cb_async(req);
 	}
 
+	mutex_unlock(&rsc_mgr.mtx);
 	goto out;
 
+fail_wait_sync:
 fail_first_get:
 fail_check_num:
 fail_get_tab:
+	mutex_unlock(&rsc_mgr.mtx);
 	list_for_each_safe(list_ptr, tmp, &req->d_list) {
 		d = list_entry(list_ptr, struct mdw_dev_info, r_item);
 		list_del(&d->r_item);
 		mdw_rsc_put_dev(d);
 	}
 out:
-	mutex_unlock(&rsc_mgr.mtx);
 	mdw_rsc_update_avl_bmp(type);
 	return ret;
 }
@@ -1069,6 +1163,21 @@ out:
 	atomic_inc(&sthd_group);
 }
 
+int mdw_rsc_set_preempt_plcy(uint32_t preempt_policy)
+{
+	if (preempt_policy >= MDW_PREEMPT_PLCY_MAX)
+		return -EINVAL;
+
+	rsc_mgr.preempt_policy = preempt_policy;
+
+	return 0;
+}
+
+uint32_t mdw_rsc_get_preempt_plcy(void)
+{
+	return rsc_mgr.preempt_policy;
+}
+
 int mdw_rsc_init(void)
 {
 	memset(&rsc_mgr, 0, sizeof(rsc_mgr));
@@ -1079,7 +1188,7 @@ int mdw_rsc_init(void)
 	bitmap_zero(rsc_mgr.dev_avl_bmp, APUSYS_DEVICE_MAX);
 	bitmap_zero(rsc_mgr.dev_sup_bmp, APUSYS_DEVICE_MAX);
 	INIT_LIST_HEAD(&rsc_mgr.r_list);
-
+	rsc_mgr.preempt_policy = MDW_PREEMPT_PLCY_RR_SIMPLE;
 	mutex_init(&rsc_mgr.mtx);
 	mdw_rsc_ws_init();
 

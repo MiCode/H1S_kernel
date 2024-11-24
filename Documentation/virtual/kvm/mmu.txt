@@ -49,8 +49,8 @@ The mmu supports first-generation mmu hardware, which allows an atomic switch
 of the current paging mode and cr3 during guest entry, as well as
 two-dimensional paging (AMD's NPT and Intel's EPT).  The emulated hardware
 it exposes is the traditional 2/3/4 level x86 mmu, with support for global
-pages, pae, pse, pse36, cr0.wp, and 1GB pages.  Work is in progress to support
-exposing NPT capable hardware on NPT capable hosts.
+pages, pae, pse, pse36, cr0.wp, and 1GB pages. Emulated hardware also
+able to expose NPT capable hardware on NPT capable hosts.
 
 Translation
 ===========
@@ -152,8 +152,8 @@ Shadow pages contain the following information:
     shadow pages) so role.quadrant takes values in the range 0..3.  Each
     quadrant maps 1GB virtual address space.
   role.access:
-    Inherited guest access permissions in the form uwx.  Note execute
-    permission is positive, not negative.
+    Inherited guest access permissions from the parent ptes in the form uwx.
+    Note execute permission is positive, not negative.
   role.invalid:
     The page is invalid and should not be used.  It is a root page that is
     currently pinned (by a cpu hardware register pointing to it); once it is
@@ -465,5 +465,5 @@ Further reading
 ===============
 
 - NPT presentation from KVM Forum 2008
-  http://www.linux-kvm.org/wiki/images/c/c8/KvmForum2008%24kdf2008_21.pdf
+  http://www.linux-kvm.org/images/c/c8/KvmForum2008%24kdf2008_21.pdf
 

@@ -27,6 +27,8 @@
 #include <asm/asm-offsets.h>
 #include <asm/exception-64s.h>
 #include <asm/ppc-opcode.h>
+#include <asm/asm-compat.h>
+#include <asm/feature-fixups.h>
 
 /*****************************************************************************
  *                                                                           *
@@ -79,8 +81,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
 	li	r5, 0
 	mtspr	SPRN_MMCRA, r5
 	isync
-	ld	r3, PACALPPACAPTR(r13)	/* is the host using the PMU? */
-	lbz	r5, LPPACA_PMCINUSE(r3)
+	lbz	r5, PACA_PMCINUSE(r13)	/* is the host using the PMU? */
 	cmpwi	r5, 0
 	beq	31f			/* skip if not */
 	mfspr	r5, SPRN_MMCR1
@@ -138,7 +139,7 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_300)
 /*
  * We return here in virtual mode after the guest exits
  * with something that we can't handle in real mode.
- * Interrupts are enabled again at this point.
+ * Interrupts are still hard-disabled.
  */
 
 	/*

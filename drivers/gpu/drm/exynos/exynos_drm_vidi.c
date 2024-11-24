@@ -161,9 +161,9 @@ static const struct exynos_drm_crtc_ops vidi_crtc_ops = {
 	.atomic_flush = exynos_crtc_handle_event,
 };
 
-static void vidi_fake_vblank_timer(unsigned long arg)
+static void vidi_fake_vblank_timer(struct timer_list *t)
 {
-	struct vidi_context *ctx = (void *)arg;
+	struct vidi_context *ctx = from_timer(ctx, t, timer);
 
 	if (drm_crtc_handle_vblank(&ctx->crtc->base))
 		mod_timer(&ctx->timer,
@@ -302,6 +302,7 @@ static int vidi_get_modes(struct drm_connector *connector)
 	struct vidi_context *ctx = ctx_from_connector(connector);
 	struct edid *edid;
 	int edid_len;
+	int count;
 
 	/*
 	 * the edid data comes from user side and it would be set
@@ -319,9 +320,13 @@ static int vidi_get_modes(struct drm_connector *connector)
 		return -ENOMEM;
 	}
 
-	drm_mode_connector_update_edid_property(connector, edid);
+	drm_connector_update_edid_property(connector, edid);
 
-	return drm_add_edid_modes(connector, edid);
+	count = drm_add_edid_modes(connector, edid);
+
+	kfree(edid);
+
+	return count;
 }
 
 static const struct drm_connector_helper_funcs vidi_connector_helper_funcs = {
@@ -344,7 +349,7 @@ static int vidi_create_connector(struct drm_encoder *encoder)
 	}
 
 	drm_connector_helper_add(connector, &vidi_connector_helper_funcs);
-	drm_mode_connector_attach_encoder(connector, encoder);
+	drm_connector_attach_encoder(connector, encoder);
 
 	return 0;
 }
@@ -449,7 +454,7 @@ static int vidi_probe(struct platform_device *pdev)
 
 	ctx->pdev = pdev;
 
-	setup_timer(&ctx->timer, vidi_fake_vblank_timer, (unsigned long)ctx);
+	timer_setup(&ctx->timer, vidi_fake_vblank_timer, 0);
 
 	mutex_init(&ctx->lock);
 
@@ -480,8 +485,6 @@ static int vidi_remove(struct platform_device *pdev)
 	if (ctx->raw_edid != (struct edid *)fake_edid_info) {
 		kfree(ctx->raw_edid);
 		ctx->raw_edid = NULL;
-
-		return -EINVAL;
 	}
 
 	component_del(&pdev->dev, &vidi_component_ops);

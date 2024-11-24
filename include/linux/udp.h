@@ -50,7 +50,13 @@ struct udp_sock {
 	__u8		 encap_type;	/* Is this an Encapsulation socket? */
 	unsigned char	 no_check6_tx:1,/* Send zero UDP6 checksums on TX? */
 			 no_check6_rx:1,/* Allow zero UDP6 checksums on RX? */
-			 gro_enabled:1;	/* Can accept GRO packets */
+			 encap_enabled:1, /* This socket enabled encap
+					   * processing; UDP tunnels and
+					   * different encapsulation layer set
+					   * this
+					   */
+			 gro_enabled:1, /* Can accept GRO packets */
+			 gro_disabled:3; /* Disable udp gro for special socket case */
 	/*
 	 * Following member retains the information to create a UDP header
 	 * when the socket is uncorked.
@@ -129,7 +135,7 @@ static inline void udp_cmsg_recv(struct msghdr *msg, struct sock *sk,
 
 static inline bool udp_unexpected_gso(struct sock *sk, struct sk_buff *skb)
 {
-	return (!sk || !udp_sk(sk)->gro_receive) && skb_is_gso(skb) &&
+	return !udp_sk(sk)->gro_enabled && skb_is_gso(skb) &&
 	       skb_shinfo(skb)->gso_type & SKB_GSO_UDP_L4;
 }
 

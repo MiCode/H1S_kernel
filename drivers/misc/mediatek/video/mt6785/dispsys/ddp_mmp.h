@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __DDP_MMP_H__
 #define __DDP_MMP_H__
@@ -153,6 +144,7 @@ struct DDP_MMP_Events {
 	mmp_event primary_chg_fps_wait;
 	mmp_event primary_chg_fps_req;
 	mmp_event primary_chg_fps_notify;
+	mmp_event primary_dynfps_chg_fps;
 #ifdef CONFIG_ADB_WRITE_PARAM_FEATURE
 	mmp_event dsi_wrlcm;
 #endif

@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <linux/init.h>
@@ -66,7 +58,7 @@ typedef u64 cycle_t;
  */
 #define CONFIG_MTK_TIMER_AEE_DUMP
 
-#ifdef CONFIG_MTK_TIMER_APXGPT
+#ifdef CONFIG_MTK_TIMER_APXGPT_V1
 #ifdef CONFIG_MTK_TIMER_AEE_DUMP
 #ifdef CONFIG_MTK_RAM_CONSOLE
 #include <mt-plat/mtk_ram_console.h>
@@ -87,11 +79,11 @@ static uint64_t gpt_time_int_handler_exit;
 
 /*
  * Common apxpgt definition and functions used when,
- * 1. CONFIG_MTK_TIMER_APXGPT on: apxgpt will be used.
+ * 1. CONFIG_MTK_TIMER_APXGPT_V1 on: apxgpt will be used.
  * 2. CONFIG_MTK_TIMER_SYSTIMER on: apxgpt will be un-initialized
  *    in init stage.
  */
-#if defined(CONFIG_MTK_TIMER_APXGPT) || defined(CONFIG_MTK_TIMER_SYSTIMER)
+#if defined(CONFIG_MTK_TIMER_APXGPT_V1) || defined(CONFIG_MTK_TIMER_SYSTIMER)
 
 #define GPT_CLKEVT_ID       (GPT1)
 #define GPT_CLKSRC_ID       (GPT2)
@@ -202,7 +194,7 @@ static void gpt_devs_init(void)
 
 #endif
 
-#ifdef CONFIG_MTK_TIMER_APXGPT
+#ifdef CONFIG_MTK_TIMER_APXGPT_V1
 
 static DEFINE_SPINLOCK(gpt_lock);
 
@@ -291,108 +283,6 @@ static struct irqaction gpt_irq = {
 	.handler = gpt_handler,
 	.dev_id = &gpt_clockevent,
 };
-
-void mtk_timer_clkevt_aee_dump(void)
-{
-#ifdef _MTK_TIMER_DBG_AEE_DUMP
-
-	/*
-	 * Notice: print function cannot be used during AEE flow
-	 * to avoid lock issues.
-	 */
-
-	struct mt_gpt_device *dev = id_to_dev(GPT_CLKEVT_ID);
-
-	/* interrupt time */
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT] int handler entry: %llu\n", gpt_time_int_handler_entry);
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT] int handler exit: %llu\n", gpt_time_int_handler_exit);
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	/* clkevt handler time */
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT] clkevt handler entry: %llu\n",
-		gpt_time_clkevt_handler_entry);
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT] clkevt handler exit: %llu\n",
-		gpt_time_clkevt_handler_exit);
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	/* set next event */
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT] set next event entry: %llu\n",
-		gpt_time_clkevt_set_next_event_entry);
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT] set next event exit: %llu\n",
-		gpt_time_clkevt_set_next_event_exit);
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	/* global gpt status */
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT] IRQEN: 0x%x\n", __raw_readl(GPT_IRQEN));
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT] IRQSTA: 0x%x\n", __raw_readl(GPT_IRQSTA));
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	/* gpt1 status */
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT1] CON: 0x%x\n", __raw_readl(dev->base_addr + GPT_CON));
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT1] CLK: 0x%x\n", __raw_readl(dev->base_addr + GPT_CLK));
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT1] CNT: 0x%x\n", __raw_readl(dev->base_addr + GPT_CNT));
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT1] CMP: 0x%x\n", __raw_readl(dev->base_addr + GPT_CMP));
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	memset(gpt_clkevt_aee_dump_buf, 0, sizeof(gpt_clkevt_aee_dump_buf));
-	snprintf(gpt_clkevt_aee_dump_buf, sizeof(gpt_clkevt_aee_dump_buf),
-		"[GPT1] irq affinity: %d\n", gpt_clockevent.irq_affinity_on);
-	aee_sram_fiq_log(gpt_clkevt_aee_dump_buf);
-
-	/*
-	 * TODO: dump apxgpt irq status
-	 *
-	 * Since print function cannot be used during AEE flow, we may need to
-	 * change print way in mt_irq_dump_status().
-	 */
-
-	/* mt_irq_dump_status(gpt_timers.tmr_irq); */
-
-#endif
-}
 
 static inline unsigned int gpt_get_and_ack_irq(void)
 {
@@ -1163,46 +1053,4 @@ CLOCKSOURCE_OF_DECLARE(mtk_apxgpt, APXGPT_OF_COMPTIBLE_NAME, mt_gpt_init);
 
 #endif
 
-/*
- * Apxgpt un-initialization used when sys_timer is selected.
- */
-#if !defined(CONFIG_MTK_TIMER_APXGPT) && !defined(CONFIG_MTK_TIMER)
-
-static int __init mt_gpt_init(void)
-{
-	u32 i;
-	struct device_node *node;
-	const struct of_device_id apxgpt_of_match[] = {
-		{ .compatible = APXGPT_OF_COMPTIBLE_NAME, },
-	};
-
-	node = of_find_compatible_node(NULL, NULL,
-		apxgpt_of_match[0].compatible);
-
-	if (!node) {
-		pr_info("node not found\n");
-		return 0;
-	}
-
-	gpt_timers.tmr_regs = of_iomap(node, 0);
-
-	if (!gpt_timers.tmr_regs) {
-		pr_info("base not found\n");
-		return 0;
-	}
-
-	gpt_devs_init();
-
-	for (i = 0; i < NR_GPTS; i++)
-		__gpt_reset(&gpt_devs[i]);
-
-	pr_info("base=0x%lx, disabled\n",
-		(unsigned long)gpt_timers.tmr_regs);
-
-	return 0;
-}
-
-module_init(mt_gpt_init);
-
-#endif
 

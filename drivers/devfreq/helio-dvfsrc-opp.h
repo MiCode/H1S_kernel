@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __HELIO_DVFSRC_OPP_H
 #define __HELIO_DVFSRC_OPP_H
@@ -23,7 +15,11 @@
 #elif defined(CONFIG_MACH_MT6765)
 #include <helio-dvfsrc-opp-mt6765.h>
 #elif defined(CONFIG_MACH_MT6785)
-#include <helio-dvfsrc-opp-mt6785.h>
+	#if defined(CONFIG_MTK_DVFSRC_MT6781_PRETEST)
+	#include <helio-dvfsrc-opp-v6781.h>
+	#else
+	#include <helio-dvfsrc-opp-mt6785.h>
+	#endif
 #elif defined(CONFIG_MACH_MT6885)
 #include <helio-dvfsrc-opp-mt6885.h>
 #elif defined(CONFIG_MACH_MT6873)
@@ -31,6 +27,8 @@
 #elif defined(CONFIG_MACH_MT6853)
 	#if defined(CONFIG_MTK_DVFSRC_MT6833_PRETEST)
 	#include <helio-dvfsrc-opp-mt6833.h>
+	#elif defined(CONFIG_MTK_DVFSRC_MT6877_PRETEST)
+	#include <helio-dvfsrc-opp-v6877.h>
 	#else
 	#include <helio-dvfsrc-opp-mt6853.h>
 	#endif
@@ -38,6 +36,10 @@
 #include <helio-dvfsrc-opp-mt6893.h>
 #elif defined(CONFIG_MACH_MT6833)
 #include <helio-dvfsrc-opp-mt6833.h>
+#elif defined(CONFIG_MACH_MT6877)
+#include <helio-dvfsrc-opp-v6877.h>
+#elif defined(CONFIG_MACH_MT6781)
+#include <helio-dvfsrc-opp-v6781.h>
 #else
 #include <helio-dvfsrc-opp-mt67xx.h>
 #endif
@@ -45,7 +47,8 @@
 #if defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6785) \
 	|| defined(CONFIG_MACH_MT6885) || defined(CONFIG_MACH_MT6765) \
 	|| defined(CONFIG_MACH_MT6873) || defined(CONFIG_MACH_MT6853) \
-	|| defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833)
+	|| defined(CONFIG_MACH_MT6893) || defined(CONFIG_MACH_MT6833) \
+	|| defined(CONFIG_MACH_MT6877) || defined(CONFIG_MACH_MT6781)
 struct opp_profile {
 	int vcore_uv;
 	int ddr_khz;

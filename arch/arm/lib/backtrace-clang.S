@@ -8,6 +8,11 @@
 #include <linux/kern_levels.h>
 #include <linux/linkage.h>
 #include <asm/assembler.h>
+.extern _stext, _etext
+__stext:
+	.word _stext
+__etext:
+	.word _etext
 		.text
 
 /* fp is 0 or stack frame */
@@ -124,6 +129,8 @@ for_each_frame:	tst	frame, mask		@ Check for address exceptions
 
 		teq	sv_fp, mask		@ make sure next frame exists
 		beq	no_frame
+		cmp	sv_fp, frame
+		blo	no_frame
 
 /*
  * sv_lr is the lr from the function that called the current function. This is
@@ -140,7 +147,21 @@ for_each_frame:	tst	frame, mask		@ Check for address exceptions
  * registers for the current function, but the stacktrace is still printed
  * properly.
  */
-1003:		ldr	sv_lr, [sv_fp, #4]	@ get saved lr from next frame
+1003:		ldr	r0, __stext
+		cmp	sv_pc, r0
+		blo	.badpc
+		ldr	r0, __etext
+		cmp	sv_pc, r0
+		bhs	.badpc
+
+		ldr	sv_lr, [sv_fp, #4]	@ get saved lr from next frame
+
+		ldr	r0, __stext
+		cmp	sv_lr, r0
+		blo	.badlr
+		ldr	r0, __etext
+		cmp	sv_lr, r0
+		bhs	.badlr
 
 1007:		ldr	r0, [sv_lr, #-4]	@ get call instruction
 		ldr	r3, .Lopcode+4
@@ -210,7 +231,21 @@ ENDPROC(c_backtrace)
 		.long   1007b, 1006b
 		.popsection
 
+.badpc:
+		adr	r0, .Lbadpc
+		mov	r1, sv_pc
+		bl	printk
+		b	no_frame
+.badlr:
+		adr	r0, .Lbadlr
+		mov	r1, sv_lr
+		bl	printk
+		b	no_frame
 .Lbad:		.asciz	"Backtrace aborted due to bad frame pointer <%p>\n"
+		.align
+.Lbadpc:	.asciz	"Backtrace aborted due to bad pc <%p>\n"
+		.align
+.Lbadlr:	.asciz	"Backtrace aborted due to bad lr <%p>\n"
 		.align
 .Lopcode:	.word	0xe92d4800 >> 11	@ stmfd sp!, {... fp, lr}
 		.word	0x0b000000		@ bl if these bits are set

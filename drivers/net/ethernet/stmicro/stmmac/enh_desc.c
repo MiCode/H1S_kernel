@@ -201,11 +201,6 @@ static int enh_desc_get_rx_status(void *data, struct stmmac_extra_stats *x,
 	if (unlikely(rdes0 & RDES0_OWN))
 		return dma_own;
 
-	if (unlikely(!(rdes0 & RDES0_LAST_DESCRIPTOR))) {
-		stats->rx_length_errors++;
-		return discard_frame;
-	}
-
 	if (unlikely(rdes0 & RDES0_ERROR_SUMMARY)) {
 		if (unlikely(rdes0 & RDES0_DESCRIPTOR_ERROR)) {
 			x->rx_desc++;
@@ -236,10 +231,9 @@ static int enh_desc_get_rx_status(void *data, struct stmmac_extra_stats *x,
 	 * It doesn't match with the information reported into the databook.
 	 * At any rate, we need to understand if the CSUM hw computation is ok
 	 * and report this info to the upper layers. */
-	if (likely(ret == good_frame))
-		ret = enh_desc_coe_rdes0(!!(rdes0 & RDES0_IPC_CSUM_ERROR),
-					 !!(rdes0 & RDES0_FRAME_TYPE),
-					 !!(rdes0 & ERDES0_RX_MAC_ADDR));
+	ret = enh_desc_coe_rdes0(!!(rdes0 & RDES0_IPC_CSUM_ERROR),
+				 !!(rdes0 & RDES0_FRAME_TYPE),
+				 !!(rdes0 & ERDES0_RX_MAC_ADDR));
 
 	if (unlikely(rdes0 & RDES0_DRIBBLING))
 		x->dribbling_bit++;
@@ -265,19 +259,15 @@ static int enh_desc_get_rx_status(void *data, struct stmmac_extra_stats *x,
 }
 
 static void enh_desc_init_rx_desc(struct dma_desc *p, int disable_rx_ic,
-				  int mode, int end, int bfsize)
+				  int mode, int end)
 {
-	int bfsize1;
-
 	p->des0 |= cpu_to_le32(RDES0_OWN);
-
-	bfsize1 = min(bfsize, BUF_SIZE_8KiB);
-	p->des1 |= cpu_to_le32(bfsize1 & ERDES1_BUFFER1_SIZE_MASK);
+	p->des1 |= cpu_to_le32(BUF_SIZE_8KiB & ERDES1_BUFFER1_SIZE_MASK);
 
 	if (mode == STMMAC_CHAIN_MODE)
 		ehn_desc_rx_set_on_chain(p);
 	else
-		ehn_desc_rx_set_on_ring(p, end, bfsize);
+		ehn_desc_rx_set_on_ring(p, end);
 
 	if (disable_rx_ic)
 		p->des1 |= cpu_to_le32(ERDES1_DISABLE_IC);
@@ -302,7 +292,7 @@ static void enh_desc_set_tx_owner(struct dma_desc *p)
 	p->des0 |= cpu_to_le32(ETDES0_OWN);
 }
 
-static void enh_desc_set_rx_owner(struct dma_desc *p)
+static void enh_desc_set_rx_owner(struct dma_desc *p, int disable_rx_ic)
 {
 	p->des0 |= cpu_to_le32(RDES0_OWN);
 }
@@ -351,7 +341,7 @@ static void enh_desc_prepare_tx_desc(struct dma_desc *p, int is_fs, int len,
 	if (tx_own)
 		tdes0 |= ETDES0_OWN;
 
-	if (is_fs & tx_own)
+	if (is_fs && tx_own)
 		/* When the own bit, for the first frame, has to be set, all
 		 * descriptors for the same frame has to be set before, to
 		 * avoid race condition.
@@ -392,7 +382,7 @@ static int enh_desc_get_tx_timestamp_status(struct dma_desc *p)
 	return (le32_to_cpu(p->des0) & ETDES0_TIME_STAMP_STATUS) >> 17;
 }
 
-static u64 enh_desc_get_timestamp(void *desc, u32 ats)
+static void enh_desc_get_timestamp(void *desc, u32 ats, u64 *ts)
 {
 	u64 ns;
 
@@ -407,7 +397,7 @@ static u64 enh_desc_get_timestamp(void *desc, u32 ats)
 		ns += le32_to_cpu(p->des3) * 1000000000ULL;
 	}
 
-	return ns;
+	*ts = ns;
 }
 
 static int enh_desc_get_rx_timestamp_status(void *desc, void *next_desc,
@@ -438,13 +428,28 @@ static void enh_desc_display_ring(void *head, unsigned int size, bool rx)
 		u64 x;
 
 		x = *(u64 *)ep;
-		pr_info("%d [0x%x]: 0x%x 0x%x 0x%x 0x%x\n",
+		pr_info("%03d [0x%x]: 0x%x 0x%x 0x%x 0x%x\n",
 			i, (unsigned int)virt_to_phys(ep),
 			(unsigned int)x, (unsigned int)(x >> 32),
 			ep->basic.des2, ep->basic.des3);
 		ep++;
 	}
 	pr_info("\n");
+}
+
+static void enh_desc_get_addr(struct dma_desc *p, unsigned int *addr)
+{
+	*addr = le32_to_cpu(p->des2);
+}
+
+static void enh_desc_set_addr(struct dma_desc *p, dma_addr_t addr)
+{
+	p->des2 = cpu_to_le32(addr);
+}
+
+static void enh_desc_clear(struct dma_desc *p)
+{
+	p->des2 = 0;
 }
 
 const struct stmmac_desc_ops enh_desc_ops = {
@@ -467,4 +472,7 @@ const struct stmmac_desc_ops enh_desc_ops = {
 	.get_timestamp = enh_desc_get_timestamp,
 	.get_rx_timestamp_status = enh_desc_get_rx_timestamp_status,
 	.display_ring = enh_desc_display_ring,
+	.get_addr = enh_desc_get_addr,
+	.set_addr = enh_desc_set_addr,
+	.clear = enh_desc_clear,
 };

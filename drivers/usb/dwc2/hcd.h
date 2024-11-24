@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
 /*
  * hcd.h - DesignWare HS OTG Controller host-mode declarations
  *
@@ -81,7 +82,7 @@ struct dwc2_qh;
  * @xfer_count:         Number of bytes transferred so far
  * @start_pkt_count:    Packet count at start of transfer
  * @xfer_started:       True if the transfer has been started
- * @ping:               True if a PING request should be issued on this channel
+ * @do_ping:            True if a PING request should be issued on this channel
  * @error_state:        True if the error count for this transaction is non-zero
  * @halt_on_queue:      True if this channel should be halted the next time a
  *                      request is queued for the channel. This is necessary in
@@ -103,7 +104,7 @@ struct dwc2_qh;
  * @schinfo:            Scheduling micro-frame bitmap
  * @ntd:                Number of transfer descriptors for the transfer
  * @halt_status:        Reason for halting the host channel
- * @hcint               Contents of the HCINT register when the interrupt came
+ * @hcint:               Contents of the HCINT register when the interrupt came
  * @qh:                 QH for the transfer being processed by this channel
  * @hc_list_entry:      For linking to list of host channels
  * @desc_list_addr:     Current QH's descriptor list DMA address
@@ -240,7 +241,7 @@ struct dwc2_tt {
 /**
  * struct dwc2_hs_transfer_time - Info about a transfer on the high speed bus.
  *
- * @start_schedule_usecs:  The start time on the main bus schedule.  Note that
+ * @start_schedule_us:  The start time on the main bus schedule.  Note that
  *                         the main bus schedule is tightly packed and this
  *			   time should be interpreted as tightly packed (so
  *			   uFrame 0 starts at 0 us, uFrame 1 starts at 100 us
@@ -305,7 +306,6 @@ struct dwc2_hs_transfer_time {
  *                           "struct dwc2_tt".  Not used if this device is high
  *                           speed.  Note that this is in "schedule slice" which
  *                           is tightly packed.
- * @ls_duration_us:     Duration on the low speed bus schedule.
  * @ntd:                Actual number of transfer descriptors in a list
  * @dw_align_buf:       Used instead of original buffer if its physical address
  *                      is not dword-aligned
@@ -321,13 +321,18 @@ struct dwc2_hs_transfer_time {
  *                      descriptor and indicates original XferSize value for the
  *                      descriptor
  * @unreserve_timer:    Timer for releasing periodic reservation.
- * @dwc2_tt:            Pointer to our tt info (or NULL if no tt).
+ * @wait_timer:         Timer used to wait before re-queuing.
+ * @dwc_tt:            Pointer to our tt info (or NULL if no tt).
  * @ttport:             Port number within our tt.
  * @tt_buffer_dirty     True if clear_tt_buffer_complete is pending
  * @unreserve_pending:  True if we planned to unreserve but haven't yet.
  * @schedule_low_speed: True if we have a low/full speed component (either the
  *			host is in low/full speed mode or do_split).
+ * @want_wait:          We should wait before re-queuing; only matters for non-
+ *                      periodic transfers and is ignored for periodic ones.
+ * @wait_timer_cancel:  Set to true to cancel the wait_timer.
  *
+ * @tt_buffer_dirty:	True if EP's TT buffer is not clean.
  * A Queue Head (QH) holds the static characteristics of an endpoint and
  * maintains a list of transfers (QTDs) for that endpoint. A QH structure may
  * be entered in either the non-periodic or periodic schedule.
@@ -364,11 +369,14 @@ struct dwc2_qh {
 	u32 desc_list_sz;
 	u32 *n_bytes;
 	struct timer_list unreserve_timer;
+	struct hrtimer wait_timer;
 	struct dwc2_tt *dwc_tt;
 	int ttport;
 	unsigned tt_buffer_dirty:1;
 	unsigned unreserve_pending:1;
 	unsigned schedule_low_speed:1;
+	unsigned want_wait:1;
+	unsigned wait_timer_cancel:1;
 };
 
 /**
@@ -399,9 +407,14 @@ struct dwc2_qh {
  * @n_desc:             Number of DMA descriptors for this QTD
  * @isoc_frame_index_last: Last activated frame (packet) index, used in
  *                      descriptor DMA mode only
+ * @num_naks:           Number of NAKs received on this QTD.
  * @urb:                URB for this transfer
  * @qh:                 Queue head for this QTD
  * @qtd_list_entry:     For linking to the QH's list of QTDs
+ * @isoc_td_first:	Index of first activated isochronous transfer
+ *			descriptor in Descriptor DMA mode
+ * @isoc_td_last:	Index of last activated isochronous transfer
+ *			descriptor in Descriptor DMA mode
  *
  * A Queue Transfer Descriptor (QTD) holds the state of a bulk, control,
  * interrupt, or isochronous transfer. A single QTD is created for each URB
@@ -429,6 +442,7 @@ struct dwc2_qtd {
 	u8 error_count;
 	u8 n_desc;
 	u16 isoc_frame_index_last;
+	u16 num_naks;
 	struct dwc2_hcd_urb *urb;
 	struct dwc2_qh *qh;
 	struct list_head qtd_list_entry;
@@ -458,10 +472,10 @@ static inline struct usb_hcd *dwc2_hsotg_to_hcd(struct dwc2_hsotg *hsotg)
  */
 static inline void disable_hc_int(struct dwc2_hsotg *hsotg, int chnum, u32 intr)
 {
-	u32 mask = dwc2_readl(hsotg->regs + HCINTMSK(chnum));
+	u32 mask = dwc2_readl(hsotg, HCINTMSK(chnum));
 
 	mask &= ~intr;
-	dwc2_writel(mask, hsotg->regs + HCINTMSK(chnum));
+	dwc2_writel(hsotg, mask, HCINTMSK(chnum));
 }
 
 void dwc2_hc_cleanup(struct dwc2_hsotg *hsotg, struct dwc2_host_chan *chan);
@@ -476,7 +490,7 @@ void dwc2_hc_start_transfer_ddma(struct dwc2_hsotg *hsotg,
  */
 static inline u32 dwc2_read_hprt0(struct dwc2_hsotg *hsotg)
 {
-	u32 hprt0 = dwc2_readl(hsotg->regs + HPRT0);
+	u32 hprt0 = dwc2_readl(hsotg, HPRT0);
 
 	hprt0 &= ~(HPRT0_ENA | HPRT0_CONNDET | HPRT0_ENACHG | HPRT0_OVRCURRCHG);
 	return hprt0;
@@ -678,8 +692,8 @@ static inline u16 dwc2_micro_frame_num(u16 frame)
  */
 static inline u32 dwc2_read_core_intr(struct dwc2_hsotg *hsotg)
 {
-	return dwc2_readl(hsotg->regs + GINTSTS) &
-	       dwc2_readl(hsotg->regs + GINTMSK);
+	return dwc2_readl(hsotg, GINTSTS) &
+	       dwc2_readl(hsotg, GINTMSK);
 }
 
 static inline u32 dwc2_hcd_urb_get_status(struct dwc2_hcd_urb *dwc2_urb)
@@ -783,19 +797,6 @@ int dwc2_hcd_is_b_host(struct dwc2_hsotg *hsotg);
  */
 void dwc2_hcd_dump_state(struct dwc2_hsotg *hsotg);
 
-/**
- * dwc2_hcd_dump_frrem() - Dumps the average frame remaining at SOF
- *
- * @hsotg: The DWC2 HCD
- *
- * This can be used to determine average interrupt latency. Frame remaining is
- * also shown for start transfer and two additional sample points.
- *
- * NOTE: This function will be removed once the peripheral controller code
- * is integrated and the driver is stable
- */
-void dwc2_hcd_dump_frrem(struct dwc2_hsotg *hsotg);
-
 /* URB interface */
 
 /* Transfer flags */
@@ -812,48 +813,5 @@ void dwc2_host_put_tt_info(struct dwc2_hsotg *hsotg,
 int dwc2_host_get_speed(struct dwc2_hsotg *hsotg, void *context);
 void dwc2_host_complete(struct dwc2_hsotg *hsotg, struct dwc2_qtd *qtd,
 			int status);
-
-#ifdef DEBUG
-/*
- * Macro to sample the remaining PHY clocks left in the current frame. This
- * may be used during debugging to determine the average time it takes to
- * execute sections of code. There are two possible sample points, "a" and
- * "b", so the _letter_ argument must be one of these values.
- *
- * To dump the average sample times, read the "hcd_frrem" sysfs attribute. For
- * example, "cat /sys/devices/lm0/hcd_frrem".
- */
-#define dwc2_sample_frrem(_hcd_, _qh_, _letter_)			\
-do {									\
-	struct hfnum_data _hfnum_;					\
-	struct dwc2_qtd *_qtd_;						\
-									\
-	_qtd_ = list_entry((_qh_)->qtd_list.next, struct dwc2_qtd,	\
-			   qtd_list_entry);				\
-	if (usb_pipeint(_qtd_->urb->pipe) &&				\
-	    (_qh_)->start_active_frame != 0 && !_qtd_->complete_split) { \
-		_hfnum_.d32 = dwc2_readl((_hcd_)->regs + HFNUM);	\
-		switch (_hfnum_.b.frnum & 0x7) {			\
-		case 7:							\
-			(_hcd_)->hfnum_7_samples_##_letter_++;		\
-			(_hcd_)->hfnum_7_frrem_accum_##_letter_ +=	\
-				_hfnum_.b.frrem;			\
-			break;						\
-		case 0:							\
-			(_hcd_)->hfnum_0_samples_##_letter_++;		\
-			(_hcd_)->hfnum_0_frrem_accum_##_letter_ +=	\
-				_hfnum_.b.frrem;			\
-			break;						\
-		default:						\
-			(_hcd_)->hfnum_other_samples_##_letter_++;	\
-			(_hcd_)->hfnum_other_frrem_accum_##_letter_ +=	\
-				_hfnum_.b.frrem;			\
-			break;						\
-		}							\
-	}								\
-} while (0)
-#else
-#define dwc2_sample_frrem(_hcd_, _qh_, _letter_)	do {} while (0)
-#endif
 
 #endif /* __DWC2_HCD_H__ */

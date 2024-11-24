@@ -102,55 +102,76 @@ config SCSI_UFS_QCOM
 	  Select this if you have UFS controller on QCOM chipset.
 	  If unsure, say N.
 
-config MTK_UFS_SUPPORT
-	bool "MTK specific hooks to UFS controller platform driver"
-	depends on SCSI_UFSHCD_PLATFORM
-	select CRC16
-	default n
-	---help---
-	  This selects MediaTek specific hooks to UFS controller platform
-	  driver and enable embedded UFS as default booting device on
-	  MediaTek platforms.
+config SCSI_UFS_MEDIATEK
+	tristate "Mediatek specific hooks to UFS controller platform driver"
+	depends on SCSI_UFSHCD_PLATFORM && ARCH_MEDIATEK
+	select PHY_MTK_UFS
+	select RESET_TI_SYSCON
+	help
+	  This selects the Mediatek specific additions to UFSHCD platform driver.
+	  UFS host on Mediatek needs some vendor specific configuration before
+	  accessing the hardware which includes PHY configuration and vendor
+	  specific registers.
 
-	  Say Y if you want to use embedded UFS as default booting device.
+	  Select this if you have UFS controller on Mediatek chipset.
 
 	  If unsure, say N.
 
-config MTK_UFS_BLOCK_IO_LOG
-	bool "UFS Block IO log"
-	depends on MTK_BLOCK_TAG && MTK_UFS_SUPPORT
-	default y
+config SCSI_UFS_HISI
+	tristate "Hisilicon specific hooks to UFS controller platform driver"
+	depends on (ARCH_HISI || COMPILE_TEST) && SCSI_UFSHCD_PLATFORM
 	---help---
-	  Enable IO trace for performance analysis and application access
-	  pattern study.
-	  Say Y if you want to have IO trace.
+	  This selects the Hisilicon specific additions to UFSHCD platform driver.
 
-	  If unsure, say N
+	  Select this if you have UFS controller on Hisilicon chipset.
+	  If unsure, say N.
 
-config UFSFEATURE
+config SCSI_UFS_BSG
+	bool "Universal Flash Storage BSG device node"
+	depends on SCSI_UFSHCD
+	select BLK_DEV_BSGLIB
+	help
+	  Universal Flash Storage (UFS) is SCSI transport specification for
+	  accessing flash storage on digital cameras, mobile phones and
+	  consumer electronic devices.
+	  A UFS controller communicates with a UFS device by exchanging
+	  UFS Protocol Information Units (UPIUs).
+	  UPIUs can not only be used as a transport layer for the SCSI protocol
+	  but are also used by the UFS native command set.
+	  This transport driver supports exchanging UFS protocol information units
+	  with a UFS device. See also the ufshcd driver, which is a SCSI driver
+	  that supports UFS devices.
+
+	  Select this if you need a bsg device node for your UFS controller.
+	  If unsure, say N.
+
+config SCSI_UFS_FEATURE
 	bool "UFS feature activate"
 	depends on SCSI_UFSHCD
 	---help---
 	UFS feature activate such as hpb, tw and etc.
 
-config UFSHPB
+config SCSI_UFS_HPB
 	bool "UFSHPB"
-	depends on SCSI_UFSHCD && UFSFEATURE
+	depends on SCSI_UFSHCD && SCSI_UFS_FEATURE
 	---help---
 	UFS HPB Feature Enable
 
-config UFSTW
+config SCSI_UFS_TW
 	bool "UFSTW"
-	depends on SCSI_UFSHCD && UFSFEATURE
+	depends on SCSI_UFSHCD && SCSI_UFS_FEATURE
 	---help---
 	UFS TW Feature Enable
 
-config UFSTW_IGNORE_GUARANTEE_BIT
+config SCSI_UFS_TW_IGNORE_GUARANTEE_BIT
 	bool "UFSTW_IGNORE_GUARANTEE_BIT"
 	default n
-	depends on SCSI_UFSHCD && UFSFEATURE && UFSTW
-	---help---
-	ignore the guarantee bit[31] of dTurboWriteBufferLifeTimeEst for PoC
+	depends on SCSI_UFSHCD && SCSI_UFS_FEATURE && SCSI_UFS_TW
+	help
+	  If device not guarantee the lifetime of Turbo Write Buffer
+	  we will Ignore the guarantee bit[31] of dTurboWriteBufferLifeTimeEst for PoC.
+	  If device not guarantee the lifetime of Turbo Write Buffer and not ignore the bit
+	  So tw_mode change to disable_mode.
 
 config SCSI_SKHPB
 	bool "Activate HPB Host-aware Performance Booster"
@@ -166,3 +187,14 @@ config SCSI_UFS_CRYPTO
 	  Enabling this makes it possible for the kernel to use the crypto
 	  capabilities of the UFS device (if present) to perform crypto
 	  operations on data being transferred to/from the device.
+
+config MTK_UFS_BLOCK_IO_LOG
+	bool "UFS Block IO log"
+	depends on MTK_BLOCK_TAG && SCSI_UFS_MEDIATEK
+	default y
+	help
+	  Enable IO trace for performance analysis and application access
+	  pattern study.
+	  Say Y if you want to have IO trace.
+
+	  If unsure, say N

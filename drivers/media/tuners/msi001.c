@@ -291,25 +291,12 @@ err:
 	return ret;
 }
 
-static int msi001_s_power(struct v4l2_subdev *sd, int on)
+static int msi001_standby(struct v4l2_subdev *sd)
 {
 	struct msi001_dev *dev = sd_to_msi001_dev(sd);
-	struct spi_device *spi = dev->spi;
-	int ret;
 
-	dev_dbg(&spi->dev, "on=%d\n", on);
-
-	if (on)
-		ret = 0;
-	else
-		ret = msi001_wreg(dev, 0x000000);
-
-	return ret;
+	return msi001_wreg(dev, 0x000000);
 }
-
-static const struct v4l2_subdev_core_ops msi001_core_ops = {
-	.s_power                  = msi001_s_power,
-};
 
 static int msi001_g_tuner(struct v4l2_subdev *sd, struct v4l2_tuner *v)
 {
@@ -386,6 +373,7 @@ static int msi001_enum_freq_bands(struct v4l2_subdev *sd,
 }
 
 static const struct v4l2_subdev_tuner_ops msi001_tuner_ops = {
+	.standby                  = msi001_standby,
 	.g_tuner                  = msi001_g_tuner,
 	.s_tuner                  = msi001_s_tuner,
 	.g_frequency              = msi001_g_frequency,
@@ -394,7 +382,6 @@ static const struct v4l2_subdev_tuner_ops msi001_tuner_ops = {
 };
 
 static const struct v4l2_subdev_ops msi001_ops = {
-	.core                     = &msi001_core_ops,
 	.tuner                    = &msi001_tuner_ops,
 };
 
@@ -464,6 +451,13 @@ static int msi001_probe(struct spi_device *spi)
 			V4L2_CID_RF_TUNER_BANDWIDTH_AUTO, 0, 1, 1, 1);
 	dev->bandwidth = v4l2_ctrl_new_std(&dev->hdl, &msi001_ctrl_ops,
 			V4L2_CID_RF_TUNER_BANDWIDTH, 200000, 8000000, 1, 200000);
+	if (dev->hdl.error) {
+		ret = dev->hdl.error;
+		dev_err(&spi->dev, "Could not initialize controls\n");
+		/* control init failed, free handler */
+		goto err_ctrl_handler_free;
+	}
+
 	v4l2_ctrl_auto_cluster(2, &dev->bandwidth_auto, 0, false);
 	dev->lna_gain = v4l2_ctrl_new_std(&dev->hdl, &msi001_ctrl_ops,
 			V4L2_CID_RF_TUNER_LNA_GAIN, 0, 1, 1, 1);

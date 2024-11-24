@@ -27,10 +27,11 @@
 #include <linux/slab.h>
 #include <linux/xattr.h>
 #include <linux/ima.h>
+#include <linux/iversion.h>
+#include <linux/fs.h>
+#include <linux/iversion.h>
 
 #include "ima.h"
-
-int ima_initialized;
 
 #ifdef CONFIG_IMA_APPRAISE
 int ima_appraise = IMA_APPRAISE_ENFORCE;
@@ -59,14 +60,11 @@ static int __init hash_setup(char *str)
 		goto out;
 	}
 
-	for (i = 0; i < HASH_ALGO__LAST; i++) {
-		if (strcmp(str, hash_algo_name[i]) == 0) {
-			ima_hash_algo = i;
-			break;
-		}
-	}
-	if (i == HASH_ALGO__LAST)
+	i = match_string(hash_algo_name, HASH_ALGO__LAST, str);
+	if (i < 0)
 		return 1;
+
+	ima_hash_algo = i;
 out:
 	hash_setup_done = 1;
 	return 1;
@@ -87,10 +85,10 @@ static void ima_rdwr_violation_check(struct file *file,
 				     struct integrity_iint_cache *iint,
 				     int must_measure,
 				     char **pathbuf,
-				     const char **pathname)
+				     const char **pathname,
+				     char *filename)
 {
 	struct inode *inode = file_inode(file);
-	char filename[NAME_MAX];
 	fmode_t mode = file->f_mode;
 	bool send_tomtou = false, send_writers = false;
 
@@ -136,7 +134,8 @@ static void ima_check_last_writer(struct integrity_iint_cache *iint,
 	if (atomic_read(&inode->i_writecount) == 1) {
 		update = test_and_clear_bit(IMA_UPDATE_XATTR,
 					    &iint->atomic_flags);
-		if ((iint->version != inode->i_version) ||
+		if (!IS_I_VERSION(inode) ||
+		    !inode_eq_iversion(inode, iint->version) ||
 		    (iint->flags & IMA_NEW_FILE)) {
 			iint->flags &= ~(IMA_DONE_MASK | IMA_NEW_FILE);
 			iint->measured_pcrs = 0;
@@ -168,10 +167,11 @@ void ima_file_free(struct file *file)
 	ima_check_last_writer(iint, inode, file);
 }
 
-static int process_measurement(struct file *file, char *buf, loff_t size,
-			       int mask, enum ima_hooks func, int opened)
+static int process_measurement(struct file *file, const struct cred *cred,
+			       u32 secid, char *buf, loff_t size, int mask,
+			       enum ima_hooks func)
 {
-	struct inode *inode = file_inode(file);
+	struct inode *backing_inode, *inode = file_inode(file);
 	struct integrity_iint_cache *iint = NULL;
 	struct ima_template_desc *template_desc;
 	char *pathbuf = NULL;
@@ -191,7 +191,7 @@ static int process_measurement(struct file *file, char *buf, loff_t size,
 	 * bitmask based on the appraise/audit/measurement policy.
 	 * Included is the appraise submask.
 	 */
-	action = ima_get_action(inode, mask, func, &pcr);
+	action = ima_get_action(inode, cred, secid, mask, func, &pcr);
 	violation_check = ((func == FILE_CHECK || func == MMAP_CHECK) &&
 			   (ima_policy_flag & IMA_MEASURE));
 	if (!action && !violation_check)
@@ -213,7 +213,7 @@ static int process_measurement(struct file *file, char *buf, loff_t size,
 
 	if (!rc && violation_check)
 		ima_rdwr_violation_check(file, iint, action & IMA_MEASURE,
-					 &pathbuf, &pathname);
+					 &pathbuf, &pathname, filename);
 
 	inode_unlock(inode);
 
@@ -230,9 +230,31 @@ static int process_measurement(struct file *file, char *buf, loff_t size,
 				 IMA_APPRAISE_SUBMASK | IMA_APPRAISED_SUBMASK |
 				 IMA_ACTION_FLAGS);
 
-	if (test_and_clear_bit(IMA_CHANGE_XATTR, &iint->atomic_flags))
-		/* reset all flags if ima_inode_setxattr was called */
+	/*
+	 * Re-evaulate the file if either the xattr has changed or the
+	 * kernel has no way of detecting file change on the filesystem.
+	 * (Limited to privileged mounted filesystems.)
+	 */
+	if (test_and_clear_bit(IMA_CHANGE_XATTR, &iint->atomic_flags) ||
+	    ((inode->i_sb->s_iflags & SB_I_IMA_UNVERIFIABLE_SIGNATURE) &&
+	     !(inode->i_sb->s_iflags & SB_I_UNTRUSTED_MOUNTER) &&
+	     !(action & IMA_FAIL_UNVERIFIABLE_SIGS))) {
 		iint->flags &= ~IMA_DONE_MASK;
+		iint->measured_pcrs = 0;
+	}
+
+	/* Detect and re-evaluate changes made to the backing file. */
+	backing_inode = d_real_inode(file_dentry(file));
+	if (backing_inode != inode &&
+	    (action & IMA_DO_MASK) && (iint->flags & IMA_DONE_MASK)) {
+		if (!IS_I_VERSION(backing_inode) ||
+		    backing_inode->i_sb->s_dev != iint->real_dev ||
+		    backing_inode->i_ino != iint->real_ino ||
+		    !inode_eq_iversion(backing_inode, iint->version)) {
+			iint->flags &= ~IMA_DONE_MASK;
+			iint->measured_pcrs = 0;
+		}
+	}
 
 	/* Determine if already appraised/measured based on bitmask
 	 * (IMA_MEASURE, IMA_MEASURED, IMA_XXXX_APPRAISE, IMA_XXXX_APPRAISED,
@@ -245,6 +267,18 @@ static int process_measurement(struct file *file, char *buf, loff_t size,
 	/* If target pcr is already measured, unset IMA_MEASURE action */
 	if ((action & IMA_MEASURE) && (iint->measured_pcrs & (0x1 << pcr)))
 		action ^= IMA_MEASURE;
+
+	/* HASH sets the digital signature and update flags, nothing else */
+	if ((action & IMA_HASH) &&
+	    !(test_bit(IMA_DIGSIG, &iint->atomic_flags))) {
+		xattr_len = ima_read_xattr(file_dentry(file), &xattr_value);
+		if ((xattr_value && xattr_len > 2) &&
+		    (xattr_value->type == EVM_IMA_XATTR_DIGSIG))
+			set_bit(IMA_DIGSIG, &iint->atomic_flags);
+		iint->flags |= IMA_HASHED;
+		action ^= IMA_HASH;
+		set_bit(IMA_UPDATE_XATTR, &iint->atomic_flags);
+	}
 
 	/* Nothing to do, just return existing appraised status */
 	if (!action) {
@@ -274,7 +308,7 @@ static int process_measurement(struct file *file, char *buf, loff_t size,
 	if (rc == 0 && (action & IMA_APPRAISE_SUBMASK)) {
 		inode_lock(inode);
 		rc = ima_appraise_measurement(func, iint, file, pathname,
-					      xattr_value, xattr_len, opened);
+					      xattr_value, xattr_len);
 		inode_unlock(inode);
 	}
 	if (action & IMA_AUDIT)
@@ -303,7 +337,9 @@ out:
 /**
  * ima_file_mmap - based on policy, collect/store measurement.
  * @file: pointer to the file to be measured (May be NULL)
- * @prot: contains the protection that will be applied by the kernel.
+ * @reqprot: protection requested by the application
+ * @prot: protection that will be applied by the kernel
+ * @flags: operational flags
  *
  * Measure files being mmapped executable based on the ima_must_measure()
  * policy decision.
@@ -311,11 +347,17 @@ out:
  * On success return 0.  On integrity appraisal error, assuming the file
  * is in policy and IMA-appraisal is in enforcing mode, return -EACCES.
  */
-int ima_file_mmap(struct file *file, unsigned long prot)
+int ima_file_mmap(struct file *file, unsigned long reqprot,
+		  unsigned long prot, unsigned long flags)
 {
-	if (file && (prot & PROT_EXEC))
-		return process_measurement(file, NULL, 0, MAY_EXEC,
-					   MMAP_CHECK, 0);
+	u32 secid;
+
+	if (file && (prot & PROT_EXEC)) {
+		security_task_getsecid(current, &secid);
+		return process_measurement(file, current_cred(), secid, NULL,
+					   0, MAY_EXEC, MMAP_CHECK);
+	}
+
 	return 0;
 }
 
@@ -334,8 +376,18 @@ int ima_file_mmap(struct file *file, unsigned long prot)
  */
 int ima_bprm_check(struct linux_binprm *bprm)
 {
-	return process_measurement(bprm->file, NULL, 0, MAY_EXEC,
-				   BPRM_CHECK, 0);
+	int ret;
+	u32 secid;
+
+	security_task_getsecid(current, &secid);
+	ret = process_measurement(bprm->file, current_cred(), secid, NULL, 0,
+				  MAY_EXEC, BPRM_CHECK);
+	if (ret)
+		return ret;
+
+	security_cred_getsecid(bprm->cred, &secid);
+	return process_measurement(bprm->file, bprm->cred, secid, NULL, 0,
+				   MAY_EXEC, CREDS_CHECK);
 }
 
 /**
@@ -348,11 +400,14 @@ int ima_bprm_check(struct linux_binprm *bprm)
  * On success return 0.  On integrity appraisal error, assuming the file
  * is in policy and IMA-appraisal is in enforcing mode, return -EACCES.
  */
-int ima_file_check(struct file *file, int mask, int opened)
+int ima_file_check(struct file *file, int mask)
 {
-	return process_measurement(file, NULL, 0,
+	u32 secid;
+
+	security_task_getsecid(current, &secid);
+	return process_measurement(file, current_cred(), secid, NULL, 0,
 				   mask & (MAY_READ | MAY_WRITE | MAY_EXEC |
-					   MAY_APPEND), FILE_CHECK, opened);
+					   MAY_APPEND), FILE_CHECK);
 }
 EXPORT_SYMBOL_GPL(ima_file_check);
 
@@ -391,14 +446,14 @@ void ima_post_path_mknod(struct dentry *dentry)
  */
 int ima_read_file(struct file *file, enum kernel_read_file_id read_id)
 {
-	if (!file && read_id == READING_MODULE) {
-#ifndef CONFIG_MODULE_SIG_FORCE
-		if ((ima_appraise & IMA_APPRAISE_MODULES) &&
-		    (ima_appraise & IMA_APPRAISE_ENFORCE))
-			return -EACCES;	/* INTEGRITY_UNKNOWN */
-#endif
-		return 0;	/* We rely on module signature checking */
-	}
+	/*
+	 * READING_FIRMWARE_PREALLOC_BUFFER
+	 *
+	 * Do devices using pre-allocated memory run the risk of the
+	 * firmware being accessible to the device prior to the completion
+	 * of IMA's signature verification any more than when using two
+	 * buffers?
+	 */
 	return 0;
 }
 
@@ -428,15 +483,19 @@ int ima_post_read_file(struct file *file, void *buf, loff_t size,
 		       enum kernel_read_file_id read_id)
 {
 	enum ima_hooks func;
+	u32 secid;
 
 	if (!file && read_id == READING_FIRMWARE) {
 		if ((ima_appraise & IMA_APPRAISE_FIRMWARE) &&
-		    (ima_appraise & IMA_APPRAISE_ENFORCE))
+		    (ima_appraise & IMA_APPRAISE_ENFORCE)) {
+			pr_err("Prevent firmware loading_store.\n");
 			return -EACCES;	/* INTEGRITY_UNKNOWN */
+		}
 		return 0;
 	}
 
-	if (!file && read_id == READING_MODULE) /* MODULE_SIG_FORCE enabled */
+	/* permit signed certs */
+	if (!file && read_id == READING_X509_CERTIFICATE)
 		return 0;
 
 	if (!file || !buf || size == 0) { /* should never happen */
@@ -446,7 +505,52 @@ int ima_post_read_file(struct file *file, void *buf, loff_t size,
 	}
 
 	func = read_idmap[read_id] ?: FILE_CHECK;
-	return process_measurement(file, buf, size, MAY_READ, func, 0);
+	security_task_getsecid(current, &secid);
+	return process_measurement(file, current_cred(), secid, buf, size,
+				   MAY_READ, func);
+}
+
+/**
+ * ima_load_data - appraise decision based on policy
+ * @id: kernel load data caller identifier
+ *
+ * Callers of this LSM hook can not measure, appraise, or audit the
+ * data provided by userspace.  Enforce policy rules requring a file
+ * signature (eg. kexec'ed kernel image).
+ *
+ * For permission return 0, otherwise return -EACCES.
+ */
+int ima_load_data(enum kernel_load_data_id id)
+{
+	bool sig_enforce;
+
+	if ((ima_appraise & IMA_APPRAISE_ENFORCE) != IMA_APPRAISE_ENFORCE)
+		return 0;
+
+	switch (id) {
+	case LOADING_KEXEC_IMAGE:
+		if (ima_appraise & IMA_APPRAISE_KEXEC) {
+			pr_err("impossible to appraise a kernel image without a file descriptor; try using kexec_file_load syscall.\n");
+			return -EACCES;	/* INTEGRITY_UNKNOWN */
+		}
+		break;
+	case LOADING_FIRMWARE:
+		if (ima_appraise & IMA_APPRAISE_FIRMWARE) {
+			pr_err("Prevent firmware sysfs fallback loading.\n");
+			return -EACCES;	/* INTEGRITY_UNKNOWN */
+		}
+		break;
+	case LOADING_MODULE:
+		sig_enforce = is_module_sig_enforced();
+
+		if (!sig_enforce && (ima_appraise & IMA_APPRAISE_MODULES)) {
+			pr_err("impossible to appraise a module without a file descriptor. sig_enforce kernel parameter might help\n");
+			return -EACCES;	/* INTEGRITY_UNKNOWN */
+		}
+	default:
+		break;
+	}
+	return 0;
 }
 
 static int __init init_ima(void)
@@ -466,10 +570,9 @@ static int __init init_ima(void)
 		error = ima_init();
 	}
 
-	if (!error) {
-		ima_initialized = 1;
+	if (!error)
 		ima_update_policy_flag();
-	}
+
 	return error;
 }
 

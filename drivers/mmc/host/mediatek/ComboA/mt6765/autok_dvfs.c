@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include <asm/segment.h>
@@ -207,7 +199,7 @@ int autok_res_check(u8 *res_h, u8 *res_l)
 #ifndef SDIO_HW_DVFS_CONDITIONAL
 	ret = -1;
 #endif
-	pr_notice("autok_res_check %d!\n", ret);
+	pr_notice("%s %d!\n", __func__, ret);
 
 	return ret;
 }
@@ -427,7 +419,7 @@ void sdio_autok_wait_dvfs_ready(void)
 int sd_execute_dvfs_autok(struct msdc_host *host, u32 opcode)
 {
 	int ret = 0;
-	int vcore = 0;
+	int vcore = AUTOK_VCORE_MERGE;
 	u8 *res;
 
 	res = host->autok_res[vcore];
@@ -437,6 +429,9 @@ int sd_execute_dvfs_autok(struct msdc_host *host, u32 opcode)
 		if (host->is_autok_done == 0) {
 			pr_notice("[AUTOK]SDcard autok\n");
 			ret = autok_execute_tuning(host, res);
+			memcpy(host->autok_res[AUTOK_VCORE_LEVEL0],
+					host->autok_res[AUTOK_VCORE_MERGE],
+					TUNING_PARA_SCAN_COUNT);
 			host->is_autok_done = 1;
 		} else {
 			autok_init_sdr104(host);
@@ -451,7 +446,7 @@ int sd_execute_dvfs_autok(struct msdc_host *host, u32 opcode)
 int emmc_execute_dvfs_autok(struct msdc_host *host, u32 opcode)
 {
 	int ret = 0;
-	int vcore = 0;
+	int vcore = AUTOK_VCORE_MERGE;
 	u8 *res;
 
 #if defined(VCOREFS_READY)
@@ -520,7 +515,7 @@ void msdc_dvfs_reg_backup_init(struct msdc_host *host)
 #else
 void msdc_dvfs_reg_backup_init(struct msdc_host *host)
 {
-	pr_debug("msdc%d:notice msdc_dvfs_reg_backup_init info", host->id);
+	pr_debug("msdc%d:notice %s info", host->id, __func__);
 }
 #endif
 
@@ -715,7 +710,8 @@ void sdio_plus_set_device_rx(struct msdc_host *host)
 
 	ret = msdc_io_rw_direct_host(mmc, 1, 1, 0x11C, 0x90, 0);
 
-#if 0 /* Device data RX window cover by host data TX */
+#ifdef DEVICE_RX_COVER_DATA_TX_DEBUG
+/* Device data RX window cover by host data TX */
 	ret = msdc_io_rw_direct_host(mmc, 1, 1, 0x124, 0x87, 0);
 	ret = msdc_io_rw_direct_host(mmc, 1, 1, 0x125, 0x87, 0);
 	ret = msdc_io_rw_direct_host(mmc, 1, 1, 0x126, 0x87, 0);
@@ -853,6 +849,117 @@ static int autok_opp[AUTOK_VCORE_NUM] = {
 	VCORE_DVFS_OPP_13, /* 0.675V or 0.7V */
 	VCORE_DVFS_OPP_15 /* 0.65V */
 };
+#endif
+
+#ifdef SD_RUNTIME_AUTOK_MERGE
+int sd_runtime_autok_merge(struct msdc_host *host)
+{
+	int merge_result, merge_mode, merge_window;
+	int i, ret = 0;
+	u8 *res = host->autok_res[AUTOK_VCORE_LEVEL1];
+
+	ret = autok_execute_tuning(host, res);
+
+	merge_mode = MERGE_HS200_SDR104;
+	merge_result = autok_vcore_merge_sel(host, merge_mode);
+	for (i = CMD_MAX_WIN; i <= H_CLK_TX_MAX_WIN; i++) {
+		merge_window = host->autok_res[AUTOK_VCORE_MERGE][i];
+		if (merge_window < AUTOK_MERGE_MIN_WIN) {
+			merge_result = -2;
+			pr_info("[AUTOK]%s:merge_window[%d] less than %d\n",
+				__func__, i, AUTOK_MERGE_MIN_WIN);
+		}
+		if (merge_window != 0xFF)
+			pr_info("[AUTOK]merge_value = %d\n", merge_window);
+	}
+
+	if (merge_result == 0) {
+		autok_tuning_parameter_init(host,
+			host->autok_res[AUTOK_VCORE_MERGE]);
+		memcpy(host->autok_res[AUTOK_VCORE_LEVEL0],
+			host->autok_res[AUTOK_VCORE_MERGE],
+				TUNING_PARA_SCAN_COUNT);
+		pr_info("[AUTOK]No need change para when dvfs\n");
+	} else if (merge_result == -1) {
+		autok_tuning_parameter_init(host,
+			host->autok_res[AUTOK_VCORE_LEVEL0]);
+	} else if (merge_result == -2) {
+		autok_tuning_parameter_init(host,
+			host->autok_res[AUTOK_VCORE_LEVEL1]);
+		memcpy(host->autok_res[AUTOK_VCORE_LEVEL0],
+			host->autok_res[AUTOK_VCORE_LEVEL1],
+				TUNING_PARA_SCAN_COUNT);
+	}
+	return ret;
+}
+#endif
+
+#ifdef EMMC_RUNTIME_AUTOK_MERGE
+int emmc_runtime_autok_merge(u32 opcode)
+{
+#if !defined(FPGA_PLATFORM)
+	struct msdc_host *host = mtk_msdc_host[0];
+	void __iomem *base;
+	int merge_result, merge_mode, merge_window;
+	int i, ret = 0;
+
+	if (!(host->mmc->caps2 & MMC_CAP2_HS400_1_8V)
+	 && !(host->mmc->caps2 & MMC_CAP2_HS200_1_8V_SDR)) {
+		return ret;
+	}
+	pr_info("emmc runtime autok merge\n");
+	base = host->base;
+
+	memcpy(host->autok_res[AUTOK_VCORE_LEVEL0],
+		host->autok_res[AUTOK_VCORE_MERGE],
+			TUNING_PARA_SCAN_COUNT);
+
+	ret = emmc_execute_dvfs_autok(host, opcode);
+	if (host->use_hw_dvfs == 0)
+		memcpy(host->autok_res[AUTOK_VCORE_LEVEL1],
+			host->autok_res[AUTOK_VCORE_MERGE],
+				TUNING_PARA_SCAN_COUNT);
+
+	if (host->mmc->ios.timing == MMC_TIMING_MMC_HS400)
+		merge_mode = MERGE_HS400;
+	else
+		merge_mode = MERGE_HS200_SDR104;
+
+	merge_result = autok_vcore_merge_sel(host, merge_mode);
+	for (i = CMD_MAX_WIN; i <= H_CLK_TX_MAX_WIN; i++) {
+		merge_window = host->autok_res[AUTOK_VCORE_MERGE][i];
+		if (merge_window < AUTOK_MERGE_MIN_WIN) {
+			merge_result = -2;
+			pr_info("[AUTOK]%s:merge_window[%d] less than %d\n",
+				__func__, i, AUTOK_MERGE_MIN_WIN);
+		}
+		if (merge_window != 0xFF)
+			pr_info("[AUTOK]merge_value = %d\n", merge_window);
+	}
+
+	if (merge_result == 0) {
+		autok_tuning_parameter_init(host,
+			host->autok_res[AUTOK_VCORE_MERGE]);
+		pr_info("[AUTOK]No need change para when dvfs\n");
+	} else if (host->use_hw_dvfs == 1) {
+		pr_info("[AUTOK]Need change para when dvfs\n");
+	} else if (host->use_hw_dvfs == 0) {
+		if (merge_result == -1)
+			autok_tuning_parameter_init(host,
+				host->autok_res[AUTOK_VCORE_LEVEL0]);
+		else if (merge_result == -2) {
+			autok_tuning_parameter_init(host,
+				host->autok_res[AUTOK_VCORE_LEVEL1]);
+			memcpy(host->autok_res[AUTOK_VCORE_MERGE],
+				host->autok_res[AUTOK_VCORE_LEVEL1],
+					TUNING_PARA_SCAN_COUNT);
+		}
+		pr_info("[AUTOK]restore legacy window\n");
+	}
+#endif
+
+	return ret;
+}
 #endif
 
 /*
@@ -998,7 +1105,7 @@ int sdio_autok(void)
 	/* Device never ready in moudle_init.
 	 * Call spm_msdc_dvfs_setting if device autok done.
 	 */
-#if 0
+#ifdef MTK_WAIT_SDIO_AUTOKDONE
 	if (!wait_for_completion_timeout(&host->autok_done, 30 * HZ)) {
 		pr_notice("SDIO wait device autok ready timeout");
 		return -1;

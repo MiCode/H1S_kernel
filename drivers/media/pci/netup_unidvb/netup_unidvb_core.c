@@ -82,11 +82,11 @@ DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
  * @start_addr_lo:	DMA ring buffer start address, lower part
  * @start_addr_hi:	DMA ring buffer start address, higher part
  * @size:		DMA ring buffer size register
-			Bits [0-7]:	DMA packet size, 188 bytes
-			Bits [16-23]:	packets count in block, 128 packets
-			Bits [24-31]:	blocks count, 8 blocks
+ *			* Bits [0-7]:	DMA packet size, 188 bytes
+ *			* Bits [16-23]:	packets count in block, 128 packets
+ *			* Bits [24-31]:	blocks count, 8 blocks
  * @timeout:		DMA timeout in units of 8ns
-			For example, value of 375000000 equals to 3 sec
+ *			For example, value of 375000000 equals to 3 sec
  * @curr_addr_lo:	Current ring buffer head address, lower part
  * @curr_addr_hi:	Current ring buffer head address, higher part
  * @stat_pkt_received:	Statistic register, not tested
@@ -267,19 +267,24 @@ static irqreturn_t netup_unidvb_isr(int irq, void *dev_id)
 	if ((reg40 & AVL_IRQ_ASSERTED) != 0) {
 		/* IRQ is being signaled */
 		reg_isr = readw(ndev->bmmio0 + REG_ISR);
-		if (reg_isr & NETUP_UNIDVB_IRQ_I2C0) {
-			iret = netup_i2c_interrupt(&ndev->i2c[0]);
-		} else if (reg_isr & NETUP_UNIDVB_IRQ_I2C1) {
-			iret = netup_i2c_interrupt(&ndev->i2c[1]);
-		} else if (reg_isr & NETUP_UNIDVB_IRQ_SPI) {
+		if (reg_isr & NETUP_UNIDVB_IRQ_SPI)
 			iret = netup_spi_interrupt(ndev->spi);
-		} else if (reg_isr & NETUP_UNIDVB_IRQ_DMA1) {
-			iret = netup_dma_interrupt(&ndev->dma[0]);
-		} else if (reg_isr & NETUP_UNIDVB_IRQ_DMA2) {
-			iret = netup_dma_interrupt(&ndev->dma[1]);
-		} else if (reg_isr & NETUP_UNIDVB_IRQ_CI) {
-			iret = netup_ci_interrupt(ndev);
+		else if (!ndev->old_fw) {
+			if (reg_isr & NETUP_UNIDVB_IRQ_I2C0) {
+				iret = netup_i2c_interrupt(&ndev->i2c[0]);
+			} else if (reg_isr & NETUP_UNIDVB_IRQ_I2C1) {
+				iret = netup_i2c_interrupt(&ndev->i2c[1]);
+			} else if (reg_isr & NETUP_UNIDVB_IRQ_DMA1) {
+				iret = netup_dma_interrupt(&ndev->dma[0]);
+			} else if (reg_isr & NETUP_UNIDVB_IRQ_DMA2) {
+				iret = netup_dma_interrupt(&ndev->dma[1]);
+			} else if (reg_isr & NETUP_UNIDVB_IRQ_CI) {
+				iret = netup_ci_interrupt(ndev);
+			} else {
+				goto err;
+			}
 		} else {
+err:
 			dev_err(&pci_dev->dev,
 				"%s(): unknown interrupt 0x%x\n",
 				__func__, reg_isr);
@@ -638,9 +643,9 @@ static void netup_unidvb_queue_cleanup(struct netup_dma *dma)
 	spin_unlock_irqrestore(&dma->lock, flags);
 }
 
-static void netup_unidvb_dma_timeout(unsigned long data)
+static void netup_unidvb_dma_timeout(struct timer_list *t)
 {
-	struct netup_dma *dma = (struct netup_dma *)data;
+	struct netup_dma *dma = from_timer(dma, t, timeout);
 	struct netup_unidvb_dev *ndev = dma->ndev;
 
 	dev_dbg(&ndev->pci_dev->dev, "%s()\n", __func__);
@@ -664,8 +669,7 @@ static int netup_unidvb_dma_init(struct netup_unidvb_dev *ndev, int num)
 	spin_lock_init(&dma->lock);
 	INIT_WORK(&dma->work, netup_unidvb_dma_worker);
 	INIT_LIST_HEAD(&dma->free_buffers);
-	setup_timer(&dma->timeout, netup_unidvb_dma_timeout,
-		    (unsigned long)dma);
+	timer_setup(&dma->timeout, netup_unidvb_dma_timeout, 0);
 	dma->ring_buffer_size = ndev->dma_size / 2;
 	dma->addr_virt = ndev->dma_virt + dma->ring_buffer_size * num;
 	dma->addr_phys = (dma_addr_t)((u64)ndev->dma_phys +
@@ -702,7 +706,7 @@ static void netup_unidvb_dma_fini(struct netup_unidvb_dev *ndev, int num)
 	netup_unidvb_dma_enable(dma, 0);
 	msleep(50);
 	cancel_work_sync(&dma->work);
-	del_timer(&dma->timeout);
+	del_timer_sync(&dma->timeout);
 }
 
 static int netup_unidvb_dma_setup(struct netup_unidvb_dev *ndev)
@@ -863,7 +867,7 @@ static int netup_unidvb_initdev(struct pci_dev *pci_dev,
 		PCI_EXP_DEVCTL_NOSNOOP_EN, 0);
 	/* Adjust PCIe completion timeout. */
 	pcie_capability_clear_and_set_word(pci_dev,
-		PCI_EXP_DEVCTL2, 0xf, 0x2);
+		PCI_EXP_DEVCTL2, PCI_EXP_DEVCTL2_COMP_TIMEOUT, 0x2);
 
 	if (netup_unidvb_request_mmio(pci_dev)) {
 		dev_err(&pci_dev->dev,
@@ -892,12 +896,7 @@ static int netup_unidvb_initdev(struct pci_dev *pci_dev,
 		ndev->lmmio0, (u32)pci_resource_len(pci_dev, 0),
 		ndev->lmmio1, (u32)pci_resource_len(pci_dev, 1),
 		pci_dev->irq);
-	if (request_irq(pci_dev->irq, netup_unidvb_isr, IRQF_SHARED,
-			"netup_unidvb", pci_dev) < 0) {
-		dev_err(&pci_dev->dev,
-			"%s(): can't get IRQ %d\n", __func__, pci_dev->irq);
-		goto irq_request_err;
-	}
+
 	ndev->dma_size = 2 * 188 *
 		NETUP_DMA_BLOCKS_COUNT * NETUP_DMA_PACKETS_COUNT;
 	ndev->dma_virt = dma_alloc_coherent(&pci_dev->dev,
@@ -938,6 +937,14 @@ static int netup_unidvb_initdev(struct pci_dev *pci_dev,
 		dev_err(&pci_dev->dev, "netup_unidvb: DMA setup failed\n");
 		goto dma_setup_err;
 	}
+
+	if (request_irq(pci_dev->irq, netup_unidvb_isr, IRQF_SHARED,
+			"netup_unidvb", pci_dev) < 0) {
+		dev_err(&pci_dev->dev,
+			"%s(): can't get IRQ %d\n", __func__, pci_dev->irq);
+		goto dma_setup_err;
+	}
+
 	dev_info(&pci_dev->dev,
 		"netup_unidvb: device has been initialized\n");
 	return 0;
@@ -956,8 +963,6 @@ spi_setup_err:
 	dma_free_coherent(&pci_dev->dev, ndev->dma_size,
 			ndev->dma_virt, ndev->dma_phys);
 dma_alloc_err:
-	free_irq(pci_dev->irq, pci_dev);
-irq_request_err:
 	iounmap(ndev->lmmio1);
 pci_bar1_error:
 	iounmap(ndev->lmmio0);

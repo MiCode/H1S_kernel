@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -103,37 +95,7 @@ static void print_systimer_rtc_time(void)
 static void minute_timer_work_func(struct work_struct *work)
 {
 	/* u32 val = 0; */
-
 	print_systimer_rtc_time();
-#if 0
-	/* unlock spm register */
-	writel(0x0b160001, spm_register_lock);
-	/* set control mux */
-	val = readl(control_mux);
-	val &= ~(1 << 7);
-	writel(val, control_mux);
-
-	val = readl(systimer_base + SYSTIMER_CNTSR);
-	val &= (7 << 8);
-	val >>= 8;
-	pr_debug("[systimer] old clock=%d\n", val);
-	if (val <= 2) {
-		/* select clock */
-		val = readl(select_clock);
-		val |= 1 << 17;
-		writel(val, select_clock);
-	} else {
-		/* select clock */
-		val = readl(select_clock);
-		val &= ~(1 << 17);
-		writel(val, select_clock);
-	}
-
-	val = readl(systimer_base + SYSTIMER_CNTSR);
-	val &= (7 << 8);
-	val >>= 8;
-	pr_debug("[systimer] new clock=%d\n", val);
-#endif
 }
 static void minute_timer_timeout(unsigned long data)
 {

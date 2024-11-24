@@ -172,24 +172,21 @@ TRACE_EVENT(mm_page_free,
 
 TRACE_EVENT(mm_page_free_batched,
 
-	TP_PROTO(struct page *page, int cold),
+	TP_PROTO(struct page *page),
 
-	TP_ARGS(page, cold),
+	TP_ARGS(page),
 
 	TP_STRUCT__entry(
 		__field(	unsigned long,	pfn		)
-		__field(	int,		cold		)
 	),
 
 	TP_fast_assign(
 		__entry->pfn		= page_to_pfn(page);
-		__entry->cold		= cold;
 	),
 
-	TP_printk("page=%p pfn=%lu order=0 cold=%d",
+	TP_printk("page=%p pfn=%lu order=0",
 			pfn_to_page(__entry->pfn),
-			__entry->pfn,
-			__entry->cold)
+			__entry->pfn)
 );
 
 TRACE_EVENT(mm_page_alloc,
@@ -318,24 +315,50 @@ TRACE_EVENT(mm_page_alloc_extfrag,
 		__entry->change_ownership)
 );
 
+/*
+ * Required for uniquely and securely identifying mm in rss_stat tracepoint.
+ */
+#ifndef __PTR_TO_HASHVAL
+static unsigned int __maybe_unused mm_ptr_to_hash(const void *ptr)
+{
+	int ret;
+	unsigned long hashval;
+
+	ret = ptr_to_hashval(ptr, &hashval);
+	if (ret)
+		return 0;
+
+	/* The hashed value is only 32-bit */
+	return (unsigned int)hashval;
+}
+#define __PTR_TO_HASHVAL
+#endif
+
 TRACE_EVENT(rss_stat,
 
-	TP_PROTO(int member,
+	TP_PROTO(struct mm_struct *mm,
+		int member,
 		long count),
 
-	TP_ARGS(member, count),
+	TP_ARGS(mm, member, count),
 
 	TP_STRUCT__entry(
+		__field(unsigned int, mm_id)
+		__field(unsigned int, curr)
 		__field(int, member)
 		__field(long, size)
 	),
 
 	TP_fast_assign(
+		__entry->mm_id = mm_ptr_to_hash(mm);
+		__entry->curr = !!(current->mm == mm);
 		__entry->member = member;
 		__entry->size = (count << PAGE_SHIFT);
 	),
 
-	TP_printk("member=%d size=%ldB",
+	TP_printk("mm_id=%u curr=%d member=%d size=%ldB",
+		__entry->mm_id,
+		__entry->curr,
 		__entry->member,
 		__entry->size)
 	);

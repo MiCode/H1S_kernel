@@ -16,6 +16,7 @@
 #include <linux/kvm.h>
 #include <linux/kvm_host.h>
 #include <kvm/iodev.h>
+#include <kvm/arm_arch_timer.h>
 #include <kvm/arm_vgic.h>
 
 #include "vgic.h"
@@ -37,6 +38,51 @@ void vgic_mmio_write_wi(struct kvm_vcpu *vcpu, gpa_t addr,
 			unsigned int len, unsigned long val)
 {
 	/* Ignore */
+}
+
+int vgic_mmio_uaccess_write_wi(struct kvm_vcpu *vcpu, gpa_t addr,
+			       unsigned int len, unsigned long val)
+{
+	/* Ignore */
+	return 0;
+}
+
+unsigned long vgic_mmio_read_group(struct kvm_vcpu *vcpu,
+				   gpa_t addr, unsigned int len)
+{
+	u32 intid = VGIC_ADDR_TO_INTID(addr, 1);
+	u32 value = 0;
+	int i;
+
+	/* Loop over all IRQs affected by this read */
+	for (i = 0; i < len * 8; i++) {
+		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, intid + i);
+
+		if (irq->group)
+			value |= BIT(i);
+
+		vgic_put_irq(vcpu->kvm, irq);
+	}
+
+	return value;
+}
+
+void vgic_mmio_write_group(struct kvm_vcpu *vcpu, gpa_t addr,
+			   unsigned int len, unsigned long val)
+{
+	u32 intid = VGIC_ADDR_TO_INTID(addr, 1);
+	int i;
+	unsigned long flags;
+
+	for (i = 0; i < len * 8; i++) {
+		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, intid + i);
+
+		spin_lock_irqsave(&irq->irq_lock, flags);
+		irq->group = !!(val & BIT(i));
+		vgic_queue_irq_unlock(vcpu->kvm, irq, flags);
+
+		vgic_put_irq(vcpu->kvm, irq);
+	}
 }
 
 /*
@@ -69,13 +115,14 @@ void vgic_mmio_write_senable(struct kvm_vcpu *vcpu,
 {
 	u32 intid = VGIC_ADDR_TO_INTID(addr, 1);
 	int i;
+	unsigned long flags;
 
 	for_each_set_bit(i, &val, len * 8) {
 		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, intid + i);
 
-		spin_lock(&irq->irq_lock);
+		spin_lock_irqsave(&irq->irq_lock, flags);
 		irq->enabled = true;
-		vgic_queue_irq_unlock(vcpu->kvm, irq);
+		vgic_queue_irq_unlock(vcpu->kvm, irq, flags);
 
 		vgic_put_irq(vcpu->kvm, irq);
 	}
@@ -87,15 +134,16 @@ void vgic_mmio_write_cenable(struct kvm_vcpu *vcpu,
 {
 	u32 intid = VGIC_ADDR_TO_INTID(addr, 1);
 	int i;
+	unsigned long flags;
 
 	for_each_set_bit(i, &val, len * 8) {
 		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, intid + i);
 
-		spin_lock(&irq->irq_lock);
+		spin_lock_irqsave(&irq->irq_lock, flags);
 
 		irq->enabled = false;
 
-		spin_unlock(&irq->irq_lock);
+		spin_unlock_irqrestore(&irq->irq_lock, flags);
 		vgic_put_irq(vcpu->kvm, irq);
 	}
 }
@@ -123,6 +171,38 @@ unsigned long vgic_mmio_read_pending(struct kvm_vcpu *vcpu,
 	return value;
 }
 
+/*
+ * This function will return the VCPU that performed the MMIO access and
+ * trapped from within the VM, and will return NULL if this is a userspace
+ * access.
+ *
+ * We can disable preemption locally around accessing the per-CPU variable,
+ * and use the resolved vcpu pointer after enabling preemption again, because
+ * even if the current thread is migrated to another CPU, reading the per-CPU
+ * value later will give us the same value as we update the per-CPU variable
+ * in the preempt notifier handlers.
+ */
+static struct kvm_vcpu *vgic_get_mmio_requester_vcpu(void)
+{
+	struct kvm_vcpu *vcpu;
+
+	preempt_disable();
+	vcpu = kvm_arm_get_running_vcpu();
+	preempt_enable();
+	return vcpu;
+}
+
+/* Must be called with irq->irq_lock held */
+static void vgic_hw_irq_spending(struct kvm_vcpu *vcpu, struct vgic_irq *irq,
+				 bool is_uaccess)
+{
+	if (is_uaccess)
+		return;
+
+	irq->pending_latch = true;
+	vgic_irq_set_phys_active(irq, true);
+}
+
 static bool is_vgic_v2_sgi(struct kvm_vcpu *vcpu, struct vgic_irq *irq)
 {
 	return (vgic_irq_is_sgi(irq->intid) &&
@@ -133,8 +213,10 @@ void vgic_mmio_write_spending(struct kvm_vcpu *vcpu,
 			      gpa_t addr, unsigned int len,
 			      unsigned long val)
 {
+	bool is_uaccess = !vgic_get_mmio_requester_vcpu();
 	u32 intid = VGIC_ADDR_TO_INTID(addr, 1);
 	int i;
+	unsigned long flags;
 
 	for_each_set_bit(i, &val, len * 8) {
 		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, intid + i);
@@ -145,20 +227,49 @@ void vgic_mmio_write_spending(struct kvm_vcpu *vcpu,
 			continue;
 		}
 
-		spin_lock(&irq->irq_lock);
-		irq->pending_latch = true;
-
-		vgic_queue_irq_unlock(vcpu->kvm, irq);
+		spin_lock_irqsave(&irq->irq_lock, flags);
+		if (irq->hw)
+			vgic_hw_irq_spending(vcpu, irq, is_uaccess);
+		else
+			irq->pending_latch = true;
+		vgic_queue_irq_unlock(vcpu->kvm, irq, flags);
 		vgic_put_irq(vcpu->kvm, irq);
 	}
+}
+
+/* Must be called with irq->irq_lock held */
+static void vgic_hw_irq_cpending(struct kvm_vcpu *vcpu, struct vgic_irq *irq,
+				 bool is_uaccess)
+{
+	if (is_uaccess)
+		return;
+
+	irq->pending_latch = false;
+
+	/*
+	 * We don't want the guest to effectively mask the physical
+	 * interrupt by doing a write to SPENDR followed by a write to
+	 * CPENDR for HW interrupts, so we clear the active state on
+	 * the physical side if the virtual interrupt is not active.
+	 * This may lead to taking an additional interrupt on the
+	 * host, but that should not be a problem as the worst that
+	 * can happen is an additional vgic injection.  We also clear
+	 * the pending state to maintain proper semantics for edge HW
+	 * interrupts.
+	 */
+	vgic_irq_set_phys_pending(irq, false);
+	if (!irq->active)
+		vgic_irq_set_phys_active(irq, false);
 }
 
 void vgic_mmio_write_cpending(struct kvm_vcpu *vcpu,
 			      gpa_t addr, unsigned int len,
 			      unsigned long val)
 {
+	bool is_uaccess = !vgic_get_mmio_requester_vcpu();
 	u32 intid = VGIC_ADDR_TO_INTID(addr, 1);
 	int i;
+	unsigned long flags;
 
 	for_each_set_bit(i, &val, len * 8) {
 		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, intid + i);
@@ -169,11 +280,14 @@ void vgic_mmio_write_cpending(struct kvm_vcpu *vcpu,
 			continue;
 		}
 
-		spin_lock(&irq->irq_lock);
+		spin_lock_irqsave(&irq->irq_lock, flags);
 
-		irq->pending_latch = false;
+		if (irq->hw)
+			vgic_hw_irq_cpending(vcpu, irq, is_uaccess);
+		else
+			irq->pending_latch = false;
 
-		spin_unlock(&irq->irq_lock);
+		spin_unlock_irqrestore(&irq->irq_lock, flags);
 		vgic_put_irq(vcpu->kvm, irq);
 	}
 }
@@ -198,48 +312,55 @@ unsigned long vgic_mmio_read_active(struct kvm_vcpu *vcpu,
 	return value;
 }
 
-static void vgic_mmio_change_active(struct kvm_vcpu *vcpu, struct vgic_irq *irq,
-				    bool new_active_state)
+/* Must be called with irq->irq_lock held */
+static void vgic_hw_irq_change_active(struct kvm_vcpu *vcpu, struct vgic_irq *irq,
+				      bool active, bool is_uaccess)
 {
-	struct kvm_vcpu *requester_vcpu;
-	spin_lock(&irq->irq_lock);
+	if (is_uaccess)
+		return;
 
-	/*
-	 * The vcpu parameter here can mean multiple things depending on how
-	 * this function is called; when handling a trap from the kernel it
-	 * depends on the GIC version, and these functions are also called as
-	 * part of save/restore from userspace.
-	 *
-	 * Therefore, we have to figure out the requester in a reliable way.
-	 *
-	 * When accessing VGIC state from user space, the requester_vcpu is
-	 * NULL, which is fine, because we guarantee that no VCPUs are running
-	 * when accessing VGIC state from user space so irq->vcpu->cpu is
-	 * always -1.
-	 */
-	requester_vcpu = kvm_arm_get_running_vcpu();
+	irq->active = active;
+	vgic_irq_set_phys_active(irq, active);
+}
 
-	/*
-	 * If this virtual IRQ was written into a list register, we
-	 * have to make sure the CPU that runs the VCPU thread has
-	 * synced back the LR state to the struct vgic_irq.
-	 *
-	 * As long as the conditions below are true, we know the VCPU thread
-	 * may be on its way back from the guest (we kicked the VCPU thread in
-	 * vgic_change_active_prepare)  and still has to sync back this IRQ,
-	 * so we release and re-acquire the spin_lock to let the other thread
-	 * sync back the IRQ.
-	 */
-	while (irq->vcpu && /* IRQ may have state in an LR somewhere */
-	       irq->vcpu != requester_vcpu && /* Current thread is not the VCPU thread */
-	       irq->vcpu->cpu != -1) /* VCPU thread is running */
-		cond_resched_lock(&irq->irq_lock);
+static void vgic_mmio_change_active(struct kvm_vcpu *vcpu, struct vgic_irq *irq,
+				    bool active)
+{
+	unsigned long flags;
+	struct kvm_vcpu *requester_vcpu = vgic_get_mmio_requester_vcpu();
 
-	irq->active = new_active_state;
-	if (new_active_state)
-		vgic_queue_irq_unlock(vcpu->kvm, irq);
+	spin_lock_irqsave(&irq->irq_lock, flags);
+
+	if (irq->hw) {
+		vgic_hw_irq_change_active(vcpu, irq, active, !requester_vcpu);
+	} else {
+		u32 model = vcpu->kvm->arch.vgic.vgic_model;
+		u8 active_source;
+
+		irq->active = active;
+
+		/*
+		 * The GICv2 architecture indicates that the source CPUID for
+		 * an SGI should be provided during an EOI which implies that
+		 * the active state is stored somewhere, but at the same time
+		 * this state is not architecturally exposed anywhere and we
+		 * have no way of knowing the right source.
+		 *
+		 * This may lead to a VCPU not being able to receive
+		 * additional instances of a particular SGI after migration
+		 * for a GICv2 VM on some GIC implementations.  Oh well.
+		 */
+		active_source = (requester_vcpu) ? requester_vcpu->vcpu_id : 0;
+
+		if (model == KVM_DEV_TYPE_ARM_VGIC_V2 &&
+		    active && vgic_irq_is_sgi(irq->intid))
+			irq->active_source = active_source;
+	}
+
+	if (irq->active)
+		vgic_queue_irq_unlock(vcpu->kvm, irq, flags);
 	else
-		spin_unlock(&irq->irq_lock);
+		spin_unlock_irqrestore(&irq->irq_lock, flags);
 }
 
 /*
@@ -301,11 +422,12 @@ void vgic_mmio_write_cactive(struct kvm_vcpu *vcpu,
 	mutex_unlock(&vcpu->kvm->lock);
 }
 
-void vgic_mmio_uaccess_write_cactive(struct kvm_vcpu *vcpu,
+int vgic_mmio_uaccess_write_cactive(struct kvm_vcpu *vcpu,
 				     gpa_t addr, unsigned int len,
 				     unsigned long val)
 {
 	__vgic_mmio_write_cactive(vcpu, addr, len, val);
+	return 0;
 }
 
 static void __vgic_mmio_write_sactive(struct kvm_vcpu *vcpu,
@@ -337,11 +459,12 @@ void vgic_mmio_write_sactive(struct kvm_vcpu *vcpu,
 	mutex_unlock(&vcpu->kvm->lock);
 }
 
-void vgic_mmio_uaccess_write_sactive(struct kvm_vcpu *vcpu,
+int vgic_mmio_uaccess_write_sactive(struct kvm_vcpu *vcpu,
 				     gpa_t addr, unsigned int len,
 				     unsigned long val)
 {
 	__vgic_mmio_write_sactive(vcpu, addr, len, val);
+	return 0;
 }
 
 unsigned long vgic_mmio_read_priority(struct kvm_vcpu *vcpu,
@@ -375,14 +498,15 @@ void vgic_mmio_write_priority(struct kvm_vcpu *vcpu,
 {
 	u32 intid = VGIC_ADDR_TO_INTID(addr, 8);
 	int i;
+	unsigned long flags;
 
 	for (i = 0; i < len; i++) {
 		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, intid + i);
 
-		spin_lock(&irq->irq_lock);
+		spin_lock_irqsave(&irq->irq_lock, flags);
 		/* Narrow the priority range to what we actually support */
 		irq->priority = (val >> (i * 8)) & GENMASK(7, 8 - VGIC_PRI_BITS);
-		spin_unlock(&irq->irq_lock);
+		spin_unlock_irqrestore(&irq->irq_lock, flags);
 
 		vgic_put_irq(vcpu->kvm, irq);
 	}
@@ -413,6 +537,7 @@ void vgic_mmio_write_config(struct kvm_vcpu *vcpu,
 {
 	u32 intid = VGIC_ADDR_TO_INTID(addr, 2);
 	int i;
+	unsigned long flags;
 
 	for (i = 0; i < len * 4; i++) {
 		struct vgic_irq *irq;
@@ -427,14 +552,14 @@ void vgic_mmio_write_config(struct kvm_vcpu *vcpu,
 			continue;
 
 		irq = vgic_get_irq(vcpu->kvm, vcpu, intid + i);
-		spin_lock(&irq->irq_lock);
+		spin_lock_irqsave(&irq->irq_lock, flags);
 
 		if (test_bit(i * 2 + 1, &val))
 			irq->config = VGIC_CONFIG_EDGE;
 		else
 			irq->config = VGIC_CONFIG_LEVEL;
 
-		spin_unlock(&irq->irq_lock);
+		spin_unlock_irqrestore(&irq->irq_lock, flags);
 		vgic_put_irq(vcpu->kvm, irq);
 	}
 }
@@ -466,6 +591,7 @@ void vgic_write_irq_line_level_info(struct kvm_vcpu *vcpu, u32 intid,
 {
 	int i;
 	int nr_irqs = vcpu->kvm->arch.vgic.nr_spis + VGIC_NR_PRIVATE_IRQS;
+	unsigned long flags;
 
 	for (i = 0; i < 32; i++) {
 		struct vgic_irq *irq;
@@ -482,12 +608,12 @@ void vgic_write_irq_line_level_info(struct kvm_vcpu *vcpu, u32 intid,
 		 * restore irq config before line level.
 		 */
 		new_level = !!(val & (1U << i));
-		spin_lock(&irq->irq_lock);
+		spin_lock_irqsave(&irq->irq_lock, flags);
 		irq->line_level = new_level;
 		if (new_level)
-			vgic_queue_irq_unlock(vcpu->kvm, irq);
+			vgic_queue_irq_unlock(vcpu->kvm, irq, flags);
 		else
-			spin_unlock(&irq->irq_lock);
+			spin_unlock_irqrestore(&irq->irq_lock, flags);
 
 		vgic_put_irq(vcpu->kvm, irq);
 	}
@@ -670,10 +796,9 @@ static int vgic_uaccess_write(struct kvm_vcpu *vcpu, struct kvm_io_device *dev,
 
 	r_vcpu = iodev->redist_vcpu ? iodev->redist_vcpu : vcpu;
 	if (region->uaccess_write)
-		region->uaccess_write(r_vcpu, addr, sizeof(u32), *val);
-	else
-		region->write(r_vcpu, addr, sizeof(u32), *val);
+		return region->uaccess_write(r_vcpu, addr, sizeof(u32), *val);
 
+	region->write(r_vcpu, addr, sizeof(u32), *val);
 	return 0;
 }
 

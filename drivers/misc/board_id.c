@@ -162,4 +162,3 @@ static int __init setup_board_id_hwversion(char *str)
 	return 1;
 }
 __setup("androidboot.hwversion=", setup_board_id_hwversion);
-

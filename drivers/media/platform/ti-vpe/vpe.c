@@ -931,7 +931,7 @@ static struct vpe_ctx *file2ctx(struct file *file)
  * mem2mem callbacks
  */
 
-/**
+/*
  * job_ready() - check whether an instance is ready to be scheduled to run
  */
 static int job_ready(void *priv)
@@ -956,23 +956,6 @@ static void job_abort(void *priv)
 
 	/* Will cancel the transaction in the next interrupt handler */
 	ctx->aborting = 1;
-}
-
-/*
- * Lock access to the device
- */
-static void vpe_lock(void *priv)
-{
-	struct vpe_ctx *ctx = priv;
-	struct vpe_dev *dev = ctx->dev;
-	mutex_lock(&dev->dev_mutex);
-}
-
-static void vpe_unlock(void *priv)
-{
-	struct vpe_ctx *ctx = priv;
-	struct vpe_dev *dev = ctx->dev;
-	mutex_unlock(&dev->dev_mutex);
 }
 
 static void vpe_dump_regs(struct vpe_dev *dev)
@@ -2458,8 +2441,6 @@ static const struct v4l2_m2m_ops m2m_ops = {
 	.device_run	= device_run,
 	.job_ready	= job_ready,
 	.job_abort	= job_abort,
-	.lock		= vpe_lock,
-	.unlock		= vpe_unlock,
 };
 
 static int vpe_runtime_get(struct platform_device *pdev)
@@ -2470,6 +2451,8 @@ static int vpe_runtime_get(struct platform_device *pdev)
 
 	r = pm_runtime_get_sync(&pdev->dev);
 	WARN_ON(r < 0);
+	if (r)
+		pm_runtime_put_noidle(&pdev->dev);
 	return r < 0 ? r : 0;
 }
 
@@ -2509,7 +2492,6 @@ static void vpe_fw_cb(struct platform_device *pdev)
 	}
 
 	video_set_drvdata(vfd, dev);
-	snprintf(vfd->name, sizeof(vfd->name), "%s", vpe_videodev.name);
 	dev_info(dev->v4l2_dev.dev, "Device registered as /dev/video%d\n",
 		vfd->num);
 }

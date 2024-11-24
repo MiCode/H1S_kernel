@@ -1,17 +1,7 @@
-/* Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.
- * If not, see <http://www.gnu.org/licenses/>.
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2019 MediaTek Inc.
+ * Author: Kai Chieh Chuang <kaichieh.chuang@mediatek.com>
  */
 
 #include <linux/init.h>
@@ -22,8 +12,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/notifier.h>
 
-#include <mt-plat/mtk_ccci_common.h>
-#include <mt-plat/mtk_meminfo.h>
+#include <mtk_ccci_common.h>
 #ifdef CONFIG_MTK_AURISYS_PHONE_CALL_SUPPORT
 #include <adsp_helper.h>
 #include "audio_messenger_ipi.h"
@@ -35,6 +24,8 @@
 
 #define USIP_EMP_IOC_MAGIC 'D'
 #define GET_USIP_EMI_SIZE _IOWR(USIP_EMP_IOC_MAGIC, 0xF0, unsigned long long)
+#define GET_USIP_ADSP_PHONE_CALL_ENH_CONFIG _IOWR(USIP_EMP_IOC_MAGIC, 0xF1, unsigned long long)
+#define SET_USIP_ADSP_PHONE_CALL_ENH_CONFIG _IOWR(USIP_EMP_IOC_MAGIC, 0xF2, unsigned long long)
 
 #define NUM_MPU_REGION 3
 
@@ -60,24 +51,25 @@ struct usip_info {
 	void *memory_area;
 	dma_addr_t memory_addr;
 	phys_addr_t addr_phy;
+
+	unsigned int adsp_phone_call_enh_config;
 };
 
 static struct usip_info usip;
-
 
 static long usip_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 {
 	int ret = 0;
 	long size_for_spe = 0;
 
-	pr_debug("%s(), cmd 0x%x, arg %lu, memory_size = %ld addr_phy = 0x%llx\n",
+	pr_info("%s(), cmd 0x%x, arg %lu, memory_size = %ld addr_phy = 0x%llx\n",
 		 __func__, cmd, arg, usip.memory_size, usip.addr_phy);
 
 	size_for_spe = EMI_TABLE[SP_EMI_AP_USIP_PARAMETER][SP_EMI_SIZE];
 	switch (cmd) {
 
 	case GET_USIP_EMI_SIZE:
-		if (usip.addr_phy == 0) {
+		if (!usip.memory_ready) {
 			pr_info("no phy addr from ccci");
 			ret = -ENODEV;
 		} else if (copy_to_user((void __user *)arg, &size_for_spe,
@@ -88,6 +80,28 @@ static long usip_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 		}
 		break;
 
+	case GET_USIP_ADSP_PHONE_CALL_ENH_CONFIG:
+		if (copy_to_user((void __user *)arg, &(usip.adsp_phone_call_enh_config),
+			sizeof(usip.adsp_phone_call_enh_config))) {
+			pr_info("%s(), Fail copy CALL_ENH_CONFIG to user Ptr: %x",
+				__func__,
+				usip.adsp_phone_call_enh_config);
+			ret = -1;
+		}
+		break;
+
+	case SET_USIP_ADSP_PHONE_CALL_ENH_CONFIG:
+		if (copy_from_user(&(usip.adsp_phone_call_enh_config), (void __user *)arg,
+			sizeof(usip.adsp_phone_call_enh_config))) {
+			pr_info("%s(), Fail copy CALL_ENH_CONFIG from user Ptr: %x",
+				__func__,
+				arg);
+			ret = -1;
+		}
+		pr_info("%s(): in SET_USIP_ADSP_PHONE_CALL_ENH_CONFIG: %d",
+			__func__,
+			usip.adsp_phone_call_enh_config);
+		break;
 	default:
 		pr_debug("%s(), default\n", __func__);
 		break;
@@ -97,7 +111,7 @@ static long usip_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 
 #ifdef CONFIG_COMPAT
 static long usip_compat_ioctl(struct file *fp, unsigned int cmd,
-unsigned long arg)
+			      unsigned long arg)
 {
 	long ret;
 
@@ -111,7 +125,6 @@ unsigned long arg)
 }
 #endif
 
-
 int usip_mmap_data(struct usip_info *usip, struct vm_area_struct *area)
 {
 	long size;
@@ -120,9 +133,8 @@ int usip_mmap_data(struct usip_info *usip, struct vm_area_struct *area)
 	unsigned long pfn;
 	int ret;
 
-
-	pr_debug("%s(), memory ready %d, size %zu, align_bytes %zu\n",
-	__func__, usip->memory_ready, usip->memory_size, align_bytes);
+	pr_info("%s(), memory ready %d, size %zu, align_bytes %zu\n",
+		__func__, usip->memory_ready, usip->memory_size, align_bytes);
 
 	if (!usip->memory_ready)
 		return -EBADFD;
@@ -150,8 +162,6 @@ int usip_mmap_data(struct usip_info *usip, struct vm_area_struct *area)
 		       __func__, ret, pfn,
 		       &usip->addr_phy,
 		       area->vm_start);
-
-
 	/*Comment*/
 	smp_mb();
 
@@ -173,31 +183,35 @@ static int usip_mmap(struct file *file, struct vm_area_struct *area)
 	}
 	return 0;
 }
-
-static int usip_open(struct inode *inode, struct file *file)
+static void usip_get_addr(void)
 {
-	file->private_data = &usip;
-	return 0;
+#if IS_ENABLED(CONFIG_MTK_ECCCI_DRIVER)
+	int size_o = 0;
+	phys_addr_t phys_addr;
+
+	phys_addr_t srw_base;
+	unsigned int srw_size;
+	phys_addr_t r_rw_base;
+	unsigned int r_rw_size;
+
+	phys_addr = get_smem_phy_start_addr(MD_SYS1,
+					    SMEM_USER_RAW_USIP, &size_o);
+	if (phys_addr == 0) {
+		pr_info("%s(), cannot get emi addr from ccci", __func__);
+		usip.memory_ready = false;
+	} else {
+		usip.memory_ready = true;
+
+		get_md_resv_mem_info(MD_SYS1, &r_rw_base, &r_rw_size,
+				     &srw_base, &srw_size);
+		pr_info("%s(), 0x%llx %d 0x%llx %d 0x%llx", __func__,
+			r_rw_base, r_rw_size, srw_base, srw_size, phys_addr);
+
+		usip.memory_size = size_o;
+		usip.addr_phy = phys_addr;
+	}
+#endif
 }
-
-static const struct file_operations usip_fops = {
-	.owner = THIS_MODULE,
-	.open = usip_open,
-	.unlocked_ioctl = usip_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl = usip_compat_ioctl,
-#endif
-	.mmap = usip_mmap,
-};
-
-#ifdef CONFIG_MTK_ECCCI_DRIVER
-static struct miscdevice usip_miscdevice = {
-	.minor      = MISC_DYNAMIC_MINOR,
-	.name       = "usip",
-	.fops       = &usip_fops,
-};
-#endif
-
 #ifdef CONFIG_MTK_AURISYS_PHONE_CALL_SUPPORT
 static void usip_send_emi_info_to_dsp(void)
 {
@@ -206,9 +220,20 @@ static void usip_send_emi_info_to_dsp(void)
 	long long usip_emi_info[2]; //idx0 for addr, idx1 for size
 	phys_addr_t offset = 0;
 
-	if (usip.addr_phy == 0) {
-		pr_info("%s(), cannot get emi addr from ccci", __func__);
+	if ((usip.adsp_phone_call_enh_config & 0x1) == 0) {
+		pr_info("%s(), adsp_phone_call_enh_config(%d) is close",
+			__func__,
+			usip.adsp_phone_call_enh_config);
 		return;
+	}
+
+	if (!usip.memory_ready) {
+		usip_get_addr();
+		if (!usip.memory_ready) {
+			pr_info("%s(), cannot get emi addr from ccci",
+				__func__);
+			return;
+		}
 	}
 
 	offset = EMI_TABLE[SP_EMI_ADSP_USIP_PHONECALL][SP_EMI_OFFSET];
@@ -244,7 +269,6 @@ static void usip_send_emi_info_to_dsp(void)
 		pr_debug("%s(), scp_ipi send succeed\n", __func__);
 }
 
-#ifdef CFG_RECOVERY_SUPPORT
 static int audio_call_event_receive(struct notifier_block *this,
 				    unsigned long event,
 				    void *ptr)
@@ -265,63 +289,75 @@ static struct notifier_block audio_call_notifier = {
 	.notifier_call = audio_call_event_receive,
 	.priority = VOICE_CALL_FEATURE_PRI,
 };
-#endif /* end of CFG_RECOVERY_SUPPORT */
 #endif /* end of CONFIG_MTK_AURISYS_PHONE_CALL_SUPPORT */
+
+static int usip_open(struct inode *inode, struct file *file)
+{
+
+	file->private_data = &usip;
+
+	if (!usip.memory_ready) {
+		usip_get_addr();
+#ifdef CONFIG_MTK_AURISYS_PHONE_CALL_SUPPORT
+		usip_send_emi_info_to_dsp();
+#endif
+	}
+
+	return 0;
+}
+
+static const struct file_operations usip_fops = {
+	.owner = THIS_MODULE,
+	.open = usip_open,
+	.unlocked_ioctl = usip_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = usip_compat_ioctl,
+#endif
+	.mmap = usip_mmap,
+};
+
+#if IS_ENABLED(CONFIG_MTK_ECCCI_DRIVER)
+static struct miscdevice usip_miscdevice = {
+	.minor      = MISC_DYNAMIC_MINOR,
+	.name       = "usip",
+	.fops       = &usip_fops,
+};
+#endif
+
 
 static int __init usip_init(void)
 {
 	int ret;
-	int size_o = 0;
-	phys_addr_t r_rw_base;
 
-	unsigned int r_rw_size;
+	usip.memory_ready = false;
+	usip.memory_size = 0;
+	usip.addr_phy = 0;
 
-	phys_addr_t srw_base;
-	unsigned int srw_size;
-
-	phys_addr_t phys_addr;
-
-
-#ifdef CONFIG_MTK_ECCCI_DRIVER
-	phys_addr = get_smem_phy_start_addr(MD_SYS1,
-	SMEM_USER_RAW_USIP, &size_o);
-
-	if (phys_addr == 0)
-		pr_info("%s(), cannot get emi addr from ccci", __func__);
-
+#if IS_ENABLED(CONFIG_MTK_ECCCI_DRIVER)
 	ret = misc_register(&usip_miscdevice);
 	if (ret) {
 		pr_err("%s(), cannot register miscdev on minor %d, ret %d\n",
 		       __func__, usip_miscdevice.minor, ret);
 		ret = -ENODEV;
 	}
-
-	get_md_resv_mem_info(MD_SYS1, &r_rw_base, &r_rw_size,
-	&srw_base, &srw_size);
 #else
-	phys_addr = 0;
-	size_o = 0;
 	ret = -ENODEV;
-	r_rw_base = 0;
-	r_rw_size = 0;
-	srw_base = 0;
-	srw_size = 0;
 #endif
-
-	pr_debug("%s(), 0x%llx %d 0x%llx %d 0x%llx", __func__,
-		 r_rw_base, r_rw_size, srw_base, srw_size, phys_addr);
 
 	/* init usip info */
-	usip.memory_size = size_o;
 	usip.memory_addr = 0x11220000L;
-	usip.addr_phy = phys_addr;
-	usip.memory_ready = true;
+#ifdef CONFIG_MTK_AURISYS_PHONE_CALL_SUPPORT
+	usip.adsp_phone_call_enh_config = 1;
+#else
+	usip.adsp_phone_call_enh_config = 0;
+#endif
 
 #ifdef CONFIG_MTK_AURISYS_PHONE_CALL_SUPPORT
-#ifdef CFG_RECOVERY_SUPPORT
+#ifdef AUDIO_DSP_V1
+	adsp_A_register_notify(&audio_call_notifier);
+#else
 	adsp_register_notify(&audio_call_notifier);
 #endif
-	usip_send_emi_info_to_dsp();
 #endif
 
 	return ret;
@@ -329,7 +365,7 @@ static int __init usip_init(void)
 
 static void __exit usip_exit(void)
 {
-#ifdef CONFIG_MTK_ECCCI_DRIVER
+#if IS_ENABLED(CONFIG_MTK_ECCCI_DRIVER)
 	misc_deregister(&usip_miscdevice);
 #endif
 }
@@ -338,7 +374,5 @@ module_init(usip_init);
 module_exit(usip_exit);
 
 MODULE_DESCRIPTION("Mediatek uSip memory control");
-MODULE_LICENSE("GPL");
-
-
+MODULE_LICENSE("GPL v2");
 

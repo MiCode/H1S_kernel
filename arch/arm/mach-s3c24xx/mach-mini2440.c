@@ -1,17 +1,12 @@
-/* linux/arch/arm/mach-s3c2440/mach-mini2440.c
- *
- * Copyright (c) 2008 Ramax Lo <ramaxlo@gmail.com>
- *      Based on mach-anubis.c by Ben Dooks <ben@simtec.co.uk>
- *      and modifications by SBZ <sbz@spgui.org> and
- *      Weibing <http://weibing.blogbus.com> and
- *      Michel Pollet <buserror@gmail.com>
- *
- * For product information, visit http://code.google.com/p/mini2440/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright (c) 2008 Ramax Lo <ramaxlo@gmail.com>
+//      Based on mach-anubis.c by Ben Dooks <ben@simtec.co.uk>
+//      and modifications by SBZ <sbz@spgui.org> and
+//      Weibing <http://weibing.blogbus.com> and
+//      Michel Pollet <buserror@gmail.com>
+//
+// For product information, visit http://code.google.com/p/mini2440/
 
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -25,7 +20,7 @@
 #include <linux/serial_core.h>
 #include <linux/serial_s3c.h>
 #include <linux/dm9000.h>
-#include <linux/platform_data/at24.h>
+#include <linux/property.h>
 #include <linux/platform_device.h>
 #include <linux/gpio_keys.h>
 #include <linux/i2c.h>
@@ -486,15 +481,15 @@ static struct platform_device mini2440_audio = {
 /*
  * I2C devices
  */
-static struct at24_platform_data at24c08 = {
-	.byte_len	= SZ_8K / 8,
-	.page_size	= 16,
+static const struct property_entry mini2440_at24_properties[] = {
+	PROPERTY_ENTRY_U32("pagesize", 16),
+	{ }
 };
 
 static struct i2c_board_info mini2440_i2c_devs[] __initdata = {
 	{
 		I2C_BOARD_INFO("24c08", 0x50),
-		.platform_data = &at24c08,
+		.properties = mini2440_at24_properties,
 	},
 };
 

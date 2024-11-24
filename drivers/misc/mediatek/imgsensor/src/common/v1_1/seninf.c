@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2016 MediaTek Inc.
  */
 
 #include <linux/init.h>
@@ -24,6 +16,7 @@
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
 #include <linux/clk.h>
+#include <linux/pm_runtime.h>
 
 #include <linux/of_platform.h>
 #include <linux/of_irq.h>
@@ -45,7 +38,134 @@
 
 static struct SENINF gseninf;
 
-#if 1
+#ifdef DFS_CTRL_BY_OPP
+static int seninf_dfs_init(struct seninf_dfs_ctx *ctx, struct device *dev)
+{
+	int ret, i;
+	struct dev_pm_opp *opp;
+	unsigned long freq;
+
+	ctx->dev = dev;
+
+	ret = dev_pm_opp_of_add_table(dev);
+	if (ret < 0) {
+		dev_info(dev, "fail to init opp table: %d\n", ret);
+		return ret;
+	}
+
+	ctx->reg = devm_regulator_get_optional(dev, "dvfsrc-vcore");
+	if (IS_ERR(ctx->reg)) {
+		dev_info(dev, "can't get dvfsrc-vcore\n");
+		return PTR_ERR(ctx->reg);
+	}
+
+	ctx->cnt = dev_pm_opp_get_opp_count(dev);
+
+	ctx->freqs = devm_kzalloc(dev,
+			sizeof(unsigned long) * ctx->cnt, GFP_KERNEL);
+	ctx->volts = devm_kzalloc(dev,
+			sizeof(unsigned long) * ctx->cnt, GFP_KERNEL);
+	if (!ctx->freqs || !ctx->volts)
+		return -ENOMEM;
+
+	i = 0;
+	freq = 0;
+	while (!IS_ERR(opp = dev_pm_opp_find_freq_ceil(dev, &freq))) {
+		ctx->freqs[i] = freq;
+		ctx->volts[i] = dev_pm_opp_get_voltage(opp);
+		freq++;
+		i++;
+		dev_pm_opp_put(opp);
+	}
+
+	return 0;
+}
+
+static void seninf_dfs_exit(struct seninf_dfs_ctx *ctx)
+{
+	dev_pm_opp_of_remove_table(ctx->dev);
+}
+
+static int seninf_dfs_ctrl(struct seninf_dfs_ctx *ctx,
+		enum DFS_OPTION option, void *pbuff)
+{
+	int i4RetValue = 0;
+
+	/*pr_info("%s\n", __func__);*/
+
+	switch (option) {
+	case DFS_CTRL_ENABLE:
+		break;
+	case DFS_CTRL_DISABLE:
+		break;
+	case DFS_UPDATE:
+	{
+		unsigned long freq, volt;
+		struct dev_pm_opp *opp;
+
+		freq = *(unsigned int *)pbuff;
+		opp = dev_pm_opp_find_freq_ceil(ctx->dev, &freq);
+		volt = dev_pm_opp_get_voltage(opp);
+		dev_pm_opp_put(opp);
+		pr_debug("%s: freq=%ld volt=%ld\n", __func__, freq, volt);
+		regulator_set_voltage(ctx->reg, volt, ctx->volts[ctx->cnt-1]);
+	}
+		break;
+	case DFS_RELEASE:
+		break;
+	case DFS_SUPPORTED_ISP_CLOCKS:
+	{
+		struct IMAGESENSOR_GET_SUPPORTED_ISP_CLK *pIspclks;
+		int i;
+
+		pIspclks = (struct IMAGESENSOR_GET_SUPPORTED_ISP_CLK *) pbuff;
+
+		pIspclks->clklevelcnt = ctx->cnt;
+
+		if (pIspclks->clklevelcnt > ISP_CLK_LEVEL_CNT) {
+			pr_info("ERR: clklevelcnt is exceeded\n");
+			i4RetValue = -EFAULT;
+			break;
+		}
+
+		for (i = 0; i < pIspclks->clklevelcnt; i++)
+			pIspclks->clklevel[i] = ctx->freqs[i];
+	}
+		break;
+	case DFS_CUR_ISP_CLOCK:
+	{
+		unsigned int *pGetIspclk;
+		int i, cur_volt;
+
+		pGetIspclk = (unsigned int *) pbuff;
+		cur_volt = regulator_get_voltage(ctx->reg);
+
+		for (i = 0; i < ctx->cnt; i++) {
+			if (ctx->volts[i] == cur_volt) {
+				*pGetIspclk = (u32)ctx->freqs[i];
+				break;
+			}
+		}
+	}
+		break;
+	default:
+		pr_info("None\n");
+		break;
+	}
+	return i4RetValue;
+}
+#endif
+
+extern MUINT32 Switch_Tg_For_Stagger(MUINT16 camtg)
+{
+#ifdef _CAM_MUX_SWITCH
+	return _switch_tg_for_stagger(camtg, &gseninf);
+#else
+	return 0;
+#endif
+}
+EXPORT_SYMBOL(Switch_Tg_For_Stagger);
+
 MINT32 seninf_dump_reg(void)
 {
 	int i = 0;
@@ -119,7 +239,6 @@ MINT32 seninf_dump_reg(void)
 
 	return 0;
 }
-#endif
 
 static irqreturn_t seninf_irq(MINT32 Irq, void *DeviceId)
 {
@@ -137,6 +256,10 @@ static MINT32 seninf_open(struct inode *pInode, struct file *pFile)
 #if SENINF_CLK_CONTROL
 	struct SENINF *pseninf = &gseninf;
 
+#ifdef SENINF_USE_RPM
+	pm_runtime_get_sync(pseninf->dev);
+#endif
+
 	mutex_lock(&pseninf->seninf_mutex);
 	if (atomic_inc_return(&pseninf->seninf_open_cnt) == 1)
 		seninf_clk_open(&pseninf->clk);
@@ -153,8 +276,10 @@ static MINT32 seninf_release(struct inode *pInode, struct file *pFile)
 {
 #if SENINF_CLK_CONTROL
 	struct SENINF *pseninf = &gseninf;
+#endif
 
 	mutex_lock(&pseninf->seninf_mutex);
+#if SENINF_CLK_CONTROL
 	if (atomic_dec_and_test(&pseninf->seninf_open_cnt))
 		seninf_clk_release(&pseninf->clk);
 #endif
@@ -167,6 +292,10 @@ static MINT32 seninf_release(struct inode *pInode, struct file *pFile)
 	PK_DBG("%s %d\n", __func__,
 	       atomic_read(&pseninf->seninf_open_cnt));
 	mutex_unlock(&pseninf->seninf_mutex);
+
+#ifdef SENINF_USE_RPM
+	pm_runtime_put_sync(pseninf->dev);
+#endif
 #endif
 
 	return 0;
@@ -254,7 +383,6 @@ static long seninf_ioctl(struct file *pfile,
 		if (_IOC_WRITE & _IOC_DIR(cmd)) {
 			if (copy_from_user(pbuff,
 						(void *)arg, _IOC_SIZE(cmd))) {
-				kfree(pbuff);
 				PK_DBG("ioctl copy from user failed\n");
 				ret = -EFAULT;
 				goto SENINF_IOCTL_EXIT;
@@ -295,6 +423,19 @@ static long seninf_ioctl(struct file *pfile,
 			*(unsigned int *)pbuff);
 #endif
 		break;
+#ifdef DFS_CTRL_BY_OPP
+	case KDSENINFIOC_DFS_UPDATE:
+		ret = seninf_dfs_ctrl(&gseninf.dfs_ctx, DFS_UPDATE, pbuff);
+		break;
+	case KDSENINFIOC_GET_SUPPORTED_ISP_CLOCKS:
+		ret = seninf_dfs_ctrl(&gseninf.dfs_ctx,
+				DFS_SUPPORTED_ISP_CLOCKS, pbuff);
+		break;
+	case KDSENINFIOC_GET_CUR_ISP_CLOCK:
+		ret = seninf_dfs_ctrl(&gseninf.dfs_ctx,
+				DFS_CUR_ISP_CLOCK, pbuff);
+		break;
+#endif
 #ifdef IMGSENSOR_DFS_CTRL_ENABLE
 	/*mmdvfs start*/
 	case KDSENINFIOC_DFS_UPDATE:
@@ -315,24 +456,31 @@ static long seninf_ioctl(struct file *pfile,
 			ret = ERROR_TEE_CA_TA_FAIL;
 		break;
 #endif
-
+	case KDSENINFIOC_SET_CAM_MUX_FOR_SWITCH:
+#ifdef _CAM_MUX_SWITCH
+		ret = _seninf_set_tg_for_switch(
+			(*(unsigned int *)pbuff) >> 16, (*(unsigned int *)pbuff) & 0xFFFF);
+#endif
+		break;
 	default:
 		PK_DBG("No such command %d\n", cmd);
 		ret = -EPERM;
+		goto SENINF_IOCTL_EXIT;
 		break;
 	}
 
 	if ((_IOC_READ & _IOC_DIR(cmd)) && copy_to_user((void __user *)arg,
 			pbuff, _IOC_SIZE(cmd))) {
-		kfree(pbuff);
 		PK_DBG("[CAMERA SENSOR] ioctl copy to user failed\n");
 		ret = -EFAULT;
 		goto SENINF_IOCTL_EXIT;
 	}
 
-	kfree(pbuff);
-
 SENINF_IOCTL_EXIT:
+	if (pbuff != NULL) {
+		kfree(pbuff);
+		pbuff = NULL;
+	}
 
 	return ret;
 }
@@ -443,11 +591,22 @@ static MINT32 seninf_probe(struct platform_device *pDev)
 
 	mutex_init(&pseninf->seninf_mutex);
 	atomic_set(&pseninf->seninf_open_cnt, 0);
+	pseninf->dev = &pDev->dev;
+
+#ifdef SENINF_USE_RPM
+	pm_runtime_enable(pseninf->dev);
+#endif
 
 #if SENINF_CLK_CONTROL
 	pseninf->clk.pplatform_device = pDev;
 	seninf_clk_init(&pseninf->clk);
 #endif
+
+#ifdef DFS_CTRL_BY_OPP
+	if (seninf_dfs_init(&pseninf->dfs_ctx, &pDev->dev))
+		return -ENODEV;
+#endif
+
 	/* get IRQ ID and request IRQ */
 	irq = irq_of_parse_and_map(pDev->dev.of_node, 0);
 
@@ -485,6 +644,15 @@ static MINT32 seninf_remove(struct platform_device *pDev)
 	struct SENINF *pseninf = &gseninf;
 
 	PK_DBG("- E.");
+
+#ifdef DFS_CTRL_BY_OPP
+	seninf_dfs_exit(&pseninf->dfs_ctx);
+#endif
+
+#if SENINF_CLK_CONTROL && defined(HAVE_SENINF_CLK_EXIT)
+	seninf_clk_exit(&pseninf->clk);
+#endif
+
 	/* unregister char driver. */
 	seninf_unreg_char_dev(pseninf);
 

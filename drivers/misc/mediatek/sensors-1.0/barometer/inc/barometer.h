@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __BARO_H__
@@ -65,7 +57,6 @@ struct baro_control_path {
 	int (*batch)(int flag, int64_t samplingPeriodNs,
 		     int64_t maxBatchReportLatencyNs);
 	int (*flush)(void); /* open data rerport to HAL */
-	int (*set_cali)(uint8_t *data, uint8_t count);
 	int (*baroess_data_fifo)(void);
 	bool is_report_input_direct;
 	bool is_support_batch;
@@ -125,7 +116,6 @@ struct baro_context {
 
 extern int baro_driver_add(struct baro_init_info *obj);
 extern int baro_data_report(int value, int status, int64_t nt);
-extern int baro_cali_report(int32_t *data);
 extern int baro_flush_report(void);
 extern int baro_register_control_path(struct baro_control_path *ctl);
 extern int baro_register_data_path(struct baro_data_path *data);

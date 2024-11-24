@@ -21,10 +21,11 @@
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <mt-plat/aee.h>
+
 LIST_HEAD(mpucb_list);
 static DEFINE_MUTEX(mpucb_mutex);
 
-static struct emimpu_callbacks {
+struct emimpu_callbacks {
 	struct list_head list;
 	unsigned long owner;
 	irqreturn_t (*debug_dump)(unsigned int emi_id, struct reg_info_t *dump, unsigned int len);
@@ -164,8 +165,6 @@ static ssize_t emimpu_ctrl_store
 	if (!command)
 		return count;
 	backup_command = command;
-	if (!command)
-		return count;
 	strncpy(command, buf, (size_t) MTK_EMI_MAX_CMD_LEN);
 
 	for (i = 0; i < MTK_EMI_MAX_TOKEN; i++) {
@@ -182,8 +181,10 @@ static ssize_t emimpu_ctrl_store
 		pr_info("%s: %s %s\n", __func__, token[0], token[1]);
 
 		ret = kstrtoul(token[1], 10, &region);
-		if (ret != 0)
+		if (ret != 0) {
 			pr_info("%s: fail to parse region\n", __func__);
+			goto emimpu_ctrl_store_end;
+		}
 
 		if (region < emimpu_dev_ptr->region_cnt) {
 			emimpu_dev_ptr->show_region = (unsigned int) region;
@@ -198,11 +199,15 @@ static ssize_t emimpu_ctrl_store
 			__func__, token[0], token[1], token[2]);
 
 		ret = kstrtoul(token[1], 10, &dgroup);
-		if (ret != 0)
+		if (ret != 0) {
 			pr_info("%s: fail to parse dgroup\n", __func__);
+			goto emimpu_ctrl_store_end;
+		}
 		ret = kstrtoul(token[2], 16, &apc);
-		if (ret != 0)
+		if (ret != 0) {
 			pr_info("[MPU] fail to parse apc\n");
+			goto emimpu_ctrl_store_end;
+		}
 
 		if (dgroup < (emimpu_dev_ptr->domain_cnt / 8)) {
 			pr_info("%s: apc[%lu]: 0x%lx\n",
@@ -222,14 +227,20 @@ static ssize_t emimpu_ctrl_store
 			__func__, token[0], token[1], token[2], token[3]);
 
 		ret = kstrtoull(token[1], 16, &start);
-		if (ret != 0)
+		if (ret != 0) {
 			pr_info("%s: fail to parse start\n", __func__);
+			goto emimpu_ctrl_store_end;
+		}
 		ret = kstrtoull(token[2], 16, &end);
-		if (ret != 0)
+		if (ret != 0) {
 			pr_info("%s: fail to parse end\n", __func__);
+			goto emimpu_ctrl_store_end;
+		}
 		ret = kstrtoul(token[3], 10, &region);
-		if (ret != 0)
+		if (ret != 0) {
 			pr_info("%s: fail to parse region\n", __func__);
+			goto emimpu_ctrl_store_end;
+		}
 
 		if (region < emimpu_dev_ptr->region_cnt) {
 			rg_info->start = start;
@@ -244,8 +255,10 @@ static ssize_t emimpu_ctrl_store
 		pr_info("%s: %s %s\n", __func__, token[0], token[1]);
 
 		ret = kstrtoul(token[1], 10, &region);
-		if (ret != 0)
+		if (ret != 0) {
 			pr_info("%s: fail to parse region\n", __func__);
+			goto emimpu_ctrl_store_end;
+		}
 
 		if (region < emimpu_dev_ptr->region_cnt) {
 			rg_info->rg_num = (unsigned int)region;
@@ -288,6 +301,22 @@ static void clear_violation(
 		post_clear_cb(emi_id);
 }
 
+static void emimpu_dump_msg(struct work_struct *work)
+{
+	struct emimpu_dbg_cb *curr_dbg_cb;
+	struct emimpu_dev_t *emimpu_dev_ptr =
+		(struct emimpu_dev_t *)platform_get_drvdata(emimpu_pdev);
+
+	for (curr_dbg_cb = emimpu_dev_ptr->dbg_cb_list; curr_dbg_cb;
+		curr_dbg_cb = curr_dbg_cb->next_dbg_cb)
+		curr_dbg_cb->func();
+
+	pr_info("%s: call aee\n", __func__);
+	aee_kernel_exception("EMIMPU", emimpu_dev_ptr->violation_msg);
+	emimpu_dev_ptr->in_msg_dump = 0;
+}
+static DECLARE_WORK(emimpu_dump_msg_wq, emimpu_dump_msg);
+
 static irqreturn_t emimpu_violation_irq(int irq, void *dev_id)
 {
 	struct emimpu_dev_t *emimpu_dev_ptr =
@@ -296,12 +325,20 @@ static irqreturn_t emimpu_violation_irq(int irq, void *dev_id)
 	void __iomem *emi_cen_base;
 	unsigned int emi_id;
 	unsigned int i;
-	bool violation, mpu_bypass;
-	char aee_msg[MTK_EMI_MAX_CMD_LEN];
+	bool violation, mpu_violation;
+	char *aee_msg;
 	ssize_t aee_msg_cnt;
+	int ret_temp;
 	struct emimpu_callbacks *mpucb;
 
-	aee_msg_cnt = snprintf(aee_msg, MTK_EMI_MAX_CMD_LEN, "violation\n");
+	if (emimpu_dev_ptr->in_msg_dump)
+		goto ignore_violation;
+
+	aee_msg = emimpu_dev_ptr->violation_msg;
+	ret_temp = snprintf(aee_msg, MTK_EMI_MAX_CMD_LEN, "violation\n");
+	aee_msg_cnt = (ret_temp < 0) ? 0 : (ssize_t)ret_temp;
+
+	mpu_violation = false;
 	for (emi_id = 0; emi_id < emimpu_dev_ptr->emi_cen_cnt; emi_id++) {
 		violation = false;
 		emi_cen_base = emimpu_dev_ptr->emi_cen_base[emi_id];
@@ -309,9 +346,6 @@ static irqreturn_t emimpu_violation_irq(int irq, void *dev_id)
 		for (i = 0; i < emimpu_dev_ptr->dump_cnt; i++) {
 			dump_reg[i].value = readl(
 				emi_cen_base + dump_reg[i].offset);
-			pr_info("%s: emi%d, offset(0x%x), value(0x%x)\n",
-				__func__, emi_id,
-				dump_reg[i].offset, dump_reg[i].value);
 
 			if (aee_msg_cnt < MTK_EMI_MAX_CMD_LEN) {
 				aee_msg_cnt += snprintf(aee_msg + aee_msg_cnt,
@@ -338,32 +372,34 @@ static irqreturn_t emimpu_violation_irq(int irq, void *dev_id)
 				continue;
 			}
 
-		mpu_bypass = false;
+		mpu_violation = true;
+
 		list_for_each_entry_reverse(mpucb, &mpucb_list, list) {
 			if (mpucb->debug_dump)
 				if (mpucb->debug_dump(emi_id,
 					dump_reg, emimpu_dev_ptr->dump_cnt)
 					== IRQ_HANDLED) {
 					mpucb->handled = true;
-					mpu_bypass = true;
+					mpu_violation = false;
 					clear_violation(emimpu_dev_ptr, emi_id);
 					mtk_clear_md_violation();
 					break;
 				}
 		}
 
-		if (mpu_bypass)
-			continue;
-
 		if (md_handling_cb) {
 			md_handling_cb(emi_id,
 				dump_reg, emimpu_dev_ptr->dump_cnt);
 		}
-
-		pr_info("%s: violation at emi%d\n", __func__, emi_id);
-		aee_kernel_exception("EMIMPU", aee_msg);
 	}
 
+	pr_info("%s: %s", __func__, aee_msg);
+	if (mpu_violation) {
+		emimpu_dev_ptr->in_msg_dump = 1;
+		schedule_work(&emimpu_dump_msg_wq);
+	}
+
+ignore_violation:
 	for (emi_id = 0; emi_id < emimpu_dev_ptr->emi_cen_cnt; emi_id++)
 		clear_violation(emimpu_dev_ptr, emi_id);
 
@@ -409,12 +445,18 @@ static int emimpu_probe(struct platform_device *pdev)
 	int ret;
 
 	pr_info("%s: module probe.\n", __func__);
-	emimpu_pdev = pdev;
 	emimpu_dev_ptr = devm_kmalloc(&pdev->dev,
 		sizeof(struct emimpu_dev_t), GFP_KERNEL);
 	if (!emimpu_dev_ptr)
 		return -ENOMEM;
+	emimpu_dev_ptr->in_msg_dump = 0;
 	emimpu_dev_ptr->show_region = 0;
+	emimpu_dev_ptr->dbg_cb_list = NULL;
+
+	emimpu_dev_ptr->violation_msg = devm_kmalloc(&pdev->dev,
+		MTK_EMI_MAX_CMD_LEN, GFP_KERNEL);
+	if (!(emimpu_dev_ptr->violation_msg))
+		return -ENOMEM;
 
 	ret = of_property_read_u32(emimpu_node,
 		"region_cnt", &(emimpu_dev_ptr->region_cnt));
@@ -545,12 +587,13 @@ static int emimpu_probe(struct platform_device *pdev)
 	}
 
 	/* get EMI base addr */
-	emimpu_dev_ptr->emi_cen_cnt = of_property_count_elems_of_size(
+	ret = of_property_count_elems_of_size(
 			emicen_node, "reg", sizeof(unsigned int) * 4);
-	if (emimpu_dev_ptr->emi_cen_cnt <= 0) {
+	if (ret <= 0) {
 		pr_info("%s: get emi_cen_cnt fail\n", __func__);
 		return -EINVAL;
 	}
+	emimpu_dev_ptr->emi_cen_cnt = (unsigned int)ret;
 	emimpu_dev_ptr->emi_cen_base = devm_kmalloc_array(&pdev->dev,
 		emimpu_dev_ptr->emi_cen_cnt, sizeof(phys_addr_t), GFP_KERNEL);
 	if (!(emimpu_dev_ptr->emi_cen_base))
@@ -578,14 +621,7 @@ static int emimpu_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, emimpu_dev_ptr);
-
-	emimpu_irq = irq_of_parse_and_map(emimpu_node, 0);
-	ret = request_irq(emimpu_irq, (irq_handler_t)emimpu_violation_irq,
-		IRQF_TRIGGER_NONE, "emimpu", &emimpu_drv);
-	if (ret) {
-		pr_info("%s: fail to request irq\n", __func__);
-		return -EINVAL;
-	}
+	emimpu_pdev = pdev;
 
 	/* enable AP region */
 	ret = of_property_read_u32(emimpu_node, "ap_region", &ap_region);
@@ -617,6 +653,14 @@ static int emimpu_probe(struct platform_device *pdev)
 				mtk_emimpu_set_apc(rg_info, i, ap_apc[i]);
 		mtk_emimpu_lock_region(rg_info, MTK_EMIMPU_LOCK);
 		devm_kfree(&pdev->dev, ap_apc);
+	}
+
+	emimpu_irq = irq_of_parse_and_map(emimpu_node, 0);
+	ret = request_irq(emimpu_irq, (irq_handler_t)emimpu_violation_irq,
+		IRQF_TRIGGER_NONE, "emimpu", &emimpu_drv);
+	if (ret) {
+		pr_info("%s: fail to request irq\n", __func__);
+		return -EINVAL;
 	}
 
 	ret = of_property_read_u32(emimpu_node, "slverr", &slverr);
@@ -910,6 +954,53 @@ int mtk_emimpu_postclear_register(void (*clear_func)(unsigned int emi_id))
 EXPORT_SYMBOL(mtk_emimpu_postclear_register);
 
 /*
+ * mtk_emimpu_debugdump_register - register callback for debug info dump
+ * @debug_func:	function point for debug info dump
+ *
+ * Return 0 for success, -EINVAL for fail
+ */
+int mtk_emimpu_debugdump_register(void (*debug_func)(void))
+{
+	struct emimpu_dbg_cb *targ_dbg_cb;
+	struct emimpu_dbg_cb *curr_dbg_cb;
+	struct emimpu_dev_t *emimpu_dev_ptr;
+
+	if (!emimpu_pdev)
+		return -EINVAL;
+
+	emimpu_dev_ptr =
+		(struct emimpu_dev_t *)platform_get_drvdata(emimpu_pdev);
+
+	if (!debug_func) {
+		pr_info("%s: debug_func is NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	targ_dbg_cb = kmalloc(sizeof(struct emimpu_dbg_cb), GFP_KERNEL);
+	if (!targ_dbg_cb)
+		return -ENOMEM;
+
+	targ_dbg_cb->func = debug_func;
+	targ_dbg_cb->next_dbg_cb = NULL;
+
+	if (!(emimpu_dev_ptr->dbg_cb_list)) {
+		emimpu_dev_ptr->dbg_cb_list = targ_dbg_cb;
+		return 0;
+	}
+
+	for (curr_dbg_cb = emimpu_dev_ptr->dbg_cb_list; curr_dbg_cb;
+		curr_dbg_cb = curr_dbg_cb->next_dbg_cb) {
+		if (!(curr_dbg_cb->next_dbg_cb)) {
+			curr_dbg_cb->next_dbg_cb = targ_dbg_cb;
+			break;
+		}
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(mtk_emimpu_debugdump_register);
+
+/*
  * mtk_emimpu_md_handling_register - register callback for md handling
  * @md_handling_func:	function point for md handling
  *
@@ -952,7 +1043,7 @@ int mtk_emimpu_register_callback(
 	if (!mpucb)
 		return -ENOMEM;
 
-	mpucb->owner = __builtin_return_address(0);
+	mpucb->owner = (unsigned long)__builtin_return_address(0);
 	mpucb->debug_dump = debug_dump;
 	mpucb->handled = false;
 

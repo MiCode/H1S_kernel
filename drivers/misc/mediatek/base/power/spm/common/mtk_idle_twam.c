@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2017 MediaTek Inc.
  */
 
 #include <linux/module.h>
@@ -58,7 +50,7 @@ static void mtk_idle_twam_callback(struct twam_cfg *ts, struct twam_select *sel)
 	int index = 0;
 
 	for (index = 0; index < 4; index++) {
-		pr_notice("Power/swap spm twam (sel%d: %d) ratio: %5u/1000, %d, %d\n",
+		printk_deferred("[name:spm&]Power/swap spm twam (sel%d: %d) ratio: %5u/1000, %d, %d\n",
 			sel->signal[index], sel->id[index],
 			(idle_twam.speed_mode) ?
 			GET_EVENT_RATIO_SPEED(ts->byte[index].id) :

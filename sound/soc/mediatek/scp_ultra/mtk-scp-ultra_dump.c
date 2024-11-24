@@ -1,15 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2018 MediaTek Inc.
  */
 
 //#include "mtk-scp-ultra.h"
@@ -42,19 +33,15 @@
 #include <linux/wait.h>
 #include <linux/time.h>
 
-#include "audio_log.h"
-#include "audio_assert.h"
-#include "audio_wakelock.h"
-
-//#include "audio_task_manager.h"
-#include <audio_ipi_dma.h>
 #include "audio_ultra_msg_id.h"
 #include <scp_helper.h>
 #include "mtk-scp-ultra_dump.h"
+#include "mtk-scp-ultra-common.h"
+
 
 #define DUMP_ULTRA_PCM_DATA_PATH "/data/vendor/audiohal/audio_dump"
 #define FRAME_BUF_SIZE (8192)
-static struct wakeup_source wakelock_ultra_dump_lock;
+static struct wakeup_source *wakelock_ultra_dump_lock;
 
 enum { /* dump_data_t */
 	DUMP_PCM_IN = 0,
@@ -114,7 +101,7 @@ int ultra_start_engine_thread(void)
 	int ret = 0;
 
 	/* only enable when debug pcm dump on */
-	aud_wake_lock(&wakelock_ultra_dump_lock);
+	aud_wake_lock(wakelock_ultra_dump_lock);
 
 	pr_debug("%s(),b_enable_stread  0546= %d", __func__, b_enable_stread);
 	if (true == b_enable_stread)
@@ -157,7 +144,7 @@ void ultra_stop_engine_thread(void)
 	kfree(dump_queue);
 	dump_queue = NULL;
 	ultra_close_dump_file();
-	//aud_wake_unlock(&wakelock_ultra_dump_lock);
+	aud_wake_unlock(wakelock_ultra_dump_lock);
 }
 
 int ultra_open_dump_file(void)
@@ -170,7 +157,7 @@ int ultra_open_dump_file(void)
 	char path_dataout_pcm[64];
 
 	/* only enable when debug pcm dump on */
-	//aud_wake_lock(&wakelock_ultra_dump_lock);
+	//aud_wake_lock(wakelock_ultra_dump_lock);
 	getnstimeofday(&curr_tm);
 	if (true == b_enable_dump) {
 		pr_info("ultra dump is alread opend\n");
@@ -196,7 +183,8 @@ int ultra_open_dump_file(void)
 			__func__, path_dataout_pcm);
 
 	fp_pcm_in = filp_open(path_datain_pcm,
-			O_CREAT | O_WRONLY | O_LARGEFILE, 0);
+			O_CREAT | O_WRONLY | O_LARGEFILE | O_NOFOLLOW,
+			0);
 	if (IS_ERR(fp_pcm_in)) {
 		pr_info("%s(), %s file open error: %ld\n",
 				__func__,
@@ -206,7 +194,7 @@ int ultra_open_dump_file(void)
 	}
 	fp_pcm_out = filp_open(
 			path_dataout_pcm,
-			O_CREAT | O_WRONLY | O_LARGEFILE,
+			O_CREAT | O_WRONLY | O_LARGEFILE | O_NOFOLLOW,
 			0);
 	if (IS_ERR(fp_pcm_out)) {
 		pr_info("%s(), %s file open error: %ld\n",
@@ -408,7 +396,6 @@ static int ultra_dump_kthread(void *data)
 					pr_info("DUMP_PCM_OUT null, break\n");
 					break;
 				}
-
 				while (size > 0) {
 					if (!IS_ERR(fp_pcm_out)) {
 						old_fs = get_fs();
@@ -448,24 +435,26 @@ void audio_ipi_client_ultra_init(void)
 		(char *)scp_get_reserve_mem_virt(ULTRA_MEM_ID);
 
 	pr_info("%s()", __func__);
-	// if (NULL == ultra_dump_mem.start_virt) {
+	if (ultra_dump_mem.start_virt == NULL) {
 		pr_info("%s() ultra_dump_mem.start_virt:%p", __func__,
-				ultra_dump_mem.start_virt);
-	// }
-	aud_wake_lock_init(&wakelock_ultra_dump_lock, "ultradump lock");
+			ultra_dump_mem.start_virt);
+	}
+	wakelock_ultra_dump_lock = aud_wake_lock_init(NULL, "ultradump lock");
 
 	dump_workqueue[DUMP_PCM_IN] = create_workqueue("dump_ultra_pcm_in");
-	if (dump_workqueue[DUMP_PCM_IN] == NULL)
+	if (dump_workqueue[DUMP_PCM_IN] == NULL) {
 		pr_notice("dump_workqueue[DUMP_PCM_IN] = %p\n",
-				dump_workqueue[DUMP_PCM_IN]);
-	AUD_ASSERT(dump_workqueue[DUMP_PCM_IN] != NULL);
+			  dump_workqueue[DUMP_PCM_IN]);
+		AUDIO_AEE("dump_workqueue[DUMP_PCM_IN] == NULL");
+	}
 
 	dump_workqueue[DUMP_PCM_OUT] =
 			create_workqueue("dump_ultra_pcm_out");
-	if (dump_workqueue[DUMP_PCM_OUT] == NULL)
+	if (dump_workqueue[DUMP_PCM_OUT] == NULL) {
 		pr_notice("dump_workqueue[DUMP_PCM_OUT] = %p\n",
-				dump_workqueue[DUMP_PCM_OUT]);
-	AUD_ASSERT(dump_workqueue[DUMP_PCM_OUT] != NULL);
+			  dump_workqueue[DUMP_PCM_OUT]);
+		AUDIO_AEE("dump_workqueue[DUMP_PCM_OUT] == NULL");
+	}
 
 	INIT_WORK(&dump_work[DUMP_PCM_IN].work, ultra_dump_in_data_routine);
 	INIT_WORK(&dump_work[DUMP_PCM_OUT].work, ultra_dump_out_data_routine);
@@ -489,5 +478,5 @@ void audio_ipi_client_ultra_deinit(void)
 			dump_workqueue[i] = NULL;
 		}
 	}
-	aud_wake_lock_destroy(&wakelock_ultra_dump_lock);
+	aud_wake_lock_destroy(wakelock_ultra_dump_lock);
 }

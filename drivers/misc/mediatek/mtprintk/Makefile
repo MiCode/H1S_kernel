@@ -10,6 +10,5 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 # GNU General Public License for more details.
 #
-
-obj-$(CONFIG_MTK_PRINTK_UART_CONSOLE) += mtk_printk_ctrl.o
-
+subdir-ccflags-y += -I$(srctree)/drivers/misc/mediatek/include
+obj-y += mtk_printk_ctrl.o

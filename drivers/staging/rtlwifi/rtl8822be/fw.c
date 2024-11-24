@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
  * Copyright(c) 2016  Realtek Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of version 2 of the GNU General Public License as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * The full GNU General Public License is included in this distribution in the
- * file called LICENSE.
  *
  * Contact Information:
  * wlanfae <wlanfae@realtek.com>
@@ -93,7 +82,7 @@ static void _rtl8822be_fill_h2c_command(struct ieee80211_hw *hw, u8 element_id,
 	}
 
 	while (!bwrite_success) {
-		/* 2. Find the last BOX number which has been writen. */
+		/* 2. Find the last BOX number which has been written. */
 		boxnum = rtlhal->last_hmeboxnum;
 		switch (boxnum) {
 		case 0:
@@ -330,7 +319,7 @@ void rtl8822be_set_fw_pwrmode_cmd(struct ieee80211_hw *hw, u8 mode)
 			byte5 = btc_ops->btc_get_lps_val(rtlpriv);
 			power_state = btc_ops->btc_get_rpwm_val(rtlpriv);
 
-			if ((rlbm == 2) && (byte5 & BIT(4))) {
+			if (rlbm == 2 && (byte5 & BIT(4))) {
 				/* Keep awake interval to 1 to prevent from
 				 * decreasing coex performance
 				 */
@@ -770,9 +759,10 @@ void rtl8822be_set_fw_rsvdpagepkt(struct ieee80211_hw *hw, bool b_dl_finished)
 		rtl8822be_fill_h2c_cmd(hw, H2C_8822B_RSVDPAGE,
 				       sizeof(u1_rsvd_page_loc),
 				       u1_rsvd_page_loc);
-	} else
+	} else {
 		RT_TRACE(rtlpriv, COMP_ERR, DBG_WARNING,
 			 "Set RSVD page location to Fw FAIL!!!!!!.\n");
+	}
 }
 
 /* Should check FW support p2p or not. */
@@ -838,7 +828,7 @@ void rtl8822be_set_p2p_ps_offload_cmd(struct ieee80211_hw *hw, u8 p2p_ps_state)
 			rtl_write_dword(rtlpriv, 0x5EC,
 					p2pinfo->noa_count_type[i]);
 		}
-		if ((p2pinfo->opp_ps == 1) || (p2pinfo->noa_num > 0)) {
+		if (p2pinfo->opp_ps == 1 || p2pinfo->noa_num > 0) {
 			/* rst p2p circuit */
 			rtl_write_byte(rtlpriv, REG_DUAL_TSF_RST_8822B, BIT(4));
 			p2p_ps_offload->offload_en = 1;

@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef PD_POLICY_ENGINE_H_
@@ -26,20 +18,15 @@ enum pd_pe_state_machine {
 	PE_STATE_MACHINE_VCONN_SWAP,
 };
 
-#define PE_STATE_DISCARD_AND_UNEXPECTED(pd_port) {\
-	pd_port->pe_data.pe_state_flags = \
-	PE_STATE_FLAG_HRESET_IF_SR_TIMEOUT |\
-	PE_STATE_FLAG_IGNORE_UNKNOWN_EVENT; }
-
 /* ---- Policy Engine Runtime Flags ---- */
 
 #define PE_STATE_FLAG_BACK_READY_IF_RECV_WAIT		(1<<0)
 #define PE_STATE_FLAG_BACK_READY_IF_RECV_REJECT		(1<<1)
 #define PE_STATE_FLAG_BACK_READY_IF_SR_TIMER_TOUT	(1<<2)
-#define PE_STATE_FLAG_BACK_READY_IF_TX_FAILED			(1<<3)
-#define PE_STATE_FLAG_HRESET_IF_SR_TIMEOUT			(1<<4)
-#define PE_STATE_FLAG_HRESET_IF_TX_FAILED				(1<<5)
-#define PE_STATE_FLAG_IGNORE_UNKNOWN_EVENT			(1<<6)
+#define PE_STATE_FLAG_BACK_READY_IF_TX_FAILED		(1<<3)
+#define PE_STATE_FLAG_HRESET_IF_SR_TIMEOUT		(1<<4)
+#define PE_STATE_FLAG_HRESET_IF_TX_FAILED		(1<<5)
+#define PE_STATE_FLAG_IGNORE_UNKNOWN_EVENT		(1<<6)
 #define PE_STATE_FLAG_ENABLE_SENDER_RESPONSE_TIMER	(1<<7)
 
 #define PE_STATE_WAIT_RESPONSE(pd_port) {\
@@ -96,8 +83,8 @@ enum pd_pe_state_machine {
 	PE_STATE_FLAG_ENABLE_SENDER_RESPONSE_TIMER; }
 
 #define PE_STATE_FLAG_BACK_READY_IF_RECV_GOOD_CRC	(1<<0)
-#define PE_STATE_FLAG_BACK_READY_IF_DPM_ACK			(1<<1)
-#define PE_STATE_FLAG_DPM_ACK_IMMEDIATELY				(1<<7)
+#define PE_STATE_FLAG_BACK_READY_IF_DPM_ACK		(1<<1)
+#define PE_STATE_FLAG_DPM_ACK_IMMEDIATELY		(1<<7)
 
 #define PE_STATE_WAIT_TX_SUCCESS(pd_port)	{\
 	pd_port->pe_data.pe_state_flags2 = \
@@ -116,7 +103,8 @@ enum pd_pe_state_machine {
 	pd_port->pe_data.pe_state_flags2 |= \
 	PE_STATE_FLAG_DPM_ACK_IMMEDIATELY; }
 
-#define VDM_STATE_FLAG_DPM_ACK_IMMEDIATELY	(1<<4)
+#define VDM_STATE_FLAG_ENABLE_VDM_RESPONSE_TIMER	(1<<0)
+#define VDM_STATE_FLAG_DPM_ACK_IMMEDIATELY		(1<<4)
 #define VDM_STATE_FLAG_BACK_READY_IF_DPM_ACK		(1<<6)
 #define VDM_STATE_FLAG_BACK_READY_IF_RECV_GOOD_CRC	(1<<7)
 
@@ -133,9 +121,14 @@ enum pd_pe_state_machine {
 	pd_port->pe_data.vdm_state_flags = \
 		VDM_STATE_FLAG_BACK_READY_IF_RECV_GOOD_CRC; }
 
+#define VDM_STATE_RESPONSE_CMD(pd_port, timer_id)	{\
+	pd_port->pe_data.vdm_state_flags = \
+		VDM_STATE_FLAG_ENABLE_VDM_RESPONSE_TIMER; \
+	pd_port->pe_data.vdm_state_timer = timer_id; }
+
 static inline bool pd_check_pe_during_hard_reset(struct pd_port *pd_port)
 {
-	return pd_port->tcpc_dev->pd_wait_hard_reset_complete;
+	return pd_port->tcpc->pd_wait_hard_reset_complete;
 }
 
 enum pd_pe_state {
@@ -362,6 +355,8 @@ enum pd_pe_state {
 	PE_DFP_UVDM_NAKED,
 #endif/* CONFIG_USB_PD_CUSTOM_VDM */
 
+	PE_UFP_VDM_SEND_NAK,
+
 /******************* PD30 Common *******************/
 #ifdef CONFIG_USB_PD_REV30
 #ifdef CONFIG_USB_PD_REV30_BAT_CAP_REMOTE
@@ -413,14 +408,6 @@ enum pd_pe_state {
 #endif	/* CONFIG_USB_PD_ERROR_RECOVERY_ONCE */
 	PE_BIST_TEST_DATA,
 	PE_BIST_CARRIER_MODE_2,
-
-#ifdef CONFIG_USB_PD_DISCARD_AND_UNEXPECT_MSG
-	PE_UNEXPECTED_TX_WAIT,
-	PE_SEND_SOFT_RESET_TX_WAIT,
-	PE_RECV_SOFT_RESET_TX_WAIT,
-	PE_SEND_SOFT_RESET_STANDBY,
-#endif	/* CONFIG_USB_PD_DISCARD_AND_UNEXPECT_MSG */
-
 /* Wait tx finished */
 	PE_IDLE1,
 	PE_IDLE2,
@@ -438,7 +425,7 @@ enum pd_pe_state {
  * Returns Negative Value if an error occurs.
  */
 
-int pd_policy_engine_run(struct tcpc_device *tcpc_dev);
+int pd_policy_engine_run(struct tcpc_device *tcpc);
 
 
 /* ---- Policy Engine (General) ---- */
@@ -849,6 +836,8 @@ void pe_dfp_uvdm_acked_entry(
 void pe_dfp_uvdm_naked_entry(
 	struct pd_port *pd_port);
 #endif/* CONFIG_USB_PD_CUSTOM_VDM */
+void pe_ufp_vdm_send_nak_entry(
+	struct pd_port *pd_port);
 
 /******************* PD30 Common *******************/
 #ifdef CONFIG_USB_PD_REV30
@@ -931,17 +920,6 @@ void pe_bist_carrier_mode_2_entry(
 	struct pd_port *pd_port);
 void pe_bist_carrier_mode_2_exit(
 	struct pd_port *pd_port);
-#ifdef CONFIG_USB_PD_DISCARD_AND_UNEXPECT_MSG
-void pe_unexpected_tx_wait_entry(
-	struct pd_port *pd_port);
-void pe_send_soft_reset_tx_wait_entry(
-	struct pd_port *pd_port);
-void pe_recv_soft_reset_tx_wait_entry(
-	struct pd_port *pd_port);
-void pe_send_soft_reset_standby_entry(
-	struct pd_port *pd_port);
-#endif	/* CONFIG_USB_PD_DISCARD_AND_UNEXPECT_MSG */
-
 /* Wait tx finished */
 void pe_idle1_entry(
 	struct pd_port *pd_port);

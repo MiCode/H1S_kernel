@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "LCM"
@@ -458,17 +450,6 @@ static struct LCM_setting_table init_setting_vdo[] = {
 
 	{REGFLAG_DELAY, 20, {} },
 
-#if 0
-#ifndef LCM_SET_DISPLAY_ON_DELAY
-	{REGFLAG_DELAY, 150, {} },
-
-	{0xE9, 0x01, {0xC2} },
-	{0xB0, 0x01, {0x01} },
-	{0xE9, 0x01, {0x00} },
-
-	{0x29, 0, {} },
-	{REGFLAG_DELAY, 50, {} },
-#endif
 #endif
 };
 
@@ -575,7 +556,7 @@ static void lcm_get_params(struct LCM_PARAMS *params)
 	/* params->dsi.ssc_disable = 1; */
 #ifndef CONFIG_FPGA_EARLY_PORTING
 	/* this value must be in MTK suggested table */
-	params->dsi.PLL_CLOCK = 497;
+	params->dsi.PLL_CLOCK = 500;
 	params->dsi.PLL_CK_CMD = 480;
 #else
 	params->dsi.pll_div1 = 0;

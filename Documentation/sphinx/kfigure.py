@@ -83,7 +83,7 @@ __version__  = '1.0.0'
 # -------------
 
 def which(cmd):
-    """Searches the ``cmd`` in the ``PATH`` enviroment.
+    """Searches the ``cmd`` in the ``PATH`` environment.
 
     This *which* searches the PATH for executable ``cmd`` . First match is
     returned, if nothing is found, ``None` is returned.
@@ -421,15 +421,15 @@ def visit_kernel_render(self, node):
     app = self.builder.app
     srclang = node.get('srclang')
 
-    kernellog.verbose('visit kernel-render node lang: "%s"' % (srclang))
+    kernellog.verbose(app, 'visit kernel-render node lang: "%s"' % (srclang))
 
     tmp_ext = RENDER_MARKUP_EXT.get(srclang, None)
     if tmp_ext is None:
-        kernellog.warn('kernel-render: "%s" unknow / include raw.' % (srclang))
+        kernellog.warn(app, 'kernel-render: "%s" unknown / include raw.' % (srclang))
         return
 
     if not dot_cmd and tmp_ext == '.dot':
-        kernellog.verbose("dot from graphviz not available / include raw.")
+        kernellog.verbose(app, "dot from graphviz not available / include raw.")
         return
 
     literal_block = node[0]
@@ -488,7 +488,7 @@ class KernelRender(Figure):
         srclang = self.arguments[0].strip()
         if srclang not in RENDER_MARKUP_EXT.keys():
             return [self.state_machine.reporter.warning(
-                'Unknow source language "%s", use one of: %s.' % (
+                'Unknown source language "%s", use one of: %s.' % (
                     srclang, ",".join(RENDER_MARKUP_EXT.keys())),
                 line=self.lineno)]
 

@@ -187,9 +187,18 @@ static void ieee80211_frame_acked(struct sta_info *sta, struct sk_buff *skb)
 	struct ieee80211_mgmt *mgmt = (void *) skb->data;
 	struct ieee80211_local *local = sta->local;
 	struct ieee80211_sub_if_data *sdata = sta->sdata;
+	struct ieee80211_tx_info *txinfo = IEEE80211_SKB_CB(skb);
 
-	if (ieee80211_hw_check(&local->hw, REPORTS_TX_ACK_STATUS))
+	if (ieee80211_hw_check(&local->hw, REPORTS_TX_ACK_STATUS)) {
 		sta->status_stats.last_ack = jiffies;
+		if (txinfo->status.is_valid_ack_signal) {
+			sta->status_stats.last_ack_signal =
+					 (s8)txinfo->status.ack_signal;
+			sta->status_stats.ack_signal_filled = true;
+			ewma_avg_signal_add(&sta->status_stats.avg_ack_signal,
+					    -txinfo->status.ack_signal);
+		}
+	}
 
 	if (ieee80211_is_data_qos(mgmt->frame_control)) {
 		struct ieee80211_hdr *hdr = (void *) skb->data;
@@ -255,6 +264,8 @@ static int ieee80211_tx_radiotap_len(struct ieee80211_tx_info *info)
 	/* IEEE80211_RADIOTAP_RATE rate */
 	if (info->status.rates[0].idx >= 0 &&
 	    !(info->status.rates[0].flags & (IEEE80211_TX_RC_MCS |
+					     RATE_INFO_FLAGS_DMG |
+					     RATE_INFO_FLAGS_EDMG |
 					     IEEE80211_TX_RC_VHT_MCS)))
 		len += 2;
 
@@ -306,6 +317,8 @@ ieee80211_add_tx_radiotap_header(struct ieee80211_local *local,
 	/* IEEE80211_RADIOTAP_RATE */
 	if (info->status.rates[0].idx >= 0 &&
 	    !(info->status.rates[0].flags & (IEEE80211_TX_RC_MCS |
+					     RATE_INFO_FLAGS_DMG |
+					     RATE_INFO_FLAGS_EDMG |
 					     IEEE80211_TX_RC_VHT_MCS))) {
 		u16 rate;
 
@@ -481,6 +494,8 @@ static void ieee80211_report_ack_skb(struct ieee80211_local *local,
 			if (ieee80211_is_any_nullfunc(hdr->frame_control))
 				cfg80211_probe_status(sdata->dev, hdr->addr1,
 						      cookie, acked,
+						      info->status.ack_signal,
+						      info->status.is_valid_ack_signal,
 						      GFP_ATOMIC);
 			else
 				cfg80211_mgmt_tx_status(&sdata->wdev, cookie,

@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2015 MediaTek Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
  */
 
 #ifndef __CMDQ_DEF_H__
@@ -30,7 +29,11 @@
 
 #define CMDQ_INVALID_THREAD		(-1)
 
+#if IS_ENABLED(CONFIG_MTK_MT6382_DBG)
+#define CMDQ_MAX_THREAD_COUNT		(BIT(5) | 24)
+#else
 #define CMDQ_MAX_THREAD_COUNT		(24)
+#endif
 #define CMDQ_MAX_TASK_IN_THREAD		(16)
 #define CMDQ_MAX_READ_SLOT_COUNT	(4)
 #define CMDQ_INIT_FREE_TASK_COUNT	(8)
@@ -245,8 +248,16 @@ enum CMDQ_SCENARIO_ENUM {
 	/* Trigger loop scenario does not enable HWs */
 	CMDQ_SCENARIO_TRIGGER_LOOP_SUB = 47,
 
+	/* bridge */
+	CMDQ_BDG_SCENARIO_DISP_TEST,
+	CMDQ_BDG_SCENARIO_DISP_TEST2,
+	/* TODO */
+
 	CMDQ_MAX_SCENARIO_COUNT	/* ALWAYS keep at the end */
 };
+
+#define CMDQ_BDG_TASK(thread) \
+	(((thread) & BIT(5)) ? true : false)
 
 /* General Purpose Register */
 enum cmdq_gpr_reg {
@@ -389,6 +400,9 @@ struct cmdqSecAddrMetadataStruct {
 	uint32_t offset;	/* [IN]_b, buffser offset to secure handle */
 	uint32_t size;		/* buffer size */
 	uint32_t port;		/* hw port id (i.e. M4U port id) */
+	uint32_t sec_id;
+	uint32_t useSecIdinMeta;
+	int32_t ionFd;
 };
 
 struct cmdqMetaBuf {
@@ -460,6 +474,9 @@ struct cmdqSecDataStruct {
 	uint64_t extension;
 
 	bool mtee;
+
+	/*iommu_sec_id*/
+	int32_t sec_id;
 #ifdef CONFIG_MTK_IN_HOUSE_TEE_SUPPORT
 	/* tablet use */
 	uint32_t secMode;

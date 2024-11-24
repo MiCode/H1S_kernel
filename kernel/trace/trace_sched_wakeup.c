@@ -287,6 +287,8 @@ static void wakeup_trace_open(struct trace_iterator *iter)
 {
 	if (is_graph(iter->tr))
 		graph_trace_open(iter);
+	else
+		iter->private = NULL;
 }
 
 static void wakeup_trace_close(struct trace_iterator *iter)
@@ -400,10 +402,10 @@ tracing_sched_switch_trace(struct trace_array *tr,
 	entry	= ring_buffer_event_data(event);
 	entry->prev_pid			= prev->pid;
 	entry->prev_prio		= prev->prio;
-	entry->prev_state		= __get_task_state(prev);
+	entry->prev_state		= task_state_index(prev);
 	entry->next_pid			= next->pid;
 	entry->next_prio		= next->prio;
-	entry->next_state		= __get_task_state(next);
+	entry->next_state		= task_state_index(next);
 	entry->next_cpu	= task_cpu(next);
 
 	if (!call_filter_check_discard(call, entry, buffer, event))
@@ -428,10 +430,10 @@ tracing_sched_wakeup_trace(struct trace_array *tr,
 	entry	= ring_buffer_event_data(event);
 	entry->prev_pid			= curr->pid;
 	entry->prev_prio		= curr->prio;
-	entry->prev_state		= __get_task_state(curr);
+	entry->prev_state		= task_state_index(curr);
 	entry->next_pid			= wakee->pid;
 	entry->next_prio		= wakee->prio;
-	entry->next_state		= __get_task_state(wakee);
+	entry->next_state		= task_state_index(wakee);
 	entry->next_cpu			= task_cpu(wakee);
 
 	if (!call_filter_check_discard(call, entry, buffer, event))

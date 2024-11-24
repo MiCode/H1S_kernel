@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __DSI_DRV_H__
@@ -176,7 +168,7 @@ extern const struct LCM_UTIL_FUNCS PM_lcm_utils_dsi0;
 /* defined in mtkfb.c */
 extern bool is_ipoh_bootup;
 extern char mtkfb_lcm_name[];
-extern long dts_gpio_state;
+
 
 int DSI_enable_checksum(enum DISP_MODULE_ENUM module,
 	struct cmdqRecStruct *cmdq);
@@ -216,28 +208,30 @@ int dsi_enable_irq(enum DISP_MODULE_ENUM module, void *handle,
 	unsigned int enable);
 int ddp_dsi_power_on(enum DISP_MODULE_ENUM module, void *cmdq_handle);
 int dsi_basic_irq_enable(enum DISP_MODULE_ENUM module, void *cmdq);
-extern int mipi_clk_change(int msg, int en);
+extern int mipi_clk_change(enum DISP_MODULE_ENUM module, int en);
+
 extern int mipi_clk_change_by_data_rate(int en, int mipi_data_rate);
 unsigned int _is_power_on_status(enum DISP_MODULE_ENUM module);
 int ddp_dsi_read_lcm_cmdq(enum DISP_MODULE_ENUM module,
 		cmdqBackupSlotHandle *read_Slot,
 		struct cmdqRecStruct *cmdq_trigger_handle,
-		struct dsi_cmd_desc *cmd_tab, unsigned int count);
-int ddp_dsi_read_lcm_cmdq_v1(enum DISP_MODULE_ENUM module,
-		cmdqBackupSlotHandle *read_Slot,
-		struct cmdqRecStruct *cmdq_trigger_handle,
-		struct dsi_cmd_desc *cmd_tab);
+		struct ddp_lcm_read_cmd_table *read_table);
 int ddp_dsi_write_lcm_cmdq(enum DISP_MODULE_ENUM module,
-		struct cmdqRecStruct *cmdq,
-		unsigned char cmd, unsigned char count,
-		unsigned char *para_list);
-void DSI_dcs_set_lcm_reg_v4(enum DISP_MODULE_ENUM module,
-	bool hs, struct LCM_setting_table_V3 *para_tbl, unsigned int size,
-	unsigned char force_update);
-UINT32 DSI_dcs_read_lcm_reg_v4(enum DISP_MODULE_ENUM module,
-	UINT8 cmd, UINT8 *user_buffer, UINT8 buffer_size, bool sendhs);
-int ddp_dsi_build_cmdq(enum DISP_MODULE_ENUM module,
-	void *cmdq_trigger_handle, enum CMDQ_STATE state);
+	struct cmdqRecStruct *cmdq, unsigned  char cmd_char,
+	unsigned char count, unsigned char *para_list);
+
+#ifdef CONFIG_MTK_HIGH_FRAME_RATE
+/*-------------------------------DynFPS start------------------------------*/
+unsigned int ddp_dsi_fps_change_index(unsigned int last_dynfps, unsigned int new_dynfps);
+void ddp_dsi_dynfps_chg_fps(enum DISP_MODULE_ENUM module, void *handle,
+	unsigned int last_fps, unsigned int new_fps, unsigned int chg_index);
+void ddp_dsi_dynfps_get_vfp_info(unsigned int disp_fps,
+	unsigned int *vfp, unsigned int *vfp_for_lp);
+void DSI_dynfps_send_cmd(void *cmdq, unsigned int cmd,
+	unsigned char count, unsigned char *para_list,
+	unsigned char force_update, enum LCM_Send_Cmd_Mode sendmode);
+/*-------------------------------DynFPS end------------------------------*/
+#endif
 
 
 #ifdef __cplusplus

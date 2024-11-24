@@ -74,13 +74,19 @@
 	.text
 	.cpu		generic+crypto
 
-	arg1_low32	.req	w0
-	arg2		.req	x1
-	arg3		.req	x2
+	arg1_low32	.req	w19
+	arg2		.req	x20
+	arg3		.req	x21
 
 	vzr		.req	v13
 
 ENTRY(crc_t10dif_pmull)
+	frame_push	3, 128
+
+	mov		arg1_low32, w0
+	mov		arg2, x1
+	mov		arg3, x2
+
 	movi		vzr.16b, #0		// init zero register
 
 	// adjust the 16-bit initial_crc value, scale it to 32 bits
@@ -128,7 +134,7 @@ CPU_LE(	ext		v7.16b, v7.16b, v7.16b, #8	)
 	// XOR the initial_crc value
 	eor		v0.16b, v0.16b, v10.16b
 
-	ldr		q10, rk3	// xmm10 has rk3 and rk4
+	ldr_l		q10, rk3, x8	// xmm10 has rk3 and rk4
 					// type of pmull instruction
 					// will determine which constant to use
 
@@ -175,8 +181,25 @@ CPU_LE(	ext		v12.16b, v12.16b, v12.16b, #8	)
 	subs		arg3, arg3, #128
 
 	// check if there is another 64B in the buffer to be able to fold
-	b.ge		_fold_64_B_loop
+	b.lt		_fold_64_B_end
 
+	if_will_cond_yield_neon
+	stp		q0, q1, [sp, #.Lframe_local_offset]
+	stp		q2, q3, [sp, #.Lframe_local_offset + 32]
+	stp		q4, q5, [sp, #.Lframe_local_offset + 64]
+	stp		q6, q7, [sp, #.Lframe_local_offset + 96]
+	do_cond_yield_neon
+	ldp		q0, q1, [sp, #.Lframe_local_offset]
+	ldp		q2, q3, [sp, #.Lframe_local_offset + 32]
+	ldp		q4, q5, [sp, #.Lframe_local_offset + 64]
+	ldp		q6, q7, [sp, #.Lframe_local_offset + 96]
+	ldr_l		q10, rk3, x8
+	movi		vzr.16b, #0		// init zero register
+	endif_yield_neon
+
+	b		_fold_64_B_loop
+
+_fold_64_B_end:
 	// at this point, the buffer pointer is pointing at the last y Bytes
 	// of the buffer the 64B of folded data is in 4 of the vector
 	// registers: v0, v1, v2, v3
@@ -184,13 +207,13 @@ CPU_LE(	ext		v12.16b, v12.16b, v12.16b, #8	)
 	// fold the 8 vector registers to 1 vector register with different
 	// constants
 
-	ldr		q10, rk9
+	ldr_l		q10, rk9, x8
 
 	.macro		fold16, reg, rk
 	pmull		v8.1q, \reg\().1d, v10.1d
 	pmull2		\reg\().1q, \reg\().2d, v10.2d
 	.ifnb		\rk
-	ldr		q10, \rk
+	ldr_l		q10, \rk, x8
 	.endif
 	eor		v7.16b, v7.16b, v8.16b
 	eor		v7.16b, v7.16b, \reg\().16b
@@ -251,7 +274,7 @@ CPU_LE(	ext		v1.16b, v1.16b, v1.16b, #8	)
 
 	// get rid of the extra data that was loaded before
 	// load the shift constant
-	adr		x4, tbl_shf_table + 16
+	adr_l		x4, tbl_shf_table + 16
 	sub		x4, x4, arg3
 	ld1		{v0.16b}, [x4]
 
@@ -275,7 +298,7 @@ CPU_LE(	ext		v1.16b, v1.16b, v1.16b, #8	)
 
 _128_done:
 	// compute crc of a 128-bit value
-	ldr		q10, rk5		// rk5 and rk6 in xmm10
+	ldr_l		q10, rk5, x8		// rk5 and rk6 in xmm10
 
 	// 64b fold
 	ext		v0.16b, vzr.16b, v7.16b, #8
@@ -291,7 +314,7 @@ _128_done:
 
 	// barrett reduction
 _barrett:
-	ldr		q10, rk7
+	ldr_l		q10, rk7, x8
 	mov		v0.d[0], v7.d[1]
 
 	pmull		v0.1q, v0.1d, v10.1d
@@ -304,6 +327,7 @@ _barrett:
 _cleanup:
 	// scale the result back to 16 bits
 	lsr		x0, x0, #16
+	frame_pop
 	ret
 
 _less_than_128:
@@ -321,7 +345,7 @@ CPU_LE(	ext		v7.16b, v7.16b, v7.16b, #8	)
 	b.eq		_128_done		// exactly 16 left
 	b.lt		_less_than_16_left
 
-	ldr		q10, rk1		// rk1 and rk2 in xmm10
+	ldr_l		q10, rk1, x8		// rk1 and rk2 in xmm10
 
 	// update the counter. subtract 32 instead of 16 to save one
 	// instruction from the loop
@@ -333,7 +357,7 @@ CPU_LE(	ext		v7.16b, v7.16b, v7.16b, #8	)
 
 _less_than_16_left:
 	// shl r9, 4
-	adr		x0, tbl_shf_table + 16
+	adr_l		x0, tbl_shf_table + 16
 	sub		x0, x0, arg3
 	ld1		{v0.16b}, [x0]
 	movi		v9.16b, #0x80
@@ -345,6 +369,7 @@ ENDPROC(crc_t10dif_pmull)
 // precomputed constants
 // these constants are precomputed from the poly:
 // 0x8bb70000 (0x8bb7 scaled to 32 bits)
+	.section	".rodata", "a"
 	.align		4
 // Q = 0x18BB70000
 // rk1 = 2^(32*3) mod Q << 32

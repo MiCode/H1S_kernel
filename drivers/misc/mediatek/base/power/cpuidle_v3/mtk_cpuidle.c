@@ -1,17 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2015 MediaTek Inc.
  */
 
 #include <linux/cpu_pm.h>
+//#include <linux/irqchip/mtk-gic.h>
 #include <linux/of_irq.h>
 #include <linux/of.h>
 #include <linux/psci.h>
@@ -22,8 +15,8 @@
 
 #include <asm/cpuidle.h>
 
-#include <mt-plat/mtk_secure_api.h>
-#include <mach/mtk_cpufreq_api.h>
+#include <linux/arm-smccc.h>
+#include <linux/soc/mediatek/mtk_sip_svc.h>
 #include <mtk_spm.h>
 #include <mtk_cpuidle.h>
 
@@ -31,13 +24,20 @@
 
 static ulong dbg_data[40];
 static int mtk_cpuidle_initialized;
+
+#if defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6739)
 static struct spm_wakeup_source spm_wakeup_src[MAX_SPM_WAKEUP_SRC];
+#endif
+
+#define MTK_SIP_POWER_FLOW_DEBUG \
+	MTK_SIP_SMC_CMD(0X214)
 
 #ifdef CPUIDLE_PROFILE
 
 #define PROFILE_EACH_CPU_ONCE
 
 #include <asm/arch_timer.h>
+#include <mach/mtk_cpufreq_api.h>
 
 static void *ts_pool;
 #define percpu_ts(cpu) ((u64 *)(ts_pool + ((cpu * NR_CPUIDLE_TS) << 3)))
@@ -60,7 +60,6 @@ static void cpuidle_ts_init(void)
 
 	p = dma_zalloc_coherent(cpu_dev, PAGE_SIZE, &atf_addr, GFP_KERNEL);
 	WARN_ON(!p);
-
 	rc = mt_secure_call(MTK_SIP_POWER_FLOW_DEBUG, 0, 1, atf_addr, 0);
 	WARN_ON(rc);
 
@@ -97,56 +96,54 @@ static void cpuidle_perf_print(int cpu, int mode)
 	percpu_perf->count++;
 
 	__time(kernel_plat_backup,
-		CPUIDLE_TS_ENTER_CPUIDLE, CPUIDLE_TS_BEFORE_ATF);
+	       CPUIDLE_TS_ENTER_CPUIDLE, CPUIDLE_TS_BEFORE_ATF);
 	__time(kernel_to_atf,
-		CPUIDLE_TS_BEFORE_ATF, CPUIDLE_TS_ENTER_ATF);
+	       CPUIDLE_TS_BEFORE_ATF, CPUIDLE_TS_ENTER_ATF);
 	__time(atf_l2_flush,
-		CPUIDLE_TS_BEFORE_L2_FLUSH, CPUIDLE_TS_AFTER_L2_FLUSH);
+	       CPUIDLE_TS_BEFORE_L2_FLUSH, CPUIDLE_TS_AFTER_L2_FLUSH);
 	__time(atf_spm_suspend,
-		CPUIDLE_TS_ENTER_SPM_SUSPEND, CPUIDLE_TS_LEAVE_SPM_SUSPEND);
+	       CPUIDLE_TS_ENTER_SPM_SUSPEND, CPUIDLE_TS_LEAVE_SPM_SUSPEND);
 	__time(atf_gic_backup,
-		CPUIDLE_TS_GIC_P1, CPUIDLE_TS_GIC_P2);
+	       CPUIDLE_TS_GIC_P1, CPUIDLE_TS_GIC_P2);
 	__time(atf_plat_backup,
-		CPUIDLE_TS_LEAVE_SPM_SUSPEND, CPUIDLE_TS_GIC_P1);
+	       CPUIDLE_TS_LEAVE_SPM_SUSPEND, CPUIDLE_TS_GIC_P1);
 
-	 /* time spent by atf_setup was accumulated with multiple sectuion */
+	 /*
+	  * the time spent by atf_setup was accumulated with multiple
+	  * sectuions
+	  */
 	__time(atf_setup,
-		CPUIDLE_TS_ENTER_ATF, CPUIDLE_TS_BEFORE_L2_FLUSH);
+	       CPUIDLE_TS_ENTER_ATF, CPUIDLE_TS_BEFORE_L2_FLUSH);
 	__time(atf_setup,
-		CPUIDLE_TS_AFTER_L2_FLUSH, CPUIDLE_TS_ENTER_SPM_SUSPEND);
+	       CPUIDLE_TS_AFTER_L2_FLUSH, CPUIDLE_TS_ENTER_SPM_SUSPEND);
 	__time(atf_setup,
-		CPUIDLE_TS_GIC_P2, CPUIDLE_TS_BEFORE_WFI);
+	       CPUIDLE_TS_GIC_P2, CPUIDLE_TS_BEFORE_WFI);
 
 	__time(atf_cpu_init,
-		CPUIDLE_TS_AFTER_WFI, CPUIDLE_TS_GIC_P3);
+	       CPUIDLE_TS_AFTER_WFI, CPUIDLE_TS_GIC_P3);
 	__time(atf_gic_restore,
-		CPUIDLE_TS_GIC_P3, CPUIDLE_TS_GIC_P4);
+	       CPUIDLE_TS_GIC_P3, CPUIDLE_TS_GIC_P4);
 	__time(atf_spm_suspend_finish,
-		CPUIDLE_TS_ENTER_SPM_SUSPEND_FINISH,
-		CPUIDLE_TS_LEAVE_SPM_SUSPEND_FINISH);
+	       CPUIDLE_TS_ENTER_SPM_SUSPEND_FINISH,
+	       CPUIDLE_TS_LEAVE_SPM_SUSPEND_FINISH);
 
 	__time(atf_plat_restore,
-		CPUIDLE_TS_GIC_P4, CPUIDLE_TS_ENTER_SPM_SUSPEND_FINISH);
+	       CPUIDLE_TS_GIC_P4, CPUIDLE_TS_ENTER_SPM_SUSPEND_FINISH);
 	__time(atf_to_kernel,
-		CPUIDLE_TS_LEAVE_SPM_SUSPEND_FINISH, CPUIDLE_TS_AFTER_ATF);
+	       CPUIDLE_TS_LEAVE_SPM_SUSPEND_FINISH, CPUIDLE_TS_AFTER_ATF);
 	__time(kernel_plat_restore,
-		CPUIDLE_TS_AFTER_ATF, CPUIDLE_TS_LEAVE_CPUIDLE);
+	       CPUIDLE_TS_AFTER_ATF, CPUIDLE_TS_LEAVE_CPUIDLE);
 
-	__time(k2atf,
-		CPUIDLE_TS_ENTER_CPUIDLE, CPUIDLE_TS_BEFORE_ATF);
-	__time(atf2wfi,
-		CPUIDLE_TS_ENTER_ATF, CPUIDLE_TS_BEFORE_WFI);
-	__time(wfi2k,
-		CPUIDLE_TS_AFTER_WFI, CPUIDLE_TS_LEAVE_ATF);
-	__time(k2leave,
-		CPUIDLE_TS_AFTER_ATF, CPUIDLE_TS_LEAVE_CPUIDLE);
+	__time(k2atf, CPUIDLE_TS_ENTER_CPUIDLE, CPUIDLE_TS_BEFORE_ATF);
+	__time(atf2wfi, CPUIDLE_TS_ENTER_ATF, CPUIDLE_TS_BEFORE_WFI);
+	__time(wfi2k, CPUIDLE_TS_AFTER_WFI, CPUIDLE_TS_LEAVE_ATF);
+	__time(k2leave, CPUIDLE_TS_AFTER_ATF, CPUIDLE_TS_LEAVE_CPUIDLE);
 
 #undef __time
 
 	/*
-	 * if the numbers of this idle mode executed by
-	 * this core were over 1000,
-	 * print out the result then reset it.
+	 * if the numbers of this idle mode executed by this core were
+	 * over 1000, print out the result then reset it.
 	 */
 
 	count = percpu_perf->count;
@@ -169,27 +166,27 @@ static void cpuidle_perf_print(int cpu, int mode)
 	request_uart_to_wakeup();
 
 	pr_debug("======== MTK_CPUIDLE Time Profiling Start ========\n");
-	pr_debug(",CPU,%d,CPU Freq,%d, idlemode:%d\n",
-		cpu, cpufreq, mode);
+	pr_debug(",CPU,%d,CPU Freq,%d, idlemode:%d\n", cpu, cpufreq, mode);
+
 	pr_debug(",Kernel Platform Backup,%u\n",
-		percpu_perf->kernel_plat_backup / count);
+		 percpu_perf->kernel_plat_backup / count);
 	pr_debug(",Kernel to ATF,%u\n", percpu_perf->kernel_to_atf / count);
 	pr_debug(",ATF Setup,%u\n", percpu_perf->atf_setup / count);
 	pr_debug(",ATF L2 Flush,%u\n", percpu_perf->atf_l2_flush / count);
 	pr_debug(",ATF SPM Suspend,%u\n", percpu_perf->atf_spm_suspend / count);
 	pr_debug(",ATF GIC Backup,%u\n", percpu_perf->atf_gic_backup / count);
 	pr_debug(",ATF Platform Backup,%u\n",
-		percpu_perf->atf_plat_backup / count);
+		 percpu_perf->atf_plat_backup / count);
 
 	pr_debug("ATF CPU Init,%u\n", percpu_perf->atf_cpu_init / count);
 	pr_debug("ATF GIC Restore,%u\n", percpu_perf->atf_gic_restore / count);
 	pr_debug("ATF SPM Suspend Finish,%u\n",
-		percpu_perf->atf_spm_suspend_finish / count);
+		 percpu_perf->atf_spm_suspend_finish / count);
 	pr_debug("ATF Platform Restore,%u\n",
-		percpu_perf->atf_plat_restore / count);
+		 percpu_perf->atf_plat_restore / count);
 	pr_debug("ATF to Kernel,%u\n", percpu_perf->atf_to_kernel / count);
 	pr_debug("Kernel Platform Restore,%u\n",
-		percpu_perf->kernel_plat_restore / count);
+		 percpu_perf->kernel_plat_restore / count);
 
 	pr_debug("Kernel to ATF before,%u\n", percpu_perf->k2atf / count);
 	pr_debug("ATF to wfi before,%u\n", percpu_perf->atf2wfi / count);
@@ -211,7 +208,7 @@ static void cpuidle_perf_print(int cpu, int mode)
 #endif /* CPUIDLE_PROFILE */
 
 
-#ifdef CONFIG_MTK_RAM_CONSOLE
+#ifdef CONFIG_MTK_AEE_IPANIC
 
 static u32 *cpuidle_fp_pa;
 static u32 *cpuidle_fp_va;
@@ -220,15 +217,13 @@ static void cpuidle_fp_init(void)
 {
 	cpuidle_fp_va = (u32 *) aee_rr_rec_mtk_cpuidle_footprint_va();
 	cpuidle_fp_pa = (u32 *) aee_rr_rec_mtk_cpuidle_footprint_pa();
-
 	if (cpuidle_fp_va && cpuidle_fp_pa) {
 		mt_secure_call(MTK_SIP_POWER_FLOW_DEBUG,
-				0, 2, (ulong) cpuidle_fp_pa, 0);
+			       0, 2, (ulong) cpuidle_fp_pa, 0);
 		return;
 	}
-
 	WARN(1, "Invalid footprint address va(%p), pa(%p)\n",
-		cpuidle_fp_va, cpuidle_fp_pa);
+	     cpuidle_fp_va, cpuidle_fp_pa);
 }
 
 static inline void cpuidle_fp(int cpu, int checkpoint)
@@ -247,8 +242,10 @@ static inline void cpuidle_fp_reset(int cpu)
 #define cpuidle_fp(cpu, checkpoint)
 #define cpuidle_fp_reset(cpu)
 
-#endif /* CONFIG_MTK_RAM_CONSOLE */
+#endif /* CONFIG_MTK_AEE_IPANIC */
 
+
+#if defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6739)
 /*
  * Look up the wake up source wired to the SPM. These wake up sources
  * were used to trigger the SPM to power on the MCUSYS/GIC.
@@ -301,6 +298,8 @@ fail:
 	return 0;
 }
 
+#endif
+
 static void mtk_platform_save(int cpu)
 {
 	mt_save_dbg_regs(dbg_data, cpu);
@@ -337,7 +336,6 @@ int mtk_enter_idle_state(int mode)
 		 * call the CPU ops suspend protocol with idle index as a
 		 * parameter.
 		 */
-
 		ret = arm_cpuidle_suspend(mode);
 
 		cpuidle_fp(cpu, CPUIDLE_FP_AFTER_ATF);
@@ -360,9 +358,9 @@ int mtk_cpuidle_init(void)
 {
 	if (mtk_cpuidle_initialized == 1)
 		return 0;
-
+#if defined(CONFIG_MACH_MT6768) || defined(CONFIG_MACH_MT6739)
 	wakeup_source_lookup();
-
+#endif
 	/* cpuidle footprint init */
 	cpuidle_fp_init();
 

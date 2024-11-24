@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __MTK_SPM_INTERNAL_H__
 #define __MTK_SPM_INTERNAL_H__
@@ -18,9 +10,9 @@
 #include <linux/spinlock.h>
 #include <linux/io.h>
 
-#include <mt-plat/mtk_secure_api.h>
 #include <mt-plat/sync_write.h>
 #include <mt-plat/aee.h>
+#include <linux/arm-smccc.h>
 
 #include <mtk_spm_reg.h>
 #include <pwr_ctrl.h>
@@ -35,9 +27,13 @@
 
 
 /********************************************************************
- * KCIK SPMFW default feature enable/disable
+ * dpidle/sodi3/sodi default feature enable/disable
  *******************************************************************/
-#define MTK_FEATURE_EANABLE_KICK_SPMFW	(1)
+#define MTK_IDLE_FEATURE_ENABLE_DPIDLE  (0)
+#define MTK_IDLE_FEATURE_ENABLE_SODI    (0)
+#define MTK_IDLE_FEATURE_ENABLE_SODI3   (0)
+#define MTK_FEATURE_ENABLE_KICK_SPMFW	(1)
+#define MTK_SPM_HARDWARE_CG_CHECK	(0)
 
 /**************************************
  * Config and Parameter
@@ -76,8 +72,28 @@
 #define WORLD_CLK_TICK_TO_SEC(TICK)	(TICK / WORLD_CLK_13M_TICKS_PER_SEC)
 
 /* SMC call's marco */
-#define SMC_CALL(_name, _arg0, _arg1, _arg2) \
-	mt_secure_call(MTK_SIP_KERNEL_SPM_##_name, _arg0, _arg1, _arg2, 0)
+#define mtk_idle_smc_impl(p1, p2, p3, p4, p5, res) \
+			arm_smccc_smc(p1, p2, p3, p4,\
+			p5, 0, 0, 0, &res)
+
+
+#ifndef SMC_CALL
+/* SMC call's marco */
+#define SMC_CALL(_name, _arg0, _arg1, _arg2) ({\
+	struct arm_smccc_res res;\
+	mtk_idle_smc_impl(MTK_SIP_KERNEL_SPM_##_name,\
+			_arg0, _arg1, _arg2, 0, res);\
+	res.a0; })
+#endif
+#ifndef mt_secure_call
+#define mt_secure_call(x1, x2, x3, x4, x5) ({\
+	struct arm_smccc_res res;\
+	mtk_idle_smc_impl(x1, x2, x3, x4, x5, res);\
+	res.a0; })
+
+#endif
+
+#include <mt-plat/mtk_secure_api.h>
 
 extern spinlock_t __spm_lock;
 

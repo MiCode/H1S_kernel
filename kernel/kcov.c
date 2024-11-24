@@ -684,8 +684,8 @@ static long kcov_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 			return -EFAULT;
 		if (remote_num_handles > KCOV_REMOTE_MAX_HANDLES)
 			return -EINVAL;
-		remote_arg_size = sizeof(*remote_arg) +
-			sizeof(remote_arg->handles[0]) * remote_num_handles;
+		remote_arg_size = struct_size(remote_arg, handles,
+					remote_num_handles);
 		remote_arg = memdup_user((void __user *)arg, remote_arg_size);
 		if (IS_ERR(remote_arg))
 			return PTR_ERR(remote_arg);

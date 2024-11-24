@@ -279,6 +279,7 @@ static int ad7793_setup(struct iio_dev *indio_dev,
 	id &= AD7793_ID_MASK;
 
 	if (id != st->chip_info->id) {
+		ret = -ENODEV;
 		dev_err(&st->sd.spi->dev, "device ID query failed\n");
 		goto out;
 	}
@@ -536,7 +537,6 @@ static const struct iio_info ad7793_info = {
 	.write_raw_get_fmt = &ad7793_write_raw_get_fmt,
 	.attrs = &ad7793_attribute_group,
 	.validate_trigger = ad_sd_validate_trigger,
-	.driver_module = THIS_MODULE,
 };
 
 static const struct iio_info ad7797_info = {
@@ -545,7 +545,6 @@ static const struct iio_info ad7797_info = {
 	.write_raw_get_fmt = &ad7793_write_raw_get_fmt,
 	.attrs = &ad7797_attribute_group,
 	.validate_trigger = ad_sd_validate_trigger,
-	.driver_module = THIS_MODULE,
 };
 
 #define DECLARE_AD7793_CHANNELS(_name, _b, _sb, _s) \

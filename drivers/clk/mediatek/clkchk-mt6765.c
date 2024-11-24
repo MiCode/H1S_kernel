@@ -1,48 +1,18 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2017 MediaTek Inc.
- * Author: Weiyi Lu <weiyi.lu@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
+ * Author: Owen Chen <owen.chen@mediatek.com>
  */
 
 #include <linux/clk-provider.h>
+#include <linux/module.h>
 #include <linux/syscore_ops.h>
 #include <linux/version.h>
 
-#define WARN_ON_CHECK_FAIL		0
-#define CLKDBG_CCF_API_4_4		1
+#include <mt-plat/aee.h>
 
-#define TAG	"[clkchk] "
-
-#define clk_warn(fmt, args...)	pr_notice(TAG fmt, ##args)
-
-#if !CLKDBG_CCF_API_4_4
-
-/* backward compatible */
-
-static const char *clk_hw_get_name(const struct clk_hw *hw)
-{
-	return __clk_get_name(hw->clk);
-}
-
-static bool clk_hw_is_prepared(const struct clk_hw *hw)
-{
-	return __clk_is_prepared(hw->clk);
-}
-
-static bool clk_hw_is_enabled(const struct clk_hw *hw)
-{
-	return __clk_is_enabled(hw->clk);
-}
-
-#endif /* !CLKDBG_CCF_API_4_4 */
+#define TAG			"[clkchk] "
+#define	BUG_ON_CHK_ENABLE	1
 
 static const char * const *get_all_clk_names(void)
 {
@@ -348,11 +318,32 @@ static const char * const *get_all_clk_names(void)
 }
 
 static const char * const off_pll_names[] = {
-	"univpll",
+	"univ2pll",
 	"apll1",
 	"mfgpll",
 	"msdcpll",
 	"mmpll",
+	NULL
+};
+
+static const char * const notice_pll_names[] = {
+	NULL
+};
+
+static const char * const off_mtcmos_names[] = {
+	"pg_dis",
+	"pg_mfg",
+	"pg_isp",
+	"pg_mfg_core0",
+	"pg_mfg_async",
+	"pg_cam",
+	"pg_vcodec",
+	NULL
+};
+
+static const char * const notice_mtcmos_names[] = {
+	"pg_md1",
+	"pg_conn",
 	NULL
 };
 
@@ -412,7 +403,7 @@ static void print_enabled_clks(void)
 			continue;
 
 		p_hw = clk_hw_get_parent(c_hw);
-		clk_warn("[%-17s: %8s, %3d, %3d, %10ld, %17s]\n",
+		pr_notice("[%-17s: %8s, %3d, %3d, %10ld, %17s]\n",
 			clk_hw_get_name(c_hw),
 			ccf_state(c_hw),
 			clk_hw_is_prepared(c_hw),
@@ -428,8 +419,6 @@ static void check_pll_off(void)
 
 	struct clk **c;
 	int invalid = 0;
-	char buf[128] = {0};
-	int n = 0;
 
 	if (!off_plls[0]) {
 		const char * const *pn;
@@ -447,42 +436,70 @@ static void check_pll_off(void)
 		if (!clk_hw_is_enabled(c_hw))
 			continue;
 
-		n += snprintf(buf + n, sizeof(buf) - n, "%s ",
+		pr_notice("suspend warning[0m: %s is on\n",
 				clk_hw_get_name(c_hw));
 
 		invalid++;
 	}
 
 	if (invalid) {
-		clk_warn("unexpected unclosed PLL: %s\n", buf);
 		print_enabled_clks();
 
-#if WARN_ON_CHECK_FAIL
+
+#ifdef CONFIG_MTK_ENG_BUILD
+#if BUG_ON_CHK_ENABLE
+		BUG_ON(1);
+#else
+		aee_kernel_warning("CCF MT6765",
+			"@%s():%d, PLLs are not off\n", __func__, __LINE__);
+		WARN_ON(1);
+#endif
+#else
+		aee_kernel_warning("CCF MT6765",
+			"@%s():%d, PLLs are not off\n", __func__, __LINE__);
 		WARN_ON(1);
 #endif
 	}
 }
 
-static void check_mtcmos_off(void)
+static void check_pll_notice(void)
 {
-	static const char * const off_mtcmos_names[] = {
-		"pg_conn",
-		"pg_dis",
-		"pg_mfg",
-		"pg_isp",
-		"pg_mfg_core0",
-		"pg_mfg_async",
-		"pg_cam",
-		"pg_vcodec",
-		NULL
-	};
-
-	static struct clk *off_mtcmos[ARRAY_SIZE(off_mtcmos_names)];
+	static struct clk *off_plls[ARRAY_SIZE(notice_pll_names)];
 
 	struct clk **c;
 	int invalid = 0;
-	char buf[128] = {0};
-	int n = 0;
+
+	if (!off_plls[0]) {
+		const char * const *pn;
+
+		for (pn = notice_pll_names, c = off_plls; *pn; pn++, c++)
+			*c = __clk_lookup(*pn);
+	}
+
+	for (c = off_plls; *c; c++) {
+		struct clk_hw *c_hw = __clk_get_hw(*c);
+
+		if (!c_hw)
+			continue;
+
+		if (!clk_hw_is_enabled(c_hw))
+			continue;
+
+		pr_notice("suspend warning[0m: %s is on\n",
+				clk_hw_get_name(c_hw));
+
+		invalid++;
+	}
+
+	if (invalid)
+		print_enabled_clks();
+}
+
+static void check_mtcmos_off(void)
+{
+	static struct clk *off_mtcmos[ARRAY_SIZE(off_mtcmos_names)];
+	struct clk **c;
+	int invalid = 0;
 
 	if (!off_mtcmos[0]) {
 		const char * const *pn;
@@ -500,18 +517,52 @@ static void check_mtcmos_off(void)
 		if (!clk_hw_is_prepared(c_hw) && !clk_hw_is_enabled(c_hw))
 			continue;
 
-		n += snprintf(buf + n, sizeof(buf) - n, "%s ",
+		pr_notice("suspend warning[0m: %s is on\n",
 				clk_hw_get_name(c_hw));
 
 		invalid++;
 	}
 
 	if (invalid) {
-		clk_warn("unexpected unclosed MTCMOS: %s\n", buf);
-
-#if WARN_ON_CHECK_FAIL
+#ifdef CONFIG_MTK_ENG_BUILD
+#if BUG_ON_CHK_ENABLE
+		BUG_ON(1);
+#else
+		aee_kernel_warning("CCF MT6765",
+			"@%s():%d, MTCMOSs are not off\n", __func__, __LINE__);
 		WARN_ON(1);
 #endif
+#else
+		aee_kernel_warning("CCF MT6765",
+			"@%s():%d, MTCMOSs are not off\n", __func__, __LINE__);
+		WARN_ON(1);
+#endif
+	}
+}
+
+static void check_mtcmos_notice(void)
+{
+	static struct clk *notice_mtcmos[ARRAY_SIZE(notice_mtcmos_names)];
+	struct clk **c;
+
+	if (!notice_mtcmos[0]) {
+		const char * const *pn;
+
+		for (pn = notice_mtcmos_names, c = notice_mtcmos;
+				*pn; pn++, c++)
+			*c = __clk_lookup(*pn);
+	}
+
+	for (c = notice_mtcmos; *c; c++) {
+		struct clk_hw *c_hw = __clk_get_hw(*c);
+
+		if (!c_hw)
+			continue;
+
+		if (!clk_hw_is_prepared(c_hw) && !clk_hw_is_enabled(c_hw))
+			continue;
+
+		pr_notice("suspend warning[0m: %s\n", clk_hw_get_name(c_hw));
 	}
 }
 
@@ -524,10 +575,13 @@ void print_enabled_clks_once(void)
 		print_enabled_clks();
 	}
 }
+EXPORT_SYMBOL(print_enabled_clks_once);
 
 static int clkchk_syscore_suspend(void)
 {
 	check_pll_off();
+	check_pll_notice();
+	check_mtcmos_notice();
 	check_mtcmos_off();
 
 	return 0;
@@ -542,7 +596,7 @@ static struct syscore_ops clkchk_syscore_ops = {
 	.resume = clkchk_syscore_resume,
 };
 
-static int __init clkchk_init(void)
+static int __init clkchk_mt6765_init(void)
 {
 	if (!of_machine_is_compatible("mediatek,MT6765"))
 		return -ENODEV;
@@ -551,4 +605,11 @@ static int __init clkchk_init(void)
 
 	return 0;
 }
-subsys_initcall(clkchk_init);
+static void __exit clkchk_mt6765_exit(void)
+{
+}
+
+subsys_initcall(clkchk_mt6765_init);
+module_exit(clkchk_mt6765_exit);
+
+MODULE_LICENSE("GPL");

@@ -1,38 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Universal Flash Storage Host Performance Booster
- *
  * Copyright (C) 2017-2018 Samsung Electronics Co., Ltd.
- *
- * Authors:
- *	Yongmyung Lee <ymhungry.lee@samsung.com>
- *	Jinyoung Choi <j-young.choi@samsung.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- * See the COPYING file in the top-level directory or visit
- * <http://www.gnu.org/licenses/gpl-2.0.html>
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * This program is provided "AS IS" and "WITH ALL FAULTS" and
- * without warranty of any kind. You are solely responsible for
- * determining the appropriateness of using and distributing
- * the program and assume all risks associated with your exercise
- * of rights with respect to the program, including but not limited
- * to infringement of third party rights, the risks and costs of
- * program errors, damage to or loss of data, programs or equipment,
- * and unavailability or interruption of operations. Under no
- * circumstances will the contributor of this Program be liable for
- * any damages of any kind arising from your use or distribution of
- * this program.
- *
- * The Linux Foundation chooses to take subject only to the GPLv2
- * license terms, and distributes only under these terms.
  */
 
 #include "ufshcd.h"
@@ -1723,6 +1691,7 @@ void ufshpb_rsp_upiu(struct ufsf_feature *ufsf, struct ufshcd_lrb *lrbp)
 {
 	struct ufshpb_lu *hpb;
 	struct ufshpb_rsp_field *rsp_field;
+	struct ufshpb_rsp_field sense_data;
 	int data_seg_len, ret;
 
 	data_seg_len = be32_to_cpu(lrbp->ucd_rsp_ptr->header.dword_2)
@@ -1746,7 +1715,9 @@ void ufshpb_rsp_upiu(struct ufsf_feature *ufsf, struct ufshcd_lrb *lrbp)
 		goto put_hpb;
 	}
 
-	rsp_field = ufshpb_get_hpb_rsp(lrbp);
+	memcpy(&sense_data, &lrbp->ucd_rsp_ptr->sr.sense_data_len,
+		sizeof(struct ufshpb_rsp_field));
+	rsp_field = &sense_data;
 
 	if (ufshpb_may_field_valid(lrbp, rsp_field)) {
 		WARN_ON(rsp_field->additional_len != DEV_ADDITIONAL_LEN);
@@ -1811,7 +1782,7 @@ static int ufshpb_execute_map_req_wait(struct ufshpb_lu *hpb,
 	if (ret)
 		return ret;
 
-	req = blk_get_request(q, REQ_OP_SCSI_IN, GFP_KERNEL);
+	req = blk_get_request(q, REQ_OP_SCSI_IN, 0);
 	if (IS_ERR(req)) {
 		WARNING_MSG("cannot get request");
 		ret = -EIO;
@@ -2510,6 +2481,22 @@ static void ufshpb_init_lu_constant(struct ufshpb_dev_info *hpb_dev_info,
 	/* relation : lu <-> region <-> sub region <-> entry */
 	entries_per_rgn = rgn_mem_size / HPB_ENTRY_SIZE;
 	hpb->entries_per_srgn = hpb->srgn_mem_size / HPB_ENTRY_SIZE;
+#if BITS_PER_LONG == 32
+	hpb->srgns_per_rgn = div_u64(rgn_mem_size, hpb->srgn_mem_size);
+
+	/*
+	 * regions_per_lu = (lu_num_blocks * 4096) / region_unit_size
+	 *	          = (lu_num_blocks * HPB_ENTRY_SIZE) / region_mem_size
+	 */
+	hpb->rgns_per_lu =
+		div_u64(((unsigned long long)hpb->lu_num_blocks
+		 + (rgn_mem_size / HPB_ENTRY_SIZE) - 1),
+		 (rgn_mem_size / HPB_ENTRY_SIZE));
+	hpb->srgns_per_lu =
+		div_u64(((unsigned long long)hpb->lu_num_blocks
+		 + (hpb->srgn_mem_size / HPB_ENTRY_SIZE) - 1),
+		(hpb->srgn_mem_size / HPB_ENTRY_SIZE));
+#else
 	hpb->srgns_per_rgn = rgn_mem_size / hpb->srgn_mem_size;
 
 	/*
@@ -2524,6 +2511,7 @@ static void ufshpb_init_lu_constant(struct ufshpb_dev_info *hpb_dev_info,
 		((unsigned long long)hpb->lu_num_blocks
 		 + (hpb->srgn_mem_size / HPB_ENTRY_SIZE) - 1)
 		/ (hpb->srgn_mem_size / HPB_ENTRY_SIZE);
+#endif
 
 	/* mempool info */
 	hpb->mpage_bytes = OS_PAGE_SIZE;

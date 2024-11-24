@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2019 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020 MediaTek Inc.
  */
 
 #ifndef __VPU_DUMP_H__
@@ -65,7 +57,6 @@ struct vpu_dmp {
 #endif
 };
 
-#ifdef CONFIG_MTK_APUSYS_VPU_DEBUG
 void vpu_dmp_init(struct vpu_device *vd);
 void vpu_dmp_exit(struct vpu_device *vd);
 int vpu_dmp_create_locked(struct vpu_device *vd, struct vpu_request *req,
@@ -93,57 +84,6 @@ void vpu_dmp_seq(struct seq_file *s);
 		vpu_dmp_free_locked(vd); \
 		vpu_cmd_unlock_all(vd); \
 	} while (0)
-
-#else
-static inline
-void vpu_dmp_init(struct vpu_device *vd)
-{
-}
-
-static inline
-void vpu_dmp_exit(struct vpu_device *vd)
-{
-}
-
-static inline
-int vpu_dmp_create_locked(struct vpu_device *vd, struct vpu_request *req,
-	const char *fmt, ...)
-{
-	return 0;
-}
-
-static inline
-int vpu_dmp_create(struct vpu_device *vd, struct vpu_request *req,
-	const char *fmt, ...)
-{
-	return 0;
-}
-
-static inline
-void vpu_dmp_free_locked(struct vpu_device *vd)
-{
-}
-
-static inline
-void vpu_dmp_free(struct vpu_device *vd)
-{
-}
-
-static inline
-void vpu_dmp_free_all(void)
-{
-}
-
-static inline
-void vpu_dmp_seq_core(struct seq_file *s, struct vpu_device *vd)
-{
-}
-
-static inline
-void vpu_dmp_seq(struct seq_file *s)
-{
-}
-#endif
 
 #endif
 

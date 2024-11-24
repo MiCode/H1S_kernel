@@ -292,6 +292,8 @@ void gcov_info_add(struct gcov_info *dst, struct gcov_info *src)
 
 		for (i = 0; i < sfn_ptr->num_counters; i++)
 			dfn_ptr->counters[i] += sfn_ptr->counters[i];
+
+		sfn_ptr = list_next_entry(sfn_ptr, head);
 	}
 }
 
@@ -470,12 +472,14 @@ static size_t convert_to_gcda(char *buffer, struct gcov_info *info)
 		pos += store_gcov_u32(buffer, pos, fi_ptr->ident);
 		pos += store_gcov_u32(buffer, pos, fi_ptr->checksum);
 		if (fi_ptr->use_extra_checksum)
-			pos += store_gcov_u32(buffer, pos, fi_ptr->cfg_checksum);
+			pos += store_gcov_u32(buffer, pos,
+					fi_ptr->cfg_checksum);
 
 		pos += store_gcov_u32(buffer, pos, GCOV_TAG_COUNTER_BASE);
 		pos += store_gcov_u32(buffer, pos, fi_ptr->num_counters * 2);
 		for (i = 0; i < fi_ptr->num_counters; i++)
-			pos += store_gcov_u64(buffer, pos, fi_ptr->counters[i]);
+			pos += store_gcov_u64(buffer, pos,
+					fi_ptr->counters[i]);
 	}
 
 	return pos;

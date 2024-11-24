@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "ddp_drv"
@@ -72,7 +64,9 @@
 #endif
 #include "disp_helper.h"
 #include <linux/of_platform.h>
+#ifdef CONFIG_MTK_SMI_EXT
 #include "smi_public.h"
+#endif
 
 #define DISP_DEVNAME "DISPSYS"
 
@@ -97,12 +91,10 @@ static int _disp_init_cmdq_slots(cmdqBackupSlotHandle *pSlot,
 	int count, int init_val)
 {
 	int i;
-
 	cmdqBackupAllocateSlot(pSlot, count);
 
 	for (i = 0; i < count; i++)
 		cmdqBackupWriteSlot(*pSlot, i, init_val);
-
 	return 0;
 }
 
@@ -223,7 +215,7 @@ static int disp_open(struct inode *inode, struct file *file)
 {
 	struct disp_node_struct *pNode = NULL;
 
-	DDPDBG("enter %s process:%s\n", __func__, current->comm);
+	DDPDBG("enter disp_open() process:%s\n", current->comm);
 
 	/* Allocate and initialize private data */
 	file->private_data = kmalloc(sizeof(struct disp_node_struct),
@@ -253,7 +245,7 @@ static int disp_release(struct inode *inode, struct file *file)
 	struct disp_node_struct *pNode = NULL;
 
 	/* unsigned int index = 0; */
-	DDPDBG("enter %s process:%s\n", __func__, current->comm);
+	DDPDBG("enter disp_release() process:%s\n", current->comm);
 
 	pNode = (struct disp_node_struct *)file->private_data;
 
@@ -283,7 +275,7 @@ struct device *disp_get_device(void)
 	return &(mydev.dev);
 }
 
-#if (defined(CONFIG_MTK_TEE_GP_SUPPORT) || \
+#if (defined(CONFIG_TEE) || \
 	defined(CONFIG_TRUSTONIC_TEE_SUPPORT)) && \
 	defined(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT)
 static struct miscdevice disp_misc_dev;
@@ -406,9 +398,8 @@ static int disp_probe_1(void)
 	unsigned long va;
 	unsigned int irq;
 
-	pr_info("disp driver(1) %s begin\n", __func__);
-
-#if (defined(CONFIG_MTK_TEE_GP_SUPPORT) || \
+	pr_info("disp driver(1) disp_probe_1 begin\n");
+#if (defined(CONFIG_TEE) || \
 	defined(CONFIG_TRUSTONIC_TEE_SUPPORT)) && \
 	defined(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT)
 	disp_misc_dev.minor = MISC_DYNAMIC_MINOR;
@@ -421,7 +412,6 @@ static int disp_probe_1(void)
 		return (unsigned long)(ERR_PTR(ret));
 	}
 #endif
-
 	/* do disp_init_irq before register irq */
 	disp_init_irq();
 
@@ -430,7 +420,6 @@ static int disp_probe_1(void)
 		int status;
 		struct device_node *node = NULL;
 		struct resource res;
-
 		if (!is_ddp_module_has_reg_info(i))
 			continue;
 
@@ -473,6 +462,7 @@ static int disp_probe_1(void)
 		       i, ddp_get_module_name(i), (void *)ddp_get_module_va(i),
 		       ddp_get_module_irq(i), ddp_get_module_pa(i));
 	}
+
 	/* initialize display slot */
 	_disp_init_cmdq_slots(&(dispsys_slot), DISP_SLOT_NUM, 0);
 
@@ -488,7 +478,7 @@ static int disp_probe_1(void)
 			ddp_module_irq_disable(i);
 			continue;
 		}
-
+#if 0
 		if (ddp_get_module_checkirq(i) !=
 			virq_to_hwirq(ddp_get_module_irq(i))) {
 			DDPERR("DT, i=%d, %s, virq=%d, v2h_irq=%d, cirq=%d\n",
@@ -500,7 +490,7 @@ static int disp_probe_1(void)
 			ddp_module_irq_disable(i);
 			continue;
 		}
-
+#endif
 		/* IRQF_TRIGGER_NONE dose not take effect here,
 		 * real trigger mode set in dts file
 		 */
@@ -508,7 +498,6 @@ static int disp_probe_1(void)
 			(irq_handler_t)disp_irq_handler,
 			IRQF_TRIGGER_NONE,
 			ddp_get_module_name(i), NULL);
-
 		if (ret) {
 			DDPERR("DT, i=%d, module=%s, request_irq(%d) fail\n",
 				i, ddp_get_module_name(i),
@@ -531,10 +520,11 @@ static int disp_probe_1(void)
 	       DISP_REG_GET(DISP_REG_CONFIG_MMSYS_CG_CON0),
 	       DISP_REG_GET(DISP_REG_CONFIG_MMSYS_CG_CON1));
 #endif
+
 	ddp_path_init();
 	disp_m4u_init();
 
-	pr_info("disp driver(1) %s end\n", __func__);
+	pr_info("disp driver(1) disp_probe_1 end\n");
 	/* NOT_REFERENCED(class_dev); */
 	return ret;
 }
@@ -542,19 +532,16 @@ static int disp_probe_1(void)
 static int disp_probe(struct platform_device *pdev)
 {
 	static unsigned int disp_probe_cnt;
-
-	if (disp_helper_get_stage() == DISP_HELPER_STAGE_NORMAL) {
-		pr_info("%s: %d\n", __func__, smi_mm_first_get());
-		if (!smi_mm_first_get()) {
-			pr_notice("SMI not start probe\n");
-			return -EPROBE_DEFER;
-		}
+#ifdef CONFIG_MTK_SMI_EXT
+	pr_notice("%s: %d\n", __func__, smi_mm_first_get());
+	if (!smi_mm_first_get()) {
+		pr_notice("SMI not start probe\n");
+		return -EPROBE_DEFER;
 	}
-
+#endif
 	if (disp_probe_cnt != 0)
 		return 0;
-
-	pr_info("disp driver(1) %s begin\n", __func__);
+	pr_info("disp driver(1) disp_probe begin\n");
 
 	/* save pdev for disp_probe_1 */
 	memcpy(&mydev, pdev, sizeof(mydev));
@@ -566,7 +553,7 @@ static int disp_probe(struct platform_device *pdev)
 
 	disp_probe_cnt++;
 
-	pr_info("disp driver(1) %s end\n", __func__);
+	pr_info("disp driver(1) disp_probe end\n");
 
 	disp_probe_1();
 
@@ -575,7 +562,7 @@ static int disp_probe(struct platform_device *pdev)
 
 static int disp_remove(struct platform_device *pdev)
 {
-#if (defined(CONFIG_MTK_TEE_GP_SUPPORT) || \
+#if (defined(CONFIG_TEE) || \
 	defined(CONFIG_TRUSTONIC_TEE_SUPPORT)) && \
 	defined(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT)
 	misc_deregister(&disp_misc_dev);
@@ -652,7 +639,7 @@ static int __init disp_late(void)
 {
 	int ret = 0;
 
-	DDPMSG("disp driver(1) %s begin\n", __func__);
+	DDPMSG("disp driver(1) disp_late begin\n");
 	/* for rt5081 */
 	ret = display_bias_regulator_init();
 	if (ret < 0)
@@ -660,7 +647,7 @@ static int __init disp_late(void)
 
 	display_bias_enable();
 
-	DDPMSG("disp driver(1) %s end\n", __func__);
+	DDPMSG("disp driver(1) disp_late end\n");
 	return 0;
 }
 

@@ -25,7 +25,7 @@
 #include <linux/slab.h>
 #include <linux/i2c.h>
 
-#include "dvb_math.h"
+#include <media/dvb_math.h>
 
 #include "stv0367.h"
 #include "stv0367_defs.h"
@@ -128,50 +128,32 @@ static const s32 stv0367cab_RF_LookUp2[RF_LOOKUP_TABLE2_SIZE][RF_LOOKUP_TABLE2_S
 	}
 };
 
-static
-int stv0367_writeregs(struct stv0367_state *state, u16 reg, u8 *data, int len)
+static noinline_for_stack
+int stv0367_writereg(struct stv0367_state *state, u16 reg, u8 data)
 {
-	u8 buf[MAX_XFER_SIZE];
+	u8 buf[3] = { MSB(reg), LSB(reg), data };
 	struct i2c_msg msg = {
 		.addr = state->config->demod_address,
 		.flags = 0,
 		.buf = buf,
-		.len = len + 2
+		.len = 3,
 	};
 	int ret;
 
-	if (2 + len > sizeof(buf)) {
-		printk(KERN_WARNING
-		       "%s: i2c wr reg=%04x: len=%d is too big!\n",
-		       KBUILD_MODNAME, reg, len);
-		return -EINVAL;
-	}
-
-
-	buf[0] = MSB(reg);
-	buf[1] = LSB(reg);
-	memcpy(buf + 2, data, len);
-
 	if (i2cdebug)
 		printk(KERN_DEBUG "%s: [%02x] %02x: %02x\n", __func__,
-			state->config->demod_address, reg, buf[2]);
+			state->config->demod_address, reg, data);
 
 	ret = i2c_transfer(state->i2c, &msg, 1);
 	if (ret != 1)
 		printk(KERN_ERR "%s: i2c write error! ([%02x] %02x: %02x)\n",
-			__func__, state->config->demod_address, reg, buf[2]);
+			__func__, state->config->demod_address, reg, data);
 
 	return (ret != 1) ? -EREMOTEIO : 0;
 }
 
-static int stv0367_writereg(struct stv0367_state *state, u16 reg, u8 data)
-{
-	u8 tmp = data; /* see gcc.gnu.org/bugzilla/show_bug.cgi?id=81715 */
-
-	return stv0367_writeregs(state, reg, &tmp, 1);
-}
-
-static u8 stv0367_readreg(struct stv0367_state *state, u16 reg)
+static noinline_for_stack
+u8 stv0367_readreg(struct stv0367_state *state, u16 reg)
 {
 	u8 b0[] = { 0, 0 };
 	u8 b1[] = { 0 };
@@ -1549,7 +1531,6 @@ static int stv0367ter_read_ber(struct dvb_frontend *fe, u32 *ber)
 	} else if (abc == 0x7) {
 		if (Errors <= 4) {
 			temporary = (Errors * 1000000000) / (8 * (1 << 14));
-			temporary =  temporary;
 		} else if (Errors <= 42) {
 			temporary = (Errors * 100000000) / (8 * (1 << 14));
 			temporary = temporary * 10;
@@ -1627,7 +1608,6 @@ static u32 stv0367ter_get_per(struct stv0367_state *state)
 	else if (abc == 0x9) {
 		if (Errors <= 4) {
 			temporary = (Errors * 1000000000) / (8 * (1 << 8));
-			temporary =  temporary;
 		} else if (Errors <= 42) {
 			temporary = (Errors * 100000000) / (8 * (1 << 8));
 			temporary = temporary * 10;
@@ -1695,10 +1675,9 @@ static const struct dvb_frontend_ops stv0367ter_ops = {
 	.delsys = { SYS_DVBT },
 	.info = {
 		.name			= "ST STV0367 DVB-T",
-		.frequency_min		= 47000000,
-		.frequency_max		= 862000000,
-		.frequency_stepsize	= 15625,
-		.frequency_tolerance	= 0,
+		.frequency_min_hz	=  47 * MHz,
+		.frequency_max_hz	= 862 * MHz,
+		.frequency_stepsize_hz	= 15625,
 		.caps = FE_CAN_FEC_1_2 | FE_CAN_FEC_2_3 |
 			FE_CAN_FEC_3_4 | FE_CAN_FEC_5_6 | FE_CAN_FEC_7_8 |
 			FE_CAN_FEC_AUTO |
@@ -1763,7 +1742,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(stv0367ter_attach);
+EXPORT_SYMBOL_GPL(stv0367ter_attach);
 
 static int stv0367cab_gate_ctrl(struct dvb_frontend *fe, int enable)
 {
@@ -2869,9 +2848,9 @@ static const struct dvb_frontend_ops stv0367cab_ops = {
 	.delsys = { SYS_DVBC_ANNEX_A },
 	.info = {
 		.name = "ST STV0367 DVB-C",
-		.frequency_min = 47000000,
-		.frequency_max = 862000000,
-		.frequency_stepsize = 62500,
+		.frequency_min_hz =  47 * MHz,
+		.frequency_max_hz = 862 * MHz,
+		.frequency_stepsize_hz = 62500,
 		.symbol_rate_min = 870000,
 		.symbol_rate_max = 11700000,
 		.caps = 0x400 |/* FE_CAN_QAM_4 */
@@ -2936,7 +2915,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(stv0367cab_attach);
+EXPORT_SYMBOL_GPL(stv0367cab_attach);
 
 /*
  * Functions for operation on Digital Devices hardware
@@ -3275,10 +3254,9 @@ static const struct dvb_frontend_ops stv0367ddb_ops = {
 	.delsys = { SYS_DVBC_ANNEX_A, SYS_DVBT },
 	.info = {
 		.name			= "ST STV0367 DDB DVB-C/T",
-		.frequency_min		= 47000000,
-		.frequency_max		= 865000000,
-		.frequency_stepsize	= 166667,
-		.frequency_tolerance	= 0,
+		.frequency_min_hz	=  47 * MHz,
+		.frequency_max_hz	= 865 * MHz,
+		.frequency_stepsize_hz	= 166667,
 		.symbol_rate_min	= 870000,
 		.symbol_rate_max	= 11700000,
 		.caps = /* DVB-C */
@@ -3358,7 +3336,7 @@ error:
 	kfree(state);
 	return NULL;
 }
-EXPORT_SYMBOL(stv0367ddb_attach);
+EXPORT_SYMBOL_GPL(stv0367ddb_attach);
 
 MODULE_PARM_DESC(debug, "Set debug");
 MODULE_PARM_DESC(i2c_debug, "Set i2c debug");

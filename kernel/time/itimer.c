@@ -139,9 +139,10 @@ enum hrtimer_restart it_real_fn(struct hrtimer *timer)
 {
 	struct signal_struct *sig =
 		container_of(timer, struct signal_struct, real_timer);
+	struct pid *leader_pid = sig->pids[PIDTYPE_TGID];
 
-	trace_itimer_expire(ITIMER_REAL, sig->leader_pid, 0);
-	kill_pid_info(SIGALRM, SEND_SIG_PRIV, sig->leader_pid);
+	trace_itimer_expire(ITIMER_REAL, leader_pid, 0);
+	kill_pid_info(SIGALRM, SEND_SIG_PRIV, leader_pid);
 
 	return HRTIMER_NORESTART;
 }
@@ -153,10 +154,6 @@ static void set_cpu_itimer(struct task_struct *tsk, unsigned int clock_id,
 	u64 oval, nval, ointerval, ninterval;
 	struct cpu_itimer *it = &tsk->signal->it[clock_id];
 
-	/*
-	 * Use the to_ktime conversion because that clamps the maximum
-	 * value to KTIME_MAX and avoid multiplication overflows.
-	 */
 	nval = ktime_to_ns(timeval_to_ktime(value->it_value));
 	ninterval = ktime_to_ns(timeval_to_ktime(value->it_interval));
 

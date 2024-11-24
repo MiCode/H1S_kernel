@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2017 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #include "gpio.h"
@@ -22,6 +14,10 @@ struct GPIO_PINCTRL gpio_pinctrl_list_cam[
 	{"rst0"},
 	{"ldo_vcama_1"},
 	{"ldo_vcama_0"},
+#ifdef CONFIG_REGULATOR_RT5133
+	{"ldo_vcama1_1"},
+	{"ldo_vcama1_0"},
+#endif
 	{"ldo_vcamd_1"},
 	{"ldo_vcamd_0"},
 	{"ldo_vcamio_1"},
@@ -68,11 +64,17 @@ static enum IMGSENSOR_RETURN gpio_init(
 			gpio_pinctrl_list_cam[i].ppinctrl_lookup_names;
 
 			if (lookup_names) {
-				snprintf(str_pinctrl_name,
+				ret = snprintf(str_pinctrl_name,
 				sizeof(str_pinctrl_name),
 				"cam%d_%s",
 				j,
 				lookup_names);
+				if (ret < 0)
+					pr_info(
+						"ERROR:%s, snprintf err, %d\n",
+						__func__,
+						ret);
+
 				pgpio->ppinctrl_state_cam[j][i] =
 					pinctrl_lookup_state(
 						pgpio->ppinctrl,
@@ -136,8 +138,7 @@ static enum IMGSENSOR_RETURN gpio_set(
 		pin > IMGSENSOR_HW_PIN_DOVDD ||
 #endif
 		pin_state < IMGSENSOR_HW_PIN_STATE_LEVEL_0 ||
-		pin_state > IMGSENSOR_HW_PIN_STATE_LEVEL_HIGH ||
-		sensor_idx < 0)
+		pin_state > IMGSENSOR_HW_PIN_STATE_LEVEL_HIGH)
 		return IMGSENSOR_RETURN_ERROR;
 
 	gpio_state = (pin_state > IMGSENSOR_HW_PIN_STATE_LEVEL_0)
@@ -154,7 +155,7 @@ static enum IMGSENSOR_RETURN gpio_set(
 #endif
 	{
 		ppinctrl_state =
-			pgpio->ppinctrl_state_cam[sensor_idx][
+			pgpio->ppinctrl_state_cam[(unsigned int)sensor_idx][
 			((pin - IMGSENSOR_HW_PIN_PDN) << 1) + gpio_state];
 	}
 
@@ -173,9 +174,11 @@ static enum IMGSENSOR_RETURN gpio_set(
 
 static enum IMGSENSOR_RETURN gpio_dump(void *pintance)
 {
+#ifdef DUMP_GPIO
 	PK_DBG("[sensor_dump][gpio]\n");
 	gpio_dump_regs();
 	PK_DBG("[sensor_dump][gpio] finish\n");
+#endif
 	return IMGSENSOR_RETURN_SUCCESS;
 }
 

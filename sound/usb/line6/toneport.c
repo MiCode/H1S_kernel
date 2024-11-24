@@ -54,9 +54,6 @@ struct usb_line6_toneport {
 	/* Firmware version (x 100) */
 	u8 firmware_version;
 
-	/* Timer for delayed PCM startup */
-	struct timer_list timer;
-
 	/* Device type */
 	enum line6_device_type type;
 
@@ -133,7 +130,7 @@ static int toneport_send_cmd(struct usb_device *usbdev, int cmd1, int cmd2)
 
 	ret = usb_control_msg(usbdev, usb_sndctrlpipe(usbdev, 0), 0x67,
 			      USB_TYPE_VENDOR | USB_RECIP_DEVICE | USB_DIR_OUT,
-			      cmd1, cmd2, NULL, 0, LINE6_TIMEOUT * HZ);
+			      cmd1, cmd2, NULL, 0, LINE6_TIMEOUT);
 
 	if (ret < 0) {
 		dev_err(&usbdev->dev, "send failed (error %d)\n", ret);
@@ -241,11 +238,8 @@ static int snd_toneport_source_put(struct snd_kcontrol *kcontrol,
 	return 1;
 }
 
-static void toneport_start_pcm(unsigned long arg)
+static void toneport_startup(struct usb_line6 *line6)
 {
-	struct usb_line6_toneport *toneport = (struct usb_line6_toneport *)arg;
-	struct usb_line6 *line6 = &toneport->line6;
-
 	line6_pcm_acquire(line6->line6pcm, LINE6_STREAM_MONITOR, true);
 }
 
@@ -367,7 +361,7 @@ static bool toneport_has_source_select(struct usb_line6_toneport *toneport)
 */
 static int toneport_setup(struct usb_line6_toneport *toneport)
 {
-	int *ticks;
+	u32 *ticks;
 	struct usb_line6 *line6 = &toneport->line6;
 	struct usb_device *usbdev = line6->usbdev;
 
@@ -376,7 +370,8 @@ static int toneport_setup(struct usb_line6_toneport *toneport)
 		return -ENOMEM;
 
 	/* sync time on device with host: */
-	*ticks = (int)get_seconds();
+	/* note: 32-bit timestamps overflow in year 2106 */
+	*ticks = (u32)ktime_get_real_seconds();
 	line6_write_data(line6, 0x80c6, ticks, 4);
 	kfree(ticks);
 
@@ -392,7 +387,8 @@ static int toneport_setup(struct usb_line6_toneport *toneport)
 	if (toneport_has_led(toneport))
 		toneport_update_led(toneport);
 
-	mod_timer(&toneport->timer, jiffies + TONEPORT_PCM_DELAY * HZ);
+	schedule_delayed_work(&toneport->line6.startup_work,
+			      msecs_to_jiffies(TONEPORT_PCM_DELAY * 1000));
 	return 0;
 }
 
@@ -403,8 +399,6 @@ static void line6_toneport_disconnect(struct usb_line6 *line6)
 {
 	struct usb_line6_toneport *toneport =
 		(struct usb_line6_toneport *)line6;
-
-	del_timer_sync(&toneport->timer);
 
 	if (toneport_has_led(toneport))
 		toneport_remove_leds(toneport);
@@ -421,10 +415,9 @@ static int toneport_init(struct usb_line6 *line6,
 	struct usb_line6_toneport *toneport =  (struct usb_line6_toneport *) line6;
 
 	toneport->type = id->driver_info;
-	setup_timer(&toneport->timer, toneport_start_pcm,
-		    (unsigned long)toneport);
 
 	line6->disconnect = line6_toneport_disconnect;
+	line6->startup = toneport_startup;
 
 	/* initialize PCM subsystem: */
 	err = line6_init_pcm(line6, &toneport_pcm_properties);

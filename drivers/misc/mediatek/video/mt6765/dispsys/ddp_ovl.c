@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #define LOG_TAG "OVL"
@@ -26,7 +18,7 @@
 #include "ddp_mmp.h"
 #include "debug.h"
 #include "disp_drv_platform.h"
-#include "mtk_dramc.h"
+//#include "mtk_dramc.h"
 
 #define OVL_REG_BACK_MAX	(40)
 #define OVL_LAYER_OFFSET	(0x20)
@@ -101,9 +93,8 @@ static inline unsigned long ovl_layer_num(enum DISP_MODULE_ENUM module)
 		return 2;
 	default:
 		DDPERR("invalid ovl module=%d\n", module);
-		return -1;
+		return 0;
 	}
-	return 0;
 }
 
 enum CMDQ_EVENT_ENUM ovl_to_cmdq_event_nonsec_end(enum DISP_MODULE_ENUM module)
@@ -119,7 +110,7 @@ enum CMDQ_EVENT_ENUM ovl_to_cmdq_event_nonsec_end(enum DISP_MODULE_ENUM module)
 		DDPERR("invalid ovl module=%d, get cmdq event nonsecure fail\n",
 			module);
 		ASSERT(0);
-		//return DISP_MODULE_UNKNOWN;
+		return CMDQ_SYNC_TOKEN_INVALID;
 	}
 	return 0;
 }
@@ -156,7 +147,7 @@ unsigned int ovl_to_index(enum DISP_MODULE_ENUM module)
 
 static inline enum DISP_MODULE_ENUM ovl_index_to_module(int index)
 {
-	if (index >= OVL_NUM) {
+	if (index >= OVL_NUM || index < 0) {
 		DDPERR("invalid ovl index=%d\n", index);
 		ASSERT(0);
 	}
@@ -177,7 +168,7 @@ int ovl_start(enum DISP_MODULE_ENUM module, void *handle)
 	DISP_REG_SET(handle, ovl_base + DISP_REG_OVL_INTEN,
 		     0x1E0 | REG_FLD_VAL(INTEN_FLD_ABNORMAL_SOF, 1) |
 		     REG_FLD_VAL(INTEN_FLD_START_INTEN, 1));
-#if (defined(CONFIG_MTK_TEE_GP_SUPPORT) || \
+#if (defined(CONFIG_TEE) || \
 	defined(CONFIG_TRUSTONIC_TEE_SUPPORT)) && \
 	defined(CONFIG_MTK_SEC_VIDEO_PATH_SUPPORT)
 	DISP_REG_SET_FIELD(handle, INTEN_FLD_FME_CPL_INTEN,
@@ -277,8 +268,7 @@ int ovl_roi(enum DISP_MODULE_ENUM module, unsigned int bg_w, unsigned int bg_h,
 	unsigned long ovl_base = ovl_base_addr(module);
 
 	if ((bg_w > OVL_MAX_WIDTH) || (bg_h > OVL_MAX_HEIGHT)) {
-		DDPERR("%s: exceed OVL max size, w=%d, h=%d\n",
-			__func__, bg_w, bg_h);
+		DDPERR("ovl_roi,exceed OVL max size, w=%d, h=%d\n", bg_w, bg_h);
 		ASSERT(0);
 	}
 
@@ -353,27 +343,32 @@ static int _ovl_lc_config(enum DISP_MODULE_ENUM module,
 	unsigned long ovl_base = ovl_base_addr(module);
 	struct disp_rect rsz_dst_roi = pconfig->rsz_dst_roi;
 	int rotate = 0;
-	u32 lc_x = 0, lc_y = 0, lc_w = pconfig->dst_w, lc_h = pconfig->dst_h;
+	u32 lc_x, lc_y, lc_w, lc_h;
 
 	#ifdef CONFIG_MTK_LCM_PHYSICAL_ROTATION_HW
 		rotate = 1;
 	#endif
 
 	if (pconfig->rsz_enable) {
-		lc_x = rsz_dst_roi.x;
-		lc_y = rsz_dst_roi.y;
-		lc_w = rsz_dst_roi.width;
-		lc_h = rsz_dst_roi.height;
+		if (!rotate) {
+			lc_x = rsz_dst_roi.x;
+			lc_y = rsz_dst_roi.y;
+			lc_w = rsz_dst_roi.width;
+			lc_h = rsz_dst_roi.height;
+		} else {
+			lc_x = pconfig->dst_w - rsz_dst_roi.x -
+						rsz_dst_roi.width;
+			lc_y = pconfig->dst_h - rsz_dst_roi.y -
+						rsz_dst_roi.height;
+			lc_w = rsz_dst_roi.width;
+			lc_h = rsz_dst_roi.height;
+		}
+	} else {
+		lc_x = 0;
+		lc_y = 0;
+		lc_w = pconfig->dst_w;
+		lc_h = pconfig->dst_h;
 	}
-
-	if (rotate) {
-		unsigned int bg_w = 0, bg_h = 0;
-
-		_get_roi(module, &bg_w, &bg_h);
-		lc_y = bg_h - lc_h - lc_y;
-		lc_x = bg_w - lc_w - lc_x;
-	}
-
 	DISP_REG_SET_FIELD(handle, FLD_OVL_LC_XOFF,
 			   ovl_base + DISP_REG_OVL_LC_OFFSET, lc_x);
 	DISP_REG_SET_FIELD(handle, FLD_OVL_LC_YOFF,
@@ -647,6 +642,7 @@ static int ovl_layer_config(enum DISP_MODULE_ENUM module, unsigned int layer,
 	if (!is_engine_sec) {
 		DISP_REG_SET(handle, DISP_REG_OVL_L0_ADDR + layer_offset_addr,
 			cfg->real_addr);
+		DISP_REG_SET(handle, ovl_base + DISP_REG_OVL_SECURE, 0x0);
 	} else {
 		unsigned int size;
 		int m4u_port;
@@ -665,6 +661,18 @@ static int ovl_layer_config(enum DISP_MODULE_ENUM module, unsigned int layer,
 				CMDQ_SAM_NMVA_2_MVA, cfg->addr + offset,
 				0, size, m4u_port);
 
+			if (layer == 0)
+				DISP_REG_SET_FIELD(handle, OVL_SECURE_FLD_L0_EN,
+					ovl_base + DISP_REG_OVL_SECURE, 0);
+			else if (layer == 1)
+				DISP_REG_SET_FIELD(handle, OVL_SECURE_FLD_L1_EN,
+					ovl_base + DISP_REG_OVL_SECURE, 0);
+			else if (layer == 2)
+				DISP_REG_SET_FIELD(handle, OVL_SECURE_FLD_L2_EN,
+					ovl_base + DISP_REG_OVL_SECURE, 0);
+			else if (layer == 3)
+				DISP_REG_SET_FIELD(handle, OVL_SECURE_FLD_L3_EN,
+					ovl_base + DISP_REG_OVL_SECURE, 0);
 		} else {
 			/*
 			 * for sec layer, addr variable stores sec handle
@@ -677,6 +685,19 @@ static int ovl_layer_config(enum DISP_MODULE_ENUM module, unsigned int layer,
 					layer_offset_addr),
 				CMDQ_SAM_H_2_MVA, cfg->addr,
 				offset, size, m4u_port);
+
+			if (layer == 0)
+				DISP_REG_SET_FIELD(handle, OVL_SECURE_FLD_L0_EN,
+					ovl_base + DISP_REG_OVL_SECURE, 1);
+			else if (layer == 1)
+				DISP_REG_SET_FIELD(handle, OVL_SECURE_FLD_L1_EN,
+					ovl_base + DISP_REG_OVL_SECURE, 1);
+			else if (layer == 2)
+				DISP_REG_SET_FIELD(handle, OVL_SECURE_FLD_L2_EN,
+					ovl_base + DISP_REG_OVL_SECURE, 1);
+			else if (layer == 3)
+				DISP_REG_SET_FIELD(handle, OVL_SECURE_FLD_L3_EN,
+					ovl_base + DISP_REG_OVL_SECURE, 1);
 		}
 	}
 	DISP_REG_SET(handle, DISP_REG_OVL_L0_SRCKEY + layer_offset, cfg->key);
@@ -711,8 +732,8 @@ int ovl_clock_on(enum DISP_MODULE_ENUM module, void *handle)
 
 int ovl_clock_off(enum DISP_MODULE_ENUM module, void *handle)
 {
-	DDPDBG("%s clock_off\n", ddp_get_module_name(module));
 #ifdef ENABLE_CLK_MGR
+	DISPCHECK("%s clock_off\n", ddp_get_module_name(module));
 	ddp_clk_disable_unprepare(ddp_get_module_clk_id(module));
 #endif
 	return 0;
@@ -924,10 +945,12 @@ static inline int ovl_switch_to_sec(enum DISP_MODULE_ENUM module, void *handle)
 
 	cmdq_engine = ovl_to_cmdq_engine(module);
 	cmdqRecSetSecure(handle, 1);
+
 	/* set engine as sec port, it will to access
 	 * the sec memory EMI_MPU protected
 	 */
-	cmdqRecSecureEnablePortSecurity(handle, (1LL << cmdq_engine));
+	//cmdqRecSecureEnablePortSecurity(handle, (1LL << cmdq_engine));
+
 	/* Enable DAPC to protect the engine register */
 	/* cmdqRecSecureEnableDAPC(handle, (1LL << cmdq_engine)); */
 	if (ovl_is_sec[ovl_idx] == 0) {
@@ -950,7 +973,7 @@ int ovl_switch_to_nonsec(enum DISP_MODULE_ENUM module, void *handle)
 
 	if (ovl_is_sec[ovl_idx] == 1) {
 		/* ovl is in sec stat, we need to switch it to nonsec */
-		struct cmdqRecStruct *nonsec_switch_handle = NULL;
+		struct cmdqRecStruct *nonsec_switch_handle;
 		int ret;
 
 		ret = cmdqRecCreate(
@@ -983,9 +1006,10 @@ int ovl_switch_to_nonsec(enum DISP_MODULE_ENUM module, void *handle)
 		 * if we switch ovl to nonsec BUT its setting is still sec
 		 */
 		disable_ovl_layers(module, nonsec_switch_handle);
+
 		/* in fact, dapc/port_sec will be disabled by cmdq */
-		cmdqRecSecureEnablePortSecurity(
-			nonsec_switch_handle, (1LL << cmdq_engine));
+		//cmdqRecSecureEnablePortSecurity(
+		//	nonsec_switch_handle, (1LL << cmdq_engine));
 
 		if (handle != NULL) {
 			/* Async Flush method */
@@ -1039,7 +1063,7 @@ static int setup_ovl_sec(enum DISP_MODULE_ENUM module,
 		ret = ovl_switch_to_nonsec(module, NULL);
 
 	if (ret)
-		DDPAEE("[SVP]fail to %s ret=%d\n",
+		DDPAEE("[SVP]fail to setup_ovl_sec: %s ret=%d\n",
 			__func__, ret);
 
 	return has_sec_layer;
@@ -1258,8 +1282,8 @@ static unsigned long long full_trans_bw_calc(struct sbch *data,
 
 	if (data->sbch_en_cnt == SBCH_EN_NUM) {
 		pConfig->read_dum_reg[module] = 1;
-	} else if (data->sbch_en_cnt == SBCH_EN_NUM + 1) {
-
+	} else if ((data->sbch_en_cnt == SBCH_EN_NUM + 1) &&
+		(pgc != NULL)) {
 		if (primary_display_is_video_mode())
 			cmdqBackupReadSlot(pgc->ovl_status_info,
 					0, &status);
@@ -1570,7 +1594,8 @@ static unsigned long long sbch_calc(enum DISP_MODULE_ENUM module,
 	DISP_REG_SET(handle, ovl_base_addr(module) + DISP_REG_OVL_SBCH_EXT,
 		ext_bit[UPDATE] | ext_bit[TRANS_EN] | ext_bit[CNST_EN]);
 	/* clear slot */
-	cmdqBackupWriteSlot(pgc->ovl_dummy_info, module, 0);
+	if (pgc != NULL)
+		cmdqBackupWriteSlot(pgc->ovl_dummy_info, module, 0);
 
 	return full_trans_bw;
 }
@@ -1578,11 +1603,11 @@ static unsigned long long sbch_calc(enum DISP_MODULE_ENUM module,
 static int ovl_config_l(enum DISP_MODULE_ENUM module,
 	struct disp_ddp_path_config *pConfig, void *handle)
 {
-	unsigned int enabled_layers = 0;
+	int enabled_layers = 0;
 	int has_sec_layer = 0;
 	int layer_id;
 	int ovl_layer = 0;
-	unsigned int enabled_ext_layers = 0, ext_sel_layers = 0;
+	int enabled_ext_layers = 0, ext_sel_layers = 0;
 	struct golden_setting_context *golden_setting =
 		pConfig->p_golden_setting_context;
 	unsigned int Bpp, fps;
@@ -1630,7 +1655,7 @@ static int ovl_config_l(enum DISP_MODULE_ENUM module,
 	for (layer_id = 0; layer_id < TOTAL_REAL_OVL_LAYER_NUM; layer_id++) {
 		struct OVL_CONFIG_STRUCT *ovl_cfg =
 			&pConfig->ovl_config[layer_id];
-		unsigned int enable = ovl_cfg->layer_en;
+		int enable = ovl_cfg->layer_en;
 
 		if (enable == 0)
 			continue;
@@ -1738,11 +1763,6 @@ static int ovl_config_l(enum DISP_MODULE_ENUM module,
 			ovl_base_addr(module) + DISP_REG_OVL_SBCH_EXT, 0);
 	}
 
-	/* Enable SMI GDRDY */
-	DISP_REG_SET(handle,
-				ovl_base_addr(module) + DISP_REG_OVL_GDRDY_PRD,
-				0xFFFFFFFF);
-
 	DDPDBG("%s transparent bw:%llu, total bw:%llu\n",
 		ddp_get_module_name(module), full_trans_bw, ovl_bw);
 
@@ -1774,10 +1794,6 @@ int ovl_build_cmdq(enum DISP_MODULE_ENUM module, void *cmdq_trigger_handle,
 		if (module == DISP_MODULE_OVL0) {
 			ret = cmdqRecPoll(cmdq_trigger_handle,
 				0x14007240, 2, 0x3f);
-			if (ret) {
-				DDPERR("%s CMDQ POLL ERR\n", __func__);
-				return -1;
-			}
 		} else {
 			DDPERR("wrong module: %s\n",
 					ddp_get_module_name(module));
@@ -2243,19 +2259,6 @@ void ovl_dump_reg(enum DISP_MODULE_ENUM module)
 			DISP_REG_GET(DISP_REG_OVL_SBCH + offset),
 			DISP_REG_GET(DISP_REG_OVL_SBCH_EXT + offset),
 			DISP_REG_GET(DISP_REG_OVL_SBCH_EXT + offset));
-
-		DDPDUMP(
-			"OVL: 0x%04x=0x%08x, 0x%04x=0x%08x, 0x%04x=0x%08x, 0x%04x=0x%08x\n",
-			0x238, INREG32(offset + 0x238),
-			0x240, INREG32(offset + 0x240),
-			0x244, INREG32(offset + 0x244),
-			0x24c, INREG32(offset + 0x24c));
-		DDPDUMP(
-			"OVL: 0x%04x=0x%08x, 0x%04x=0x%08x, 0x%04x=0x%08x, 0x%04x=0x%08x\n",
-			0x250, INREG32(offset + 0x250),
-			0x254, INREG32(offset + 0x254),
-			0x258, INREG32(offset + 0x258),
-			0x25c, INREG32(offset + 0x25c));
 	}
 }
 

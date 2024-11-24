@@ -1,18 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2018 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef _MT_PMIC_API_H_
 #define _MT_PMIC_API_H_
+
+#include <mach/upmu_hw.h>
 
 extern unsigned int mt6358_upmu_get_top0_ana_id(
 	void);
@@ -10770,5 +10764,105 @@ extern unsigned int mt6358_upmu_get_da_vcn33_bt_mode(
 	void);
 extern unsigned int mt6358_upmu_get_da_vcn33_wifi_mode(
 	void);
-
+#if defined(USE_PMIC_MT6366) && USE_PMIC_MT6366
+extern unsigned int mt6358_upmu_set_rg_ldo_vm18_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vm18_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vm18_lp(unsigned int val);
+extern unsigned int mt6358_upmu_set_rg_ldo_vm18_sw_op_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vm18_sw_op_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vm18_hw0_op_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vm18_hw0_op_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vm18_hw1_op_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vm18_hw1_op_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vm18_hw2_op_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vm18_hw2_op_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vm18_hw0_op_cfg(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vm18_hw0_op_cfg(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vm18_hw1_op_cfg(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vm18_hw1_op_cfg(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vm18_hw2_op_cfg(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vm18_hw2_op_cfg(void);
+extern unsigned int mt6358_upmu_get_da_vm18_mode(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vm18_stbtd(unsigned int val);
+extern unsigned int mt6358_upmu_get_da_vm18_stb(void);
+extern unsigned int mt6358_upmu_get_da_vm18_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vm18_ocfb_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vm18_ocfb_en(void);
+extern unsigned int mt6358_upmu_get_da_vm18_ocfb_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vm18_dummy_load(unsigned int val);
+extern unsigned int mt6358_upmu_get_da_vm18_dummy_load(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vmddr_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vmddr_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vmddr_lp(unsigned int val);
+extern unsigned int mt6358_upmu_set_rg_ldo_vmddr_sw_op_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vmddr_sw_op_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vmddr_hw0_op_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vmddr_hw0_op_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vmddr_hw1_op_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vmddr_hw1_op_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vmddr_hw2_op_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vmddr_hw2_op_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vmddr_hw0_op_cfg(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vmddr_hw0_op_cfg(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vmddr_hw1_op_cfg(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vmddr_hw1_op_cfg(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vmddr_hw2_op_cfg(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vmddr_hw2_op_cfg(void);
+extern unsigned int mt6358_upmu_get_da_vmddr_mode(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vmddr_stbtd(unsigned int val);
+extern unsigned int mt6358_upmu_get_da_vmddr_stb(void);
+extern unsigned int mt6358_upmu_get_da_vmddr_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vmddr_ocfb_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vmddr_ocfb_en(void);
+extern unsigned int mt6358_upmu_get_da_vmddr_ocfb_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vmddr_dummy_load(unsigned int val);
+extern unsigned int mt6358_upmu_get_da_vmddr_dummy_load(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vsram_core_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_lp(unsigned int val);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_vosel_sleep(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vsram_core_vosel_sleep(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_sfchg_frate(unsigned int val);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_sfchg_fen(unsigned int val);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_sfchg_rrate(unsigned int val);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_sfchg_ren(unsigned int val);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_dvs_trans_td(unsigned int val);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_dvs_trans_ctrl(unsigned int val);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_dvs_trans_once(unsigned int val);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_sw_op_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vsram_core_sw_op_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_hw0_op_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vsram_core_hw0_op_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_hw1_op_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vsram_core_hw1_op_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_hw2_op_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vsram_core_hw2_op_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_hw0_op_cfg(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vsram_core_hw0_op_cfg(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_hw1_op_cfg(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vsram_core_hw1_op_cfg(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_hw2_op_cfg(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vsram_core_hw2_op_cfg(void);
+extern unsigned int mt6358_upmu_get_da_vsram_core_mode(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_stbtd(unsigned int val);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_ocfb_en(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vsram_core_ocfb_en(void);
+extern unsigned int mt6358_upmu_get_da_vsram_core_ocfb_en(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_dummy_load(unsigned int val);
+extern unsigned int mt6358_upmu_get_da_vsram_core_dummy_load(void);
+extern unsigned int mt6358_upmu_get_da_vsram_core_vosel_gray(void);
+extern unsigned int mt6358_upmu_get_da_vsram_core_vosel(void);
+extern unsigned int mt6358_upmu_get_da_vsram_core_en(void);
+extern unsigned int mt6358_upmu_get_da_vsram_core_stb(void);
+extern unsigned int mt6358_upmu_get_da_vsram_core_vsleep_sel(void);
+extern unsigned int mt6358_upmu_get_da_vsram_core_r2r_pdn(void);
+extern unsigned int mt6358_upmu_get_da_vsram_core_track_ndis_en(void);
+extern unsigned int mt6358_upmu_get_ldo_vsram_core_wdtdbg_vosel(void);
+extern unsigned int mt6358_upmu_set_rg_vm18_vosel(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_vm18_vosel(void);
+extern unsigned int mt6358_upmu_set_rg_vmddr_vosel(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_vmddr_vosel(void);
+extern unsigned int mt6358_upmu_set_rg_ldo_vsram_core_vosel(unsigned int val);
+extern unsigned int mt6358_upmu_get_rg_ldo_vsram_core_vosel(void);
+#endif
 #endif				/* _MT_PMIC_API_H_ */

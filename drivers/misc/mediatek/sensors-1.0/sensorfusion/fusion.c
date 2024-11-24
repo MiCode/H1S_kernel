@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+ * Copyright (C) 2019 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) "<FUSION> " fmt
@@ -145,7 +137,7 @@ static int fusion_enable_and_batch(int index)
 }
 #endif
 
-static ssize_t fusion_store_active(struct device *dev,
+static ssize_t fusionactive_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct fusion_context *cxt = fusion_context_obj;
@@ -164,7 +156,7 @@ static ssize_t fusion_store_active(struct device *dev,
 	}
 
 	if (cxt->fusion_context[index].fusion_ctl.enable_nodata == NULL) {
-		pr_debug("[%s] ctl not registered\n", __func__);
+		pr_err("[%s] ctl not registered\n", __func__);
 		return -1;
 	}
 
@@ -178,6 +170,7 @@ static ssize_t fusion_store_active(struct device *dev,
 		err = -1;
 		goto err_out;
 	}
+
 #ifdef CONFIG_NANOHUB
 	if (cxt->fusion_context[index].enable == 1) {
 		err = cxt->fusion_context[index].fusion_ctl.enable_nodata(1);
@@ -198,11 +191,14 @@ static ssize_t fusion_store_active(struct device *dev,
 	pr_debug("%s done\n", __func__);
 err_out:
 	mutex_unlock(&fusion_context_obj->fusion_op_mutex);
-	return err;
+	if (err)
+		return err;
+	else
+		return count;
 }
 
 /*----------------------------------------------------------------------------*/
-static ssize_t fusion_show_active(struct device *dev,
+static ssize_t fusionactive_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	int vendor_div[max_fusion_support];
@@ -223,14 +219,13 @@ static ssize_t fusion_show_active(struct device *dev,
 		vendor_div[ungyro], vendor_div[unmag], vendor_div[pdr]);
 }
 
-static ssize_t fusion_show_sensordevnum(struct device *dev,
+static ssize_t fusiondevnum_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-
-static ssize_t fusion_store_batch(struct device *dev,
+static ssize_t fusionbatch_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct fusion_context *cxt = fusion_context_obj;
@@ -280,20 +275,22 @@ static ssize_t fusion_store_batch(struct device *dev,
 	err = fusion_enable_and_batch(index);
 #endif
 	pr_debug("%s done\n", __func__);
-#ifdef CONFIG_NANOHUB
 err_out:
-#endif
 	mutex_unlock(&fusion_context_obj->fusion_op_mutex);
-	return err;
+
+	if (err)
+		return err;
+	else
+		return count;
 }
 
-static ssize_t fusion_show_batch(struct device *dev,
+static ssize_t fusionbatch_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 }
 
-static ssize_t fusion_store_flush(struct device *dev,
+static ssize_t fusionflush_store(struct device *dev,
 	struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct fusion_context *cxt = NULL;
@@ -320,10 +317,13 @@ static ssize_t fusion_store_flush(struct device *dev,
 	if (err < 0)
 		pr_err("fusion enable flush err %d\n", err);
 	mutex_unlock(&fusion_context_obj->fusion_op_mutex);
-	return err;
+	if (err)
+		return err;
+	else
+		return count;
 }
 
-static ssize_t fusion_show_flush(struct device *dev,
+static ssize_t fusionflush_show(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", 0);
@@ -393,10 +393,10 @@ static int fusion_misc_init(struct fusion_context *cxt)
 	return err;
 }
 
-DEVICE_ATTR(fusionactive, 0644, fusion_show_active, fusion_store_active);
-DEVICE_ATTR(fusionbatch, 0644, fusion_show_batch, fusion_store_batch);
-DEVICE_ATTR(fusionflush, 0644, fusion_show_flush, fusion_store_flush);
-DEVICE_ATTR(fusiondevnum, 0644, fusion_show_sensordevnum, NULL);
+DEVICE_ATTR_RW(fusionactive);
+DEVICE_ATTR_RW(fusionbatch);
+DEVICE_ATTR_RW(fusionflush);
+DEVICE_ATTR_RO(fusiondevnum);
 
 static struct attribute *fusion_attributes[] = {
 	&dev_attr_fusionactive.attr,
@@ -630,7 +630,6 @@ int uncali_mag_flush_report(void)
 }
 static int fusion_probe(void)
 {
-
 	int err;
 
 	pr_debug("%s+++!!\n", __func__);

@@ -160,13 +160,14 @@ static void nfcmrvl_tx_complete(struct urb *urb)
 	struct nci_dev *ndev = (struct nci_dev *)skb->dev;
 	struct nfcmrvl_private *priv = nci_get_drvdata(ndev);
 	struct nfcmrvl_usb_drv_data *drv_data = priv->drv_data;
+	unsigned long flags;
 
 	nfc_info(priv->dev, "urb %p status %d count %d\n",
 		 urb, urb->status, urb->actual_length);
 
-	spin_lock(&drv_data->txlock);
+	spin_lock_irqsave(&drv_data->txlock, flags);
 	drv_data->tx_in_flight--;
-	spin_unlock(&drv_data->txlock);
+	spin_unlock_irqrestore(&drv_data->txlock, flags);
 
 	kfree(urb->setup_packet);
 	kfree_skb(skb);
@@ -400,13 +401,25 @@ static void nfcmrvl_play_deferred(struct nfcmrvl_usb_drv_data *drv_data)
 	int err;
 
 	while ((urb = usb_get_from_anchor(&drv_data->deferred))) {
+		usb_anchor_urb(urb, &drv_data->tx_anchor);
+
 		err = usb_submit_urb(urb, GFP_ATOMIC);
-		if (err)
+		if (err) {
+			kfree(urb->setup_packet);
+			usb_unanchor_urb(urb);
+			usb_free_urb(urb);
 			break;
+		}
 
 		drv_data->tx_in_flight++;
+		usb_free_urb(urb);
 	}
-	usb_scuttle_anchored_urbs(&drv_data->deferred);
+
+	/* Cleanup the rest deferred urbs. */
+	while ((urb = usb_get_from_anchor(&drv_data->deferred))) {
+		kfree(urb->setup_packet);
+		usb_free_urb(urb);
+	}
 }
 
 static int nfcmrvl_resume(struct usb_interface *intf)

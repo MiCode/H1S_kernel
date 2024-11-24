@@ -1,19 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
  */
 #include <linux/kernel.h>
 #include <linux/rtc.h>
 #include <linux/timer.h>
 #include "ccci_config.h"
+#include "ccci_common_config.h"
 #if defined(CONFIG_MTK_AEE_FEATURE)
 #include <mt-plat/aee.h>
 #endif
@@ -639,9 +632,11 @@ static void mdee_dumper_info_prepare_v1(struct ccci_fsm_ee *mdee)
 			debug_info->dsp_assert.parameters[2] =
 				ex_info->content.assert.parameters[2];
 		}
-		if (ret < 0 || ret >= sizeof(debug_info->dsp_assert.file_name))
+		if (ret < 0 || ret >= sizeof(debug_info->dsp_assert.file_name)) {
 			CCCI_ERROR_LOG(md_id, FSM,
 				"%s-%d:snprintf fail,ret = %d\n", __func__, __LINE__, ret);
+			break;
+		}
 		if (val < 0 || val >= sizeof(debug_info->dsp_assert.execution_unit))
 			CCCI_ERROR_LOG(md_id, FSM,
 				"%s-%d:snprintf fail,val = %d\n", __func__, __LINE__, val);

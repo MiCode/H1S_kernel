@@ -1,22 +1,13 @@
 /*
- * Generic entry point for the idle threads
+ * Generic entry points for the idle threads and
+ * implementation of the idle task scheduling class.
+ *
+ * (NOTE: these are not related to SCHED_IDLE batch scheduled
+ *        tasks which are handled in sched/fair.c )
  */
-#include <linux/sched.h>
-#include <linux/sched/idle.h>
-#include <linux/cpu.h>
-#include <linux/cpuidle.h>
-#include <linux/cpuhotplug.h>
-#include <linux/tick.h>
-#include <linux/mm.h>
-#include <linux/stackprotector.h>
-#include <linux/suspend.h>
-#include <linux/livepatch.h>
-
-#include <asm/tlb.h>
+#include "sched.h"
 
 #include <trace/events/power.h>
-
-#include "sched.h"
 
 /* Linker adds these: start and end of __cpuidle functions */
 extern char __cpuidle_text_start[], __cpuidle_text_end[];
@@ -47,6 +38,7 @@ void cpu_idle_poll_ctrl(bool enable)
 static int __init cpu_idle_poll_setup(char *__unused)
 {
 	cpu_idle_force_poll = 1;
+
 	return 1;
 }
 __setup("nohlt", cpu_idle_poll_setup);
@@ -54,6 +46,7 @@ __setup("nohlt", cpu_idle_poll_setup);
 static int __init cpu_idle_nopoll_setup(char *__unused)
 {
 	cpu_idle_force_poll = 0;
+
 	return 1;
 }
 __setup("hlt", cpu_idle_nopoll_setup);
@@ -61,16 +54,19 @@ __setup("hlt", cpu_idle_nopoll_setup);
 
 static noinline int __cpuidle cpu_idle_poll(void)
 {
-	rcu_idle_enter();
-	trace_cpu_idle_rcuidle(0, smp_processor_id());
-	local_irq_enable();
+	trace_cpu_idle(0, smp_processor_id());
 	stop_critical_timings();
+	rcu_idle_enter();
+	local_irq_enable();
+
 	while (!tif_need_resched() &&
-		(cpu_idle_force_poll || tick_check_broadcast_expired()))
+	       (cpu_idle_force_poll || tick_check_broadcast_expired()))
 		cpu_relax();
-	start_critical_timings();
-	trace_cpu_idle_rcuidle(PWR_EVENT_EXIT, smp_processor_id());
+
 	rcu_idle_exit();
+	start_critical_timings();
+	trace_cpu_idle(PWR_EVENT_EXIT, smp_processor_id());
+
 	return 1;
 }
 
@@ -96,7 +92,9 @@ void __cpuidle default_idle_call(void)
 		local_irq_enable();
 	} else {
 		stop_critical_timings();
+		rcu_idle_enter();
 		arch_cpu_idle();
+		rcu_idle_exit();
 		start_critical_timings();
 	}
 }
@@ -154,7 +152,6 @@ static void cpuidle_idle_call(void)
 
 	if (cpuidle_not_available(drv, dev)) {
 		tick_nohz_idle_stop_tick();
-		rcu_idle_enter();
 
 		default_idle_call();
 		goto exit_idle;
@@ -172,19 +169,15 @@ static void cpuidle_idle_call(void)
 
 	if (idle_should_enter_s2idle() || dev->use_deepest_state) {
 		if (idle_should_enter_s2idle()) {
-			rcu_idle_enter();
 
 			entered_state = cpuidle_enter_s2idle(drv, dev);
 			if (entered_state > 0) {
 				local_irq_enable();
 				goto exit_idle;
 			}
-
-			rcu_idle_exit();
 		}
 
 		tick_nohz_idle_stop_tick();
-		rcu_idle_enter();
 
 		next_state = cpuidle_find_deepest_state(drv, dev);
 		call_cpuidle(drv, dev, next_state);
@@ -201,8 +194,6 @@ static void cpuidle_idle_call(void)
 		else
 			tick_nohz_idle_retain_tick();
 
-		rcu_idle_enter();
-
 		entered_state = call_cpuidle(drv, dev, next_state);
 		/*
 		 * Give the governor an opportunity to reflect on the outcome
@@ -218,8 +209,6 @@ exit_idle:
 	 */
 	if (WARN_ON_ONCE(irqs_disabled()))
 		local_irq_enable();
-
-	rcu_idle_exit();
 }
 
 /*
@@ -229,6 +218,7 @@ exit_idle:
  */
 static void do_idle(void)
 {
+	int cpu = smp_processor_id();
 	/*
 	 * If the arch has a polling bit, we maintain an invariant:
 	 *
@@ -239,7 +229,6 @@ static void do_idle(void)
 	 */
 
 	__current_set_polling();
-	quiet_vmstat();
 	tick_nohz_idle_enter();
 
 	while (!need_resched()) {
@@ -248,7 +237,7 @@ static void do_idle(void)
 
 		local_irq_disable();
 
-		if (cpu_is_offline(smp_processor_id())) {
+		if (cpu_is_offline(cpu)) {
 			tick_nohz_idle_stop_tick();
 			cpuhp_report_idle_dead();
 			arch_cpu_idle_dead();
@@ -356,8 +345,8 @@ void cpu_startup_entry(enum cpuhp_state state)
 {
 	/*
 	 * This #ifdef needs to die, but it's too late in the cycle to
-	 * make this generic (arm and sh have never invoked the canary
-	 * init for the non boot cpus!). Will be fixed in 3.11
+	 * make this generic (ARM and SH have never invoked the canary
+	 * init for the non boot CPUs!). Will be fixed in 3.11
 	 */
 #ifdef CONFIG_X86
 	/*
@@ -374,3 +363,117 @@ void cpu_startup_entry(enum cpuhp_state state)
 	while (1)
 		do_idle();
 }
+
+/*
+ * idle-task scheduling class.
+ */
+
+#ifdef CONFIG_SMP
+static int
+select_task_rq_idle(struct task_struct *p, int cpu, int sd_flag, int flags,
+		    int sibling_count_hint)
+{
+	return task_cpu(p); /* IDLE tasks as never migrated */
+}
+#endif
+
+/*
+ * Idle tasks are unconditionally rescheduled:
+ */
+static void check_preempt_curr_idle(struct rq *rq, struct task_struct *p, int flags)
+{
+	resched_curr(rq);
+}
+
+static struct task_struct *
+pick_next_task_idle(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
+{
+	put_prev_task(rq, prev);
+	update_idle_core(rq);
+	schedstat_inc(rq->sched_goidle);
+
+	return rq->idle;
+}
+
+/*
+ * It is not legal to sleep in the idle task - print a warning
+ * message if some code attempts to do it:
+ */
+static void
+dequeue_task_idle(struct rq *rq, struct task_struct *p, int flags)
+{
+	raw_spin_unlock_irq(&rq->lock);
+	printk(KERN_ERR "bad: scheduling from the idle thread!\n");
+	dump_stack();
+	raw_spin_lock_irq(&rq->lock);
+}
+
+static void put_prev_task_idle(struct rq *rq, struct task_struct *prev)
+{
+}
+
+/*
+ * scheduler tick hitting a task of our scheduling class.
+ *
+ * NOTE: This function can be called remotely by the tick offload that
+ * goes along full dynticks. Therefore no local assumption can be made
+ * and everything must be accessed through the @rq and @curr passed in
+ * parameters.
+ */
+static void task_tick_idle(struct rq *rq, struct task_struct *curr, int queued)
+{
+}
+
+static void set_curr_task_idle(struct rq *rq)
+{
+}
+
+static void switched_to_idle(struct rq *rq, struct task_struct *p)
+{
+	BUG();
+}
+
+static void
+prio_changed_idle(struct rq *rq, struct task_struct *p, int oldprio)
+{
+	BUG();
+}
+
+static unsigned int get_rr_interval_idle(struct rq *rq, struct task_struct *task)
+{
+	return 0;
+}
+
+static void update_curr_idle(struct rq *rq)
+{
+}
+
+/*
+ * Simple, special scheduling class for the per-CPU idle tasks:
+ */
+const struct sched_class idle_sched_class = {
+	/* .next is NULL */
+	/* no enqueue/yield_task for idle tasks */
+
+	/* dequeue is not valid, we print a debug message there: */
+	.dequeue_task		= dequeue_task_idle,
+
+	.check_preempt_curr	= check_preempt_curr_idle,
+
+	.pick_next_task		= pick_next_task_idle,
+	.put_prev_task		= put_prev_task_idle,
+
+#ifdef CONFIG_SMP
+	.select_task_rq		= select_task_rq_idle,
+	.set_cpus_allowed	= set_cpus_allowed_common,
+#endif
+
+	.set_curr_task          = set_curr_task_idle,
+	.task_tick		= task_tick_idle,
+
+	.get_rr_interval	= get_rr_interval_idle,
+
+	.prio_changed		= prio_changed_idle,
+	.switched_to		= switched_to_idle,
+	.update_curr		= update_curr_idle,
+};

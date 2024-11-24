@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (C) 2015 MediaTek Inc.
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- */
+ * Copyright (c) 2019 MediaTek Inc.
+*/
 
 #ifndef __M4U_PRIV_H__
 #define __M4U_PRIV_H__
@@ -222,8 +214,7 @@ int m4u_reg_restore(void);
 int m4u_insert_seq_range(int port,
 	unsigned int MVAStart, unsigned int MVAEnd);
 int m4u_invalid_seq_range_by_id(int port, int seq_id);
-void m4u_print_port_status(struct seq_file *seq, int only_print_active,
-			    unsigned int target_larb);
+void m4u_print_port_status(struct seq_file *seq, int only_print_active);
 
 int m4u_dump_main_tlb(int m4u_id, int m4u_slave_id);
 int m4u_dump_pfh_tlb(int m4u_id);
@@ -231,12 +222,13 @@ int m4u_dump_rs_info(unsigned int m4u_index, int m4u_slave_id);
 int m4u_dump_victim_tlb(int m4u_id);
 int m4u_domain_init(struct m4u_device *m4u_dev, void *priv_reserve, int m4u_id);
 int mau_start_monitor(int m4u_id, int m4u_slave_id, int mau_set,
-		      int wr, int vir, int io, int bit32,
+		      int wr, int vir, int io,
+		      unsigned int ext_addr_start, unsigned int ext_addr_end,
 		      unsigned int start, unsigned int end,
 		      unsigned int port_mask, unsigned int larb_mask);
 
 /*int config_mau(struct M4U_MAU_STRUCT mau);*/
-int m4u_enable_tf(unsigned int port, bool fgenable);
+int m4u_enable_tf(int port, bool fgenable);
 
 
 extern int gM4U_4G_DRAM_Mode;
@@ -253,15 +245,13 @@ int m4u_unmap(struct m4u_domain_t *domain,
 		unsigned int mva, unsigned int size);
 
 
-void m4u_get_pgd(struct m4u_client_t *client,
-	unsigned int port, void **pgd_va, void **pgd_pa, unsigned int *size);
+void m4u_get_pgd(struct m4u_client_t *client, int port,
+	void **pgd_va, void **pgd_pa, unsigned int *size);
 unsigned long m4u_mva_to_pa(struct m4u_client_t *client,
-	unsigned int port, unsigned int mva);
+	int port, unsigned int mva);
 int m4u_mva_check(int port, unsigned int mva);
-int __m4u_query_mva_info(unsigned int domain_idx,
+int m4u_query_mva_info(unsigned int domain_idx,
 	unsigned int mva, unsigned int size,
-	unsigned int *real_mva, unsigned int *real_size);
-int m4u_query_mva_info(unsigned int mva, unsigned int size,
 	unsigned int *real_mva, unsigned int *real_size);
 
 /* ================================= */
@@ -386,7 +376,7 @@ struct M4U_MOUDLE_STRUCT {
 #define MTK_M4U_T_DMA_OP	      _IOW(MTK_M4U_MAGICNO, 29, int)
 
 #define MTK_M4U_T_SEC_INIT                  _IOW(MTK_M4U_MAGICNO, 50, int)
-#define MTK_M4U_T_GZ_SEC_INIT               _IOW(MTK_M4U_MAGICNO, 60, int)
+#define MTK_M4U_GZ_SEC_INIT	    _IOW(MTK_M4U_MAGICNO, 60, int)
 
 
 #if defined(CONFIG_MACH_MT6779) || defined(CONFIG_MACH_MT6785)

@@ -69,13 +69,12 @@ void mmc_retune_enable(struct mmc_host *host)
 
 /*
  * Pause re-tuning for a small set of operations.  The pause begins after the
- * next command and after first doing re-tuning.
+ * next command.
  */
 void mmc_retune_pause(struct mmc_host *host)
 {
 	if (!host->retune_paused) {
 		host->retune_paused = 1;
-		mmc_retune_needed(host);
 		mmc_retune_hold(host);
 	}
 }
@@ -112,12 +111,6 @@ void mmc_retune_hold(struct mmc_host *host)
 	host->hold_retune += 1;
 }
 
-void mmc_retune_hold_now(struct mmc_host *host)
-{
-	host->retune_now = 0;
-	host->hold_retune += 1;
-}
-
 void mmc_retune_release(struct mmc_host *host)
 {
 	if (host->hold_retune)
@@ -125,6 +118,7 @@ void mmc_retune_release(struct mmc_host *host)
 	else
 		WARN_ON(1);
 }
+EXPORT_SYMBOL(mmc_retune_release);
 
 int mmc_retune(struct mmc_host *host)
 {
@@ -149,9 +143,6 @@ int mmc_retune(struct mmc_host *host)
 			goto out;
 
 		return_to_hs400 = true;
-
-		if (host->ops->prepare_hs400_tuning)
-			host->ops->prepare_hs400_tuning(host, &host->ios);
 	}
 
 	err = mmc_execute_tuning(host->card);
@@ -162,13 +153,14 @@ int mmc_retune(struct mmc_host *host)
 		err = mmc_hs200_to_hs400(host->card);
 out:
 	host->doing_retune = 0;
-
+	if (err)
+		host->need_retune = 1;
 	return err;
 }
 
-static void mmc_retune_timer(unsigned long data)
+static void mmc_retune_timer(struct timer_list *t)
 {
-	struct mmc_host *host = (struct mmc_host *)data;
+	struct mmc_host *host = from_timer(host, t, retune_timer);
 
 	mmc_retune_needed(host);
 }
@@ -185,7 +177,7 @@ static void mmc_retune_timer(unsigned long data)
 int mmc_of_parse(struct mmc_host *host)
 {
 	struct device *dev = host->parent;
-	u32 bus_width;
+	u32 bus_width, drv_type, cd_debounce_delay_ms;
 	int ret;
 	bool cd_cap_invert, cd_gpio_invert = false;
 	bool ro_cap_invert, ro_gpio_invert = false;
@@ -236,11 +228,16 @@ int mmc_of_parse(struct mmc_host *host)
 	} else {
 		cd_cap_invert = device_property_read_bool(dev, "cd-inverted");
 
+		if (device_property_read_u32(dev, "cd-debounce-delay-ms",
+					     &cd_debounce_delay_ms))
+			cd_debounce_delay_ms = 200;
+
 		if (device_property_read_bool(dev, "broken-cd"))
 			host->caps |= MMC_CAP_NEEDS_POLL;
 
 		ret = mmc_gpiod_request_cd(host, "cd", 0, true,
-					   0, &cd_gpio_invert);
+					   cd_debounce_delay_ms * 1000,
+					   &cd_gpio_invert);
 		if (!ret)
 			dev_info(host->parent, "Got CD GPIO\n");
 		else if (ret != -ENOENT && ret != -ENOSYS)
@@ -327,6 +324,15 @@ int mmc_of_parse(struct mmc_host *host)
 	if (device_property_read_bool(dev, "no-mmc"))
 		host->caps2 |= MMC_CAP2_NO_MMC;
 
+	/* Must be after "non-removable" check */
+	if (device_property_read_u32(dev, "fixed-emmc-driver-type", &drv_type) == 0) {
+		if (host->caps & MMC_CAP_NONREMOVABLE)
+			host->fixed_drv_type = drv_type;
+		else
+			dev_err(host->parent,
+				"can't use fixed driver type, media is removable\n");
+	}
+
 	host->dsr_req = !device_property_read_u32(dev, "dsr", &host->dsr);
 	if (host->dsr_req && (host->dsr & ~0xffff)) {
 		dev_err(host->parent,
@@ -334,6 +340,9 @@ int mmc_of_parse(struct mmc_host *host)
 			host->dsr);
 		host->dsr_req = 0;
 	}
+
+	device_property_read_u32(dev, "post-power-on-delay-ms",
+				 &host->ios.power_delay_ms);
 
 	return mmc_pwrseq_alloc(host);
 }
@@ -351,6 +360,7 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 {
 	int err;
 	struct mmc_host *host;
+
 #ifdef CONFIG_MTK_EMMC_CQ_SUPPORT
 	int i;
 #endif
@@ -387,7 +397,7 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	init_waitqueue_head(&host->wq);
 	INIT_DELAYED_WORK(&host->detect, mmc_rescan);
 	INIT_DELAYED_WORK(&host->sdio_irq_work, sdio_irq_work);
-	setup_timer(&host->retune_timer, mmc_retune_timer, (unsigned long)host);
+	timer_setup(&host->retune_timer, mmc_retune_timer, 0);
 
 	/*
 	 * By default, hosts do not support SGIO or large requests.
@@ -400,27 +410,41 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	host->max_blk_size = 512;
 	host->max_blk_count = PAGE_SIZE / 512;
 
+	host->fixed_drv_type = -EINVAL;
+	host->ios.power_delay_ms = 10;
+
 #ifdef CONFIG_MTK_EMMC_CQ_SUPPORT
-	for (i = 0; i < EMMC_MAX_QUEUE_DEPTH; i++)
-		host->areq_que[i] = NULL;
-	atomic_set(&host->areq_cnt, 0);
-	host->areq_cur = NULL;
-	host->done_mrq = NULL;
+	if (host->index == 0) {
+		for (i = 0; i < EMMC_MAX_QUEUE_DEPTH; i++)
+			host->areq_que[i] = NULL;
 
-	INIT_LIST_HEAD(&host->cmd_que);
-	INIT_LIST_HEAD(&host->dat_que);
-	spin_lock_init(&host->cmd_que_lock);
-	spin_lock_init(&host->dat_que_lock);
-	spin_lock_init(&host->que_lock);
-
-	init_waitqueue_head(&host->cmp_que);
-	init_waitqueue_head(&host->cmdq_que);
+		atomic_set(&host->areq_cnt, 0);
+		host->areq_cur = NULL;
+		host->done_mrq = NULL;
+		INIT_LIST_HEAD(&host->cmd_que);
+		INIT_LIST_HEAD(&host->dat_que);
+		spin_lock_init(&host->cmd_que_lock);
+		spin_lock_init(&host->dat_que_lock);
+		spin_lock_init(&host->que_lock);
+		init_waitqueue_head(&host->cmp_que);
+		init_waitqueue_head(&host->cmdq_que);
+	}
 #endif
 
 	return host;
 }
 
 EXPORT_SYMBOL(mmc_alloc_host);
+
+static int mmc_validate_host_caps(struct mmc_host *host)
+{
+	if (host->caps & MMC_CAP_SDIO_IRQ && !host->ops->enable_sdio_irq) {
+		dev_warn(host->parent, "missing ->enable_sdio_irq() ops\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
 
 /**
  *	mmc_add_host - initialise host hardware
@@ -434,8 +458,9 @@ int mmc_add_host(struct mmc_host *host)
 {
 	int err;
 
-	WARN_ON((host->caps & MMC_CAP_SDIO_IRQ) &&
-		!host->ops->enable_sdio_irq);
+	err = mmc_validate_host_caps(host);
+	if (err)
+		return err;
 
 	err = device_add(&host->class_dev);
 	if (err)
@@ -489,6 +514,7 @@ EXPORT_SYMBOL(mmc_remove_host);
  */
 void mmc_free_host(struct mmc_host *host)
 {
+	cancel_delayed_work_sync(&host->detect);
 	mmc_crypto_free_host(host);
 	mmc_pwrseq_free(host);
 	put_device(&host->class_dev);

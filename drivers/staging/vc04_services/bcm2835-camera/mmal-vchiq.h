@@ -1,11 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Broadcom BM2835 V4L2 driver
  *
  * Copyright © 2013 Raspberry Pi (Trading) Ltd.
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file COPYING in the main directory of this archive
- * for more details.
  *
  * Authors: Vincent Sanders <vincent.sanders@collabora.co.uk>
  *          Dave Stevenson <dsteve@broadcom.com>
@@ -35,14 +32,6 @@ enum vchiq_mmal_es_type {
 	MMAL_ES_TYPE_SUBPICTURE   /**< Sub-picture elementary stream */
 };
 
-/* rectangle, used lots so it gets its own struct */
-struct vchiq_mmal_rect {
-	s32 x;
-	s32 y;
-	s32 width;
-	s32 height;
-};
-
 struct vchiq_mmal_port_buffer {
 	unsigned int num; /* number of buffers */
 	u32 size; /* size of buffers */
@@ -58,7 +47,7 @@ typedef void (*vchiq_mmal_buffer_cb)(
 		unsigned long length, u32 mmal_flags, s64 dts, s64 pts);
 
 struct vchiq_mmal_port {
-	bool enabled;
+	u32 enabled:1;
 	u32 handle;
 	u32 type; /* port type, cached to use on port info set */
 	u32 index; /* port index, cached to use on port info set */
@@ -82,10 +71,9 @@ struct vchiq_mmal_port {
 	struct list_head buffers;
 	/* lock to serialise adding and removing buffers from list */
 	spinlock_t slock;
-	/* count of how many buffer header refils have failed because
-	 * there was no buffer to satisfy them
-	 */
-	int buffer_underflow;
+
+	/* Count of buffers the VPU has yet to return */
+	atomic_t buffers_with_vpu;
 	/* callback on buffer completion */
 	vchiq_mmal_buffer_cb buffer_cb;
 	/* callback context */
@@ -93,7 +81,8 @@ struct vchiq_mmal_port {
 };
 
 struct vchiq_mmal_component {
-	bool enabled;
+	u32 in_use:1;
+	u32 enabled:1;
 	u32 handle;  /* VideoCore handle for component */
 	u32 inputs;  /* Number of input ports */
 	u32 outputs; /* Number of output ports */
@@ -102,6 +91,7 @@ struct vchiq_mmal_component {
 	struct vchiq_mmal_port input[MAX_PORT_COUNT]; /* input ports */
 	struct vchiq_mmal_port output[MAX_PORT_COUNT]; /* output ports */
 	struct vchiq_mmal_port clock[MAX_PORT_COUNT]; /* clock ports */
+	u32 client_component;	/* Used to ref back to client struct */
 };
 
 int vchiq_mmal_init(struct vchiq_mmal_instance **out_instance);
@@ -130,7 +120,7 @@ int vchiq_mmal_component_disable(
 /* enable a mmal port
  *
  * enables a port and if a buffer callback provided enque buffer
- * headers as apropriate for the port.
+ * headers as appropriate for the port.
  */
 int vchiq_mmal_port_enable(
 		struct vchiq_mmal_instance *instance,
@@ -171,4 +161,7 @@ int vchiq_mmal_submit_buffer(struct vchiq_mmal_instance *instance,
 			     struct vchiq_mmal_port *port,
 			     struct mmal_buffer *buf);
 
+int mmal_vchi_buffer_init(struct vchiq_mmal_instance *instance,
+			  struct mmal_buffer *buf);
+int mmal_vchi_buffer_cleanup(struct mmal_buffer *buf);
 #endif /* MMAL_VCHIQ_H */

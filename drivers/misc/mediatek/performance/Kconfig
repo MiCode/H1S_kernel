@@ -1,6 +1,5 @@
 config MTK_PERFMGR_TOUCH_BOOST
 	tristate "touch boost in performance manager"
-	default n
 	help
 	  MTK_PERFMGR_TOUCH_BOOST is the kernel config of touch boost
 	  feature designed by MTK, which is a performance improving
@@ -11,7 +10,6 @@ config MTK_PERFMGR_TOUCH_BOOST
 config MTK_LOAD_TRACKER
 	tristate "CPU Loading Tracking Service"
 	depends on CPU_FREQ
-	default n
 	help
 	  MTK_LOAD_TRACKER is the kernel config of CPU Loading Tracking
 	  Service designed by MTK, which is a service to get CPU Loading
@@ -21,7 +19,6 @@ config MTK_LOAD_TRACKER
 config MTK_CPU_CTRL_CFP
 	tristate "CPU CTRL Ceiling-Fool-Proof"
 	depends on MTK_LOAD_TRACKER
-	default n
 	help
 	  MTK_CPU_CTRL_CFP is the kernel config of CPU controller
 	  Ceiling-Fool-Proof Mechanism designed by MTK. CPU controller
@@ -30,7 +27,6 @@ config MTK_CPU_CTRL_CFP
 
 config MTK_PERF_OBSERVER
 	bool "MTK system performance observer support"
-	default n
 	help
 	  MTK_PERF_OBSERVER define if system performance observer should
 	  be built-in or not. It supports system related performance index
@@ -39,7 +35,6 @@ config MTK_PERF_OBSERVER
 
 config MTK_RESYM
 	bool "MTK resource symphony support"
-	default n
 	help
 	  MTK_RESYM define if resource symphony should
 	  be built-in or not. It supports system related usages.
@@ -48,7 +43,6 @@ config MTK_RESYM
 
 config MTK_FPSGO_V3
 	bool "Support FPSGO_V3 framework"
-	default n
 	help
 	  Support FPSGO_V3 framework for most FPS performance and
 	  low power balance. As a perquisite to ensure FPS performance,
@@ -59,33 +53,27 @@ config MTK_FPSGO_V3
 
 config MTK_EARA_THERMAL
 	bool "MTK eara_thermal support"
-	depends on MTK_FPSGO_V3
-	default n
+	depends on MTK_FPSGO_V3 && MTK_PPM && THERMAL
 	help
 	  MTK_EARA_THERMAL is the kernel config of EARA_THERMAL mechanism.
 	  EARA_THERMAL persuades FPS performance when thermal throttling.
 	  This function depends on MTK_FPSGO_V3.
 	  If you are not sure about this, please set n.
 
-config MTK_EARA_AI
-	bool "MTK EARA_AI support"
-	depends on MTK_FPSGO_V3
-	default n
-	help
-	  MTK_EARA_AI is the kernel config of EARA_AI mechanism.
-	  As a perquisite to ensure FPS performance,
-	  EARA_AI persuades lowest power consumption for better DoU
-	  endurance and AI experience.
-	  This function depends on MTK_FPSGO_V3.
-	  If you are not sure about this, please set n.
-
 config MTK_GBE
 	bool "MTK GBE support"
 	depends on MTK_FPSGO_V3
-	default n
 	help
 	  MTK_GBE is the kernel config of GBE mechanism.
 	  GBE stands for Game Boost Engine. GBE is a mechanism to
 	  boost Game Engine while gaming for better gaming experience
 	  This function depends on MTK_FPSGO_V3.
 	  If you are not sure about this, please set n.
+
+config MTK_FRS
+	tristate "Mediatek Frame Rate Smoother"
+	help
+	  Support Frame Rate Smoother kernel intergface. It will adjustment
+	  target fps by thermal.
+	  If you are not sure about this, set n.
+

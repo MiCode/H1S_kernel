@@ -24,6 +24,7 @@
 #include <linux/cpufreq.h>
 #include <linux/cpumask.h>
 #include <linux/cpu_cooling.h>
+#include <linux/energy_model.h>
 #include <linux/export.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -57,7 +58,7 @@ static bool bL_switching_enabled;
 #define VIRT_FREQ(cluster, freq)    ((cluster == A7_CLUSTER) ? freq >> 1 : freq)
 
 static struct thermal_cooling_device *cdev[MAX_CLUSTERS];
-static struct cpufreq_arm_bL_ops *arm_bL_ops;
+static const struct cpufreq_arm_bL_ops *arm_bL_ops;
 static struct clk *clk[MAX_CLUSTERS];
 static struct cpufreq_frequency_table *freq_table[MAX_CLUSTERS + 1];
 static atomic_t cluster_usage[MAX_CLUSTERS + 1];
@@ -280,7 +281,7 @@ static int merge_cluster_tables(void)
 	for (i = 0; i < MAX_CLUSTERS; i++)
 		count += get_table_count(freq_table[i]);
 
-	table = kzalloc(sizeof(*table) * count, GFP_KERNEL);
+	table = kcalloc(count, sizeof(*table), GFP_KERNEL);
 	if (!table)
 		return -ENOMEM;
 
@@ -456,6 +457,7 @@ put_clusters:
 /* Per-CPU initialization */
 static int bL_cpufreq_init(struct cpufreq_policy *policy)
 {
+	struct em_data_callback em_cb = EM_DATA_CB(of_dev_pm_opp_get_cpu_power);
 	u32 cur_cluster = cpu_to_cluster(policy->cpu);
 	struct device *cpu_dev;
 	int ret;
@@ -483,16 +485,17 @@ static int bL_cpufreq_init(struct cpufreq_policy *policy)
 	if (ret)
 		return ret;
 
-	ret = cpufreq_table_validate_and_show(policy, freq_table[cur_cluster]);
-	if (ret) {
-		dev_err(cpu_dev, "CPU %d, cluster: %d invalid freq table\n",
-			policy->cpu, cur_cluster);
-		put_cluster_clk_and_freq_table(cpu_dev, policy->cpus);
-		return ret;
-	}
-
+	policy->freq_table = freq_table[cur_cluster];
 	policy->cpuinfo.transition_latency =
 				arm_bL_ops->get_transition_latency(cpu_dev);
+
+	ret = dev_pm_opp_get_opp_count(cpu_dev);
+	if (ret <= 0) {
+		dev_dbg(cpu_dev, "OPP table is not ready, deferring probe\n");
+		return -EPROBE_DEFER;
+	}
+
+	em_register_perf_domain(policy->cpus, ret, &em_cb);
 
 	if (is_bL_switching_enabled())
 		per_cpu(cpu_last_req_freq, policy->cpu) = clk_get_cpu_rate(policy->cpu);
@@ -526,34 +529,13 @@ static int bL_cpufreq_exit(struct cpufreq_policy *policy)
 
 static void bL_cpufreq_ready(struct cpufreq_policy *policy)
 {
-	struct device *cpu_dev = get_cpu_device(policy->cpu);
 	int cur_cluster = cpu_to_cluster(policy->cpu);
-	struct device_node *np;
 
 	/* Do not register a cpu_cooling device if we are in IKS mode */
 	if (cur_cluster >= MAX_CLUSTERS)
 		return;
 
-	np = of_node_get(cpu_dev->of_node);
-	if (WARN_ON(!np))
-		return;
-
-	if (of_find_property(np, "#cooling-cells", NULL)) {
-		u32 power_coefficient = 0;
-
-		of_property_read_u32(np, "dynamic-power-coefficient",
-				     &power_coefficient);
-
-		cdev[cur_cluster] = of_cpufreq_power_cooling_register(np,
-				policy, power_coefficient, NULL);
-		if (IS_ERR(cdev[cur_cluster])) {
-			dev_err(cpu_dev,
-				"running cpufreq without cooling device: %ld\n",
-				PTR_ERR(cdev[cur_cluster]));
-			cdev[cur_cluster] = NULL;
-		}
-	}
-	of_node_put(np);
+	cdev[cur_cluster] = of_cpufreq_cooling_register(policy);
 }
 
 static struct cpufreq_driver bL_cpufreq_driver = {
@@ -617,7 +599,7 @@ static int __bLs_register_notifier(void) { return 0; }
 static int __bLs_unregister_notifier(void) { return 0; }
 #endif
 
-int bL_cpufreq_register(struct cpufreq_arm_bL_ops *ops)
+int bL_cpufreq_register(const struct cpufreq_arm_bL_ops *ops)
 {
 	int ret, i;
 
@@ -661,7 +643,7 @@ int bL_cpufreq_register(struct cpufreq_arm_bL_ops *ops)
 }
 EXPORT_SYMBOL_GPL(bL_cpufreq_register);
 
-void bL_cpufreq_unregister(struct cpufreq_arm_bL_ops *ops)
+void bL_cpufreq_unregister(const struct cpufreq_arm_bL_ops *ops)
 {
 	if (arm_bL_ops != ops) {
 		pr_err("%s: Registered with: %s, can't unregister, exiting\n",

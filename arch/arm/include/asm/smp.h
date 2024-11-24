@@ -49,6 +49,12 @@ extern void smp_init_cpus(void);
 extern void set_smp_cross_call(void (*)(const struct cpumask *, unsigned int));
 
 /*
+ * Provide a function to set a callback function pointer for updating the ipi
+ * history.
+ */
+extern void set_update_ipi_history_callback(void (*fn)(int));
+
+/*
  * Called from platform specific assembly code, this is the
  * secondary CPU entry point.
  */
@@ -60,7 +66,7 @@ asmlinkage void secondary_start_kernel(void);
  */
 struct secondary_data {
 	union {
-		unsigned long mpu_rgn_szr;
+		struct mpu_rgn_info *mpu_rgn_info;
 		u64 pgdir;
 	};
 	unsigned long swapper_pg_dir;

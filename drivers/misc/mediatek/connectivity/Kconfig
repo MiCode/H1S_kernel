@@ -2,6 +2,9 @@ config MTK_COMBO
 	tristate "MediaTek Connectivity Combo Chip Support"
 	help
 	  MTK connectivity combo chip driver for MT66xx
+	  This config
+	  is used to
+	  turn on/off connsys
 
 #
 # MTK Combo Chip Selection
@@ -10,6 +13,11 @@ config MTK_COMBO
 choice
 	prompt "Select Chip"
 	depends on MTK_COMBO
+	help
+	  This is used to select chip.
+	  When MTK_COMBO is y,
+	  we need to choose
+	  a chip.
 
 config MTK_COMBO_CHIP_MT6620
 	bool "MT6620"
@@ -35,14 +43,6 @@ config MTK_COMBO_CHIP_MT7668
 	  is
 	  MT7668
 
-config MTK_COMBO_CHIP_MT7663
-	bool "MT7663"
-	help
-	  this config is used to decided combo chip version
-	  in current platform
-	  is
-	  MT7663
-
 config MTK_COMBO_CHIP_MT6630
 	bool "MT6630"
 	help
@@ -54,7 +54,8 @@ config MTK_COMBO_CHIP_MT6630
 config MTK_COMBO_CHIP_MT6632
 	bool "Mediatek MT6632 device driver support"
 	help
-	  This driver supports the built-in smart phone found in the Mediatek MT6632 chipset.
+	  This driver supports the built-in smart phone found
+	  in the Mediatek MT6632 chipset.
 	  If you want to use MT6632 driver supprt, say Y.
 	  If unsure, say N.
 	  Mediatek MT6632 module includes BT, FM, GPS, WIFI.
@@ -108,19 +109,19 @@ config MTK_COMBO_CHIP_CONSYS_6761
 	  MT6761(BT/WIFI/GPS/FM combo chip)
 
 config MTK_COMBO_CHIP_CONSYS_8167
-        bool "MTK MT8167 combo chip support"
-        help
-          this config is used to decided SOC consys version
-          in current platform
-          is
-          MT8167(BT/WIFI/GPS/FM combo chip)
+	bool "MTK MT8167 combo chip support"
+	help
+	  this config is used to decided SOC consys version
+	  in current platform
+	  is
+	  MT8167(BT/WIFI/GPS/FM combo chip)
 
 config MTK_COMBO_CHIP_CONSYS_8168
-        bool "MTK MT8168 combo chip support"
-        help
-          this config is used to decided SOC consys version
-          in current platform
-          is
+	bool "MTK MT8168 combo chip support"
+	help
+	  this config is used to decided SOC consys version
+	  in current platform
+	  is
           MT8168(BT/WIFI/GPS/FM combo chip)
 
 config MTK_COMBO_CHIP_CONSYS_3967
@@ -155,6 +156,22 @@ config MTK_COMBO_CHIP_CONSYS_6768
 	  is
 	  MT6768(BT/WIFI/GPS/FM combo chip)
 
+config MTK_COMBO_CHIP_CONSYS_6779
+	bool "MTK MT6779 combo chip support"
+	help
+	  this config is used to decided SOC consys version
+	  in current platform
+	  is
+	  MT6779(BT/WIFI/GPS/FM combo chip)
+
+config MTK_COMBO_CHIP_CONSYS_6781
+	bool "MTK MT6781 combo chip support"
+	help
+	  this config is used to decided SOC consys version
+	  in current platform
+	  is
+	  MT6781(BT/WIFI/GPS/FM combo chip)
+
 config MTK_COMBO_CHIP_CONSYS_6785
 	bool "MTK MT6785 combo chip support"
 	help
@@ -187,6 +204,14 @@ config MTK_COMBO_CHIP_CONSYS_6873
 	  is
 	  MT6873(BT/WIFI/GPS/FM combo chip)
 
+config MTK_COMBO_CHIP_CONSYS_6877
+	bool "MTK MT6877 combo chip support"
+	help
+	  this config is used to decided SOC consys version
+	  in current platform
+	  is
+	  MT6877(BT/WIFI/GPS/FM combo chip)
+
 config MTK_COMBO_CHIP_CONSYS_6885
 	bool "MTK MT6885 combo chip support"
 	help
@@ -202,6 +227,7 @@ config MTK_COMBO_CHIP_CONSYS_6893
 	  in current platform
 	  is
 	  MT6893(BT/WIFI/GPS/FM combo chip)
+
 endchoice
 
 config MTK_COMBO_CHIP
@@ -211,7 +237,6 @@ config MTK_COMBO_CHIP
 	default "MT6630" if MTK_COMBO_CHIP_MT6630
 	default "MT6632" if MTK_COMBO_CHIP_MT6632
 	default "MT7668" if MTK_COMBO_CHIP_MT7668
-	default "MT7663" if MTK_COMBO_CHIP_MT7663
 	default "CONSYS_6757" if MTK_COMBO_CHIP_CONSYS_6757
 	default "CONSYS_6763" if MTK_COMBO_CHIP_CONSYS_6763
 	default "CONSYS_6758" if MTK_COMBO_CHIP_CONSYS_6758
@@ -223,13 +248,15 @@ config MTK_COMBO_CHIP
 	default "CONSYS_6771" if MTK_COMBO_CHIP_CONSYS_6771
 	default "CONSYS_6739" if MTK_COMBO_CHIP_CONSYS_6739
 	default "CONSYS_6768" if MTK_COMBO_CHIP_CONSYS_6768
+	default "CONSYS_6779" if MTK_COMBO_CHIP_CONSYS_6779
+	default "CONSYS_6781" if MTK_COMBO_CHIP_CONSYS_6781
 	default "CONSYS_6785" if MTK_COMBO_CHIP_CONSYS_6785
 	default "CONSYS_6833" if MTK_COMBO_CHIP_CONSYS_6833
 	default "CONSYS_6853" if MTK_COMBO_CHIP_CONSYS_6853
 	default "CONSYS_6873" if MTK_COMBO_CHIP_CONSYS_6873
 	default "CONSYS_6885" if MTK_COMBO_CHIP_CONSYS_6885
-	default "CONSYS_8168" if MTK_COMBO_CHIP_CONSYS_8168
 	default "CONSYS_6893" if MTK_COMBO_CHIP_CONSYS_6893
+	default "CONSYS_6877" if MTK_COMBO_CHIP_CONSYS_6877
 	help
 	  this feature is used to identify combo chip version or SOC chip
 	  consys version.
@@ -253,13 +280,6 @@ config MTK_COMBO_COMM
 	tristate "MediaTek Combo Chip Common part driver"
 	help
 	  MediaTek combo chip common part driver
-
-#config MTK_COMBO_COMM_PS
-#	depends on MTK_COMBO_COMM
-#	bool "Enable PS support"
-#	default n
-#	help
-#	  Enable PS support of common UART interface
 
 config MTK_COMBO_COMM_UART
 	depends on MTK_COMBO_COMM
@@ -344,9 +364,6 @@ config MTK_DHCPV6C_WIFI
 
 config MTK_CONN_LTE_IDC_SUPPORT
 	bool "MediaTek CONN LTE IDC support"
-	select MTK_CONN_MD
-	default n if MTK_COMBO_CHIP_CONSYS_6885
-	default n if MTK_COMBO_CHIP_CONSYS_6893
 	default y if MTK_ECCCI_DRIVER
 	help
 	  This option enables CONN LTE IDC support
@@ -413,6 +430,15 @@ config MTK_MERGE_INTERFACE_SUPPORT
 	  interface is set to 'y',
 	  otherwise merge interface is not used.
 
+config MTK_CONNFEM
+	tristate "MediaTek connfem driver"
+	depends on MTK_COMBO
+	help
+	  This config is used to choose
+	  if need to compile connfem folder.
+	  Will compile connfem folder if set to 'y',
+	  otherwise will not compile connfem folder.
+
 config MTK_COMBO_CHIP_DEEP_SLEEP_SUPPORT
 	depends on MTK_COMBO_CHIP_MT6632
 	default y
@@ -436,7 +462,14 @@ config MTK_CONNSYS_DEDICATED_LOG_PATH
 	default n
 	help
 	  This will enable connsys log using dedicated path
-	  1. There would be a common debug utility for collecting log from connsys
-	     (by EMI or other specific path)
+	  1. There would be a common debug utility for collecting log
+	     from connsys (by EMI or other specific path)
 	  2. The scope may include (but not limited) Wi-Fi firmware log,
 	     BT firmware log, GPS firmware log etc.
+
+config WLAN_DRV_BUILD_IN
+	bool "Build Wlan module in kernel"
+	help
+	  This will build the wlan driver and the corresponding componenets
+	  into the kernel.
+	  If unsure say n

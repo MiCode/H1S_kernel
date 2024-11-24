@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (C) 2016 MediaTek Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
+ * Copyright (C) 2020 MediaTek Inc.
  */
 
 #define pr_fmt(fmt) "[test_app] " fmt
@@ -104,6 +96,7 @@ static ssize_t control_store(struct kobject *kobj,
 {
 	int ret = 0;
 	struct hf_manager_cmd cmd;
+	struct hf_manager_batch *batch = NULL;
 
 	if (!test_app.client)
 		goto out;
@@ -140,8 +133,9 @@ static ssize_t control_store(struct kobject *kobj,
 	memset(&cmd, 0, sizeof(cmd));
 	cmd.sensor_type = test_app.sensor_type;
 	cmd.action = test_app.val1;
-	cmd.delay = test_app.val2;
-	cmd.latency = 0;
+	batch = (struct hf_manager_batch *)cmd.data;
+	batch->delay = test_app.val2;
+	batch->latency = 0;
 	ret = hf_client_control_sensor(test_app.client, &cmd);
 	if (ret < 0) {
 		pr_err("hf_client_control_sensor %u fail\n",
@@ -187,3 +181,4 @@ module_init(test_app_init);
 MODULE_DESCRIPTION("high frequency manager test");
 MODULE_AUTHOR("Hongxu Zhao <hongxu.zhao@mediatek.com>");
 MODULE_LICENSE("GPL v2");
+
