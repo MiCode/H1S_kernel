@@ -1,0 +1,21 @@
+#Please follow the example pattern
+#There are some SPACES between parameter and parameter
+
+[Country Code]
+[Index] BR_EDR_PWR_MODE, | EDR_MAX_TX_PWR, | BLE_DEFAULT_TX_PWR, | BLE_DEFAULT_TX_PWR_2M, | BLE_LR_S2, | BLE_LR_S8
+
+[AU,SA]
+[BT0]   1,                 1.75,             1.5,                  1,                       1,           1
+[BT1]   1,                 2.75,             2.5,                  2,                       1,           1
+
+[TW,US]
+[BT0]   1,                 14,               15,                   16,                      20,          20
+[BT1]   1,                 17,               17,                   17,                      20,          20
+
+[JP]
+[BT0]   0,                 5.25,             -3,                   -3,                      -2,          -2
+[BT1]   0,                 5.5,              -2.5,                 -2,                      -2,          -2
+
+[DE]
+[BT0]   0,                 -32,              -29,                  -29,                     -29,         -29
+[BT1]   0,                 -32,              -29,                  -29,                     -29,         -29

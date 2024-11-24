@@ -1,0 +1,199 @@
+name: linux-exfat-oot CI
+
+on:
+  push:
+    branches: [ "for-kernel-version-from-4.1.0" ]
+  pull_request:
+    branches: [ "for-kernel-version-from-4.1.0" ]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Download the kernel
+      run: |
+        sudo apt-get update
+        sudo apt-get install libelf-dev wget tar gzip python2.7
+        wget https://mirrors.edge.kernel.org/pub/linux/kernel/v4.x/linux-4.1.36.tar.gz
+        tar xf linux-4.1.36.tar.gz
+        mv linux-4.1.36 linux-stable
+        rm -rf linux-4.1.36.tar.gz
+    - name: Prerequisite for xfstests testing
+      run: |
+        sudo apt-get install linux-headers-$(uname -r)
+        sudo apt-get install autoconf libtool pkg-config libnl-3-dev libnl-genl-3-dev
+        sudo apt-get install xfslibs-dev uuid-dev libtool-bin xfsprogs libgdbm-dev gawk fio attr libattr1-dev libacl1-dev libaio-dev
+        git clone --branch=exfat-next https://github.com/exfat-utils/exfat-utils
+        git clone https://github.com/namjaejeon/exfat-testsuites
+        export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+        export PATH=/usr/local/lib:$PATH
+        sudo useradd fsgqa
+        sudo useradd 123456-fsgqa
+    - name: Copy exfat source to kernel
+      run: |
+        mv linux-stable ../
+        mkdir ../linux-stable/fs/exfat
+        cp -ar * ../linux-stable/fs/exfat/
+    - name: Compile with 4.1 kernel
+      run: |
+        cd ../linux-stable
+        yes "" | make oldconfig > /dev/null
+        echo 'obj-$(CONFIG_EXFAT_FS) += exfat/' >> fs/Makefile
+        echo 'source "fs/exfat/Kconfig"' >> fs/Kconfig
+        echo 'CONFIG_EXFAT_FS=m' >> .config
+        echo 'CONFIG_EXFAT_DEFAULT_IOCHARSET="utf8"' >> .config
+        make -j$((`nproc`+1)) fs/exfat/exfat.ko
+    - name: Run xfstests testsuite
+      run: |
+        cd ..
+        rm -rf linux-stable
+        cd linux-exfat-oot
+        make > /dev/null
+        sudo make install > /dev/null
+        sudo insmod exfat.ko
+        cd exfat-utils
+        ./autogen.sh > /dev/null
+        ./configure > /dev/null
+        make -j$((`nproc`+1)) > /dev/null
+        sudo make install > /dev/null
+        cd ..
+        sudo mkdir -p /mnt/scratch
+        sudo mkdir -p /mnt/test
+        sudo mkdir -p full_test
+    - name: create file/director test
+      run: |
+        truncate -s 10G full_test.img
+        sudo losetup /dev/loop22 full_test.img
+        sudo mkfs.exfat /dev/loop22
+        sudo mount -t exfat /dev/loop22 ./full_test/
+        cd full_test/
+        i=1;while [ $i -le 10000 ];do sudo touch file$i;if [ $? != 0 ]; then exit 1; fi; i=$(($i + 1));done
+        sync
+        sudo fsck.exfat /dev/loop22
+        sudo rm -rf *
+        i=1;while [ $i -le 10000 ];do sudo mkdir file$i;if [ $? != 0 ]; then exit 1; fi; i=$(($i + 1));done
+        sync
+        sudo rm -rf *
+        sudo fsck.exfat /dev/loop22
+        cd ..
+        sudo umount ./full_test/
+        sudo fsck.exfat /dev/loop22
+        sudo losetup -d /dev/loop22
+        rm full_test.img
+    - name: xfstest tests
+      run: |
+        cd exfat-testsuites/
+        tar xzvf xfstests-exfat.tgz > /dev/null
+        cd xfstests-exfat
+        make -j$((`nproc`+1)) > /dev/null
+        truncate -s 100G test.img
+        truncate -s 100G scratch.img
+        sudo losetup /dev/loop20 test.img
+        sudo losetup /dev/loop21 scratch.img
+        sudo mkfs.exfat /dev/loop20
+        sudo mkfs.exfat /dev/loop21
+        sudo ./check generic/001
+        sudo ./check generic/006
+        sudo ./check generic/007
+        sudo ./check generic/011
+        sudo ./check generic/013
+        sudo ./check generic/014
+        sudo ./check generic/028
+        sudo ./check generic/029
+        sudo ./check generic/030
+        sudo ./check generic/034
+        sudo ./check generic/035
+        sudo ./check generic/036
+        sudo ./check generic/069
+        sudo ./check generic/073
+        sudo ./check generic/074
+        sudo ./check generic/075
+        sudo ./check generic/076
+        sudo ./check generic/080
+        sudo ./check generic/084
+        sudo ./check generic/091
+        sudo ./check generic/095
+        sudo ./check generic/098
+        sudo ./check generic/100
+        sudo ./check generic/112
+        sudo ./check generic/113
+        sudo ./check generic/114
+        sudo ./check generic/120
+        sudo ./check generic/123
+        sudo ./check generic/124
+        sudo ./check generic/127
+        sudo ./check generic/129
+        sudo ./check generic/130
+        sudo ./check generic/131
+        sudo ./check generic/132
+        sudo ./check generic/133
+        sudo ./check generic/135
+        sudo ./check generic/141
+        sudo ./check generic/169
+        sudo ./check generic/198
+        sudo ./check generic/207
+        sudo ./check generic/208
+        sudo ./check generic/209
+        sudo ./check generic/210
+        sudo ./check generic/211
+        sudo ./check generic/212
+        sudo ./check generic/215
+        sudo losetup -d /dev/loop20
+        sudo losetup -d /dev/loop21
+        rm test.img
+        rm scratch.img
+        truncate -s 100G test.img
+        truncate -s 100G scratch.img
+        sudo losetup /dev/loop20 test.img
+        sudo losetup /dev/loop21 scratch.img
+        sudo mkfs.exfat /dev/loop20
+        sudo mkfs.exfat /dev/loop21
+        sudo ./check generic/221
+        sudo ./check generic/239
+        sudo ./check generic/240
+        sudo ./check generic/241
+        sudo ./check generic/245
+        sudo ./check generic/246
+        sudo ./check generic/247
+        sudo ./check generic/248
+        sudo ./check generic/249
+        sudo ./check generic/257
+        sudo ./check generic/260
+        sudo ./check generic/263
+        sudo ./check generic/285
+        sudo ./check generic/288
+        sudo ./check generic/308
+        sudo ./check generic/309
+        sudo ./check generic/310
+        sudo ./check generic/313
+        sudo ./check generic/323
+        sudo ./check generic/325
+        sudo ./check generic/338
+        sudo ./check generic/339
+        sudo ./check generic/340
+        sudo ./check generic/344
+        sudo ./check generic/345
+        sudo ./check generic/346
+        sudo ./check generic/354
+        sudo ./check generic/376
+        sudo ./check generic/393
+        sudo ./check generic/394
+        sudo ./check generic/405
+        sudo ./check generic/406
+        sudo ./check generic/409
+        sudo ./check generic/410
+        sudo ./check generic/411
+        sudo ./check generic/412
+        sudo ./check generic/418
+        sudo ./check generic/428
+        sudo ./check generic/437
+        sudo ./check generic/438
+        sudo ./check generic/441
+        sudo ./check generic/443
+        sudo ./check generic/448
+        sudo ./check generic/450
+        sudo ./check generic/451
+        sudo ./check generic/452

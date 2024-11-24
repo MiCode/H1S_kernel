@@ -1,0 +1,129 @@
+#
+# MediaTek SoC drivers
+#
+menu "MediaTek SoC drivers"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+
+config MTK_CMDQ
+	tristate "MediaTek CMDQ Support"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	select MAILBOX
+	select MTK_CMDQ_MBOX
+	select MTK_INFRACFG
+	help
+	  Say yes here to add support for the MediaTek Command Queue (CMDQ)
+	  driver. The CMDQ is used to help read/write registers with critical
+	  time limitation, such as updating display configuration during the
+	  vblank.
+
+config MTK_INFRACFG
+	bool "MediaTek INFRACFG Support"
+	select REGMAP
+	help
+	  Say yes here to add support for the MediaTek INFRACFG controller. The
+	  INFRACFG controller contains various infrastructure registers not
+	  directly associated to any device.
+
+config MTK_DVFSRC
+	tristate "MediaTek DVFSRC Support"
+	depends on ARCH_MEDIATEK
+	help
+	  Say yes here to add support for the MediaTek DVFSRC (dynamic voltage
+	  and frequency scaling resource collector) found
+	  on different MediaTek SoCs. The DVFSRC is a proprietary
+	  hardware which is used to collect all the requests from
+	  system and turn into the decision of minimum Vcore voltage
+	  and minimum DRAM frequency to fulfill those requests.
+
+config MTK_PMIC_WRAP
+	tristate "MediaTek PMIC Wrapper Support"
+	select RESET_CONTROLLER
+	select REGMAP
+	help
+	  Say yes here to add support for MediaTek PMIC Wrapper found
+	  on different MediaTek SoCs. The PMIC wrapper is a proprietary
+	  hardware to connect the PMIC.
+
+config MTK_SCPSYS
+	bool "MediaTek SCPSYS Support"
+	default ARCH_MEDIATEK
+	select REGMAP
+	select MTK_INFRACFG
+	select PM_GENERIC_DOMAINS if PM
+	help
+	  Say yes here to add support for the MediaTek SCPSYS power domain
+	  driver.
+
+config MTK_SCPSYS_BRINGUP
+	bool "MediaTek SCPSYS bring Up Support"
+	depends on MTK_SCPSYS
+	help
+	  Say yes here to support for MediaTek SCPSYS power domain power on
+	  for chip bring up early stage.
+	  This driver is used to turn on the specific power domain for chip
+	  bringing up stage.
+
+config MTK_MMDVFS
+	tristate "MediaTek MMDVFS Support"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on REGULATOR_MTK_DVFSRC
+	help
+	  Say yes here to add support for the MediaTek Multimedia DVFS (MMDVFS)
+	  driver. The MMDVFS is used to set clk for Mediatek multimedia hardwares
+	  , such as display, camera, mdp and video codec. Say no if your device
+	  does not need to do DVFS for Multimedia hardwares.
+
+config MTK_IPI
+	tristate "MediaTek IPI Support"
+	depends on RPMSG_MTK
+	help
+	  Say yes here to add support for the MediaTek IPI between tinysys.
+	  MTK IPI consists of APIs to do Linux to/from uP/DSP communication
+	  based on rpmsg. Synchronization among tasks is also handled by
+	  this layer. If uP/DSP drivers handle by themselves, they can use
+	  rpmsg directly.
+
+config MTK_MBOX
+	tristate "MediaTek Mbox Support"
+	help
+	  Say yes here to add support for the MediaTek Mbox driver.
+	  MTK MBOX is a physical H/W which consists of configurable 128
+	  or 256 bytes SRAM and 32 bit irq. The driver does read/write
+	  SRAM and IRQ handling.
+
+config MTK_LPM
+	bool "MediaTek Low Power Manager"
+	depends on ARCH_MEDIATEK
+	help
+	  Say yes here to add support for the MediaTek Low Power Manager
+	  driver. The mtk-lpm will handle the mtk low power module then
+	  platform could enter deeper sleep mode when cpu preparing to
+	  power down if it have sufficient time between warmboot.
+
+config MTK_PMQOS
+	tristate "MediaTek PMQOS Framework support"
+	depends on ARCH_MEDIATEK
+	help
+	  Say yes here to support for the MediaTek PMQOS framework
+	  driver. Driver can register the Qos class notify and receive
+	  from the devices request to adjust qos policy for power
+	  and performance.
+
+menu "Security"
+
+source "drivers/soc/mediatek/devapc/Kconfig"
+source "drivers/soc/mediatek/devmpu/Kconfig"
+
+endmenu # Security
+
+config MTK_SOCINFO
+	tristate "MediaTek SoCInfo Driver"
+	select SOC_BUS
+	help
+	  Say yes here to support the MediaTek SoCInfo driver, providing
+	  information about the SoC to user space. From Android, Google
+	  export Soc information by unified Android property for APP
+	  vendor, instead of sysfs which maintained by each SoC vendor.
+
+endmenu
+

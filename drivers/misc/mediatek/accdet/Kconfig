@@ -1,0 +1,30 @@
+config MTK_ACCDET
+	bool "MediaTek ACCDET driver"
+	help
+	  ACCDET driver is for headset detect and support for MediaTek SOC
+	  If you want to use MediaTek ACCDET driver,
+	  say Y.
+	  If unsure, say N.
+
+config ACCDET_EINT_IRQ
+	bool "MediaTek ACCDET PMIC EINT"
+	help
+	  ACCDET Internal EINT(PMIC) support for MediaTek SOC
+	  If you want to use MediaTek ACCDET EINT from PMIC,
+	  say Y.
+	  If unsure, say N.
+
+config ACCDET_SUPPORT_EINT0
+	bool "MediaTek ACCDET PMIC EINT0"
+	help
+	  ACCDET use Internal EINT0(PMIC) support for MediaTek SOC
+	  If you just want to use MediaTek PMIC ACCDET EINT0,
+	  say Y.
+	  If unsure, say N.
+
+config HS_MIC_RECORD_NOISE_PD_CHG
+	bool "Headset mic record with noise use 3rd pps charge ic"
+	help
+	  Headset mic record with noise, when 3rd pps charge ic work whit large current
+	  say Y here.
+	  If unsure, say N.

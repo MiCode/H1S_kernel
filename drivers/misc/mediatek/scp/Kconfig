@@ -1,0 +1,37 @@
+config MTK_TINYSYS_SCP_SUPPORT
+	tristate "Specify Interface Support SCP"
+	default n
+	select MFD_SYSCON
+	help
+	  SCP is a MediaTek in-house DSP which can receive
+	  command from IPI interface.
+	  Set Y to enable this feature.
+	  If unsure,
+	  Set N to stay with legacy feature.
+
+config MTK_TINYSYS_SCP_CM4_SUPPORT
+	tristate "Specify micro processor CM4 supported by SCP"
+	depends on MTK_TINYSYS_SCP_SUPPORT
+	default n
+	help
+	  CM4 is one uP supported by SCP which designed by ARM corp.
+	  Set Y to enable this feature.
+	  If unsure,
+	  Set N to stay with legacy feature.
+
+config MTK_TINYSYS_SCP_LOGGER_SUPPORT
+	bool "SCP Logger support"
+	depends on MTK_TINYSYS_SCP_SUPPORT
+	default y
+	help
+	  This is debug feature: SCP logger on/off option.
+	  Set Y to enable this feature.
+	  Set N to disable this feature.
+	  If unsure, Set Y to have debug log.
+
+config MTK_TINYSYS_SCP_RV_SUPPORT
+	tristate "Specify micro processor RV supported by SCP"
+	depends on MTK_TINYSYS_SCP_SUPPORT
+	default n
+	help
+	  MTK_TINYSYS_SCP_VERSION define which scp version will be used
