@@ -32,11 +32,14 @@ static const char * const pd_ctrl_msg_name[] = {
 	"ctrlF",
 #if CONFIG_USB_PD_REV30
 	"no_support",
-	"get_src_cap_ex",
+	"get_src_cap_ext",
 	"get_status",
 	"fr_swap",
 	"get_pps",
 	"get_cc",
+	"get_snk_cap_ext",
+	"ctrl17",
+	"get_rev",
 #endif	/* CONFIG_USB_PD_REV30 */
 };
 
@@ -65,7 +68,7 @@ static const char * const pd_data_msg_name[] = {
 	"data9",
 	"dataA",
 	"dataB",
-	"dataC",
+	"rev",
 	"dataD",
 	"dataE",
 	"vdm",
@@ -81,7 +84,7 @@ static inline void print_data_msg_event(struct tcpc_device *tcpc, uint8_t msg)
 
 static const char *const pd_ext_msg_name[] = {
 	"ext0",
-	"src_cap_ex",
+	"src_cap_ext",
 	"status",
 	"get_bat_cap",
 	"get_bat_status",
@@ -95,6 +98,7 @@ static const char *const pd_ext_msg_name[] = {
 	"pps_status",
 	"ci",
 	"cc",
+	"snk_cap_ext",
 };
 
 static inline void print_ext_msg_event(struct tcpc_device *tcpc, uint8_t msg)
@@ -115,11 +119,13 @@ static const char *const pd_hw_msg_name[] = {
 	"vbus_stable",
 	"tx_err",
 	"discard",
-	"retry_vdm",
 
 #if CONFIG_USB_PD_REV30_COLLISION_AVOID
 	"sink_tx_change",
 #endif	/* CONFIG_USB_PD_REV30_COLLISION_AVOID */
+#if CONFIG_USB_PD_RETRY_CRC_DISCARD
+	"tx_retransmit",
+#endif	/* CONFIG_USB_PD_RETRY_CRC_DISCARD */
 };
 
 static inline void print_hw_msg_event(struct tcpc_device *tcpc, uint8_t msg)
@@ -157,7 +163,7 @@ static inline void print_dpm_msg_event(struct tcpc_device *tcpc, uint8_t msg)
 }
 
 static const char *const tcp_dpm_evt_name[] = {
-	/* TCP_DPM_EVT_UNKONW */
+	/* TCP_DPM_EVT_UNKNOWN */
 	"unknown",
 
 	/* TCP_DPM_EVT_PD_COMMAND */
@@ -172,6 +178,7 @@ static const char *const tcp_dpm_evt_name[] = {
 	"cable_soft_reset",
 	"get_src_cap",
 	"get_snk_cap",
+	"src_cap",
 	"request",
 	"request_ex",
 	"request_again",
@@ -180,6 +187,7 @@ static const char *const tcp_dpm_evt_name[] = {
 
 #if CONFIG_USB_PD_REV30
 	"get_src_cap_ext",
+	"get_sink_cap_ext",
 	"get_status",
 	"fr_swap_snk",
 	"fr_swap_src",
@@ -191,28 +199,30 @@ static const char *const tcp_dpm_evt_name[] = {
 	"get_bat_cap",
 	"get_bat_status",
 	"get_mfrs_info",
+	"get_revision",
 #endif	/* CONFIG_USB_PD_REV30 */
 
 	/* TCP_DPM_EVT_VDM_COMMAND */
-	"disc_cable",
+	"disc_cable_id",
 	"disc_id",
-	"disc_svid",
-	"disc_mode",
+	"disc_svids",
+	"disc_modes",
 	"enter_mode",
 	"exit_mode",
 	"attention",
 
-#if CONFIG_USB_PD_ALT_MODE
 	"dp_atten",
-#if CONFIG_USB_PD_ALT_MODE_DFP
 	"dp_status",
 	"dp_config",
-#endif	/* CONFIG_USB_PD_ALT_MODE_DFP */
-#endif	/* CONFIG_USB_PD_ALT_MODE */
 
 #if CONFIG_USB_PD_CUSTOM_VDM
 	"uvdm",
 #endif	/* CONFIG_USB_PD_CUSTOM_VDM */
+
+#if CONFIG_USB_PD_DFP_READY_DISCOVER_ID
+	"disc_cable_svids",
+	"disc_cable_modes",
+#endif /* CONFIG_USB_PD_DFP_READY_DISCOVER_ID */
 
 	/* TCP_DPM_EVT_IMMEDIATELY */
 	"hard_reset",
@@ -511,7 +521,7 @@ static inline bool pd_process_cable_ctrl_msg_accept(
 	switch (pd_port->pe_state_curr) {
 #if CONFIG_PD_SRC_RESET_CABLE
 	case PE_SRC_CBL_SEND_SOFT_RESET:
-		vdm_put_dpm_discover_cable_event(pd_port);
+		vdm_put_dpm_discover_cable_id_event(pd_port);
 		return false;
 #endif	/* CONFIG_PD_SRC_RESET_CABLE */
 
@@ -654,9 +664,6 @@ static inline bool pe_is_valid_pd_msg_role(struct pd_port *pd_port,
 	uint8_t msg_pr, msg_dr;
 	struct tcpc_device __maybe_unused *tcpc = pd_port->tcpc;
 
-	if (pd_msg == NULL)	/* Good-CRC */
-		return true;
-
 	if (pd_msg->frame_type != TCPC_TX_SOP)
 		return true;
 
@@ -710,10 +717,13 @@ static inline void pe_translate_pd_msg_event(struct pd_port *pd_port,
 	if (PD_HEADER_EXT(msg_hdr))
 		pd_event->event_type = PD_EVT_EXT_MSG;
 
-	if (pd_msg->frame_type == TCPC_TX_SOP_PRIME) {
+#if CONFIG_USB_PD_REV30_SYNC_SPEC_REV
+	if (pd_msg->frame_type == TCPC_TX_SOP_PRIME &&
+	    !pd_event_ctrl_msg_match(pd_event, PD_CTRL_GOOD_CRC)) {
 		pd_sync_sop_prime_spec_revision(
 			pd_port, PD_HEADER_REV(msg_hdr));
 	}
+#endif /* CONFIG_USB_PD_REV30_SYNC_SPEC_REV */
 #endif	/* CONFIG_USB_PD_REV30 */
 }
 
@@ -855,6 +865,8 @@ bool pd_process_event(
 #endif
 		print_event(pd_port, pd_event);
 
+	pd_copy_msg_data_from_evt(pd_port, pd_event);
+
 	if ((pd_event->event_type < PD_EVT_PD_MSG_END) && (pd_msg != NULL)) {
 
 		if (!pe_is_valid_pd_msg_id(pd_port, pd_event, pd_msg))
@@ -865,8 +877,6 @@ bool pd_process_event(
 			return true;
 		}
 	}
-
-	pd_copy_msg_data_from_evt(pd_port, pd_event);
 
 	if (pd_curr_is_vdm_evt(pd_port))
 		return pd_process_event_vdm(pd_port, pd_event);

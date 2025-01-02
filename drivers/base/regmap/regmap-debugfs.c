@@ -48,7 +48,7 @@ static ssize_t regmap_name_read_file(struct file *file,
 		name = map->dev->driver->name;
 
 	ret = snprintf(buf, PAGE_SIZE, "%s\n", name);
-	if (ret < 0) {
+	if (ret >= PAGE_SIZE) {
 		kfree(buf);
 		return ret;
 	}
@@ -323,7 +323,7 @@ static ssize_t regmap_map_write_file(struct file *file,
 		return -EINVAL;
 
 	/* Userspace has been fiddling around behind the kernel's back */
-	add_taint(TAINT_USER, LOCKDEP_STILL_OK);
+	//add_taint(TAINT_USER, LOCKDEP_STILL_OK);
 
 	ret = regmap_write(map, reg, value);
 	if (ret < 0)
@@ -478,7 +478,7 @@ static ssize_t regmap_cache_only_write_file(struct file *file,
 
 	if (new_val && !map->cache_only) {
 		dev_warn(map->dev, "debugfs cache_only=Y forced\n");
-		add_taint(TAINT_USER, LOCKDEP_STILL_OK);
+		//add_taint(TAINT_USER, LOCKDEP_STILL_OK);
 	} else if (!new_val && map->cache_only) {
 		dev_warn(map->dev, "debugfs cache_only=N forced: syncing cache\n");
 		require_sync = true;
@@ -525,7 +525,7 @@ static ssize_t regmap_cache_bypass_write_file(struct file *file,
 
 	if (new_val && !map->cache_bypass) {
 		dev_warn(map->dev, "debugfs cache_bypass=Y forced\n");
-		add_taint(TAINT_USER, LOCKDEP_STILL_OK);
+		//add_taint(TAINT_USER, LOCKDEP_STILL_OK);
 	} else if (!new_val && map->cache_bypass) {
 		dev_warn(map->dev, "debugfs cache_bypass=N forced\n");
 	}

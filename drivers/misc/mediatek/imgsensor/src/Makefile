@@ -9,9 +9,11 @@ subdir-ccflags-y += \
 	-I$(srctree)/drivers/misc/mediatek/ccu/inc \
 	-I$(srctree)/drivers/misc/mediatek/imgsensor/inc \
 	-I$(srctree)/drivers/misc/mediatek/cam_cal/inc \
+	-I$(srctree)/drivers/misc/mediatek/imgsensor/src/common/v1_1/camera_hw/smartldo_wl2866d \
 
 obj-$(CONFIG_MTK_IMGSENSOR_ISP3_Z) += isp3_z/
 obj-$(CONFIG_MTK_IMGSENSOR_ISP3_M) += isp3_m/
 obj-$(CONFIG_MTK_IMGSENSOR_ISP4) += isp4/
 obj-$(CONFIG_MTK_IMGSENSOR_ISP4_C) += isp4_c/
 obj-$(CONFIG_MTK_IMGSENSOR) += isp6s/
+

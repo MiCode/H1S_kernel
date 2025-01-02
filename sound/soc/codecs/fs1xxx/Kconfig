@@ -1,0 +1,5 @@
+config SND_SOC_FS1XXX
+	tristate "SoC Audio for foursemi FS1XXX PA"
+	depends on I2C
+	help
+	  This option enables support for FS1XXX PA.

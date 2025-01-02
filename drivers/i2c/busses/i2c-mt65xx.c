@@ -22,10 +22,12 @@
 #include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
+#include <linux/pm_qos.h>
 #include <linux/scatterlist.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 
+#define I2C_CONFERR                     (1 << 9)
 #define I2C_RS_TRANSFER			(1 << 4)
 #define I2C_ARB_LOST			(1 << 3)
 #define I2C_HS_NACKERR			(1 << 2)
@@ -99,6 +101,7 @@
 #define I2C_MCU_INTR_EN         0x1
 
 #define I2C_DRV_NAME		"i2c-mt65xx"
+#define I2C_POLLING_TIMEOUT     50000000
 
 /* mt6873 use DMA_HW_VERSION1 */
 enum {
@@ -286,7 +289,7 @@ struct mtk_i2c {
 	struct clk *clk_arb;		/* Arbitrator clock for i2c */
 	bool have_pmic;			/* can use i2c pins from PMIC */
 	bool use_push_pull;		/* IO config push-pull mode */
-
+        bool fifo_use_polling;
 	u16 irq_stat;			/* interrupt status */
 	unsigned int clk_src_div;
 	unsigned int speed_hz;		/* The speed in transfer */
@@ -305,6 +308,7 @@ struct mtk_i2c {
 	bool ctrl_data_hold;
 	struct mtk_i2c_ac_timing ac_timing;
 	const struct mtk_i2c_compatible *dev_comp;
+	struct pm_qos_request i2c_qos_request;
 };
 
 /**
@@ -681,14 +685,14 @@ static void mtk_i2c_init_hw(struct mtk_i2c *i2c)
 
 	if (i2c->dev_comp->apdma_sync) {
 		writel(I2C_DMA_WARM_RST, i2c->pdmabase + OFFSET_RST);
-		udelay(10);
+		udelay(2);
 		writel(I2C_DMA_CLR_FLAG, i2c->pdmabase + OFFSET_RST);
-		udelay(10);
+		udelay(2);
 		writel(I2C_DMA_HANDSHAKE_RST | I2C_DMA_HARD_RST,
 		       i2c->pdmabase + OFFSET_RST);
 		mtk_i2c_writew(i2c, I2C_HANDSHAKE_RST | I2C_SOFT_RST,
 			       OFFSET_SOFTRESET);
-		udelay(10);
+		udelay(2);
 		writel(I2C_DMA_CLR_FLAG, i2c->pdmabase + OFFSET_RST);
 		mtk_i2c_writew(i2c, I2C_CHN_CLR_FLAG, OFFSET_SOFTRESET);
 	} else {
@@ -1132,7 +1136,8 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 	dma_addr_t wpaddr = 0;
 	bool isDMA = false;
 	int ret;
-
+        bool poll_en = false;
+        u64 cur_time = 0;
 	i2c->irq_stat = 0;
 
 	if (i2c->auto_restart)
@@ -1192,10 +1197,17 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 	} else {
 		mtk_i2c_writew(i2c, I2C_FIFO_ADDR_CLR, OFFSET_FIFO_ADDR_CLR);
 	}
+        if (i2c->fifo_use_polling && !isDMA && num <= 2 && !i2c->ignore_restart_irq)
+                poll_en = true;
+        else
+                poll_en = false;
 
-	/* Enable interrupt */
-	mtk_i2c_writew(i2c, restart_flag | I2C_HS_NACKERR | I2C_ACKERR |
-			    I2C_ARB_LOST | I2C_TRANSAC_COMP, OFFSET_INTR_MASK);
+        /* Enable interrupt */
+        if (poll_en)
+                mtk_i2c_writew(i2c, 0, OFFSET_INTR_MASK);
+        else
+                mtk_i2c_writew(i2c, restart_flag | I2C_HS_NACKERR | I2C_ACKERR |
+                        I2C_ARB_LOST | I2C_TRANSAC_COMP, OFFSET_INTR_MASK);
 
 	/* Set transfer and transaction len */
 	if (i2c->op == I2C_MASTER_WRRD) {
@@ -1382,12 +1394,26 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 	}
 	mtk_i2c_writew(i2c, start_reg, OFFSET_START);
 
-	ret = wait_for_completion_timeout(&i2c->msg_complete,
-					  i2c->adap.timeout);
-
-	/* Clear interrupt mask */
-	mtk_i2c_writew(i2c, ~(restart_flag | I2C_HS_NACKERR | I2C_ACKERR |
-			    I2C_ARB_LOST | I2C_TRANSAC_COMP), OFFSET_INTR_MASK);
+        if (poll_en) {
+                cur_time = ktime_get_ns();
+                while (!mtk_i2c_readw(i2c, OFFSET_INTR_STAT) &&
+                        ((ktime_get_ns() - cur_time) < I2C_POLLING_TIMEOUT))
+                        udelay(5);
+                /* make sure memory order */
+                mb();
+                i2c->irq_stat = mtk_i2c_readw(i2c, OFFSET_INTR_STAT);
+                mtk_i2c_writew(i2c, i2c->irq_stat, OFFSET_INTR_STAT);
+                if (i2c->irq_stat)
+                        ret = 1;
+                else
+                        ret = 0;
+        } else {
+                ret = wait_for_completion_timeout(&i2c->msg_complete,
+                        i2c->adap.timeout);
+                        /* Clear interrupt mask */
+                mtk_i2c_writew(i2c, ~(restart_flag | I2C_CONFERR | I2C_HS_NACKERR | I2C_ACKERR |
+                        I2C_ARB_LOST | I2C_TRANSAC_COMP), OFFSET_INTR_MASK);
+        }
 
 	if (isDMA == true) {
 		if (i2c->op == I2C_MASTER_WR) {
@@ -1420,7 +1446,7 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 
 	if (ret == 0) {
 		u16 start_reg = mtk_i2c_readw(i2c, OFFSET_START);
-		dev_info(i2c->dev, "addr: %x, transfer timeout\n", msgs->addr);
+		dev_info(i2c->dev, "addr: %x,poll_en=%d, transfer timeout\n", msgs->addr, poll_en);
 		mtk_i2c_dump_reg(i2c);
 		if (i2c->ch_offset_i2c) {
 			mtk_i2c_writew(i2c, I2C_FIFO_ADDR_CLR_MCH | I2C_FIFO_ADDR_CLR,
@@ -1472,6 +1498,10 @@ static int mtk_i2c_transfer(struct i2c_adapter *adap,
 	u8 *dma_multi_wr_buf;
 	struct i2c_msg multi_msg[1];
 	struct mtk_i2c *i2c = i2c_get_adapdata(adap);
+
+	/* update qos to prevent deep idle during transfer */
+	if (adap->nr == 5)
+		cpu_latency_qos_update_request(&i2c->i2c_qos_request, 150);
 
 	ret = mtk_i2c_clock_enable(i2c);
 	if (ret)
@@ -1566,6 +1596,9 @@ static int mtk_i2c_transfer(struct i2c_adapter *adap,
 
 err_exit:
 	mtk_i2c_clock_disable(i2c);
+	if (adap->nr == 5)
+		cpu_latency_qos_update_request(&i2c->i2c_qos_request,
+			PM_QOS_DEFAULT_VALUE);
 	return ret;
 }
 
@@ -1644,6 +1677,8 @@ static int mtk_i2c_parse_dt(struct device_node *np, struct mtk_i2c *i2c)
 	i2c->use_push_pull =
 		of_property_read_bool(np, "mediatek,use-push-pull");
 	i2c->ctrl_data_hold = of_property_read_bool(np, "mediatek,data_hold_time");
+        i2c->fifo_use_polling = of_property_read_bool(np, "mediatek,fifo-use-polling");
+        dev_info(i2c->dev, "fifo-use-polling=%d\n", i2c->fifo_use_polling);
 	return 0;
 }
 
@@ -1761,6 +1796,10 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	}
 	mtk_i2c_init_hw(i2c);
 	mtk_i2c_clock_disable(i2c);
+
+	/* register qos to prevent deep idle during transfer */
+	cpu_latency_qos_add_request(&i2c->i2c_qos_request,
+		PM_QOS_DEFAULT_VALUE);
 
 	ret = devm_request_irq(&pdev->dev, irq, mtk_i2c_irq,
 			       IRQF_NO_SUSPEND | IRQF_TRIGGER_NONE,

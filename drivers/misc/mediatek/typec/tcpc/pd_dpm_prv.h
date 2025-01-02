@@ -21,11 +21,10 @@
 #define SVID_DATA_UFP_GET_ACTIVE_MODE(svid_data)\
 	SVID_DATA_LOCAL_MODE(svid_data, svid_data->active_mode-1)
 
-extern int dpm_check_supported_modes(void);
-
 struct svdm_svid_ops {
 	const char *name;
 	uint16_t svid;
+	struct svdm_svid_list cable_svids;
 
 	bool (*dfp_inform_id)(struct pd_port *pd_port,
 		struct svdm_svid_data *svid_data, bool ack);
@@ -42,14 +41,24 @@ struct svdm_svid_ops {
 	bool (*dfp_inform_attention)(struct pd_port *pd_port,
 		struct svdm_svid_data *svid_data);
 
-	void (*ufp_request_enter_mode)(struct pd_port *pd_port,
+	bool (*dfp_inform_cable_id)(struct pd_port *pd_port,
+		struct svdm_svid_data *svid_data, bool ack,
+		uint32_t *payload, uint8_t cnt);
+	bool (*dfp_inform_cable_svids)(struct pd_port *pd_port,
+		struct svdm_svid_data *svid_data, bool ack,
+		uint32_t *payload, uint8_t cnt);
+	bool (*dfp_inform_cable_modes)(struct pd_port *pd_port,
+		struct svdm_svid_data *svid_data, bool ack,
+		uint32_t *payload, uint8_t cnt);
+
+	bool (*ufp_request_enter_mode)(struct pd_port *pd_port,
 		struct svdm_svid_data *svid_data, uint8_t ops);
-	void (*ufp_request_exit_mode)(struct pd_port *pd_port,
+	bool (*ufp_request_exit_mode)(struct pd_port *pd_port,
 		struct svdm_svid_data *svid_data, uint8_t ops);
 
 	bool (*notify_pe_startup)(struct pd_port *pd_port,
 		struct svdm_svid_data *svid_data);
-	int (*notify_pe_ready)(struct pd_port *pd_port,
+	bool (*notify_pe_ready)(struct pd_port *pd_port,
 		struct svdm_svid_data *svid_data);
 	bool (*notify_pe_shutdown)(struct pd_port *pd_port,
 		struct svdm_svid_data *svid_data);
@@ -120,13 +129,16 @@ int dpm_check_good_power(struct pd_port *pd_port);
 
 extern struct svdm_svid_data *
 	dpm_get_svdm_svid_data(struct pd_port *pd_port, uint16_t svid);
+extern struct svdm_svid_data *dpm_get_svdm_svid_data_via_cable_svids(
+	struct pd_port *pd_port, uint16_t svid);
 
 extern bool svdm_reset_state(struct pd_port *pd_port);
 extern bool svdm_notify_pe_startup(struct pd_port *pd_port);
 
-static inline int svdm_notify_pe_ready(struct pd_port *pd_port)
+static inline bool svdm_notify_pe_ready(struct pd_port *pd_port)
 {
-	int i, ret;
+	int i = 0;
+	bool ret = false;
 	struct svdm_svid_data *svid_data;
 
 	for (i = 0; i < pd_port->svid_data_cnt; i++) {
@@ -134,12 +146,12 @@ static inline int svdm_notify_pe_ready(struct pd_port *pd_port)
 		if (svid_data->ops && svid_data->ops->notify_pe_ready) {
 			ret = svid_data->ops->notify_pe_ready(
 						pd_port, svid_data);
-			if (ret != 0)
-				return ret;
+			if (ret)
+				break;
 		}
 	}
 
-	return 0;
+	return ret;
 }
 
 static inline bool svdm_notify_pe_shutdown(
@@ -162,121 +174,185 @@ static inline bool svdm_notify_pe_shutdown(
 static inline bool svdm_dfp_inform_id(struct pd_port *pd_port, bool ack)
 {
 	int i;
+	bool ret = false;
 	struct svdm_svid_data *svid_data;
 
-	for (i = 0; i < pd_port->svid_data_cnt; i++) {
+	for (i = 0; i < pd_port->svid_data_cnt && !ret; i++) {
 		svid_data = &pd_port->svid_data[i];
-		if (svid_data->ops && svid_data->ops->dfp_inform_id)
-			svid_data->ops->dfp_inform_id(pd_port, svid_data, ack);
+		if (!svid_data->ops || !svid_data->ops->dfp_inform_id)
+			continue;
+		ret = svid_data->ops->dfp_inform_id(pd_port, svid_data, ack);
 	}
 
-	return true;
+	return ret;
 }
 
 static inline bool svdm_dfp_inform_svids(struct pd_port *pd_port, bool ack)
 {
 	int i;
+	bool ret = false;
 	struct svdm_svid_data *svid_data;
 
-	for (i = 0; i < pd_port->svid_data_cnt; i++) {
+	for (i = 0; i < pd_port->svid_data_cnt && !ret; i++) {
 		svid_data = &pd_port->svid_data[i];
-		if (svid_data->ops && svid_data->ops->dfp_inform_svids)
-			svid_data->ops->dfp_inform_svids(
-						pd_port, svid_data, ack);
+		if (!svid_data->ops || !svid_data->ops->dfp_inform_svids)
+			continue;
+		ret = svid_data->ops->dfp_inform_svids(pd_port, svid_data, ack);
 	}
 
-	return true;
+	return ret;
 }
 
 static inline bool svdm_dfp_inform_modes(
 		struct pd_port *pd_port, uint16_t svid, bool ack)
 {
+	bool ret = false;
 	struct svdm_svid_data *svid_data;
 
 	svid_data = dpm_get_svdm_svid_data(pd_port, svid);
 	if (svid_data == NULL)
-		return false;
+		goto out;
 
 	if (svid_data->ops && svid_data->ops->dfp_inform_modes)
-		svid_data->ops->dfp_inform_modes(pd_port, svid_data, ack);
-
-	return true;
+		ret = svid_data->ops->dfp_inform_modes(pd_port, svid_data, ack);
+out:
+	return ret;
 }
 
 static inline bool svdm_dfp_inform_enter_mode(
 	struct pd_port *pd_port, uint16_t svid, uint8_t ops, bool ack)
 {
+	bool ret = false;
 	struct svdm_svid_data *svid_data;
 
 	svid_data = dpm_get_svdm_svid_data(pd_port, svid);
 	if (svid_data == NULL)
-		return false;
+		goto out;
 
 	if (svid_data->ops && svid_data->ops->dfp_inform_enter_mode)
-		svid_data->ops->dfp_inform_enter_mode(
+		ret = svid_data->ops->dfp_inform_enter_mode(
 						pd_port, svid_data, ops, ack);
-
-	return true;
+out:
+	return ret;
 }
 
 static inline bool svdm_dfp_inform_exit_mode(
 	struct pd_port *pd_port, uint16_t svid, uint8_t ops)
 {
+	bool ret = false;
 	struct svdm_svid_data *svid_data;
 
 	svid_data = dpm_get_svdm_svid_data(pd_port, svid);
 	if (svid_data == NULL)
-		return false;
+		goto out;
 
 	if (svid_data->ops && svid_data->ops->dfp_inform_exit_mode)
-		svid_data->ops->dfp_inform_exit_mode(pd_port, svid_data, ops);
-
-	return true;
+		ret = svid_data->ops->dfp_inform_exit_mode(pd_port, svid_data, ops);
+out:
+	return ret;
 }
 
 static inline bool svdm_dfp_inform_attention(
 	struct pd_port *pd_port, uint16_t svid)
 {
+	bool ret = false;
 	struct svdm_svid_data *svid_data;
 
 	svid_data = dpm_get_svdm_svid_data(pd_port, svid);
 	if (svid_data == NULL)
-		return false;
+		goto out;
 
 	if (svid_data->ops && svid_data->ops->dfp_inform_attention)
-		svid_data->ops->dfp_inform_attention(pd_port, svid_data);
-
-	return true;
+		ret = svid_data->ops->dfp_inform_attention(pd_port, svid_data);
+out:
+	return ret;
 }
 
 static inline bool svdm_ufp_request_enter_mode(
 	struct pd_port *pd_port, uint16_t svid, uint8_t ops)
 {
+	bool ret = false;
 	struct svdm_svid_data *svid_data;
 
 	svid_data = dpm_get_svdm_svid_data(pd_port, svid);
 	if (svid_data == NULL)
-		return false;
+		goto out;
 
 	if (svid_data->ops && svid_data->ops->ufp_request_enter_mode)
-		svid_data->ops->ufp_request_enter_mode(pd_port, svid_data, ops);
-
-	return true;
+		ret = svid_data->ops->ufp_request_enter_mode(pd_port, svid_data, ops);
+out:
+	return ret;
 }
 
 static inline bool svdm_ufp_request_exit_mode(
 	struct pd_port *pd_port, uint16_t svid, uint8_t ops)
 {
+	bool ret = false;
 	struct svdm_svid_data *svid_data;
 
 	svid_data = dpm_get_svdm_svid_data(pd_port, svid);
 	if (svid_data == NULL)
-		return false;
+		goto out;
 
 	if (svid_data->ops && svid_data->ops->ufp_request_exit_mode)
-		svid_data->ops->ufp_request_exit_mode(pd_port, svid_data, ops);
+		ret = svid_data->ops->ufp_request_exit_mode(pd_port, svid_data, ops);
+out:
+	return ret;
+}
 
-	return true;
+static inline bool svdm_dfp_inform_cable_id(struct pd_port *pd_port, bool ack,
+					    uint32_t *payload, uint8_t cnt)
+{
+	int i;
+	bool ret = false;
+	struct svdm_svid_data *svid_data;
+
+	for (i = 0; i < pd_port->svid_data_cnt && !ret; i++) {
+		svid_data = &pd_port->svid_data[i];
+		if (!svid_data->ops || !svid_data->ops->dfp_inform_cable_id)
+			continue;
+		ret = svid_data->ops->dfp_inform_cable_id(pd_port, svid_data,
+							  ack, payload, cnt);
+	}
+
+	return ret;
+}
+
+static inline bool svdm_dfp_inform_cable_svids(struct pd_port *pd_port,
+					       bool ack, uint32_t *payload,
+					       uint8_t cnt)
+{
+	int i;
+	bool ret = false;
+	struct svdm_svid_data *svid_data;
+
+	for (i = 0; i < pd_port->svid_data_cnt && !ret; i++) {
+		svid_data = &pd_port->svid_data[i];
+		if (!svid_data->ops || !svid_data->ops->dfp_inform_cable_svids)
+			continue;
+		ret = svid_data->ops->dfp_inform_cable_svids(pd_port, svid_data,
+							     ack, payload, cnt);
+	}
+
+	return ret;
+}
+
+static inline bool svdm_dfp_inform_cable_modes(struct pd_port *pd_port,
+					       uint16_t svid, bool ack,
+					       uint32_t *payload, uint8_t cnt)
+{
+	bool ret = false;
+	struct svdm_svid_data *svid_data;
+
+	svid_data = dpm_get_svdm_svid_data_via_cable_svids(pd_port, svid);
+	if (svid_data == NULL)
+		goto out;
+
+	if (svid_data->ops && svid_data->ops->dfp_inform_cable_modes)
+		ret = svid_data->ops->dfp_inform_cable_modes(pd_port, svid_data,
+							     ack, payload, cnt);
+out:
+	return ret;
 }
 
 #endif /* PD_DPM_PRV_H_INCLUDED */

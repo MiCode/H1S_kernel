@@ -20,6 +20,8 @@ enum {
 	MTK_DISP_BLANK_UNBLANK,
 	/* disp power off */
 	MTK_DISP_BLANK_POWERDOWN,
+	/* disp doze */
+	MTK_DISP_BLANK_LP1,
 };
 
 int mtk_disp_notifier_register(const char *source, struct notifier_block *nb);

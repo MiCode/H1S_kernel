@@ -87,3 +87,11 @@ config UFSRINGBUF_POC
 	  UFS RingBuffer POC test
 	  1. set default vendor_signature & vendor_parameter for test
 	  2. Set custom vender_parameter
+
+config SCSI_UFS_XIAOMI_FFU
+	bool "Xiaomi UFS FFU"
+	depends on SCSI_UFSHCD
+	default n
+	help
+	  This adds support for Xiaomi FFU driver support.
+

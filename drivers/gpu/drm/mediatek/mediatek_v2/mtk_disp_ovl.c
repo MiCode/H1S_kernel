@@ -742,6 +742,18 @@ next:
 #endif
 }
 
+static void mtk_ovl_reset(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle)
+{
+	DDPINFO("%s+ %s\n", __func__, mtk_dump_comp_str(comp));
+	cmdq_pkt_write(handle, comp->cmdq_base,
+			comp->regs_pa + DISP_REG_OVL_RST, BIT(0), ~0);
+	cmdq_pkt_write(handle, comp->cmdq_base,
+			comp->regs_pa + DISP_REG_OVL_RST, 0, ~0);
+	cmdq_pkt_write(handle, comp->cmdq_base,
+			comp->regs_pa + DISP_REG_OVL_RST, 0, ~0);
+	DDPINFO("%s-\n", __func__);
+}
+
 static irqreturn_t mtk_disp_ovl_irq_handler(int irq, void *dev_id)
 {
 	struct mtk_disp_ovl *priv = dev_id;
@@ -751,6 +763,9 @@ static irqreturn_t mtk_disp_ovl_irq_handler(int irq, void *dev_id)
 	unsigned int val = 0;
 	unsigned int ret = 0;
 	static DEFINE_RATELIMIT_STATE(isr_ratelimit, 1 * HZ, 4);
+
+	static unsigned long long underflow_first_ts;
+	unsigned long long underflow_new_ts = 0;
 
 	if (IS_ERR_OR_NULL(priv))
 		return IRQ_NONE;
@@ -771,6 +786,8 @@ static irqreturn_t mtk_disp_ovl_irq_handler(int irq, void *dev_id)
 	}
 
 	mtk_crtc = ovl->mtk_crtc;
+	if (mtk_crtc)
+		drv_priv = mtk_crtc->base.dev->dev_private;
 
 	if (ovl->id == DDP_COMPONENT_OVL0)
 		DRM_MMP_MARK(ovl0, ovl->regs_pa, val);
@@ -799,6 +816,10 @@ static irqreturn_t mtk_disp_ovl_irq_handler(int irq, void *dev_id)
 	if (val & (1 << 1)) {
 		DDPIRQ("[IRQ] %s: frame done!\n", mtk_dump_comp_str(ovl));
 		dump_ovl_layer_trace(mtk_crtc, ovl);
+		if (ovl->id == DDP_COMPONENT_OVL0)
+			DRM_MMP_EVENT_END(ovl0, val, 0);
+		if (ovl->id == DDP_COMPONENT_OVL0_2L)
+			DRM_MMP_EVENT_END(ovl0_2l, val, 0);
 	}
 	if (val & (1 << 2)) {
 		if (__ratelimit(&isr_ratelimit)) {
@@ -811,22 +832,69 @@ static irqreturn_t mtk_disp_ovl_irq_handler(int irq, void *dev_id)
 		}
 
 		priv->underflow_cnt++;
+
+		underflow_new_ts = sched_clock();
+		if (!underflow_first_ts) {
+			underflow_first_ts = underflow_new_ts;
+			DDPMSG("[IRQ] %s: first frame underflow!\n",
+					mtk_dump_comp_str(ovl));
+		} else if (underflow_new_ts - underflow_first_ts > 500*1000*1000) {
+			DDPMSG("[IRQ] %s: frame underflow more than 500ms, reset underflow_cnt!\n",
+					mtk_dump_comp_str(ovl));
+			underflow_first_ts = 0;
+			priv->underflow_cnt = 0;
+		}
+
+		if (underflow_new_ts - underflow_first_ts <= 500*1000*1000) {
+			DDPMSG("underflow: first_ts:%llu, new_ts:%llu\n",
+				underflow_first_ts, underflow_new_ts);
+			if (priv->underflow_cnt > 20) {
+				priv->underflow_cnt = 0;
+				/* disable ovl irq */
+				writel(0, ovl->regs + DISP_REG_OVL_INTEN);
+				DDPPR_ERR("[IRQ] %s: frame underflow! cnt > 20, need do recovery!\n",
+						mtk_dump_comp_str(ovl));
+
+  				atomic_set(&mtk_crtc->signal_underrun_recovery, 1);
+	  			wake_up_interruptible(&mtk_crtc->signal_underrun_recovery_wq);
+			}
+		}
+
 		if (priv->underflow_cnt % 1000 == 0) {
 			if (ovl->id == DDP_COMPONENT_OVL0 ||
 			    ovl->id == DDP_COMPONENT_OVL1) {
-				DDPAEE("[IRQ] %s:buffer underflow\n",
-					mtk_dump_comp_str(ovl));
 				mtk_smi_dbg_hang_detect("ovl-underflow");
 			}
 			mtk_ovl_dump(ovl);
 			mtk_ovl_analysis(ovl);
 		}
 	}
-	if (val & (1 << 3))
+	if (val & (1 << 3)) {
 		DDPIRQ("[IRQ] %s: sw reset done!\n", mtk_dump_comp_str(ovl));
+		if (ovl->id == DDP_COMPONENT_OVL0)
+			DRM_MMP_MARK(ovl0, val, 0);
+		if (ovl->id == DDP_COMPONENT_OVL0_2L)
+			DRM_MMP_MARK(ovl0_2l, val, 0);
+	}
+	if (val & (1 << 4)) {
+		DDPIRQ("[IRQ] %s: hw reset done!\n", mtk_dump_comp_str(ovl));
+		if (ovl->id == DDP_COMPONENT_OVL0)
+			DRM_MMP_MARK(ovl0, val, 1);
+		if (ovl->id == DDP_COMPONENT_OVL0_2L)
+			DRM_MMP_MARK(ovl0_2l, val, 1);
+	}
 
-	if (mtk_crtc) {
-		drv_priv = mtk_crtc->base.dev->dev_private;
+	if (val & (1 << 14)) {
+		DDPIRQ("[IRQ] %s: frame start!\n", mtk_dump_comp_str(ovl));
+		//dump_ovl_layer_trace(mtk_crtc, ovl);
+		if (ovl->id == DDP_COMPONENT_OVL0)
+			DRM_MMP_EVENT_START(ovl0, val, 0);
+		if (ovl->id == DDP_COMPONENT_OVL0_2L)
+			DRM_MMP_EVENT_START(ovl0_2l, val, 0);
+	}
+
+	if (mtk_crtc && drv_priv) {
+//		drv_priv = mtk_crtc->base.dev->dev_private;
 		if (!mtk_drm_helper_get_opt(
 			    drv_priv->helper_opt,
 			    MTK_DRM_OPT_COMMIT_NO_WAIT_VBLANK)) {
@@ -3435,7 +3503,11 @@ static int mtk_ovl_io_cmd(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle,
 	case IRQ_LEVEL_NORMAL: {
 		unsigned int inten;
 
-		inten = REG_FLD_VAL(INTEN_FLD_FME_UND_INTEN, 1);
+		inten = REG_FLD_VAL(INTEN_FLD_FME_UND_INTEN, 1) |
+			REG_FLD_VAL(INTEN_FLD_FME_CPL_INTEN, 1) |
+			REG_FLD_VAL(INTEN_FLD_START_INTEN, 1) |
+			REG_FLD_VAL(INTEN_FLD_FME_SWRST_DONE_INTEN, 1) |
+			REG_FLD_VAL(INTEN_FLD_FME_HWRST_DONE_INTEN, 1);
 		cmdq_pkt_write(handle, comp->cmdq_base,
 			       comp->regs_pa + DISP_REG_OVL_INTSTA, 0,
 			       ~0);
@@ -4116,6 +4188,9 @@ mtk_ovl_config_trigger(struct mtk_ddp_comp *comp, struct cmdq_pkt *pkt,
 				comp->regs_pa + DISP_REG_OVL_RST, 0x1, 0x1);
 		cmdq_pkt_write(pkt, comp->cmdq_base,
 				comp->regs_pa + DISP_REG_OVL_RST, 0x0, 0x1);
+		cmdq_pkt_write(pkt, comp->cmdq_base,
+				comp->regs_pa + DISP_REG_OVL_RST, 0x0, 0x1);
+//		cmdq_pkt_sleep(pkt, CMDQ_US_TO_TICK(20), CMDQ_GPR_R07);
 
 		break;
 	}
@@ -4227,6 +4302,7 @@ static const struct mtk_ddp_comp_funcs mtk_disp_ovl_funcs = {
 	.config = mtk_ovl_config,
 	.start = mtk_ovl_start,
 	.stop = mtk_ovl_stop,
+	.reset = mtk_ovl_reset,
 #ifdef IF_ZERO
 	.enable_vblank = mtk_ovl_enable_vblank,
 	.disable_vblank = mtk_ovl_disable_vblank,

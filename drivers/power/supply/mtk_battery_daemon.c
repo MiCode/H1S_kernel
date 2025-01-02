@@ -3929,6 +3929,7 @@ static void mtk_battery_daemon_handler(struct mtk_battery *gm, void *nl_data,
 	{
 		memcpy(&int_value, &msg->fgd_data[0], sizeof(int_value));
 		gm->aging_factor = int_value;
+		gm->soh_update_flag = true;
 		bm_debug("[K]FG_DAEMON_CMD_SET_AGING_FACTOR %d\n",
 		gm->aging_factor);
 	}

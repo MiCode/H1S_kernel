@@ -1,0 +1,23 @@
+&i2c6 {
+	nu2115@m6d{
+		compatible = "nuvolta,nu2115-standalone";
+		reg = <0x6d>;
+		status = "okay";
+		interrupt-parent = <&pio>;
+		interrupts = <0 0>;
+		nu2115,intr_gpio = <&pio 0 0>;
+		charger_name = "primary_dvchg";
+		charger_name_v4_19 = "primary_divider_chg";
+		nuvolta,nu2115,bat-ovp-disable = <0>;
+		nuvolta,nu2115,bat-ocp-disable = <1>;
+		nuvolta,nu2115,bus-ocp-disable = <0>;
+		nuvolta,nu2115,bat-ovp-threshold = <4575>;
+		nuvolta,nu2115,bat-ocp-threshold = <8000>;
+		nuvolta,nu2115,bus-ovp-threshold = <12300>;
+		nuvolta,nu2115,bus-ovp-alarm-threshold = <12300>;
+		nuvolta,nu2115,bus-ocp-threshold = <3750>;
+		nuvolta,nu2115,bus-ocp-alarm-threshold = <3500>;
+		nuvolta,nu2115,ac-ovp-threshold = <13000>;
+		nuvolta,nu2115,sense-resistor-mohm = <5>;
+	};
+};

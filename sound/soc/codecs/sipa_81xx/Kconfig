@@ -1,0 +1,11 @@
+config SND_SOC_SIPA_81XX
+	tristate "SoC Audio for sia SIA81XX Smart K PA"
+	depends on I2C
+	help
+		This option enables support for SIA81XX Smart K PA
+config SND_SOC_SIPA_TUNING
+	tristate "SoC Audio for sia tuning module"
+	depends on SND_SOC_SIPA_81XX
+	depends on I2C
+	help
+		This option enables support for SIA PA tuning module

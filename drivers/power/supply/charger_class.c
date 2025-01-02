@@ -68,6 +68,15 @@ int charger_dev_plug_out(struct charger_device *chg_dev)
 }
 EXPORT_SYMBOL(charger_dev_plug_out);
 
+int charger_dev_get_online(struct charger_device *chg_dev)
+{
+	if (chg_dev != NULL && chg_dev->ops != NULL && chg_dev->ops->get_online)
+		return chg_dev->ops->get_online(chg_dev);
+
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(charger_dev_get_online);
+
 int charger_dev_do_event(struct charger_device *chg_dev, u32 event, u32 args)
 {
 	if (chg_dev != NULL && chg_dev->ops != NULL && chg_dev->ops->event)
@@ -270,6 +279,16 @@ int charger_dev_set_constant_voltage(struct charger_device *chg_dev, u32 uV)
 }
 EXPORT_SYMBOL(charger_dev_set_constant_voltage);
 
+int charger_dev_set_recharge_voltage(struct charger_device *chg_dev, u32 uV)
+{
+	if (chg_dev != NULL && chg_dev->ops != NULL &&
+	    chg_dev->ops->set_recharge_voltage)
+		return chg_dev->ops->set_recharge_voltage(chg_dev, uV);
+
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(charger_dev_set_recharge_voltage);
+
 int charger_dev_get_constant_voltage(struct charger_device *chg_dev, u32 *uV)
 {
 	if (chg_dev != NULL && chg_dev->ops != NULL &&
@@ -411,6 +430,16 @@ int charger_dev_enable_termination(struct charger_device *chg_dev, bool en)
 	return -EOPNOTSUPP;
 }
 EXPORT_SYMBOL(charger_dev_enable_termination);
+
+int charger_dev_set_charge_full(struct charger_device *chg_dev, bool full)
+{
+	if (chg_dev != NULL && chg_dev->ops != NULL &&
+	    chg_dev->ops->set_charging_full)
+		return chg_dev->ops->set_charging_full(chg_dev, full);
+
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(charger_dev_set_charge_full);
 
 int charger_dev_get_mivr_state(struct charger_device *chg_dev, bool *in_loop)
 {
@@ -588,6 +617,16 @@ int charger_dev_init_chip(struct charger_device *chg_dev)
 	return -EOPNOTSUPP;
 }
 EXPORT_SYMBOL(charger_dev_init_chip);
+
+int charger_dev_enable_cp_adc(struct charger_device *chg_dev, bool en)
+{
+	if (chg_dev != NULL && chg_dev->ops != NULL &&
+	    chg_dev->ops->enable_cp_adc)
+		return chg_dev->ops->enable_cp_adc(chg_dev, en);
+
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(charger_dev_enable_cp_adc);
 
 int charger_dev_enable_chg_type_det(struct charger_device *chg_dev, bool en)
 {

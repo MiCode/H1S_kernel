@@ -1,24 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2020 MediaTek Inc.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
-#if IS_ENABLED(CONFIG_USB_POWER_DELIVERY)
 #include <linux/random.h>
 #include "inc/tcpci.h"
 #include "inc/pd_policy_engine.h"
 #include "inc/pd_dpm_core.h"
 #include "pd_dpm_prv.h"
 
-#if CONFIG_USB_PD_ALT_MODE_RTDC
+#ifdef CONFIG_USB_POWER_DELIVERY
+#ifdef CONFIG_USB_PD_ALT_MODE_RTDC
+
 #define RTDC_UVDM_EN_UNLOCK		0x2024
 #define RTDC_UVDM_RECV_EN_UNLOCK	0x4024
 #define RTDC_SVDM_PPS_AUTHORIZATION	0x10
 
 #define RTDC_VALID_MODE				0x01
 #define RTDC_UVDM_EN_UNLOCK_SUCCESS		0x01
-
-#define RTDC_TA_EMULATE	0
 
 void crcbits(uint32_t data, uint32_t *crc, uint32_t *ppolynomial)
 {
@@ -76,7 +75,7 @@ static inline bool dc_dfp_send_en_unlock(struct pd_port *pd_port,
 	pd_port->uvdm_data[1] = data0;
 	pd_port->uvdm_data[2] = data1;
 
-#if CONFIG_USB_PD_REV30_PPS_SINK
+#ifdef CONFIG_USB_PD_REV30_PPS_SINK
 	if (pd_port->pe_data.dc_pps_mode) {
 		pd_port->uvdm_data[0] = VDO_S(
 			USB_VID_DIRECTCHARGE,
@@ -100,7 +99,7 @@ enum pd_dc_dfp_state {
 	DC_DFP_EN_UNLOCK2,
 	DC_DFP_OPERATION,
 
-#if RTDC_TA_EMULATE
+#ifdef RTDC_TA_EMULATE
 	DC_UFP_T0,
 	DC_UFP_T1,
 	DC_UFP_T2,
@@ -148,7 +147,7 @@ static const char * const dc_dfp_state_name[] = {
 	"dc_dfp_en_unlock2",
 	"dc_dfp_operation",
 
-#if RTDC_TA_EMULATE
+#ifdef RTDC_TA_EMULATE
 	"dc1",
 	"dc2",
 	"dc3",
@@ -201,7 +200,7 @@ bool dc_dfp_verify_en_unlock1(struct pd_port *pd_port)
 	expect_resp = RTDC_UVDM_RECV_EN_UNLOCK;
 	resp_cmd = PD_UVDM_HDR_CMD(pd_port->uvdm_data[0]);
 
-#if CONFIG_USB_PD_REV30_PPS_SINK
+#ifdef CONFIG_USB_PD_REV30_PPS_SINK
 	if (pd_port->pe_data.dc_pps_mode) {
 		resp_cmd = SVDM_CMD_STATE_MASK(pd_port->uvdm_data[0]);
 		expect_resp = SVDM_CMD_STATE(
@@ -252,7 +251,7 @@ bool dc_dfp_verify_en_unlock2(struct pd_port *pd_port)
 	expect_resp = RTDC_UVDM_RECV_EN_UNLOCK;
 	resp_cmd = PD_UVDM_HDR_CMD(pd_port->uvdm_data[0]);
 
-#if CONFIG_USB_PD_REV30_PPS_SINK
+#ifdef CONFIG_USB_PD_REV30_PPS_SINK
 	if (pd_port->pe_data.dc_pps_mode) {
 		resp_cmd = SVDM_CMD_STATE_MASK(pd_port->uvdm_data[0]);
 		expect_resp = SVDM_CMD_STATE(
@@ -281,10 +280,10 @@ bool dc_dfp_notify_pe_startup(
 	if (!(pd_port->id_vdos[0] & PD_IDH_MODAL_SUPPORT))
 		return false;
 
-	if (pd_port->dpm_caps & DPM_CAP_ATTEMPT_ENTER_DC_MODE)
+	if (pd_port->dpm_caps & DPM_CAP_ATTEMP_ENTER_DC_MODE)
 		dc_dfp_set_state(pd_port, DC_DFP_DISCOVER_ID);
 
-#if RTDC_TA_EMULATE
+#ifdef RTDC_TA_EMULATE
 	dc_dfp_set_state(pd_port, DC_UFP_T0);
 #endif
 
@@ -294,11 +293,11 @@ bool dc_dfp_notify_pe_startup(
 int dc_dfp_notify_pe_ready(struct pd_port *pd_port,
 		struct svdm_svid_data *svid_data)
 {
-#if CONFIG_USB_PD_REV30_PPS_SINK
+#ifdef CONFIG_USB_PD_REV30_PPS_SINK
 	struct tcpc_device __maybe_unused *tcpc = pd_port->tcpc;
 #endif	/* CONFIG_USB_PD_REV30_PPS_SINK */
 
-#if RTDC_TA_EMULATE
+#ifdef RTDC_TA_EMULATE
 	if (pd_port->data_role == PD_ROLE_DFP && svid_data->exist) {
 		pd_put_tcp_pd_event(pd_port, TCP_DPM_EVT_DR_SWAP_AS_UFP);
 		return 1;
@@ -313,7 +312,7 @@ int dc_dfp_notify_pe_ready(struct pd_port *pd_port,
 	if (pd_port->dc_dfp_state != DC_DFP_DISCOVER_MODES)
 		return 0;
 
-#if CONFIG_USB_PD_RTDC_CHECK_CABLE
+#ifdef CONFIG_USB_PD_RTDC_CHECK_CABLE
 	if (!pd_port->pe_data.power_cable_present) {
 		dc_dfp_set_state(pd_port, DC_DFP_ERR_DISCOVER_CABLE);
 		return 0;
@@ -325,7 +324,7 @@ int dc_dfp_notify_pe_ready(struct pd_port *pd_port,
 	}
 #endif	/* CONFIG_USB_PD_RTDC_CHECK_CABLE */
 
-#if CONFIG_USB_PD_REV30_PPS_SINK
+#ifdef CONFIG_USB_PD_REV30_PPS_SINK
 	/* If TA support pd revision30, using standard PPS flow */
 	if (pd_check_rev30(pd_port)) {
 		dc_dfp_set_state(pd_port, DC_DFP_ERR_PD_REV30);
@@ -473,8 +472,8 @@ static inline bool dc_dfp_notify_en_unlock2(struct pd_port *pd_port,
 	if (!dc_dfp_verify_en_unlock2(pd_port))
 		return false;
 
-#if CONFIG_USB_PD_REV30_PPS_SINK
-#if CONFIG_USB_PD_REV30_SYNC_SPEC_REV
+#ifdef CONFIG_USB_PD_REV30_PPS_SINK
+#ifdef CONFIG_USB_PD_REV30_SYNC_SPEC_REV
 	if (pd_port->pe_data.dc_pps_mode)
 		pd_port->pd_revision[0] = PD_REV30;
 #endif	/* CONFIG_USB_PD_REV30_SYNC_SPEC_REV */
@@ -482,7 +481,7 @@ static inline bool dc_dfp_notify_en_unlock2(struct pd_port *pd_port,
 
 	dc_dfp_set_state(pd_port, DC_DFP_OPERATION);
 
-#if CONFIG_USB_PD_REV30_PPS_SINK
+#ifdef CONFIG_USB_PD_REV30_PPS_SINK
 	/* PPS shoult not use en_unlock to notify system */
 	if (pd_port->pe_data.dc_pps_mode)
 		return true;
@@ -511,7 +510,7 @@ bool dc_dfp_notify_uvdm(struct pd_port *pd_port,
 bool dc_ufp_notify_uvdm(struct pd_port *pd_port,
 				struct svdm_svid_data *svid_data)
 {
-#if RTDC_TA_EMULATE
+#ifdef RTDC_TA_EMULATE
 	uint32_t reply_cmd[3];
 	uint32_t recv_code[2], rn_code, pass_code;
 
@@ -587,7 +586,7 @@ bool dc_parse_svid_data(struct pd_port *pd_port,
 {
 	svid_data->local_mode.mode_cnt = 1;
 	svid_data->local_mode.mode_vdo[0] = 0x00;
-	pd_port->dpm_caps |= DPM_CAP_ATTEMPT_ENTER_DC_MODE;
+	pd_port->dpm_caps |= DPM_CAP_ATTEMP_ENTER_DC_MODE;
 	return true;
 }
 #endif	/* CONFIG_USB_PD_ALT_MODE_RTDC */

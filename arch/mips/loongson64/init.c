@@ -140,6 +140,11 @@ static __init void reserve_pio_range(void)
 			}
 		}
 	}
+
+	/* Reserve vgabios if it comes from firmware */
+	if (loongson_sysconf.vgabios_addr)
+		memblock_reserve(virt_to_phys((void *)loongson_sysconf.vgabios_addr),
+				SZ_256K);
 }
 
 void __init arch_init_irq(void)

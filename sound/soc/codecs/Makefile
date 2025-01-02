@@ -642,7 +642,12 @@ obj-$(CONFIG_SND_SOC_WSA881X)	+= snd-soc-wsa881x.o
 obj-$(CONFIG_SND_SOC_ZL38060)	+= snd-soc-zl38060.o
 obj-$(CONFIG_SND_SOC_ZX_AUD96P22) += snd-soc-zx-aud96p22.o
 obj-$(CONFIG_SND_SOC_CS35L45)    += cs35l45/
-
+# sipa_81xx
+obj-$(CONFIG_SND_SOC_SIPA_81XX) += sipa_81xx/
+# pa info
+obj-$(CONFIG_LCT_AUDIO_INFO)   += lct_audio_pa_info/
+# fs1xxx
+obj-$(CONFIG_SND_SOC_FS1XXX) += fs1xxx/
 # Amp
 obj-$(CONFIG_SND_SOC_MAX9877)	+= snd-soc-max9877.o
 obj-$(CONFIG_SND_SOC_MAX98504)	+= snd-soc-max98504.o

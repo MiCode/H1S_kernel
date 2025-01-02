@@ -2138,13 +2138,13 @@ static const struct mtk_disp_rdma_data mt6879_rdma_driver_data = {
 };
 
 static const struct mtk_disp_rdma_data mt6855_rdma_driver_data = {
-	.fifo_size = SZ_1K * 3 + SZ_32K,
-	.pre_ultra_low_us = 250,
-	.pre_ultra_high_us = 260,
-	.ultra_low_us = 230,
-	.ultra_high_us = 250,
-	.urgent_low_us = 110,
-	.urgent_high_us = 120,
+	.fifo_size = SZ_16K * 3 + SZ_128 * 5,
+	.pre_ultra_low_us = 380,
+	.pre_ultra_high_us = 400,
+	.ultra_low_us = 340,
+	.ultra_high_us = 380,
+	.urgent_low_us = 230,
+	.urgent_high_us = 250,
 	.sodi_config = mt6855_mtk_sodi_config,
 	.shadow_update_reg = 0x00b8,
 	.support_shadow = false,

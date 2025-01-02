@@ -430,6 +430,7 @@ enum mtk_ddp_io_cmd {
 	IRQ_LEVEL_ALL,
 	IRQ_LEVEL_NORMAL,
 	IRQ_LEVEL_IDLE,
+	IRQ_UNDERRUN,
 	DSI_VFP_IDLE_MODE,
 	DSI_VFP_DEFAULT_MODE,
 	DSI_GET_TIMING,
@@ -443,6 +444,7 @@ enum mtk_ddp_io_cmd {
 	OVL_REPLACE_BOOTUP_MVA,
 	BACKUP_INFO_CMP,
 	LCM_RESET,
+	LC_ESD_RESTORE_BACKLIGHT,
 	DSI_SEND_DDIC_CMD_PACK,
 	DSI_SET_BL,
 	DSI_SET_BL_AOD,
@@ -530,6 +532,7 @@ struct mtk_ddp_comp_funcs {
 	void (*unprepare)(struct mtk_ddp_comp *comp);
 	void (*start)(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle);
 	void (*stop)(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle);
+	void (*reset)(struct mtk_ddp_comp *comp, struct cmdq_pkt *handle);
 	void (*enable_vblank)(struct mtk_ddp_comp *comp, struct drm_crtc *crtc,
 			      struct cmdq_pkt *handle);
 	void (*disable_vblank)(struct mtk_ddp_comp *comp,
@@ -687,6 +690,13 @@ static inline void mtk_ddp_comp_stop(struct mtk_ddp_comp *comp,
 {
 	if (comp && comp->funcs && comp->funcs->stop && !comp->blank_mode)
 		comp->funcs->stop(comp, handle);
+}
+
+static inline void mtk_ddp_comp_reset(struct mtk_ddp_comp *comp,
+				     struct cmdq_pkt *handle)
+{
+	if (comp && comp->funcs && comp->funcs->reset && !comp->blank_mode)
+		comp->funcs->reset(comp, handle);
 }
 
 static inline void mtk_ddp_comp_enable_vblank(struct mtk_ddp_comp *comp,

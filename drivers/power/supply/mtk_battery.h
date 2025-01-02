@@ -35,6 +35,8 @@
 #define BMLOG_TRACE_LEVEL   8
 
 #define BMLOG_DEFAULT_LEVEL BMLOG_DEBUG_LEVEL
+#define BAT_CHARGE_FULL_DESIGN 5110000   //uAh
+#define CHARGE_CURRENT_MAX 8000000 //uA
 
 #define bm_err(fmt, args...)   \
 do {\
@@ -100,6 +102,17 @@ do {\
 	.set	= _name##_set,						\
 }
 
+enum smart_chg_functype{
+	SMART_CHG_STATUS_FLAG		= 0,
+	SMART_CHG_FEATURE_MIN_NUM	= 1,
+	SMART_CHG_NAVIGATION		= 1,
+	SMART_CHG_OUTDOOR_CHARGE	= 2,
+	SMART_CHG_LOW_FAST		= 3,
+	SMART_CHG_EXTREME_COLD_CHG	= 8,
+	/* add new func here */
+	SMART_CHG_FEATURE_MAX_NUM = 15,
+};
+
 enum battery_property {
 	BAT_PROP_TEMPERATURE,
 	BAT_PROP_COULOMB_INT_GAP,
@@ -113,6 +126,20 @@ enum battery_property {
 	BAT_PROP_FG_RESET,
 	BAT_PROP_LOG_LEVEL,
 	BAT_PROP_TEMP_TH_GAP,
+	BAT_PROP_SMART_BATT,
+	BAT_PROP_SMART_CHG,
+	BAT_PROP_NIGHT_CHARGING,
+	BAT_PROP_SMART_FV,
+        BAT_PROP_OTG_UI_SUPPORT,
+	BAT_PROP_CID_STATUS,
+	BAT_PROP_CC_TOGGLE,
+        BAT_PROP_FAKE_CYCLE,
+};
+
+struct smart_chg {
+	bool en_ret;
+	int active_status;
+	int func_val;
 };
 
 struct battery_data {
@@ -805,13 +832,13 @@ struct simulator_log {
 /* ============================================================ */
 /* power misc related */
 /* ============================================================ */
-#define BAT_VOLTAGE_LOW_BOUND 3400
+#define BAT_VOLTAGE_LOW_BOUND 3300
 #define BAT_VOLTAGE_HIGH_BOUND 3450
 #define LOW_TMP_BAT_VOLTAGE_LOW_BOUND 3350
 #define SHUTDOWN_TIME 40
 #define AVGVBAT_ARRAY_SIZE 30
 #define INIT_VOLTAGE 3450
-#define BATTERY_SHUTDOWN_TEMPERATURE 60
+#define BATTERY_SHUTDOWN_TEMPERATURE 70
 
 struct shutdown_condition {
 	bool is_overheat;
@@ -902,11 +929,16 @@ struct mtk_battery {
 
 	struct mtk_battery_algo algo;
 
+	struct workqueue_struct *update_workqueue;
+	struct delayed_work update_delay_work;
+
+	int soh_update_num;
 	u_int fgd_pid;
 
 	/* adb */
 	int fixed_bat_tmp;
 	int fixed_uisoc;
+	int fixed_cycle;
 
 	/* for test */
 	struct BAT_EC_Struct Bat_EC_ctrl;
@@ -921,6 +953,7 @@ struct mtk_battery {
 	bool disable_bs_psy;
 	bool ntc_disable_nafg;
 	bool cmd_disable_nafg;
+	bool soh_update_flag;
 
 	/*battery plug in out*/
 	int chr_type;
@@ -1046,6 +1079,8 @@ struct mtk_battery {
 	/* aging */
 	bool is_reset_aging_factor;
 	int aging_factor;
+	int soh;
+	int ui_soh;
 
 	/* bootmode */
 	u32 bootmode;
@@ -1076,6 +1111,17 @@ struct mtk_battery {
 	int (*resume)(struct mtk_battery *gm);
 
 	int log_level;
+
+	/* smart charge */
+	int diff_fv_val;
+	struct smart_chg smart_charge[SMART_CHG_FEATURE_MAX_NUM + 1];
+	int night_charging;
+	int thermal_level;
+	int extreme_cold_temp;
+	bool extreme_cold_chg_flag;
+        bool control_cc_toggle;
+	int smart_fv;
+	bool auth_cycle_count_update;
 };
 
 struct mtk_battery_sysfs_field_info {
@@ -1150,4 +1196,8 @@ extern void fg_bat_temp_int_internal(struct mtk_battery *gm);
 /* mtk_battery_algo.c end */
 extern void disable_all_irq(struct mtk_battery *gm);
 
+extern int batt_auth_get_cycle_count(void);
+extern int batt_auth_set_cycle_count(int set_count, int get_count);
+extern int batt_auth_get_raw_soh(void);
+extern int batt_auth_set_raw_soh(int raw_soh);
 #endif /* __MTK_BATTERY_INTF_H__ */

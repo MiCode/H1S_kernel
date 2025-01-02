@@ -39,12 +39,43 @@ void pe_dfp_cbl_vdm_identity_request_entry(struct pd_port *pd_port)
 
 void pe_dfp_cbl_vdm_identity_acked_entry(struct pd_port *pd_port)
 {
-	pd_dpm_inform_cable_id(pd_port, false);
+	pd_dpm_inform_cable_id(pd_port, true, false);
 }
 
 void pe_dfp_cbl_vdm_identity_naked_entry(struct pd_port *pd_port)
 {
-	pd_dpm_inform_cable_id(pd_port, false);
+	pd_dpm_inform_cable_id(pd_port, false, false);
+}
+
+void pe_dfp_cbl_vdm_svids_request_entry(struct pd_port *pd_port)
+{
+	pd_send_vdm_discover_svids(pd_port, TCPC_TX_SOP_PRIME);
+}
+
+void pe_dfp_cbl_vdm_svids_acked_entry(struct pd_port *pd_port)
+{
+	pd_dpm_inform_cable_svids(pd_port, true);
+}
+
+void pe_dfp_cbl_vdm_svids_naked_entry(struct pd_port *pd_port)
+{
+	pd_dpm_inform_cable_svids(pd_port, false);
+}
+
+void pe_dfp_cbl_vdm_modes_request_entry(struct pd_port *pd_port)
+{
+	pd_send_vdm_discover_modes(pd_port, TCPC_TX_SOP_PRIME,
+				   pd_port->cable_svid_to_discover);
+}
+
+void pe_dfp_cbl_vdm_modes_acked_entry(struct pd_port *pd_port)
+{
+	pd_dpm_inform_cable_modes(pd_port, true);
+}
+
+void pe_dfp_cbl_vdm_modes_naked_entry(struct pd_port *pd_port)
+{
+	pd_dpm_inform_cable_modes(pd_port, false);
 }
 
 /*
@@ -153,8 +184,6 @@ void pe_dfp_cbl_send_cable_reset_entry(struct pd_port *pd_port)
  * [PD2.0] Display Port
  */
 
-#if CONFIG_USB_PD_ALT_MODE_DFP
-
 void pe_dfp_vdm_dp_status_update_request_entry(struct pd_port *pd_port)
 {
 	pd_dpm_dfp_send_dp_status_update(pd_port);
@@ -184,8 +213,6 @@ void pe_dfp_vdm_dp_configuration_naked_entry(struct pd_port *pd_port)
 {
 	pd_dpm_dfp_inform_dp_configuration(pd_port, false);
 }
-
-#endif	/* CONFIG_USB_PD_ALT_MODE_DFP */
 
 /*
  * UVDM

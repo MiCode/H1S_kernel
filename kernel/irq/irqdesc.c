@@ -683,8 +683,11 @@ int __handle_domain_irq(struct irq_domain *domain, unsigned int hwirq,
 		irq_exit();
 	}
 #else
-	if (lookup)
+	if (lookup) {
+		__irq_enter_raw();
 		irq = irq_find_mapping(domain, hwirq);
+		__irq_exit_raw();
+	}
 #endif//CONFIG_MTK_FIX_IRQ_RCU_DEAD_LOCK
 #endif
 

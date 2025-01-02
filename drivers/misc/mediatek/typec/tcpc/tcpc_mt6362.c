@@ -1,21 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2020 MediaTek Inc.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
-#include <linux/cpu.h>
-#include <linux/iio/consumer.h>
-#include <linux/interrupt.h>
 #include <linux/kernel.h>
-#include <linux/kthread.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_irq.h>
-#include <linux/platform_device.h>
 #include <linux/regmap.h>
-#include <linux/sched/clock.h>
-#include <dt-bindings/mfd/mt6362.h>
+#include <linux/platform_device.h>
+#include <linux/kthread.h>
+#include <linux/cpu.h>
+#include <linux/iio/consumer.h>
 #include <uapi/linux/sched/types.h>
+#include <dt-bindings/mfd/mt6362.h>
 
 #include "inc/tcpci.h"
 #include "inc/tcpci_typec.h"
@@ -23,7 +20,7 @@
 #include "inc/std_tcpci_v10.h"
 
 #define MT6362_INFO_EN	1
-#define MT6362_DBGINFO_EN	0
+#define MT6362_DBGINFO_EN	1
 #define MT6362_WD1_EN	1
 #define MT6362_WD2_EN	1
 
@@ -122,6 +119,9 @@
 	(MT6362_MSK_VCON_OVCC1 | MT6362_MSK_VCON_OVCC2 | MT6362_MSK_VCON_RVP | \
 	 MT6362_MSK_VCON_UVP | MT6362_MSK_VCON_SHTGND)
 #define MT6362_MSK_CTD		BIT(4)
+#define MT6362_MSK_FOD_DONE	BIT(0)
+#define MT6362_MSK_FOD_OV	BIT(1)
+#define MT6362_MSK_FOD_DISCHGF	BIT(7)
 #define MT6362_MSK_RPDET_AUTO	BIT(7)
 #define MT6362_MSK_RPDET_MANUAL	BIT(6)
 #define MT6362_MSK_CTD_EN	BIT(1)
@@ -143,6 +143,14 @@
 #define MT6362_MSK_HIDET_CC2_CMPEN	BIT(4)
 #define MT6362_MSK_HIDET_CC_CMPEN \
 	(MT6362_MSK_HIDET_CC1_CMPEN | MT6362_MSK_HIDET_CC2_CMPEN)
+#define MT6362_MSK_FOD_DONE	BIT(0)
+#define MT6362_MSK_FOD_OV	BIT(1)
+#define MT6362_MSK_FOD_LR	BIT(5)
+#define MT6362_MSK_FOD_HR	BIT(6)
+#define MT6362_MSK_FOD_DISCHGF	BIT(7)
+#define MT6362_MSK_FOD_ALL \
+	(MT6362_MSK_FOD_DONE | MT6362_MSK_FOD_OV | MT6362_MSK_FOD_LR | \
+	 MT6362_MSK_FOD_HR | MT6362_MSK_FOD_DISCHGF)
 #define MT6362_MSK_CABLE_TYPEC	BIT(4)
 #define MT6362_MSK_CABLE_TYPEA	BIT(5)
 #define MT6362_MSK_SHIPPING_OFF	BIT(5)
@@ -246,7 +254,7 @@ static const u8 mt6362_vend_alert_maskall[MT6362_VEND_INT_NUM] = {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
-#if CONFIG_WATER_DETECTION
+#ifdef CONFIG_WATER_DETECTION
 /* reg0x20 ~ reg0x2D */
 static const u8 mt6362_rt2_wd_init_setting[] = {
 	0x50, 0x34, 0x44, 0xCA, 0x68, 0x02, 0x20, 0x03,
@@ -295,11 +303,11 @@ static const u8 mt6362_wd_polling_path[MT6362_WD_CHAN_NUM] = {
 
 static const u8 mt6362_wd_protection_path[MT6362_WD_CHAN_NUM] = {
 	MT6362_MSK_WDSBU1_EN | MT6362_MSK_WDSBU2_EN |
-	MT6362_MSK_WDCC1_EN | MT6362_MSK_WDCC2_EN |
-	MT6362_MSK_WDDP_EN | MT6362_MSK_WDDM_EN,
+	MT6362_MSK_WDCC1_EN | MT6362_MSK_WDCC2_EN,
+//	MT6362_MSK_WDDP_EN | MT6362_MSK_WDDM_EN,
 	MT6362_MSK_WDSBU1_EN | MT6362_MSK_WDSBU2_EN |
-	MT6362_MSK_WDCC1_EN | MT6362_MSK_WDCC2_EN |
-	MT6362_MSK_WDDP_EN | MT6362_MSK_WDDM_EN,
+	MT6362_MSK_WDCC1_EN | MT6362_MSK_WDCC2_EN,
+//	MT6362_MSK_WDDP_EN | MT6362_MSK_WDDM_EN,
 };
 #endif /* CONFIG_WATER_DETECTION */
 
@@ -315,15 +323,18 @@ struct mt6362_tcpc_data {
 	int irq;
 	u16 did;
 
-#if CONFIG_WATER_DETECTION
+	atomic_t cpu_poll_count;
+	struct delayed_work cpu_poll_dwork;
+
+#ifdef CONFIG_WATER_DETECTION
 	atomic_t wd_protect_rty;
 #endif /* CONFIG_WATER_DETECTION */
 
-#if CONFIG_WD_POLLING_ONLY
+#ifdef CONFIG_WD_POLLING_ONLY
 	struct delayed_work wd_poll_dwork;
 #endif /* CONFIG_WD_POLLING_ONLY */
 
-#if CONFIG_CABLE_TYPE_DETECTION
+#ifdef CONFIG_CABLE_TYPE_DETECTION
 	bool handle_init_ctd;
 	enum tcpc_cable_type init_cable_type;
 #endif /* CONFIG_CABLE_TYPE_DETECTION */
@@ -459,7 +470,7 @@ static int mt6362_init_vend_mask(struct mt6362_tcpc_data *tdata)
 {
 	u8 mask[MT6362_VEND_INT_NUM] = {0};
 
-#if CONFIG_TCPC_VSAFE0V_DETECT_IC
+#ifdef CONFIG_TCPC_VSAFE0V_DETECT_IC
 	mask[MT6362_VEND_INT1] |= MT6362_MSK_VBUS80;
 #endif /* CONFIG_TCPC_VSAFE0V_DETECT_IC */
 	if (tdata->tcpc->tcpc_flags & TCPC_FLAGS_LPM_WAKEUP_WATCHDOG)
@@ -489,7 +500,7 @@ static int mt6362_init_alert_mask(struct mt6362_tcpc_data *tdata)
 		   TCPC_V10_REG_ALERT_POWER_STATUS |
 		   TCPC_V10_REG_ALERT_VENDOR_DEFINED;
 
-#if IS_ENABLED(CONFIG_USB_POWER_DELIVERY)
+#ifdef CONFIG_USB_POWER_DELIVERY
 	mask |= TCPC_V10_REG_ALERT_TX_SUCCESS |
 		TCPC_V10_REG_ALERT_TX_DISCARDED |
 		TCPC_V10_REG_ALERT_TX_FAILED |
@@ -516,7 +527,7 @@ static int mt6362_enable_force_discharge(struct mt6362_tcpc_data *tdata,
 		(tdata, TCPC_V10_REG_POWER_CTRL, TCPC_V10_REG_FORCE_DISC_EN);
 }
 
-#if CONFIG_TCPC_VSAFE0V_DETECT_IC
+#ifdef CONFIG_TCPC_VSAFE0V_DETECT_IC
 static int mt6362_enable_vsafe0v_detect(struct mt6362_tcpc_data *tdata, bool en)
 {
 	return (en ? mt6362_set_bits : mt6362_clr_bits)
@@ -558,7 +569,7 @@ static int mt6362_vend_alert_status_clear(struct mt6362_tcpc_data *tdata,
 			      TCPC_V10_REG_ALERT_VENDOR_DEFINED);
 }
 
-#if CONFIG_CABLE_TYPE_DETECTION
+#ifdef CONFIG_CABLE_TYPE_DETECTION
 static int mt6362_get_cable_type(struct mt6362_tcpc_data *tdata,
 				 enum tcpc_cable_type *type)
 {
@@ -578,10 +589,10 @@ static int mt6362_get_cable_type(struct mt6362_tcpc_data *tdata,
 }
 #endif /* CONFIG_CABLE_TYPE_DETECTION */
 
-static int mt6362_init_ctd(struct mt6362_tcpc_data *tdata)
+static int mt6362_init_fod_ctd(struct mt6362_tcpc_data *tdata)
 {
 	int ret = 0;
-#if CONFIG_CABLE_TYPE_DETECTION
+#ifdef CONFIG_CABLE_TYPE_DETECTION
 	u8 ctd_evt;
 
 	tdata->tcpc->typec_cable_type = TCPC_CABLE_TYPE_NONE;
@@ -595,7 +606,7 @@ static int mt6362_init_ctd(struct mt6362_tcpc_data *tdata)
 	return ret;
 }
 
-#if CONFIG_WATER_DETECTION
+#ifdef CONFIG_WATER_DETECTION
 static int mt6362_set_wd_ldo(struct mt6362_tcpc_data *tdata,
 			     enum mt6362_wd_ldo ldo)
 {
@@ -604,7 +615,7 @@ static int mt6362_set_wd_ldo(struct mt6362_tcpc_data *tdata,
 }
 #endif /* CONFIG_WATER_DETECTION */
 
-#if CONFIG_WATER_DETECTION
+#ifdef CONFIG_WATER_DETECTION
 static int mt6362_get_cc(struct tcpc_device *tcpc, int *cc1, int *cc2);
 static int mt6362_is_cc_toggling(struct mt6362_tcpc_data *tdata, bool *toggling)
 {
@@ -859,7 +870,7 @@ static int __mt6362_is_water_detected(struct mt6362_tcpc_data *tdata,
 	struct tcpc_desc *desc = tdata->desc;
 	u32 lb = desc->wd_sbu_ph_lbound;
 	u32 ub = desc->wd_sbu_calib_init * 110 / 100;
-#if CONFIG_CABLE_TYPE_DETECTION
+#ifdef CONFIG_CABLE_TYPE_DETECTION
 	enum tcpc_cable_type cable_type;
 	u8 ctd_evt;
 #endif /* CONFIG_CABLE_TYPE_DETECTION */
@@ -916,7 +927,7 @@ static int __mt6362_is_water_detected(struct mt6362_tcpc_data *tdata,
 		msleep(20);
 	}
 
-#if CONFIG_CABLE_TYPE_DETECTION
+#ifdef CONFIG_CABLE_TYPE_DETECTION
 	cable_type = tdata->tcpc->typec_cable_type;
 	if (cable_type == TCPC_CABLE_TYPE_NONE) {
 		ret = mt6362_read8(tdata, MT6362_REG_MTINT3, &ctd_evt);
@@ -1070,7 +1081,7 @@ out:
 	return 0;
 }
 
-#if CONFIG_WD_POLLING_ONLY
+#ifdef CONFIG_WD_POLLING_ONLY
 static void mt6362_wd_poll_dwork_handler(struct work_struct *work)
 {
 	int ret;
@@ -1099,7 +1110,7 @@ static int mt6362_set_cc_toggling(struct mt6362_tcpc_data *tdata, int pull)
 	ret = mt6362_write8(tdata, TCPC_V10_REG_ROLE_CTRL, data);
 	if (ret < 0)
 		return ret;
-#if CONFIG_TCPC_VSAFE0V_DETECT_IC
+#ifdef CONFIG_TCPC_VSAFE0V_DETECT_IC
 	ret = mt6362_enable_vsafe0v_detect(tdata, false);
 	if (ret < 0)
 		return ret;
@@ -1108,7 +1119,7 @@ static int mt6362_set_cc_toggling(struct mt6362_tcpc_data *tdata, int pull)
 	ret = mt6362_write8(tdata, MT6362_REG_LPWRCTRL3, 0xD9);
 	if (ret < 0)
 		return ret;
-#if CONFIG_TCPC_LOW_POWER_MODE
+#ifdef CONFIG_TCPC_LOW_POWER_MODE
 	tcpci_set_low_power_mode(tdata->tcpc, true, pull);
 #endif /* CONFIG_TCPC_LOW_POWER_MODE */
 	udelay(30);
@@ -1116,8 +1127,8 @@ static int mt6362_set_cc_toggling(struct mt6362_tcpc_data *tdata, int pull)
 			    TCPM_CMD_LOOK_CONNECTION);
 	if (ret < 0)
 		return ret;
-#if CONFIG_WD_SBU_POLLING
-#if CONFIG_WD_POLLING_ONLY
+#ifdef CONFIG_WD_SBU_POLLING
+#ifdef CONFIG_WD_POLLING_ONLY
 	schedule_delayed_work(&tdata->wd_poll_dwork,
 			msecs_to_jiffies(500));
 #else
@@ -1197,7 +1208,7 @@ static int mt6362_tcpc_init(struct tcpc_device *tcpc, bool sw_reset)
 	mt6362_set_bits(tdata, TCPC_V10_REG_TCPC_CTRL,
 			TCPC_V10_REG_TCPC_CTRL_EN_LOOK4CONNECTION_ALERT);
 
-#if CONFIG_WATER_DETECTION
+#ifdef CONFIG_WATER_DETECTION
 	mt6362_init_wd(tdata);
 #endif /* CONFIG_WATER_DETECTION */
 
@@ -1228,7 +1239,8 @@ static int mt6362_init_mask(struct tcpc_device *tcpc)
 	mt6362_init_ext_mask(tdata);
 	mt6362_init_vend_mask(tdata);
 
-#if CONFIG_CABLE_TYPE_DETECTION
+#ifdef CONFIG_CABLE_TYPE_DETECTION
+	/* Init cable type must be done after fod */
 	if (tdata->handle_init_ctd) {
 		/*
 		 * wait 3ms for exit low power mode and
@@ -1316,7 +1328,7 @@ static int mt6362_get_power_status(struct tcpc_device *tcpc, u16 *status)
 	 * Vsafe0v only triggers when vbus falls under 0.8V,
 	 * also update parameter if vbus present triggers
 	 */
-#if CONFIG_TCPC_VSAFE0V_DETECT_IC
+#ifdef CONFIG_TCPC_VSAFE0V_DETECT_IC
 	ret = tcpci_is_vsafe0v(tcpc);
 	if (ret < 0)
 		goto out;
@@ -1388,7 +1400,7 @@ static int mt6362_set_cc(struct tcpc_device *tcpc, int pull)
 	if (pull == TYPEC_CC_DRP) {
 		ret = mt6362_set_cc_toggling(tdata, pull);
 	} else {
-#if CONFIG_WD_POLLING_ONLY
+#ifdef CONFIG_WD_POLLING_ONLY
 		cancel_delayed_work_sync(&tdata->wd_poll_dwork);
 		mt6362_enable_wd_polling(tdata, false);
 #endif /* CONFIG_WD_POLLING_ONLY */
@@ -1442,7 +1454,7 @@ static int mt6362_set_vconn(struct tcpc_device *tcpc, int en)
 
 static int mt6362_tcpc_deinit(struct tcpc_device *tcpc)
 {
-#if CONFIG_TCPC_SHUTDOWN_CC_DETACH
+#ifdef CONFIG_TCPC_SHUTDOWN_CC_DETACH
 	mt6362_set_cc(tcpc, TYPEC_CC_DRP);
 	mt6362_set_cc(tcpc, TYPEC_CC_OPEN);
 #else
@@ -1461,7 +1473,7 @@ static int mt6362_set_watchdog(struct tcpc_device *tcpc, bool en)
 		(tdata, TCPC_V10_REG_TCPC_CTRL, TCPC_V10_REG_TCPC_CTRL_EN_WDT);
 }
 
-#if CONFIG_TCPC_VSAFE0V_DETECT_IC
+#ifdef CONFIG_TCPC_VSAFE0V_DETECT_IC
 static int mt6362_is_vsafe0v(struct tcpc_device *tcpc)
 {
 	int ret;
@@ -1475,7 +1487,7 @@ static int mt6362_is_vsafe0v(struct tcpc_device *tcpc)
 }
 #endif /* CONFIG_TCPC_VSAFE0V_DETECT_IC */
 
-#if CONFIG_TCPC_LOW_POWER_MODE
+#ifdef CONFIG_TCPC_LOW_POWER_MODE
 static int mt6362_is_low_power_mode(struct tcpc_device *tcpc)
 {
 	int ret;
@@ -1496,12 +1508,12 @@ static int mt6362_set_low_power_mode(struct tcpc_device *tcpc, bool en,
 
 	if (en) {
 		data = MT6362_MSK_LPWR_EN;
-#if CONFIG_TYPEC_CAP_NORP_SRC
+#ifdef CONFIG_TYPEC_CAP_NORP_SRC
 		data |= MT6362_MSK_VBUSDET_EN;
 #endif	/* CONFIG_TYPEC_CAP_NORP_SRC */
 	} else {
 		data = MT6362_MSK_VBUSDET_EN | MT6362_MSK_BMCIOOSC_EN;
-#if CONFIG_TCPC_VSAFE0V_DETECT_IC
+#ifdef CONFIG_TCPC_VSAFE0V_DETECT_IC
 		mt6362_enable_vsafe0v_detect(tdata, true);
 #endif /* CONFIG_TCPC_VSAFE0V_DETECT_IC */
 	}
@@ -1509,7 +1521,7 @@ static int mt6362_set_low_power_mode(struct tcpc_device *tcpc, bool en,
 }
 #endif	/* CONFIG_TCPC_LOW_POWER_MODE */
 
-#if IS_ENABLED(CONFIG_USB_POWER_DELIVERY)
+#ifdef CONFIG_USB_POWER_DELIVERY
 static int mt6362_set_msg_header(struct tcpc_device *tcpc, u8 power_role,
 				 u8 data_role)
 {
@@ -1572,7 +1584,7 @@ static int mt6362_transmit(struct tcpc_device *tcpc,
 			   const u32 *data)
 {
 	int ret, data_cnt, packet_cnt;
-	u8 temp[MT6362_TRANSMIT_MAX_SIZE + 1];
+	u8 temp[MT6362_TRANSMIT_MAX_SIZE];
 	struct mt6362_tcpc_data *tdata = tcpc_get_dev_data(tcpc);
 
 	if (type < TCPC_TX_HARD_RESET) {
@@ -1611,7 +1623,7 @@ static int mt6362_set_bist_carrier_mode(struct tcpc_device *tcpc, u8 pattern)
 }
 #endif /* CONFIG_USB_POWER_DELIVERY */
 
-#if CONFIG_USB_PD_RETRY_CRC_DISCARD
+#ifdef CONFIG_USB_PD_RETRY_CRC_DISCARD
 static int mt6362_retransmit(struct tcpc_device *tcpc)
 {
 	struct mt6362_tcpc_data *tdata = tcpc_get_dev_data(tcpc);
@@ -1622,7 +1634,7 @@ static int mt6362_retransmit(struct tcpc_device *tcpc)
 }
 #endif /* CONFIG_USB_PD_RETRY_CRC_DISCARD */
 
-#if CONFIG_WATER_DETECTION
+#ifdef CONFIG_WATER_DETECTION
 static int mt6362_is_water_detected(struct tcpc_device *tcpc)
 {
 	int ret, i;
@@ -1655,7 +1667,7 @@ static int mt6362_set_wd_polling(struct tcpc_device *tcpc, bool en)
 {
 	struct mt6362_tcpc_data *tdata = tcpc_get_dev_data(tcpc);
 
-#if CONFIG_WD_POLLING_ONLY
+#ifdef CONFIG_WD_POLLING_ONLY
 	if (!en)
 		cancel_delayed_work_sync(&tdata->wd_poll_dwork);
 #endif /* CONFIG_WD_POLLING_ONLY */
@@ -1669,7 +1681,7 @@ static int mt6362_set_wd_polling(struct tcpc_device *tcpc, bool en)
  * ==================================================================
  */
 
-#if CONFIG_TCPC_VSAFE0V_DETECT_IC
+#ifdef CONFIG_TCPC_VSAFE0V_DETECT_IC
 static int mt6362_vsafe0v_irq_handler(struct mt6362_tcpc_data *tdata)
 {
 	int ret;
@@ -1682,7 +1694,7 @@ static int mt6362_vsafe0v_irq_handler(struct mt6362_tcpc_data *tdata)
 }
 #endif /* CONFIG_TCPC_VSAFE0V_DETECT_IC */
 
-#if CONFIG_WATER_DETECTION
+#ifdef CONFIG_WATER_DETECTION
 static int mt6362_wd12_strise_irq_handler(struct mt6362_tcpc_data *tdata)
 {
 	/* Pull or discharge status from 0 to 1 in normal polling mode */
@@ -1697,7 +1709,7 @@ static int mt6362_wd12_done_irq_handler(struct mt6362_tcpc_data *tdata)
 }
 #endif /* CONFIG_WATER_DETECTION */
 
-#if CONFIG_CABLE_TYPE_DETECTION
+#ifdef CONFIG_CABLE_TYPE_DETECTION
 static int mt6362_ctd_irq_handler(struct mt6362_tcpc_data *tdata)
 {
 	int ret;
@@ -1723,16 +1735,16 @@ struct irq_mapping_tbl {
 	{ .num = _num, .name = #_name, .hdlr = mt6362_##_name##_irq_handler }
 
 static struct irq_mapping_tbl mt6362_vend_irq_mapping_tbl[] = {
-#if CONFIG_TCPC_VSAFE0V_DETECT_IC
+#ifdef CONFIG_TCPC_VSAFE0V_DETECT_IC
 	MT6362_IRQ_MAPPING(1, vsafe0v),
 #endif /* CONFIG_TCPC_VSAFE0V_DETECT_IC */
 
-#if CONFIG_WATER_DETECTION
+#ifdef CONFIG_WATER_DETECTION
 	MT6362_IRQ_MAPPING(49, wd12_strise),
 	MT6362_IRQ_MAPPING(50, wd12_done),
 #endif /* CONFIG_WATER_DETECTION */
 
-#if CONFIG_CABLE_TYPE_DETECTION
+#ifdef CONFIG_CABLE_TYPE_DETECTION
 	MT6362_IRQ_MAPPING(20, ctd),
 #endif /* CONFIG_CABLE_TYPE_DETECTION */
 };
@@ -1794,16 +1806,16 @@ static struct tcpc_ops mt6362_tcpc_ops = {
 	.set_watchdog = mt6362_set_watchdog,
 	.alert_vendor_defined_handler = mt6362_alert_vendor_defined_handler,
 
-#if CONFIG_TCPC_VSAFE0V_DETECT_IC
+#ifdef CONFIG_TCPC_VSAFE0V_DETECT_IC
 	.is_vsafe0v = mt6362_is_vsafe0v,
 #endif /* CONFIG_TCPC_VSAFE0V_DETECT_IC */
 
-#if CONFIG_TCPC_LOW_POWER_MODE
+#ifdef CONFIG_TCPC_LOW_POWER_MODE
 	.is_low_power_mode = mt6362_is_low_power_mode,
 	.set_low_power_mode = mt6362_set_low_power_mode,
 #endif	/* CONFIG_TCPC_LOW_POWER_MODE */
 
-#if IS_ENABLED(CONFIG_USB_POWER_DELIVERY)
+#ifdef CONFIG_USB_POWER_DELIVERY
 	.set_msg_header = mt6362_set_msg_header,
 	.set_rx_enable = mt6362_set_rx_enable,
 	.protocol_reset = mt6362_protocol_reset,
@@ -1813,16 +1825,39 @@ static struct tcpc_ops mt6362_tcpc_ops = {
 	.set_bist_carrier_mode = mt6362_set_bist_carrier_mode,
 #endif	/* CONFIG_USB_POWER_DELIVERY */
 
-#if CONFIG_USB_PD_RETRY_CRC_DISCARD
+#ifdef CONFIG_USB_PD_RETRY_CRC_DISCARD
 	.retransmit = mt6362_retransmit,
 #endif	/* CONFIG_USB_PD_RETRY_CRC_DISCARD */
 
-#if CONFIG_WATER_DETECTION
+#ifdef CONFIG_WATER_DETECTION
 	.is_water_detected = mt6362_is_water_detected,
 	.set_water_protection = mt6362_set_water_protection,
 	.set_usbid_polling = mt6362_set_wd_polling,
 #endif /* CONFIG_WATER_DETECTION */
 };
+
+static void mt6362_cpu_poll_ctrl(struct mt6362_tcpc_data *tdata)
+{
+	cancel_delayed_work_sync(&tdata->cpu_poll_dwork);
+
+	if (atomic_read(&tdata->cpu_poll_count) == 0) {
+		atomic_inc(&tdata->cpu_poll_count);
+		cpu_idle_poll_ctrl(true);
+	}
+
+	schedule_delayed_work(&tdata->cpu_poll_dwork, msecs_to_jiffies(40));
+}
+
+static void mt6362_cpu_poll_dwork_handler(struct work_struct *work)
+{
+	struct delayed_work *dwork = to_delayed_work(work);
+	struct mt6362_tcpc_data *tdata = container_of(dwork,
+						      struct mt6362_tcpc_data,
+						      cpu_poll_dwork);
+
+	if (atomic_dec_and_test(&tdata->cpu_poll_count))
+		cpu_idle_poll_ctrl(false);
+}
 
 static void mt6362_irq_work_handler(struct kthread_work *work)
 {
@@ -1831,6 +1866,7 @@ static void mt6362_irq_work_handler(struct kthread_work *work)
 						      irq_work);
 
 	MT6362_DBGINFO("++\n");
+	mt6362_cpu_poll_ctrl(tdata);
 	tcpci_lock_typec(tdata->tcpc);
 	tcpci_alert(tdata->tcpc);
 	tcpci_unlock_typec(tdata->tcpc);
@@ -1891,28 +1927,31 @@ static int mt6362_init_irq(struct mt6362_tcpc_data *tdata,
 
 static int mt6362_register_tcpcdev(struct mt6362_tcpc_data *tdata)
 {
+	struct device_node *np = tdata->dev->of_node;
+
 	tdata->tcpc = tcpc_device_register(tdata->dev, tdata->desc,
 					  &mt6362_tcpc_ops, tdata);
-	if (IS_ERR(tdata->tcpc))
+	if (IS_ERR_OR_NULL(tdata->tcpc))
 		return -EINVAL;
 
+#ifdef CONFIG_USB_PD_DISABLE_PE
+	tdata->tcpc->disable_pe = of_property_read_bool(np, "tcpc,disable_pe");
+#endif	/* CONFIG_USB_PD_DISABLE_PE */
+
 	/* Init tcpc_flags */
-#if CONFIG_CABLE_TYPE_DETECTION
+#ifdef CONFIG_CABLE_TYPE_DETECTION
 	tdata->tcpc->tcpc_flags |= TCPC_FLAGS_CABLE_TYPE_DETECTION;
 #endif /* CONFIG_CABLE_TYPE_DETECTION */
-#if CONFIG_WD_POLLING_ONLY
-	chip->tcpc->tcpc_flags |= TCPC_FLAGS_WD_POLLING_ONLY;
-#endif
-#if CONFIG_WATER_DETECTION
+#ifdef CONFIG_WATER_DETECTION
 	tdata->tcpc->tcpc_flags |= TCPC_FLAGS_WATER_DETECTION;
 #endif /* CONFIG_WATER_DETECTION */
-#if CONFIG_TYPEC_CAP_LPM_WAKEUP_WATCHDOG
+#ifdef CONFIG_TYPEC_CAP_LPM_WAKEUP_WATCHDOG
 	tdata->tcpc->tcpc_flags |= TCPC_FLAGS_LPM_WAKEUP_WATCHDOG;
 #endif	/* CONFIG_TYPEC_CAP_LPM_WAKEUP_WATCHDOG */
-#if CONFIG_USB_PD_RETRY_CRC_DISCARD
+#ifdef CONFIG_USB_PD_RETRY_CRC_DISCARD
 	tdata->tcpc->tcpc_flags |= TCPC_FLAGS_RETRY_CRC_DISCARD;
 #endif	/* CONFIG_USB_PD_RETRY_CRC_DISCARD */
-#if CONFIG_USB_PD_REV30
+#ifdef CONFIG_USB_PD_REV30
 	tdata->tcpc->tcpc_flags |= TCPC_FLAGS_PD_REV30;
 #endif	/* CONFIG_USB_PD_REV30 */
 	if (tdata->tcpc->tcpc_flags & TCPC_FLAGS_PD_REV30)
@@ -1937,7 +1976,7 @@ static int mt6362_parse_dt(struct mt6362_tcpc_data *tdata)
 	/* default setting */
 	desc->role_def = TYPEC_ROLE_DRP;
 	desc->notifier_supply_num = 0;
-	desc->rp_lvl = TYPEC_CC_RP_DFT;
+	desc->rp_lvl = TYPEC_RP_DFT;
 	desc->vconn_supply = TCPC_VCONN_SUPPLY_ALWAYS;
 
 	if (of_property_read_u32(np, "tcpc,role_def", &val) >= 0) {
@@ -1956,21 +1995,17 @@ static int mt6362_parse_dt(struct mt6362_tcpc_data *tdata)
 
 	if (of_property_read_u32(np, "tcpc,rp_level", &val) >= 0) {
 		switch (val) {
-		case 0: /* RP Default */
-			desc->rp_lvl = TYPEC_CC_RP_DFT;
-			break;
-		case 1: /* RP 1.5V */
-			desc->rp_lvl = TYPEC_CC_RP_1_5;
-			break;
-		case 2: /* RP 3.0V */
-			desc->rp_lvl = TYPEC_CC_RP_3_0;
+		case TYPEC_RP_DFT:
+		case TYPEC_RP_1_5:
+		case TYPEC_RP_3_0:
+			desc->rp_lvl = val;
 			break;
 		default:
 			break;
 		}
 	}
 
-#if CONFIG_TCPC_VCONN_SUPPLY_MODE
+#ifdef CONFIG_TCPC_VCONN_SUPPLY_MODE
 	if (of_property_read_u32(np, "tcpc,vconn_supply", &val) >= 0) {
 		if (val >= TCPC_VCONN_SUPPLY_NR)
 			desc->vconn_supply = TCPC_VCONN_SUPPLY_ALWAYS;
@@ -1979,7 +2014,7 @@ static int mt6362_parse_dt(struct mt6362_tcpc_data *tdata)
 	}
 #endif	/* CONFIG_TCPC_VCONN_SUPPLY_MODE */
 
-#if CONFIG_WATER_DETECTION
+#ifdef CONFIG_WATER_DETECTION
 	if (of_property_read_u32(np, "wd,sbu_calib_init", &val) < 0)
 		desc->wd_sbu_calib_init = CONFIG_WD_SBU_CALIB_INIT;
 	else
@@ -2075,7 +2110,7 @@ static void check_printk_performance(void)
 	u64 t1, t2;
 	u32 nsrem;
 
-#if IS_ENABLED(CONFIG_PD_DBG_INFO)
+#ifdef CONFIG_PD_DBG_INFO
 	for (i = 0; i < 10; i++) {
 		t1 = local_clock();
 		pd_dbg_info("%d\n", i);
@@ -2138,10 +2173,12 @@ static int mt6362_tcpc_probe(struct platform_device *pdev)
 #if TCPC_ENABLE_ANYMSG
 	check_printk_performance();
 #endif /* TCPC_ENABLE_ANYMSG */
+	INIT_DELAYED_WORK(&tdata->cpu_poll_dwork,
+			  mt6362_cpu_poll_dwork_handler);
 
-#if CONFIG_WATER_DETECTION
+#ifdef CONFIG_WATER_DETECTION
 	atomic_set(&tdata->wd_protect_rty, CONFIG_WD_PROTECT_RETRY_COUNT);
-#if CONFIG_WD_POLLING_ONLY
+#ifdef CONFIG_WD_POLLING_ONLY
 	INIT_DELAYED_WORK(&tdata->wd_poll_dwork, mt6362_wd_poll_dwork_handler);
 #endif /* CONFIG_WD_POLLING_ONLY */
 #endif /* CONFIG_WATER_DETECTION */
@@ -2167,9 +2204,9 @@ static int mt6362_tcpc_probe(struct platform_device *pdev)
 	}
 
 	/* Must init before sw reset */
-	ret = mt6362_init_ctd(tdata);
+	ret = mt6362_init_fod_ctd(tdata);
 	if (ret < 0) {
-		dev_err(tdata->dev, "%s init ctd fail(%d)\n", __func__,
+		dev_err(tdata->dev, "%s init fod ctd fail(%d)\n", __func__,
 			ret);
 		goto err;
 	}
@@ -2200,9 +2237,10 @@ static int mt6362_tcpc_remove(struct platform_device *pdev)
 
 	if (!tdata)
 		return 0;
-#if CONFIG_WD_POLLING_ONLY
+#ifdef CONFIG_WD_POLLING_ONLY
 	cancel_delayed_work_sync(&tdata->wd_poll_dwork);
 #endif /* CONFIG_WD_POLLING_ONLY */
+	cancel_delayed_work_sync(&tdata->cpu_poll_dwork);
 	if (tdata->tcpc)
 		tcpc_device_unregister(tdata->dev, tdata->tcpc);
 	return 0;

@@ -1,0 +1,64 @@
+/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
+
+&pio {
+	sia81xx_gpio_R: sia81xx_gpio_R {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO134__FUNC_GPIO134>;
+			output-low;
+		};
+	};
+};
+
+&odm {
+	si_pa_L: si_pa_L {
+		compatible = "si,sia81xx";
+		si,si_pa_type = "sia8152x";
+		si,si_pa_disable_pin = <1>;
+		channel_num = <0>;
+		status = "okay";
+	};
+
+	si_pa_R: si_pa_R {
+		compatible = "si,sia81xx";
+		si,si_pa_type = "sia81x9";
+		si,si_pa_reset = <&pio 134 0>;
+		pinctrl-names = "si_pa_gpio";
+		pinctrl-0 = <&sia81xx_gpio_R>;
+		si,si_pa_disable_pin = <0>;
+		channel_num = <1>;
+		status = "okay";
+	};
+};
+
+&sound {
+	si,sia81xx-max-num = <2>;
+	si,sia81xx-aux-devs = <&si_pa_L>, <&si_pa_R>;
+	si,sia81xx-aux-devs-prefix = "SpkrMonoL", "SpkrMonoR";
+};
+
+&i2c7 {
+	sipa_i2c_L: sipa_i2c_L@5A {
+		compatible = "si,sia81xx-i2c";
+		reg = <0x5A>;
+		si,sipa-dev = <&si_pa_L>;
+		status = "okay";
+	};
+
+	sipa_i2c_R: sipa_i2c_R@29 {
+		compatible = "si,sia81xx-i2c";
+		reg = <0x29>;
+		si,sipa-dev = <&si_pa_R>;
+		status = "okay";
+	};
+};
+

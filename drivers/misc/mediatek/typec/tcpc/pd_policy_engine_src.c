@@ -35,12 +35,13 @@ void pe_src_discovery_entry(struct pd_port *pd_port)
 
 	pd_port->pe_data.pd_connected = false;
 
-	pd_enable_timer(pd_port, PD_TIMER_SOURCE_CAPABILITY);
-
 #if CONFIG_USB_PD_SRC_STARTUP_DISCOVER_ID
-	if (pd_is_discover_cable(pd_port))
+	if (pd_is_discover_cable(pd_port) &&
+	    !pd_port->pe_data.cable_discovered_state)
 		pd_enable_timer(pd_port, PD_TIMER_DISCOVER_ID);
-#endif
+#endif	/* CONFIG_USB_PD_SRC_STARTUP_DISCOVER_ID */
+
+	pd_enable_timer(pd_port, PD_TIMER_SOURCE_CAPABILITY);
 }
 
 void pe_src_send_capabilities_entry(struct pd_port *pd_port)
@@ -181,12 +182,12 @@ void pe_src_vdm_identity_request_entry(struct pd_port *pd_port)
 
 void pe_src_vdm_identity_acked_entry(struct pd_port *pd_port)
 {
-	pd_dpm_inform_cable_id(pd_port, true);
+	pd_dpm_inform_cable_id(pd_port, true, true);
 }
 
 void pe_src_vdm_identity_naked_entry(struct pd_port *pd_port)
 {
-	pd_dpm_inform_cable_id(pd_port, true);
+	pd_dpm_inform_cable_id(pd_port, false, true);
 }
 
 #endif	/* CONFIG_USB_PD_SRC_STARTUP_DISCOVER_ID */
@@ -298,5 +299,16 @@ void pe_src_give_pps_status_entry(struct pd_port *pd_port)
 	PD_BUG_ON(1);
 }
 #endif	/* CONFIG_USB_PD_REV30_PPS_SOURCE */
+
+void pe_src_get_sink_cap_ext_entry(struct pd_port *pd_port)
+{
+	PE_STATE_WAIT_MSG(pd_port);
+	pd_send_sop_ctrl_msg(pd_port, PD_CTRL_GET_SINK_CAP_EXT);
+}
+
+void pe_src_get_sink_cap_ext_exit(struct pd_port *pd_port)
+{
+	pd_dpm_inform_sink_cap_ext(pd_port);
+}
 
 #endif	/* CONFIG_USB_PD_REV30 */

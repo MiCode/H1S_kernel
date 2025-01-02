@@ -135,3 +135,7 @@ obj-$(CONFIG_MTK_POWER_GS_LEGACY_V2) += power_gs_v1/
 obj-$(CONFIG_MTK_VIDEOCODEC_DRIVER) += videocodec/
 obj-$(CONFIG_MTK_LEGACY_THERMAL) += thermal/
 obj-$(CONFIG_MTK_MT6382_BDG) += spi_slave_drv/
+# BSP.System - 2023.9.6 - add simtray status
+obj-$(CONFIG_SIMTRAY_STATUS) += simtray/
+#add cpumaxfreq
+obj-$(CONFIG_CPUMAXFREQ_SUPPORT) += cpumaxfreq/

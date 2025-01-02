@@ -34,10 +34,12 @@
 #include "mtk_dump.h"
 #include "mtk_disp_bdg.h"
 #include "mtk_dsi.h"
+#include "mi_disp_esd_check.h"
 
 #define ESD_TRY_CNT 5
 #define ESD_CHECK_PERIOD 2000 /* ms */
 static DEFINE_MUTEX(pinctrl_lock);
+static atomic_t panel_dead;
 
 /* pinctrl implementation */
 long _set_state(struct drm_crtc *crtc, const char *name)
@@ -601,7 +603,38 @@ static int mtk_drm_esd_recover(struct drm_crtc *crtc)
 	cmdq_pkt_destroy(cmdq_handle);
 done:
 	CRTC_MMP_EVENT_END(drm_crtc_index(crtc), esd_recovery, 0, ret);
+	mtk_ddp_comp_io_cmd(output_comp, NULL, LC_ESD_RESTORE_BACKLIGHT, NULL);
 
+	return 0;
+}
+
+static int mtk_drm_underrun_recovery_worker_kthread(void *data)
+{
+	struct sched_param param = {.sched_priority = 87};
+	int ret = 0;
+	struct drm_crtc *crtc = (struct drm_crtc *)data;
+	struct mtk_drm_crtc *mtk_crtc = to_mtk_crtc(crtc);
+
+	struct mtk_drm_private *private = crtc->dev->dev_private;
+
+	sched_setscheduler(current, SCHED_RR, &param);
+
+	while (1) {
+		ret = wait_event_interruptible(
+			mtk_crtc->signal_underrun_recovery_wq
+			, atomic_read(&mtk_crtc->signal_underrun_recovery));
+			atomic_set(&mtk_crtc->signal_underrun_recovery, 0);
+
+		mutex_lock(&private->commit.lock);
+		DDP_MUTEX_LOCK(&mtk_crtc->lock, __func__, __LINE__);
+		DDPPR_ERR("%s, found long time underrun, need do recovery!\n", __func__);
+		mtk_drm_esd_recover(crtc);
+		DDP_MUTEX_UNLOCK(&mtk_crtc->lock, __func__, __LINE__);
+		mutex_unlock(&private->commit.lock);
+
+		if (kthread_should_stop())
+			break;
+	}
 	return 0;
 }
 
@@ -844,6 +877,12 @@ static void mtk_disp_esd_chk_init(struct drm_crtc *crtc)
 	mtk_drm_request_eint(crtc);
 
 	wake_up_process(esd_ctx->disp_esd_chk_task);
+
+	mtk_crtc->signal_underrun_recovery_task = kthread_create(
+		mtk_drm_underrun_recovery_worker_kthread, crtc, "underrun_recovery");
+	init_waitqueue_head(&mtk_crtc->signal_underrun_recovery_wq);
+	atomic_set(&mtk_crtc->signal_underrun_recovery, 0);
+	wake_up_process(mtk_crtc->signal_underrun_recovery_task);
 }
 
 void mtk_disp_chk_recover_deinit(struct drm_crtc *crtc)
@@ -873,3 +912,13 @@ void mtk_disp_chk_recover_init(struct drm_crtc *crtc)
 			output_comp && mtk_ddp_comp_get_type(output_comp->id) == MTK_DSI)
 		mtk_disp_esd_chk_init(crtc);
 }
+int get_panel_dead_flag(void)
+{
+	return atomic_read(&panel_dead);
+}
+EXPORT_SYMBOL(get_panel_dead_flag);
+void set_panel_dead_flag(int value)
+{
+	return atomic_set(&panel_dead, value);
+}
+EXPORT_SYMBOL(set_panel_dead_flag);

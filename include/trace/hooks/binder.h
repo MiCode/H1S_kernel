@@ -17,6 +17,8 @@ struct binder_proc;
 struct binder_thread;
 struct binder_transaction;
 struct binder_transaction_data;
+struct binder_work;
+struct binder_buffer;
 #else
 /* struct binder_alloc */
 #include <../drivers/android/binder_alloc.h>
@@ -114,6 +116,34 @@ DECLARE_HOOK(android_vh_binder_read_done,
 DECLARE_HOOK(android_vh_binder_has_work_ilocked,
 	TP_PROTO(struct binder_thread *thread, bool do_proc_work, int *ret),
 	TP_ARGS(thread, do_proc_work, ret));
+DECLARE_HOOK(android_vh_binder_proc_transaction_finish,
+	TP_PROTO(struct binder_proc *proc, struct binder_transaction *t,
+		struct task_struct *binder_th_task, bool pending_async, bool sync),
+	TP_ARGS(proc, t, binder_th_task, pending_async, sync));
+DECLARE_HOOK(android_vh_alloc_oem_binder_struct,
+	TP_PROTO(struct binder_transaction_data *tr, struct binder_transaction *t,
+		struct binder_proc *proc),
+	TP_ARGS(tr, t, proc));
+DECLARE_HOOK(android_vh_binder_transaction_received,
+	TP_PROTO(struct binder_transaction *t, struct binder_proc *proc,
+		struct binder_thread *thread, uint32_t cmd),
+	TP_ARGS(t, proc, thread, cmd));
+DECLARE_HOOK(android_vh_free_oem_binder_struct,
+	TP_PROTO(struct binder_transaction *t),
+	TP_ARGS(t));
+DECLARE_HOOK(android_vh_binder_special_task,
+	TP_PROTO(struct binder_transaction *t, struct binder_proc *proc,
+		struct binder_thread *thread, struct binder_work *w,
+		struct list_head *head, bool sync, bool *special_task),
+	TP_ARGS(t, proc, thread, w, head, sync, special_task));
+DECLARE_HOOK(android_vh_binder_free_buf,
+	TP_PROTO(struct binder_proc *proc, struct binder_thread *thread,
+		struct binder_buffer *buffer),
+	TP_ARGS(proc, thread, buffer));
+DECLARE_HOOK(android_vh_binder_buffer_release,
+	TP_PROTO(struct binder_proc *proc, struct binder_thread *thread,
+		struct binder_buffer *buffer, bool has_transaction),
+	TP_ARGS(proc, thread, buffer, has_transaction));
 /* macro versions of hooks are no longer required */
 
 #endif /* _TRACE_HOOK_BINDER_H */

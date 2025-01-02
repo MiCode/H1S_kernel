@@ -85,7 +85,47 @@ s32 cmdq_sec_mtee_allocate_shared_memory(struct cmdq_sec_mtee_context *tee,
 	return status;
 }
 
-s32 cmdq_sec_mtee_allocate_wsm(struct cmdq_sec_mtee_context *tee,
+s32 cmdq_sec_mtee_allocate_wsm(void **wsm_buffer, u32 size, void **wsm_buf_ex, u32 size_ex,
+	void **wsm_buf_ex2, u32 size_ex2)
+{
+	s32 status = TZ_RESULT_SUCCESS;
+
+	if (!wsm_buffer || !wsm_buf_ex || !wsm_buf_ex2) {
+		cmdq_err("%s: null wsm pointer! buffer:%p:%#x, buf_ex:%p:%#x, buf_ex2:%p:%#x",
+			__func__, wsm_buffer, wsm_buffer, wsm_buf_ex, wsm_buf_ex,
+			wsm_buf_ex2, wsm_buf_ex2);
+		return -EINVAL;
+	}
+
+	/* region_id = 0, mapAry = NULL for continuous */
+	*wsm_buffer = kzalloc(size, GFP_KERNEL);
+	if (!*wsm_buffer) {
+		cmdq_err("%s allocate wsm_buffer failed, size:%d", __func__, size);
+		return -ENOMEM;
+	}
+	cmdq_msg("%s allocate wsm_buffer, size:%d", __func__, size);
+
+	*wsm_buf_ex = kzalloc(size_ex, GFP_KERNEL);
+	if (!*wsm_buf_ex) {
+		kfree(*wsm_buffer);
+		cmdq_err("%s allocate wsm_buf_ex failed, size:%d", __func__, size_ex);
+		return -ENOMEM;
+	}
+	cmdq_msg("%s allocate wsm_buf_ex, size:%d", __func__, size_ex);
+
+	*wsm_buf_ex2 = kzalloc(size_ex2, GFP_KERNEL);
+	if (!*wsm_buf_ex2) {
+		kfree(*wsm_buffer);
+		kfree(*wsm_buf_ex);
+		cmdq_err("%s allocate wsm_buf_ex2 failed, size:%d", __func__, size_ex2);
+		return -ENOMEM;
+	}
+	cmdq_msg("%s allocate wsm_buf_ex2, size:%d", __func__, size_ex2);
+
+	return status;
+}
+
+s32 cmdq_sec_mtee_register_wsm(struct cmdq_sec_mtee_context *tee,
 	void **wsm_buffer, u32 size, void **wsm_buf_ex, u32 size_ex,
 	void **wsm_buf_ex2, u32 size_ex2)
 {
@@ -100,9 +140,11 @@ s32 cmdq_sec_mtee_allocate_wsm(struct cmdq_sec_mtee_context *tee,
 		return -EINVAL;
 
 	/* region_id = 0, mapAry = NULL for continuous */
-	*wsm_buffer = kzalloc(size, GFP_KERNEL);
-	if (!*wsm_buffer)
-		return -ENOMEM;
+	if (!*wsm_buffer) {
+		*wsm_buffer = kzalloc(size, GFP_KERNEL);
+		if (!*wsm_buffer)
+			return -ENOMEM;
+	}
 
 	tee->wsm_param.size = size;
 	tee->wsm_param.buffer = (void *)(u64)virt_to_phys(*wsm_buffer);
@@ -118,9 +160,11 @@ s32 cmdq_sec_mtee_allocate_wsm(struct cmdq_sec_mtee_context *tee,
 		__func__, tee->wsm_pHandle, tee->wsm_handle,
 		tee->wsm_param.size, *wsm_buffer);
 
-	*wsm_buf_ex = kzalloc(size_ex, GFP_KERNEL);
-	if (!*wsm_buf_ex)
-		return -ENOMEM;
+	if (!*wsm_buf_ex) {
+		*wsm_buf_ex = kzalloc(size_ex, GFP_KERNEL);
+		if (!*wsm_buf_ex)
+			return -ENOMEM;
+	}
 
 	tee->wsm_ex_param.size = size_ex;
 	tee->wsm_ex_param.buffer = (void *)(u64)virt_to_phys(*wsm_buf_ex);
@@ -135,9 +179,11 @@ s32 cmdq_sec_mtee_allocate_wsm(struct cmdq_sec_mtee_context *tee,
 			__func__, tee->wsm_pHandle, tee->wsm_ex_handle,
 			tee->wsm_ex_param.size, *wsm_buf_ex);
 
-	*wsm_buf_ex2 = kzalloc(size_ex2, GFP_KERNEL);
-	if (!*wsm_buf_ex2)
-		return -ENOMEM;
+	if (!*wsm_buf_ex2) {
+		*wsm_buf_ex2 = kzalloc(size_ex2, GFP_KERNEL);
+		if (!*wsm_buf_ex2)
+			return -ENOMEM;
+	}
 
 	tee->wsm_ex2_param.size = size_ex2;
 	tee->wsm_ex2_param.buffer = (void *)(u64)virt_to_phys(*wsm_buf_ex2);

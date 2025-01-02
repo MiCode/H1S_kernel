@@ -1,0 +1,19 @@
+&i2c3 {
+	status = "okay";
+        clock-frequency = <400000>;
+        sn-i2c@28 {
+		compatible = "nxp,sn-nci";
+		reg = <0x28>;
+		nxp,sn-ven-rstn = <&pio 41 0>;
+		nxp,sn-dwl-req = <&pio 1 0>;
+		nxp,sn-irq = <&pio 2 0>;
+		interrupt-parent = <&pio>;
+		interrupts = <2 IRQ_TYPE_LEVEL_LOW>;
+                //add TMS NFC
+		tms,irq-gpio        = <&pio 2 0>;
+		tms,ven-gpio        = <&pio 41 0>;
+		tms,download-gpio   = <&pio 1 0>;
+		status = "okay";
+        };
+};
+

@@ -1,0 +1,7 @@
+# ODM_WIFI_GPIO info
+#
+config WIFI_ANT_CHECK_SUPPORT
+	tristate "GPIO testing mode driver for sar controler"
+	default n
+	help
+	 Driver for a simple testing mode detection

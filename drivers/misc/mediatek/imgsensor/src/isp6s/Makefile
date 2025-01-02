@@ -24,6 +24,13 @@ imgsensor_isp6s-objs += ../common/$(COMMON_VERSION)/imgsensor_pwr_seq.o
 imgsensor_isp6s-objs += ../common/$(COMMON_VERSION)/imgsensor_sensor_list.o
 imgsensor_isp6s-objs += ../common/$(COMMON_VERSION)/seninf_clk.o
 imgsensor_isp6s-objs += ../common/$(COMMON_VERSION)/seninf.o
+imgsensor_isp6s-objs += ../common/v1_1/imgsensor_custom.o
+
+obj-m += smartldo.o
+smartldo-objs :=
+smartldo-objs += ../common/v1_1/camera_hw/smartldo_wl2866d/smartldo_wl2866d.o
+
+##imgsensor_isp6s-objs += ../common/v1_1/camera_hw/smartldo_wl2866d/smartldo_wl2866d.o
 
 IMG_COMMON_CODE_PATH := ../common/$(COMMON_VERSION)
 include $(IMGSENSOR_DRIVER_PATH)/common/$(COMMON_VERSION)/n3d_fsync/Makefile

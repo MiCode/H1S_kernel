@@ -416,6 +416,8 @@ int mt_leds_parse_dt(struct mt_led_data *mdev, struct fwnode_handle *fwnode)
 	} else {
 		mdev->conf.cdev.brightness = mdev->conf.cdev.max_brightness * 40 / 100;
 	}
+
+	mdev->conf.cdev.brightness = 307;
 	ret = fwnode_property_read_u32(fwnode,
 		"min-brightness", &(mdev->conf.min_brightness));
 	if (ret) {

@@ -1,0 +1,38 @@
+/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
+
+&pio {
+	fs18xx_gpio_R: fs18xx_gpio_R {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO134__FUNC_GPIO134>;
+			output-low;
+		};
+	};
+};
+
+&i2c7 {
+	clock-frequency = <400000>;
+	fs1xxx@36 {
+		compatible = "foursemi,fs1599";
+		reg = <0x36>;
+		status = "ok";
+	};
+
+	fs1xxx@35 {
+		compatible = "foursemi,fs1815";
+		reg = <0x35>;
+		fsm,rst-gpio = <&pio 134 0>;
+		pinctrl-names = "fs18xx_gpio";
+		pinctrl-0 = <&fs18xx_gpio_R>;
+		status = "ok";
+	};
+};

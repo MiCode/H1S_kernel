@@ -2227,7 +2227,14 @@
   __traceiter_android_vh_snd_compr_use_pause_in_drain
   __traceiter_android_vh_sound_usb_support_cpu_suspend
   __traceiter_android_vh_syscall_prctl_finished
+  __traceiter_android_vh_ufs_abort_success_ctrl
+  __traceiter_android_vh_ufs_compl_rsp_check_done
+  __traceiter_android_vh_ufs_err_check_ctrl
+  __traceiter_android_vh_ufs_err_handler
+  __traceiter_android_vh_ufs_err_print_ctrl
+  __traceiter_android_vh_ufs_perf_huristic_ctrl
   __traceiter_android_vh_ufs_send_command
+  __traceiter_android_vh_ufs_send_command_post_change
   __traceiter_android_vh_ufs_send_tm_command
   __traceiter_cpu_frequency
   __traceiter_gpu_mem_total
@@ -2312,7 +2319,14 @@
   __tracepoint_android_vh_snd_compr_use_pause_in_drain
   __tracepoint_android_vh_sound_usb_support_cpu_suspend
   __tracepoint_android_vh_syscall_prctl_finished
+  __tracepoint_android_vh_ufs_abort_success_ctrl
+  __tracepoint_android_vh_ufs_compl_rsp_check_done
+  __tracepoint_android_vh_ufs_err_check_ctrl
+  __tracepoint_android_vh_ufs_err_handler
+  __tracepoint_android_vh_ufs_err_print_ctrl
+  __tracepoint_android_vh_ufs_perf_huristic_ctrl
   __tracepoint_android_vh_ufs_send_command
+  __tracepoint_android_vh_ufs_send_command_post_change
   __tracepoint_android_vh_ufs_send_tm_command
   __tracepoint_cpu_frequency
   __tracepoint_gpu_mem_total
@@ -2367,10 +2381,13 @@
   uart_update_timeout
   uclamp_eff_value
   __udelay
+  ufshcd_complete_requests
   ufshcd_delay_us
   ufshcd_dme_get_attr
   ufshcd_dme_set_attr
   ufshcd_dump_regs
+  ufshcd_err_handling_prepare
+  ufshcd_err_handling_unprepare
   ufshcd_fixup_dev_quirks
   ufshcd_get_pwr_dev_param
   ufshcd_hba_enable

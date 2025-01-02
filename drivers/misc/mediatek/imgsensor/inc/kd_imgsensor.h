@@ -110,9 +110,42 @@
 	_IOWR(IMGSENSORMAGIC, 10, struct COMPAT_ACDK_SENSOR_PRESOLUTION_STRUCT)
 #endif
 
+/* SENSOR CHIP VERSION */
+#define SC820CS_AAC_ULTRA_I_SENSOR_ID           0xD154
+#define SC820CS_OFILM_ULTRA_II_SENSOR_ID        0xD155
+#define SENSOR_DRVNAME_SC820CS_AAC_ULTRA_I_MIPI_RAW         "sc820cs_aac_ultra_i_mipi_raw"
+#define SENSOR_DRVNAME_SC820CS_OFILM_ULTRA_II_MIPI_RAW         "sc820cs_ofilm_ultra_ii_mipi_raw"
 /************************************************************************
  *
  ************************************************************************/
+
+/* for o17 camera start*/
+#define S5KHM6_OFILM_MAIN_I_SENSOR_ID           0x1AD6
+#define S5KHM6_AAC_MAIN_II_SENSOR_ID           	(0x1AD6+1)
+#define IMX882_AAC_MAIN_I_SENSOR_ID             0x8202
+#define IMX882_OFILM_MAIN_II_SENSOR_ID          (0x8202+1)
+#define SC202CS_AAC_DEPTH_I_SENSOR_ID           (0xEB52+2)
+#define SC202CS_OFILM_DEPTH_II_SENSOR_ID        (0xEB53+2)
+#define GC16B3C_AAC_FRONT_I_SENSOR_ID           0x16b3
+#define SC202PCS_AAC_MACRO_I_SENSOR_ID          0xeb52
+#define SC202_OFILM_MACRO_II_SENSOR_ID          0xeb53
+#define SC1620_OFILM_FRONT_II_SENSOR_ID         0xc959
+#define OV20B40_AAC_FRONT_I_SENSOR_ID           0x2042
+#define OV20B40_OFILM_FRONT_II_SENSOR_ID        (0x2042+1)
+#define SENSOR_DRVNAME_SC202PCS_AAC_MACRO_I_MIPI_RAW         "sc202pcs_aac_macro_i_mipi_raw"
+#define SENSOR_DRVNAME_SC202_OFILM_MACRO_II_MIPI_RAW         "sc202_ofilm_macro_ii_mipi_raw"
+#define SENSOR_DRVNAME_S5KHM6_OFILM_MAIN_I_MIPI_RAW          "s5khm6_ofilm_main_i_mipi_raw"
+#define SENSOR_DRVNAME_S5KHM6_AAC_MAIN_II_MIPI_RAW           "s5khm6_aac_main_ii_mipi_raw"
+#define SENSOR_DRVNAME_IMX882_AAC_MAIN_I_MIPI_RAW            "imx882_aac_main_i_mipi_raw"
+#define SENSOR_DRVNAME_IMX882_OFILM_MAIN_II_MIPI_RAW         "imx882_ofilm_main_ii_mipi_raw"
+#define SENSOR_DRVNAME_SC202CS_AAC_DEPTH_I_MIPI_RAW          "sc202cs_aac_depth_i_mipi_raw"
+#define SENSOR_DRVNAME_SC202CS_OFILM_DEPTH_II_MIPI_RAW       "sc202cs_ofilm_depth_ii_mipi_raw"
+#define SENSOR_DRVNAME_GC16B3C_AAC_FRONT_I_MIPI_RAW          "gc16b3c_aac_front_i_mipi_raw"
+#define SENSOR_DRVNAME_SC1620_OFILM_FRONT_II_MIPI_RAW        "sc1620_ofilm_front_ii_mipi_raw"
+#define SENSOR_DRVNAME_OV20B40_AAC_FRONT_I_MIPI_RAW          "ov20b40_aac_front_i_mipi_raw"
+#define SENSOR_DRVNAME_OV20B40_OFILM_FRONT_II_MIPI_RAW       "ov20b40_ofilm_front_ii_mipi_raw"
+/* for o17 camera end */
+
 /* SENSOR CHIP VERSION */
 /*IMX*/
 #define IMX499_SENSOR_ID                        0x0499

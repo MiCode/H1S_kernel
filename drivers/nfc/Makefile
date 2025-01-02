@@ -3,8 +3,10 @@
 # Makefile for nfc devices
 #
 
+obj-y                           += tmsdrv/
 obj-$(CONFIG_NFC_FDP)		+= fdp/
 obj-$(CONFIG_NFC_PN544)		+= pn544/
+obj-$(CONFIG_NXP_NFC_I2C)	+= pn560/
 obj-$(CONFIG_NFC_MICROREAD)	+= microread/
 obj-$(CONFIG_NFC_PN533)		+= pn533/
 obj-$(CONFIG_NFC_MEI_PHY)	+= mei_phy.o

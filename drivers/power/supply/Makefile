@@ -96,9 +96,11 @@ obj-$(CONFIG_CHARGER_TPS65090)	+= tps65090-charger.o
 obj-$(CONFIG_CHARGER_TPS65217)	+= tps65217_charger.o
 obj-$(CONFIG_CHARGER_RT9465)	+= rt9465.o
 obj-$(CONFIG_BATTERY_MT6357) += mt6357_battery.o
+obj-$(CONFIG_SC8541X_CHARGER)	+= sc8541x_charger.o
+obj-$(CONFIG_NU2115_CHARGER)	+= nu2115.o
 mt6357_battery-objs := mtk_battery_coulomb_service.o mtk_battery.o mtk_battery_algo.o mt6357-gauge.o mtk_battery_daemon.o
-obj-$(CONFIG_BATTERY_MT6358) += mt6358_battery.o
-mt6358_battery-objs := mtk_battery_coulomb_service.o mtk_battery.o mtk_battery_algo.o mt6358-gauge.o mtk_battery_daemon.o
+#obj-$(CONFIG_BATTERY_MT6358) += mt6358_battery.o
+#mt6358_battery-objs := mtk_battery_coulomb_service.o mtk_battery.o mtk_battery_algo.o mt6358-gauge.o mtk_battery_daemon.o
 obj-$(CONFIG_BATTERY_MT6359P) += mt6359p_battery.o
 mt6359p_battery-objs := mtk_battery_coulomb_service.o mtk_battery.o mtk_battery_algo.o mt6359p-gauge.o mtk_battery_daemon.o
 obj-$(CONFIG_AXP288_FUEL_GAUGE) += axp288_fuel_gauge.o
@@ -126,7 +128,7 @@ obj-$(CONFIG_MTK_CHARGER) += mtk_charger_framework.o mtk_pd_charging.o charger_c
 else
 obj-$(CONFIG_MTK_CHARGER) += mtk_charger_framework.o mtk_pd_charging.o charger_class.o adapter_class.o mtk_charger_algorithm_class.o
 endif
-mtk_charger_framework-objs := mtk_charger.o mtk_charger_intf.o mtk_basic_charger.o mtk_pulse_charger.o
+mtk_charger_framework-objs := mtk_charger.o mtk_charger_intf.o mtk_basic_charger.o mtk_pulse_charger.o mtk_jeita.o
 mtk_pd_charging-objs := mtk_pd.o mtk_pd_hal.o
 obj-$(CONFIG_MTK_PUMP_EXPRESS_PLUS_20_SUPPORT) += mtk_pep20.o
 mtk_pep20-objs := mtk_pe2.o mtk_pe2_hal.o
@@ -138,7 +140,9 @@ obj-$(CONFIG_MTK_PUMP_EXPRESS_45_SUPPORT) += mtk_pep45.o
 mtk_pep45-objs := mtk_pe4_5.o mtk_pe4_5_hal.o
 obj-$(CONFIG_MTK_PUMP_EXPRESS_50_SUPPORT) += mtk_pep50.o
 mtk_pep50-objs := mtk_pe5.o mtk_pe5_hal.o
-
+obj-y += battery_secrete/
 ifneq ($(wildcard $(srctree)/$(src)/k6983v1_64_alpha),)
 obj-$(CONFIG_GAUGE_MT6983_ALPHA_SUPPORT) += k6983v1_64_alpha/
 endif
+
+obj-$(CONFIG_LC_CHARGER_SYSFS) += lc_charger_sysfs.o

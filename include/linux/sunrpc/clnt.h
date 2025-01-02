@@ -79,6 +79,7 @@ struct rpc_clnt {
 		struct work_struct	cl_work;
 	};
 	const struct cred	*cl_cred;
+	struct super_block *pipefs_sb;
 };
 
 /*

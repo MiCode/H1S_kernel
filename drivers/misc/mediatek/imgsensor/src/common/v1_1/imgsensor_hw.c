@@ -31,7 +31,8 @@ char * const imgsensor_hw_pin_names[] = {
 char * const imgsensor_hw_id_names[] = {
 	"mclk",
 	"regulator",
-	"gpio"
+	"gpio",
+	"smartldo"
 };
 char * const imgsensor_prj_names[] = {
 	"tb8781p2_64"

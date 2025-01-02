@@ -849,6 +849,18 @@ config CHARGER_MT6370
 	  This driver can also be built as a module. If so, the module
 	  will be called "mt6370-charger".
 
+config SC8541X_CHARGER
+	tristate "SC8541X_CHARGER Driver"
+	help
+	  If you say yes here you will get support for the SC8541 Charge Pump.
+	  This driver can give support for SC8541 Interface.
+
+config NU2115_CHARGER
+	tristate "NU2115_CHARGER Driver"
+	help
+	  if you say yes here you will get support for the NU2115 Charge Pump.
+	  This driver can give support for NU2115 Interface.
+
 config CHARGER_MT6375
 	tristate "MT6375 charger driver"
 	depends on MFD_MT6375
@@ -1014,5 +1026,15 @@ config GAUGE_MT6983_ALPHA_SUPPORT
 	  To compile this dirver for used touch IC.
 	  Set Y or M to select this feature for specific platform-mt6983,
 	  and set N to disable.
+
+config LC_CHARGER_SYSFS
+	tristate "Lc Charger Sysfs driver"
+	help
+	  Say yes here to enable Lc Charger Sysfs driver.
+	  This driver contains charging control flow and
+	  maintains charging status.
+	  Say no if not Lc Charger Sysfs driver.
+
+source "drivers/power/supply/battery_secrete/Kconfig"
 
 endif # POWER_SUPPLY

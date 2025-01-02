@@ -62,6 +62,16 @@ int chg_alg_is_algo_ready(struct chg_alg_device *alg_dev)
 }
 EXPORT_SYMBOL(chg_alg_is_algo_ready);
 
+int chg_alg_plugout_reset(struct chg_alg_device *alg_dev)
+{
+	if (alg_dev != NULL && alg_dev->ops != NULL &&
+	    alg_dev->ops->plugout_reset)
+		return alg_dev->ops->plugout_reset(alg_dev);
+
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(chg_alg_plugout_reset);
+
 int chg_alg_is_algo_running(struct chg_alg_device *alg_dev)
 {
 	if (alg_dev != NULL && alg_dev->ops != NULL &&
@@ -136,6 +146,41 @@ int chg_alg_set_current_limit(struct chg_alg_device *alg_dev,
 	return -EOPNOTSUPP;
 }
 EXPORT_SYMBOL(chg_alg_set_current_limit);
+
+int chg_alg_cp_statemachine_restart(struct chg_alg_device *alg_dev,
+	bool run_once)
+{
+	pr_notice("%s\n", __func__);
+	if (alg_dev != NULL && alg_dev->ops != NULL &&
+	    alg_dev->ops->cp_statemachine_restart)
+		return alg_dev->ops->cp_statemachine_restart(alg_dev, run_once);
+
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(chg_alg_cp_statemachine_restart);
+
+int chg_alg_thermal_restart(struct chg_alg_device *alg_dev,
+	bool run_once)
+{
+	pr_notice("%s\n", __func__);
+	if (alg_dev != NULL && alg_dev->ops != NULL &&
+	    alg_dev->ops->thermal_restart)
+		return alg_dev->ops->thermal_restart(alg_dev, run_once);
+
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(chg_alg_thermal_restart);
+
+int chg_alg_cp_charge_finished(struct chg_alg_device *alg_dev)
+{
+	pr_notice("%s\n", __func__);
+	if (alg_dev != NULL && alg_dev->ops != NULL &&
+	    alg_dev->ops->cp_charge_finished)
+		return alg_dev->ops->cp_charge_finished(alg_dev);
+
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL(chg_alg_cp_charge_finished);
 
 char *chg_alg_state_to_str(int state)
 {

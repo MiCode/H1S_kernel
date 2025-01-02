@@ -2873,7 +2873,7 @@ void ufshpb_get_dev_info(struct ufs_hba *hba, u8 *desc_buf)
 
 	hpb_dev_info->control_mode = desc_buf[DEVICE_DESC_PARAM_HPB_CONTROL];
 
-	version = get_unaligned_be16(desc_buf + DEVICE_DESC_PARAM_HPB_VER);
+	version = get_unaligned_be16(desc_buf + DEVICE_DESC_PARAM_HPB_VER) & HPB_MAJOR_VERSION_MASK;
 	if ((version != HPB_SUPPORT_VERSION) &&
 	    (version != HPB_SUPPORT_LEGACY_VERSION)) {
 		dev_err(hba->dev, "%s: HPB %x version is not supported.\n",

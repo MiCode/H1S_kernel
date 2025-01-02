@@ -5,6 +5,7 @@
  */
 
 #include <linux/cdev.h>		/* cdev */
+#include <linux/delay.h>
 #include <linux/err.h>	/* IS_ERR, PTR_ERR */
 #include <linux/init.h>		/* For init/exit macros */
 #include <linux/interrupt.h>
@@ -26,11 +27,13 @@
 #include <linux/time.h>
 #include <linux/vmalloc.h>
 #include <linux/wait.h>		/* For wait queue*/
+#include <linux/workqueue.h>
 #include <net/sock.h>		/* netlink */
 #include <linux/suspend.h>
 #include "mtk_battery.h"
 #include "mtk_battery_table.h"
-
+#include "mtk_charger.h"
+#include "../../misc/mediatek/power_throttling/mtk_low_battery_throttling.h"
 
 struct tag_bootmode {
 	u32 size;
@@ -38,6 +41,33 @@ struct tag_bootmode {
 	u32 bootmode;
 	u32 boottype;
 };
+
+static bool is_count_update = false;
+static int new_cycle_count = 0;
+static int last_cycle_count = 0;
+static bool is_first = true;
+static struct blocking_notifier_head mag_current_now_nb;
+
+int mag_current_now_register_notifier(struct notifier_block *nb)
+{
+	pr_err("%s, mag_current_now_register_notifier\n", __func__);
+	return blocking_notifier_chain_register(&mag_current_now_nb, nb);
+}
+EXPORT_SYMBOL(mag_current_now_register_notifier);
+
+int mag_current_now_unregister_notifier(struct notifier_block *nb)
+{
+	pr_err("%s, mag_current_now_unregister_notifier\n", __func__);
+	return blocking_notifier_chain_unregister(&mag_current_now_nb, nb);
+}
+EXPORT_SYMBOL(mag_current_now_unregister_notifier);
+
+int mag_current_now_notifier_call_chain(unsigned long val, void *v)
+{
+	pr_err("%s,mag_current_now_notifier_call_chain\n", __func__);
+	return blocking_notifier_call_chain(&mag_current_now_nb, val, v);
+}
+EXPORT_SYMBOL(mag_current_now_notifier_call_chain);
 
 int __attribute__ ((weak))
 	mtk_battery_daemon_init(struct platform_device *pdev)
@@ -110,6 +140,138 @@ void disable_gauge_irq(struct mtk_gauge *gauge,
 		disable_irq_nosync(gauge->irq_no[irq]);
 }
 
+//smart chg
+static void set_error(struct mtk_battery *gm)
+{
+	gm->smart_charge[SMART_CHG_STATUS_FLAG].en_ret = 1;
+	bm_err("xm %s en_ret=%d\n", __func__, gm->smart_charge[SMART_CHG_STATUS_FLAG].en_ret);
+}
+
+static void set_success(struct mtk_battery *gm)
+{
+	gm->smart_charge[SMART_CHG_STATUS_FLAG].en_ret = 0;
+	bm_err("xm %s en_ret=%d\n", __func__, gm->smart_charge[SMART_CHG_STATUS_FLAG].en_ret);
+}
+
+static int smart_chg_is_error(struct mtk_battery *gm)
+{
+	return gm->smart_charge[SMART_CHG_STATUS_FLAG].en_ret? true : false;
+}
+
+static void handle_smart_chg_functype(struct mtk_battery *gm,
+	const int func_type, const int en_ret, const int func_val)
+{
+	int temp = 0;
+	switch (func_type)
+	{
+	case SMART_CHG_FEATURE_MIN_NUM ... SMART_CHG_LOW_FAST:
+		gm->smart_charge[func_type].en_ret = en_ret;
+		gm->smart_charge[func_type].active_status = false;
+		gm->smart_charge[func_type].func_val = func_val;
+		set_success(gm);
+		bm_err("xm %s set func_type:%d, en_ret = %d\n", __func__, func_type, en_ret);
+		break;
+	case SMART_CHG_EXTREME_COLD_CHG:
+		gm->smart_charge[func_type].en_ret = en_ret;
+		gm->smart_charge[func_type].active_status = false;
+		gm->smart_charge[func_type].func_val = func_val;
+		set_success(gm);
+		bm_err("%s set func_type:%d\n", __func__, func_type);
+		if(gm->smart_charge[SMART_CHG_EXTREME_COLD_CHG].en_ret)
+		{
+			bm_err("smart_chg extreme_cold chg triggger\n");
+			gm->extreme_cold_chg_flag = true;
+			if(!gm->smart_charge[SMART_CHG_EXTREME_COLD_CHG].active_status)
+				gm->smart_charge[SMART_CHG_EXTREME_COLD_CHG].active_status = true;
+			exec_throttle_level_get(&temp);
+			if (gm->bs_data.bat_capacity < 100 && temp > 0) {
+				exec_throttle(0);
+				bm_err("smart_chg extreme_cold ,must use PT lv1\n");
+			}
+		} else {
+			if (gm->bs_data.bat_batt_temp < 0 && gm->bs_data.bat_batt_vol < 4300)
+				exec_throttle(1);
+			gm->extreme_cold_chg_flag = false;
+			bm_err("smart_chg extreme_cold chg don't triggger, bat_temp = %d, soc = %d, bat_batt_vol = %d\n", gm->bs_data.bat_batt_temp, gm->bs_data.bat_capacity, gm->bs_data.bat_batt_vol);
+		}
+		break;
+	default:
+		bm_err("xm %s ERROR: Not supported func type: %d\n", __func__, func_type);
+		set_error(gm);
+		break;
+	}
+}
+
+static int handle_smart_chg_functype_status(struct mtk_battery *gm)
+{
+	int i;
+	int all_func_status = 0;
+	all_func_status |= !!gm->smart_charge[SMART_CHG_STATUS_FLAG].en_ret;	//handle bit0
+
+	bm_debug("%s all_func_status =%#X, en_ret=%d\n", __func__, all_func_status, gm->smart_charge[SMART_CHG_STATUS_FLAG].en_ret);
+
+	/* save functype[i] enable status in all_func_status bit[i] */
+	for(i = SMART_CHG_FEATURE_MIN_NUM; i <= SMART_CHG_FEATURE_MAX_NUM; i++){  //handle bit1 ~ bit SMART_CHG_FEATURE_MAX_NUM
+		if(gm->smart_charge[i].en_ret)
+			all_func_status |= BIT_MASK(i);
+		else
+			all_func_status &= ~BIT_MASK(i);
+
+		bm_err("%s type:%d, en_ret=%d, active_status=%d,func_val=%d, all_func_status=%#X\n",
+			__func__, i, gm->smart_charge[i].en_ret, gm->smart_charge[i].active_status, gm->smart_charge[i].func_val,all_func_status);
+	}
+
+	bm_err("%s all_func_status:%#X\n", __func__, all_func_status);
+	return all_func_status;
+}
+
+static int smart_chg_set(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int val)
+{
+	// DECLEAR_BITMAP(func_type, SMART_CHG_FEATURE_MAX_NUM);
+	bool en_ret = val & 0x1;
+	unsigned long func_type = (val & 0xFFFE) >> 1;
+	int func_val = val >> 16;
+	int bit_pos;
+	int all_func_status;
+
+	bm_err("%s get val:%#X, func_type:%#X, en_ret:%d, func_val:%d\n",
+		__func__,val, func_type, en_ret, func_val);
+
+	bit_pos = find_first_bit(&func_type, SMART_CHG_FEATURE_MAX_NUM);
+
+	if (bit_pos == SMART_CHG_FEATURE_MAX_NUM || find_next_bit(&func_type, SMART_CHG_FEATURE_MAX_NUM , bit_pos + 1) != SMART_CHG_FEATURE_MAX_NUM){
+		bm_err("%s ERROR: zero or more than one func type!\n", __func__);
+		bm_err("%s find_next_bit = %d, bit_pos = %d\n",
+			__func__, find_next_bit(&func_type, SMART_CHG_FEATURE_MAX_NUM , bit_pos + 1), bit_pos);
+		set_error(gm);
+	} else {
+		set_success(gm);
+	}
+
+	// if func_type bit0 is 1, bit_pos = 0, not 1. so ++bit_pos.
+	if(!smart_chg_is_error(gm))
+		handle_smart_chg_functype(gm, ++bit_pos, en_ret, func_val);
+
+	/* update smart_chg[0] status */
+	all_func_status = handle_smart_chg_functype_status(gm);
+	gm->smart_charge[SMART_CHG_STATUS_FLAG].en_ret = all_func_status & 0x1;
+	gm->smart_charge[SMART_CHG_STATUS_FLAG].active_status = (all_func_status & 0xFFFE) >> 1;
+
+	return 0;
+}
+
+static int smart_chg_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int *val)
+{
+	/* get latest functype status*/
+	*val = handle_smart_chg_functype_status(gm);
+	bm_err("%s val:%#X\n", __func__, *val);
+	return 0;
+}
+
 struct mtk_battery *get_mtk_battery(void)
 {
 	struct mtk_gauge *gauge;
@@ -152,9 +314,52 @@ bool is_algo_active(struct mtk_battery *gm)
 	return gm->algo.active;
 }
 
+static char __bat_cmdline[1024];
+static char *bat_cmdline = __bat_cmdline;
+const char *bat_get_cmd(void)
+{
+	struct device_node * of_chosen = NULL;
+	char *bootargs = NULL;
+
+	if (__bat_cmdline[0] != 0)
+		return bat_cmdline;
+
+	of_chosen = of_find_node_by_path("/chosen");
+	if (of_chosen) {
+		bootargs = (char *)of_get_property(
+					of_chosen, "bootargs", NULL);
+		if (!bootargs)
+			chr_err("%s: failed to get bootargs\n", __func__);
+		else {
+			strncpy(__bat_cmdline, bootargs, 512);
+			chr_err("%s: bootargs: %s\n", __func__, bootargs);
+		}
+	} else
+		chr_err("%s: failed to get /chosen \n", __func__);
+
+	return bat_cmdline;
+}
+
+#define BATTERY_ID "battery_id="
+
 int fgauge_get_profile_id(void)
 {
-	return 0;
+	int bat_id = 0;
+        char *rootfsmtd_ptr = NULL;
+
+        rootfsmtd_ptr = strstr(bat_get_cmd(), BATTERY_ID);
+        if (rootfsmtd_ptr) {
+		sscanf(rootfsmtd_ptr, BATTERY_ID"%d", &bat_id);
+		bm_err("%s cmdline battery_id=%d\n", __func__, bat_id);
+	}
+
+        if (bat_id > 2) {
+                bat_id = 0;
+        }
+
+        bm_err("%s battery_id=%d\n", __func__, bat_id);
+
+	return bat_id;
 }
 
 int wakeup_fg_algo_cmd(
@@ -262,6 +467,115 @@ int check_cap_level(int uisoc)
 		return POWER_SUPPLY_CAPACITY_LEVEL_UNKNOWN;
 }
 
+static int pre_smooth_soc = 0;
+static int soc_remain_flag = 0;
+static int time_done = 0;
+static struct hrtimer timer;
+
+static int battery_soc_smooth_tracking_new(struct mtk_battery *gm, int soc)
+{
+	int soc_rate[8] = {90, 89, 88, 87, 86, 85, 84, 83};
+	int smooth_soc[8] = {90, 89, 89, 88, 87, 87, 86, 85};
+	int smooth_soc1 = 0;
+	int i = 0;
+	int time_sec = 0;
+	struct battery_data *bs_data;
+	static struct mtk_charger *info;
+	struct power_supply *psy = NULL;
+
+	if (soc < 0 || soc > 100) {
+		pr_err("%s soc not right, return\n", __func__);
+		return soc;
+	}
+
+	if (IS_ERR_OR_NULL(info)) {
+		psy = power_supply_get_by_name("mtk-master-charger");
+		if (!psy) {
+			pr_err("%s get charger psy fail\n", __func__);
+			return soc;
+		} else {
+			info = power_supply_get_drvdata(psy);
+		}
+	}
+
+	bs_data = &gm->bs_data;
+
+	for (i = 0; i < 8; i++) {
+		if (soc == soc_rate[i])
+			smooth_soc1 = smooth_soc[i];
+	}
+
+	if (soc <= 82) {
+		smooth_soc1 = soc * (84 -1) / (82 - 1);
+	}
+
+	if (soc <= 100 && soc >= 91)
+		smooth_soc1 = soc;
+
+	if (pre_smooth_soc == 0) {
+		pre_smooth_soc = smooth_soc1 - 1;
+	}
+	//pr_err("%s: pre_smooth_soc:%d, smooth_soc1:%d\n", __func__, pre_smooth_soc, smooth_soc1);
+	if (smooth_soc1 - pre_smooth_soc == 1 || smooth_soc1 - pre_smooth_soc == -1 || smooth_soc1 == pre_smooth_soc) {
+		pre_smooth_soc = smooth_soc1;
+		//pr_err("%s: soc not jump\n", __func__);
+	} else {
+		//pr_err("%s: soc jump!\n", __func__);
+		smooth_soc1 = (smooth_soc1 + pre_smooth_soc) / 2;
+		if (bs_data->bat_status == POWER_SUPPLY_STATUS_CHARGING) {
+			//pr_err("%s: charge status is charging\n", __func__);
+			if (info->pd_type == MTK_PD_CONNECT_PE_READY_SNK_APDO && info->pd_adapter->verifed) {
+				time_sec = 15; // 15s
+			} else if (info->chr_type == POWER_SUPPLY_TYPE_USB && info->usb_type == POWER_SUPPLY_USB_TYPE_SDP){
+				time_sec = 60; // 1min
+			} else {
+				time_sec = 30; // 30s
+			}
+		} else {
+			//pr_err("%s: chgarge status is discharging\n", __func__);
+			//pr_err("%s: ibat: %d\n", __func__, gm->ibat);
+			if (gm->ibat < -1000) {
+				time_sec = 30; // 30s
+			} else {
+				time_sec = 60; // 60s
+			}
+		}
+		//pr_err("%s: time_sec: %d\n", __func__, time_sec);
+
+		if (soc_remain_flag != 1) {
+			hrtimer_start(&timer, ktime_set(time_sec, 0), HRTIMER_MODE_REL);
+			soc_remain_flag = 1;
+			pr_err("%s: start timer\n", __func__);
+		}
+
+		if (time_done == 1) {
+			pr_err("%s: timer is done\n", __func__);
+			pre_smooth_soc = smooth_soc1;
+			soc_remain_flag = 0;
+			time_done = 0;
+		}
+	}
+	//pr_err("%s: last smooth soc:%d\n", __func__, smooth_soc1);
+	return smooth_soc1;
+}
+
+static enum hrtimer_restart hrtimer_handle(struct hrtimer *hrtimer)
+{
+	struct power_supply *bat_psy = NULL;
+
+	bat_psy = power_supply_get_by_name("battery");
+	if (IS_ERR_OR_NULL(bat_psy)) {
+		pr_err("%s, get battery psy fail\n", __func__);
+		bat_psy = power_supply_get_by_name("battery");
+	}
+	//pr_err("%s, hrtimer call back\n", __func__);
+	time_done = 1;
+	power_supply_changed(bat_psy);
+	//hrtimer_cancel(hrtimer);
+
+	return HRTIMER_NORESTART;
+}
+
 static enum power_supply_property battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_HEALTH,
@@ -279,6 +593,8 @@ static enum power_supply_property battery_props[] = {
 	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT,
 };
 
 static int battery_psy_get_property(struct power_supply *psy,
@@ -288,8 +604,11 @@ static int battery_psy_get_property(struct power_supply *psy,
 	int ret = 0;
 	int curr_now = 0, curr_avg = 0;
 	struct mtk_battery *gm;
+	int charge_full_design;
+	int charge_counter;
 	struct battery_data *bs_data;
 
+	pr_err("%s \n", __func__);
 	gm = (struct mtk_battery *)power_supply_get_drvdata(psy);
 	bs_data = &gm->bs_data;
 
@@ -323,7 +642,27 @@ static int battery_psy_get_property(struct power_supply *psy,
 		val->intval = bs_data->bat_technology;
 		break;
 	case POWER_SUPPLY_PROP_CYCLE_COUNT:
-		val->intval = 1;
+		if (gm->fixed_cycle > 0) {
+			val->intval = gm->fixed_cycle;
+			pr_info("%s use fixed cycle:%d\n", __func__, val->intval);
+			break;
+		}
+
+		if ((!is_first) && (last_cycle_count < gm->bat_cycle)) {
+			pr_err("%s bat_cycle:%d, last_cycle:%d\n",
+					__func__, gm->bat_cycle, last_cycle_count);
+			is_count_update = true;
+		}
+		if (is_count_update || gm->auth_cycle_count_update || is_first || gm->soh_update_flag) {
+			pr_err("is_count:%d,auth_count:%d,is_first:%d,soh_update:%d\n",
+				is_count_update, gm->auth_cycle_count_update, is_first, gm->soh_update_flag);
+			if (!delayed_work_pending(&gm->update_delay_work))
+				queue_delayed_work(gm->update_workqueue,
+					&gm->update_delay_work, 0);
+		}
+		val->intval = new_cycle_count;
+
+		pr_err("%s cycle_count:%d\n", __func__, val->intval);
 		break;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		/* 1 = META_BOOT, 4 = FACTORY_BOOT 5=ADVMETA_BOOT */
@@ -337,7 +676,7 @@ static int battery_psy_get_property(struct power_supply *psy,
 		if (gm->fixed_uisoc != 0xffff)
 			val->intval = gm->fixed_uisoc;
 		else
-			val->intval = bs_data->bat_capacity;
+			val->intval = battery_soc_smooth_tracking_new(gm, bs_data->bat_capacity);
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		ret = gauge_get_property(GAUGE_PROP_BATTERY_CURRENT,
@@ -348,8 +687,13 @@ static int battery_psy_get_property(struct power_supply *psy,
 		else {
 			val->intval = curr_now * 100;
 			gm->ibat = curr_now;
+			mag_current_now_notifier_call_chain((unsigned long)(val->intval), NULL);
+			bm_err("battery_curr_now = %d\n",curr_now * 100);
 		}
-
+		if (bs_data->bat_status == POWER_SUPPLY_STATUS_FULL) {
+			if (val->intval < 8000 && val->intval > -8000)
+				val->intval = 0;
+		}
 		ret = 0;
 		break;
 	case POWER_SUPPLY_PROP_CURRENT_AVG:
@@ -364,14 +708,18 @@ static int battery_psy_get_property(struct power_supply *psy,
 		ret = 0;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
-		val->intval =
-			gm->fg_table_cust_data.fg_profile[
-				gm->battery_id].q_max * 1000;
+		charge_full_design = gm->algo_qmax * gm->aging_factor / 100;
+		if (charge_full_design > BAT_CHARGE_FULL_DESIGN)
+			val->intval = BAT_CHARGE_FULL_DESIGN;
+		else
+			val->intval = charge_full_design;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
-		val->intval = gm->ui_soc *
-			gm->fg_table_cust_data.fg_profile[
-				gm->battery_id].q_max * 1000 / 100;
+		charge_counter = gm->ui_soc * (gm->algo_qmax * gm->aging_factor / 100) / 100;
+		if (charge_counter > BAT_CHARGE_FULL_DESIGN)
+			val->intval = BAT_CHARGE_FULL_DESIGN;
+		else
+			val->intval = charge_counter;
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		/* 1 = META_BOOT, 4 = FACTORY_BOOT 5=ADVMETA_BOOT */
@@ -433,6 +781,8 @@ static int battery_psy_get_property(struct power_supply *psy,
 		ret = 0;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
+		val->intval = BAT_CHARGE_FULL_DESIGN;
+#if 0
 		if (check_cap_level(bs_data->bat_capacity) ==
 			POWER_SUPPLY_CAPACITY_LEVEL_UNKNOWN)
 			val->intval = 0;
@@ -452,6 +802,7 @@ static int battery_psy_get_property(struct power_supply *psy,
 			}
 			val->intval = q_max_uah;
 		}
+#endif
 		break;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
 		bs_data = &gm->bs_data;
@@ -470,7 +821,12 @@ static int battery_psy_get_property(struct power_supply *psy,
 				bm_err("get CV property fail\n");
 		}
 		break;
-
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
+		val->intval = CHARGE_CURRENT_MAX;
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT:
+		val->intval = gm->thermal_level;
+		break;
 
 	default:
 		ret = -EINVAL;
@@ -489,6 +845,7 @@ static int battery_psy_set_property(struct power_supply *psy,
 {
 	int ret = 0;
 	struct mtk_battery *gm;
+	int auth_count = 0;
 
 	gm = (struct mtk_battery *)power_supply_get_drvdata(psy);
 
@@ -500,8 +857,24 @@ static int battery_psy_set_property(struct power_supply *psy,
 			bm_err("[%s], dynamic_cv: %d\n",  __func__, val->intval);
 		}
 		break;
-
-
+	case POWER_SUPPLY_PROP_CYCLE_COUNT:
+		auth_count = batt_auth_get_cycle_count();
+		if (auth_count < 0) {
+			pr_err("%s auth_count read fail, set error\n", __func__);
+			ret = -1;
+			break;
+		}
+		ret = batt_auth_set_cycle_count(val->intval, auth_count);
+		if (ret < 0) {
+			pr_err("%s auth_count set fail, set error\n", __func__);
+			break;
+		}
+		gm->auth_cycle_count_update = true;
+		pr_err("%s cycle_count:%d, last_cycle:%d\n", __func__, val->intval, auth_count);
+		break;
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT:
+		gm->thermal_level = val->intval;
+		break;
 	default:
 		ret = -EINVAL;
 		break;
@@ -511,6 +884,44 @@ static int battery_psy_set_property(struct power_supply *psy,
 		__func__, psp, ret, val->intval);
 
 	return ret;
+}
+
+static bool mtk_battery_check_input_suspend(void)
+{
+        struct power_supply *psy;
+        static struct mtk_charger *info;
+
+        if (IS_ERR_OR_NULL(info)) {
+                psy = power_supply_get_by_name("mtk-master-charger");
+                if (!psy) {
+                        pr_err("%s get charger psy fail\n", __func__);
+                        return 0;
+                } else {
+                        info = power_supply_get_drvdata(psy);
+                        return info->cmd_discharging;
+                }
+        } else {
+               return info->cmd_discharging;
+        }
+}
+
+static bool mtk_battery_check_night_charging(void)
+{
+	struct power_supply *psy;
+	static struct mtk_charger *info;
+
+	if (IS_ERR_OR_NULL(info)) {
+		psy = power_supply_get_by_name("mtk-master-charger");
+		if (!psy) {
+			pr_err("%s get charger psy fail\n", __func__);
+			return 0;
+		} else {
+			info = power_supply_get_drvdata(psy);
+			return info->night_charging_flag;
+		}
+	} else {
+		return info->night_charging_flag;
+	}
 }
 
 static void mtk_battery_external_power_changed(struct power_supply *psy)
@@ -555,7 +966,7 @@ static void mtk_battery_external_power_changed(struct power_supply *psy)
 		} else {
 			if (status.intval == POWER_SUPPLY_STATUS_NOT_CHARGING) {
 				bs_data->bat_status =
-					POWER_SUPPLY_STATUS_NOT_CHARGING;
+					POWER_SUPPLY_STATUS_CHARGING;
 
 				dv2_chg_psy = power_supply_get_by_name("mtk-mst-div-chg");
 				if (!IS_ERR_OR_NULL(dv2_chg_psy)) {
@@ -569,22 +980,31 @@ static void mtk_battery_external_power_changed(struct power_supply *psy)
 					}
 				}
 			} else {
-				bs_data->bat_status =
-					POWER_SUPPLY_STATUS_CHARGING;
+				if(!(status.intval == POWER_SUPPLY_STATUS_FULL && bs_data->bat_capacity == 100))
+					bs_data->bat_status =
+						POWER_SUPPLY_STATUS_CHARGING;
 			}
 
 			fg_sw_bat_cycle_accu(gm);
 		}
 
-		if (status.intval == POWER_SUPPLY_STATUS_FULL
-			&& gm->b_EOC != true) {
-			bm_err("POWER_SUPPLY_STATUS_FULL, EOC\n");
-			gauge_get_int_property(GAUGE_PROP_BAT_EOC);
-			bm_err("GAUGE_PROP_BAT_EOC done\n");
-			gm->b_EOC = true;
-			notify_fg_chr_full(gm);
-		} else
-			gm->b_EOC = false;
+		if (status.intval == POWER_SUPPLY_STATUS_FULL && bs_data->bat_capacity == 100) {
+                        bm_err("POWER_SUPPLY_STATUS_FULL, EOC\n");
+                        bs_data->bat_status = POWER_SUPPLY_STATUS_FULL;
+                        gauge_get_int_property(GAUGE_PROP_BAT_EOC);
+                        bm_err("GAUGE_PROP_BAT_EOC done\n");
+                        gm->b_EOC = true;
+                        notify_fg_chr_full(gm);
+		} else {
+                        gm->b_EOC = false;
+                }
+
+                if (mtk_battery_check_input_suspend()) {
+                        bs_data->bat_status = POWER_SUPPLY_STATUS_DISCHARGING;
+                }
+
+		if (mtk_battery_check_night_charging())
+			bs_data->bat_status = POWER_SUPPLY_STATUS_CHARGING;
 
 		battery_update(gm);
 
@@ -621,6 +1041,19 @@ static void mtk_battery_external_power_changed(struct power_supply *psy)
 	gm->chr_type = cur_chr_type;
 
 }
+
+static int battery_psy_writeable(struct power_supply *psy,
+				  enum power_supply_property psp)
+{
+	switch (psp) {
+	case POWER_SUPPLY_PROP_CYCLE_COUNT:
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
 void battery_service_data_init(struct mtk_battery *gm)
 {
 	struct battery_data *bs_data;
@@ -632,6 +1065,7 @@ void battery_service_data_init(struct mtk_battery *gm)
 	bs_data->psd.num_properties = ARRAY_SIZE(battery_props);
 	bs_data->psd.get_property = battery_psy_get_property;
 	bs_data->psd.set_property = battery_psy_set_property;
+        bs_data->psd.property_is_writeable = battery_psy_writeable;
 	bs_data->psd.external_power_changed =
 		mtk_battery_external_power_changed;
 	bs_data->psy_cfg.drv_data = gm;
@@ -639,7 +1073,7 @@ void battery_service_data_init(struct mtk_battery *gm)
 	bs_data->bat_status = POWER_SUPPLY_STATUS_DISCHARGING,
 	bs_data->bat_health = POWER_SUPPLY_HEALTH_GOOD,
 	bs_data->bat_present = 1,
-	bs_data->bat_technology = POWER_SUPPLY_TECHNOLOGY_LION,
+	bs_data->bat_technology = POWER_SUPPLY_TECHNOLOGY_LIPO,
 	bs_data->bat_capacity = -1,
 	bs_data->bat_batt_vol = 0,
 	bs_data->bat_batt_temp = 0,
@@ -904,6 +1338,17 @@ int force_get_tbat(struct mtk_battery *gm, bool update)
 
 	if (bat_temperature_val == -EHOSTDOWN)
 		return gm->cur_bat_temp;
+
+	if (gm->extreme_cold_chg_flag) {
+		if (bat_temperature_val < 0) {
+			gm->extreme_cold_temp = 3;
+		} else {
+			gm->extreme_cold_temp = 2;
+		}
+	} else {
+		gm->extreme_cold_temp = 0;
+	}
+	bat_temperature_val = bat_temperature_val - gm->extreme_cold_temp;
 
 	gm->cur_bat_temp = bat_temperature_val;
 
@@ -2131,8 +2576,21 @@ void battery_update(struct mtk_battery *gm)
 	}
 
 	battery_update_psd(gm);
-	bat_data->bat_technology = POWER_SUPPLY_TECHNOLOGY_LION;
-	bat_data->bat_health = POWER_SUPPLY_HEALTH_GOOD;
+	bat_data->bat_technology = POWER_SUPPLY_TECHNOLOGY_LIPO;
+
+	if (bat_data->bat_batt_temp >= 60)
+		bat_data->bat_health = POWER_SUPPLY_HEALTH_OVERHEAT;
+	else if (bat_data->bat_batt_temp >= 58)
+		bat_data->bat_health = POWER_SUPPLY_HEALTH_HOT;
+	else if (bat_data->bat_batt_temp >= 45)
+		bat_data->bat_health = POWER_SUPPLY_HEALTH_WARM;
+	else if (bat_data->bat_batt_temp >= 15)
+		bat_data->bat_health = POWER_SUPPLY_HEALTH_GOOD;
+	else if (bat_data->bat_batt_temp >= 0)
+		bat_data->bat_health = POWER_SUPPLY_HEALTH_COOL;
+	else
+		bat_data->bat_health = POWER_SUPPLY_HEALTH_COLD;
+
 	bat_data->bat_present =
 		gauge_get_int_property(GAUGE_PROP_BATTERY_EXIST);
 
@@ -2497,6 +2955,62 @@ static int temp_th_set(struct mtk_battery *gm,
 	return 0;
 }
 
+static int smart_batt_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr, int *val)
+{
+	*val = gm->diff_fv_val;
+	bm_err("%s val:%d\n",__func__, *val);
+
+	return 0;
+}
+
+static int smart_batt_set(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr, int val)
+{
+	gm->diff_fv_val = val;
+	smart_batt_set_diff_fv(val);
+	bm_err("%s val:%d\n", __func__, val);
+
+	return 0;
+}
+
+static int smart_fv_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int *val)
+{
+	*val = gm->smart_fv;
+	bm_err("%s val:%d\n", __func__, *val);
+	return 0;
+}
+
+static int smart_fv_set(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int val)
+{
+	gm->smart_fv = val;
+	smart_fv_set_diff_fv(val);
+	bm_err("%s val:%d\n", __func__, val);
+	return 0;
+}
+
+static int night_charging_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr, int *val)
+{
+	*val = gm->night_charging;
+	bm_err("%s night_charging:%d\n",__func__, *val);
+
+	return 0;
+}
+
+static int night_charging_set(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr, int val)
+{
+	gm->night_charging = val;
+	bm_err("%s night_charging:%d\n", __func__, val);
+
+	return 0;
+}
+
 static ssize_t bat_sysfs_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
@@ -2542,6 +3056,161 @@ static ssize_t bat_sysfs_show(struct device *dev,
 	return count;
 }
 
+static int otg_ui_support_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int *val)
+{
+	*val = 1;
+	chr_info("[%s] *val: %d\n", __func__, *val);
+	return 0;
+}
+
+static int cid_status_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int *val)
+{
+	*val = manual_get_cid_status();
+	chr_info("[%s] *val: %d\n", __func__, *val);
+	return 0;
+}
+
+static int cc_toggle_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int *val)
+{
+        manual_get_cc_toggle(&gm->control_cc_toggle);
+	*val = !!gm->control_cc_toggle;
+	chr_info("[%s] *val: %d\n", __func__, *val);
+	return 0;
+}
+
+static int cc_toggle_set(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int val)
+{
+	gm->control_cc_toggle = val;
+	manual_set_cc_toggle(!!val);
+	chr_info("[%s] *val: %d\n", __func__, gm->control_cc_toggle);
+	return 0;
+}
+
+static void update_cycle_work(struct work_struct *work)
+{
+	struct delayed_work *update_work;
+	struct mtk_battery *gm;
+	static int is_reday = 0;
+	static int int_value = 10000;
+	int auth_count = 0;
+	int raw_soh = 100;
+	int new_soh = 0;
+	int ret = 0;
+
+	pr_err("%s \n", __func__);
+	update_work = to_delayed_work(work);
+	gm = container_of(update_work, struct mtk_battery, update_delay_work);
+
+	if (is_reday < 50 && gm->bat_cycle == 0) {
+		new_cycle_count = gm->bat_cycle;
+		pr_err("%s gm->bat_cycle:%d\n", __func__, gm->bat_cycle);
+		is_reday++;
+		return;
+	}
+	if (is_first) {
+		auth_count = batt_auth_get_cycle_count();
+		if (auth_count < 0) {
+			new_cycle_count = gm->bat_cycle;
+			return;
+		}
+		last_cycle_count = gm->bat_cycle;
+		new_cycle_count = (last_cycle_count > auth_count) ? last_cycle_count : auth_count;
+		ret = batt_auth_set_cycle_count(new_cycle_count, auth_count);
+		if (ret < 0) {
+			pr_err("%s first_count set fail\n", __func__);
+			return;
+		}
+		if (gm->aging_factor == 0) {
+			return;
+		}
+		int_value = gm->aging_factor;
+		gm->soh_update_flag = false;
+		pr_err("%s[first] auth_count:%d, bat_cycle:%d, last_cycle:%d, aging_factor=%d\n",
+			__func__, auth_count, gm->bat_cycle, last_cycle_count, gm->aging_factor);
+		is_first = false;
+	} else {
+		if (last_cycle_count < gm->bat_cycle) {
+			auth_count = batt_auth_get_cycle_count();
+			if (auth_count < 0) {
+				pr_err("%s auth_count read fail, new_cycle:%d\n", __func__, new_cycle_count);
+				return;
+			}
+			new_cycle_count = (gm->bat_cycle - last_cycle_count) + auth_count;
+			ret = batt_auth_set_cycle_count(new_cycle_count, auth_count);
+			if (ret < 0) {
+				pr_err("%s is_count_update fail\n", __func__);
+				return;
+			}
+			pr_err("%s auth_count:%d, bat_cycle:%d, last_cycle:%d\n",
+					__func__, auth_count, gm->bat_cycle, last_cycle_count);
+			last_cycle_count = gm->bat_cycle;
+			is_count_update = false;
+		}
+		if (gm->auth_cycle_count_update == true) {
+			auth_count = batt_auth_get_cycle_count();
+			if (auth_count < 0) {
+				pr_err("%s auth_count update fail, new_cycle:%d\n", __func__, new_cycle_count);
+				return;
+			}
+			if (new_cycle_count != auth_count)
+				new_cycle_count = auth_count;
+			gm->auth_cycle_count_update = false;
+			pr_err("%s auth_count:%d, new_cycle:%d\n",
+					__func__, auth_count, new_cycle_count);
+		}
+	}
+
+	if ((int_value > gm->aging_factor) && (gm->aging_factor > 0)) {
+		gm->soh_update_num = (((int_value + 99) / 100) - ((gm->aging_factor + 99) / 100));
+		bm_err("%s aging_factor update aging_factor=%d, int_value=%d\n",
+			__func__, gm->aging_factor, int_value);
+		gm->soh_update_flag = false;
+	}
+
+	if (gm->soh_update_num) {
+		bm_err("%s raw_soh update aging_factor=%d, int_value=%d\n",
+			__func__, gm->aging_factor, int_value);
+		int_value = gm->aging_factor;
+		raw_soh = batt_auth_get_raw_soh();
+		pr_err("%s raw_soh:%d\n", __func__, raw_soh);
+		if (raw_soh > 0) {
+			new_soh = raw_soh - gm->soh_update_num;
+			ret = batt_auth_set_raw_soh(new_soh);
+			pr_err("%s new_soh:%d, gm->aging_factor:%d,, ret:%d\n",
+				__func__, new_soh, gm->aging_factor, ret);
+		}
+		if (ret < 0)
+			return;
+		else
+			gm->soh_update_num = 0;
+	}
+}
+
+static int fake_cycle_get(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int *val)
+{
+	*val = gm->fixed_cycle;
+	chr_info("[%s] *val: %d\n", __func__, *val);
+	return 0;
+}
+
+static int fake_cycle_set(struct mtk_battery *gm,
+	struct mtk_battery_sysfs_field_info *attr,
+	int val)
+{
+	gm->fixed_cycle = val;
+	chr_info("[%s] *val: %d\n", __func__, gm->control_cc_toggle);
+	return 0;
+}
 /* Must be in the same order as BAT_PROP_* */
 static struct mtk_battery_sysfs_field_info battery_sysfs_field_tbl[] = {
 	BAT_SYSFS_FIELD_RW(temperature, BAT_PROP_TEMPERATURE),
@@ -2556,6 +3225,14 @@ static struct mtk_battery_sysfs_field_info battery_sysfs_field_tbl[] = {
 	BAT_SYSFS_FIELD_WO(reset, BAT_PROP_FG_RESET),
 	BAT_SYSFS_FIELD_RW(log_level, BAT_PROP_LOG_LEVEL),
 	BAT_SYSFS_FIELD_WO(temp_th, BAT_PROP_TEMP_TH_GAP),
+	BAT_SYSFS_FIELD_RW(smart_batt, BAT_PROP_SMART_BATT),
+	BAT_SYSFS_FIELD_RW(smart_chg, BAT_PROP_SMART_CHG),
+	BAT_SYSFS_FIELD_RW(night_charging, BAT_PROP_NIGHT_CHARGING),
+	BAT_SYSFS_FIELD_RW(smart_fv, BAT_PROP_SMART_FV),
+        BAT_SYSFS_FIELD_RO(otg_ui_support, BAT_PROP_OTG_UI_SUPPORT),
+	BAT_SYSFS_FIELD_RO(cid_status, BAT_PROP_CID_STATUS),
+	BAT_SYSFS_FIELD_RW(cc_toggle, BAT_PROP_CC_TOGGLE),
+        BAT_SYSFS_FIELD_RW(fake_cycle, BAT_PROP_FAKE_CYCLE),
 };
 
 int battery_get_property(enum battery_property bp,
@@ -3534,10 +4211,15 @@ int battery_init(struct platform_device *pdev)
 	gauge = dev_get_drvdata(&pdev->dev);
 	gm = gauge->gm;
 	gm->fixed_bat_tmp = 0xffff;
+        gm->fixed_cycle = 0;
 	gm->tmp_table = fg_temp_table;
 	gm->log_level = BMLOG_ERROR_LEVEL;
 	gm->sw_iavg_gap = 3000;
 	gm->in_sleep = false;
+	gm->extreme_cold_chg_flag = false;
+	gm->extreme_cold_temp = 0;
+	gm->auth_cycle_count_update = false;
+	gm->soh = 100;
 	mutex_init(&gm->fg_update_lock);
 
 	init_waitqueue_head(&gm->wait_que);
@@ -3557,7 +4239,10 @@ int battery_init(struct platform_device *pdev)
 	gauge_coulomb_consumer_init(&gm->uisoc_minus, &pdev->dev, "uisoc-1%");
 	gm->uisoc_minus.callback = fg_bat_int2_l_handler;
 
-
+	gm->update_workqueue = create_singlethread_workqueue("cyc_update");
+	INIT_DELAYED_WORK(&gm->update_delay_work, update_cycle_work);
+	queue_delayed_work(gm->update_workqueue,
+			&gm->update_delay_work, msecs_to_jiffies(10));
 
 	alarm_init(&gm->tracking_timer, ALARM_BOOTTIME,
 		tracking_timer_callback);
@@ -3583,6 +4268,9 @@ int battery_init(struct platform_device *pdev)
 #endif /* CONFIG_PM */
 
 	fg_drv_thread_hrtimer_init(gm);
+
+	hrtimer_init(&timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	timer.function = hrtimer_handle;
 
 	if (!gm->disable_bs_psy)
 		battery_sysfs_create_group(gm->bs_data.psy);

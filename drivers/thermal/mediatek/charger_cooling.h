@@ -48,6 +48,7 @@ struct charger_cooling_device {
 	struct device *dev;
 	enum charger_type type;
 	struct power_supply *chg_psy;
+	struct power_supply *bat_psy;
 	struct power_supply *s_chg_psy;
 	const struct charger_cooling_platform_data *pdata;
 };

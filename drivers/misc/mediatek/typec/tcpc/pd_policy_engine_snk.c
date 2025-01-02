@@ -41,23 +41,20 @@ void pe_snk_startup_entry(struct pd_port *pd_port)
 
 void pe_snk_discovery_entry(struct pd_port *pd_port)
 {
-	bool wait_valid = true;
-
 	if (pd_check_pe_during_hard_reset(pd_port)) {
-		wait_valid = false;
-		pd_enable_pe_state_timer(pd_port, PD_TIMER_PS_TRANSITION);
-	}
-	pd_enable_vbus_valid_detection(pd_port, wait_valid);
+		pd_set_rx_enable(pd_port, PD_RX_CAP_PE_SEND_WAIT_CAP);
+		pd_enable_vbus_safe0v_detection(pd_port);
+		pd_enable_pe_state_timer(pd_port, PD_TIMER_HARD_RESET_SAFE0V);
+	} else
+		pd_enable_vbus_valid_detection(pd_port, true);
 }
 
 void pe_snk_wait_for_capabilities_entry(
 				struct pd_port *pd_port)
 {
-#if CONFIG_USB_PD_SNK_HRESET_KEEP_DRAW
 	/* Default current draw after HardReset */
 	if (pd_check_pe_during_hard_reset(pd_port))
 		pd_dpm_sink_vbus(pd_port, true);
-#endif	/* CONFIG_USB_PD_SNK_HRESET_KEEP_DRAW */
 
 	pd_notify_pe_hard_reset_completed(pd_port);
 
@@ -67,14 +64,11 @@ void pe_snk_wait_for_capabilities_entry(
 
 void pe_snk_evaluate_capability_entry(struct pd_port *pd_port)
 {
-	/* Disable UART output for Source SenderResponse */
-	pd_lock_msg_output(pd_port);
-
 	pd_handle_hard_reset_recovery(pd_port);
 	pd_handle_first_pd_command(pd_port);
 
-	pd_port->pe_data.explicit_contract = false;
 	pd_dpm_snk_evaluate_caps(pd_port);
+	pd_port->pe_data.explicit_contract = false;
 }
 
 void pe_snk_select_capability_entry(struct pd_port *pd_port)
@@ -85,16 +79,13 @@ void pe_snk_select_capability_entry(struct pd_port *pd_port)
 	PE_STATE_WAIT_MSG_HRESET_IF_TOUT(pd_port);
 
 	if (pd_event->event_type == PD_EVT_DPM_MSG) {
-		PE_DBG("SelectCap%d, rdo:0x%08x\n",
+		PE_INFO("SelectCap%d, rdo:0x%08x\n",
 			pd_event->msg_sec, pd_port->last_rdo);
 	} else {
 		/* new request, for debug only */
 		/* pd_dpm_sink_vbus(pd_port, false); */
-		PE_DBG("NewReq, rdo:0x%08x\n", pd_port->last_rdo);
+		PE_INFO("NewReq, rdo:0x%08x\n", pd_port->last_rdo);
 	}
-
-	/* Disable UART output for Sink SenderResponse */
-	pd_lock_msg_output(pd_port);
 
 	pd_send_sop_data_msg(pd_port,
 		PD_DATA_REQUEST, 1, &pd_port->last_rdo);
@@ -102,28 +93,10 @@ void pe_snk_select_capability_entry(struct pd_port *pd_port)
 
 void pe_snk_select_capability_exit(struct pd_port *pd_port)
 {
-#if CONFIG_USB_PD_RENEGOTIATION_COUNTER
-	struct tcpc_device __maybe_unused *tcpc = pd_port->tcpc;
-#endif /* CONFIG_USB_PD_RENEGOTIATION_COUNTER */
-
-	if (pd_check_ctrl_msg_event(pd_port, PD_CTRL_ACCEPT)) {
-		pd_port->pe_data.remote_selected_cap =
-					RDO_POS(pd_port->last_rdo);
-		pd_port->cap_miss_match = 0;
-	} else if (pd_check_ctrl_msg_event(pd_port, PD_CTRL_REJECT)) {
-#if CONFIG_USB_PD_RENEGOTIATION_COUNTER
-		if (pd_port->cap_miss_match == 0x01) {
-			PE_INFO("reset renegotiation cnt by cap mismatch\n");
-			pd_port->pe_data.renegotiation_count = 0;
-		}
-#endif /* CONFIG_USB_PD_RENEGOTIATION_COUNTER */
-		pd_port->cap_miss_match |= (1 << 1);
-	} else
-		pd_port->cap_miss_match = 0;
-
-	/* Waiting for Hard-Reset Done */
-	if (!pd_check_timer_msg_event(pd_port, PD_TIMER_SENDER_RESPONSE))
-		pd_unlock_msg_output(pd_port);
+	if (pd_check_ctrl_msg_event(pd_port, PD_CTRL_ACCEPT))
+		pd_port->pe_data.selected_cap = RDO_POS(pd_port->last_rdo);
+	else if (pd_check_ctrl_msg_event(pd_port, PD_CTRL_REJECT))
+		pd_port->pe_data.request_rejected = true;
 }
 
 void pe_snk_transition_sink_entry(struct pd_port *pd_port)
@@ -305,5 +278,12 @@ void pe_snk_get_pps_status_exit(struct pd_port *pd_port)
 	pd_dpm_inform_pps_status(pd_port);
 }
 #endif	/* CONFIG_USB_PD_REV30_PPS_SINK */
+
+void pe_snk_give_sink_cap_ext_entry(struct pd_port *pd_port)
+{
+	PE_STATE_WAIT_TX_SUCCESS(pd_port);
+
+	pd_dpm_send_sink_cap_ext(pd_port);
+}
 
 #endif	/* CONFIG_USB_PD_REV30 */

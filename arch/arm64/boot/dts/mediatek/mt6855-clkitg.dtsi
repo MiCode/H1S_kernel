@@ -4,6 +4,99 @@
  * Author: Owen Chen <owen.chen@mediatek.com>
  */
 
+/* CAMERA SMART LDO  start */
+
+&pio {
+	i2c7_pins_default: i2c7_pins_default {
+	};
+	i2c7_pins_clk_output1: i2c7pinsclkoutput1 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO151__FUNC_GPIO151>;
+			slew-rate = <1>;
+			output-high;
+		};
+	};
+	i2c7_pins_clk_output0: i2c7pinsclkoutput0 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO151__FUNC_GPIO151>;
+			slew-rate = <1>;
+			output-low;
+		};
+	};
+	i2c7_pins_clk_muxclk: i2c7pinsclkmuxclk {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO151__FUNC_SCL7>;
+            		input-enable;
+            		bias-pull-up;
+		};
+	};
+	i2c7_pins_sda_output1: i2c7pinssdaoutput1 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO152__FUNC_GPIO152>;
+			slew-rate = <1>;
+			output-high;
+		};
+	};
+	i2c7_pins_sda_output0: i2c7pinssdaoutput0 {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO152__FUNC_GPIO152>;
+			slew-rate = <1>;
+			output-low;
+		};
+	};
+	i2c7_pins_sda_muxsda: i2c7pinssdamuxsda {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO152__FUNC_SDA7>;
+            		input-enable;
+            		bias-pull-up;
+		};
+	};
+	smartldo_en_high: smartldoenhigh {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO26__FUNC_GPIO26>;
+			slew-rate = <1>;
+			output-high;
+		};
+	};
+	smartldo_en_low: smartldoenlow {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO26__FUNC_GPIO26>;
+			slew-rate = <1>;
+			output-low;
+		};
+	};
+
+};
+
+&i2c7 {
+    smart_ldo:smart_ldo@28 {
+        compatible = "mediatek,camera_smart_ldo";
+		reg = <0x28>;
+		status = "okay";
+	};
+};
+
+&smart_ldo {
+    pinctrl-names = "default",  "i2c7_clk_high",
+		"i2c7_clk_low", "i2c7_clk_func",
+		"i2c7_sda_high","i2c7_sda_low",
+		"i2c7_sda_func","smartldo_en_high",
+		"smartldo_en_low";
+	pinctrl-0 = <&i2c7_pins_default>;
+	pinctrl-1 = <&i2c7_pins_clk_output1>;
+	pinctrl-2 = <&i2c7_pins_clk_output0>;
+	pinctrl-3 = <&i2c7_pins_clk_muxclk>;
+	pinctrl-4 = <&i2c7_pins_sda_output1>;
+	pinctrl-5 = <&i2c7_pins_sda_output0>;
+	pinctrl-6 = <&i2c7_pins_sda_muxsda>;
+	pinctrl-7 = <&smartldo_en_high>;
+	pinctrl-8 = <&smartldo_en_low>;
+
+	status = "okay";
+};
+
+/* CAMERA SMART LDO  end */
+
 &clkitg {
 	status = "okay";
 	bring-up {

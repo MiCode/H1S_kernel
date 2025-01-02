@@ -26,6 +26,12 @@
 #include <linux/kmemleak.h>
 #include <linux/time.h>
 
+#include <dvfsrc-exp.h>
+#include <linux/soc/mediatek/mtk_dvfsrc.h>
+#if IS_ENABLED(CONFIG_MTK_DRAMC)
+#include <soc/mediatek/dramc.h>
+#endif
+
 #ifndef DRM_CMDQ_DISABLE
 #include <linux/soc/mediatek/mtk-cmdq-ext.h>
 #else
@@ -58,6 +64,7 @@
 #include "mtk_disp_ccorr.h"
 #include "mtk_debug.h"
 #include "platform/mtk_drm_6789.h"
+#include "mi_disp/mi_dsi_panel.h"
 
 /* *****Panel_Master*********** */
 #include "mtk_fbconfig_kdebug.h"
@@ -3078,6 +3085,63 @@ static unsigned int overlap_to_bw(struct drm_crtc *crtc,
 	return bw;
 }
 
+static unsigned int mt6855_lp4_ratio_tb[8] = {
+	800, 800, 787, 750, 700, 700, 625, 700
+};
+static unsigned int mt6855_lp5_ratio_tb[8] = {
+	705, 659, 625, 625, 625, 625, 625, 625
+};
+
+static void update_bw_by_emi_hrt_ratio(struct mtk_drm_private *priv,
+				unsigned int *bw)
+{
+	int dram_opp = 0;
+	unsigned int old_bw = *bw;
+	unsigned int dram_type = 0;
+	unsigned int dram_data_rate = 0;
+	unsigned int delta_ratio = 0;
+
+	if (priv->data->mmsys_id != MMSYS_MT6855)
+		return;
+
+	dram_opp = mtk_dvfsrc_query_opp_info(MTK_DVFSRC_CURR_DRAM_OPP);
+	dram_data_rate = mtk_dramc_get_data_rate();
+
+#if IS_ENABLED(CONFIG_MTK_DRAMC)
+	dram_type = mtk_dramc_get_ddr_type();
+	if ((dram_type == TYPE_LPDDR4) ||
+		(dram_type == TYPE_LPDDR4X) ||
+		(dram_type == TYPE_LPDDR4P)) {
+		if (priv->data->mmsys_id == MMSYS_MT6855) {
+			if (dram_opp > sizeof(mt6855_lp4_ratio_tb) / sizeof(unsigned int) - 1) {
+				DDPMSG("%s, not found valid dram_opp:%d data_rate:%d\n",
+						__func__, dram_opp, dram_data_rate);
+				return;
+			}
+			delta_ratio = mt6855_lp4_ratio_tb[dram_opp] * 1000 / 500;
+			*bw = *bw * delta_ratio / 1000;
+			DDPINFO("%s, data_rate:%d, delta_ratio:%d/1000, old bw:%d, new bw:%d\n",
+					__func__, dram_data_rate, delta_ratio, old_bw, *bw);
+		}
+	} else if ((dram_type == TYPE_LPDDR5) ||
+		(dram_type == TYPE_LPDDR5X)) {
+		if (priv->data->mmsys_id == MMSYS_MT6855) {
+			if (dram_opp > sizeof(mt6855_lp5_ratio_tb) / sizeof(unsigned int) - 1) {
+				DDPMSG("%s, not found valid dram_opp:%d data_rate:%d\n",
+						__func__, dram_opp, dram_data_rate);
+				return;
+			}
+			delta_ratio = mt6855_lp5_ratio_tb[dram_opp] * 1000 / 500;
+			*bw = *bw * delta_ratio / 1000;
+			DDPINFO("%s, data_rate:%d, delta_ratio:%d/1000, old bw:%d, new bw:%d\n",
+					__func__, dram_data_rate, delta_ratio, old_bw, *bw);
+		}
+	} else {
+		DDPMSG("%s not found valid dram_type\n", __func__);
+	}
+#endif
+}
+
 static void mtk_crtc_update_hrt_state(struct drm_crtc *crtc,
 				      unsigned int frame_weight,
 				      struct mtk_drm_lyeblob_ids *lyeblob_ids,
@@ -3092,6 +3156,7 @@ static void mtk_crtc_update_hrt_state(struct drm_crtc *crtc,
 	struct drm_display_mode *mode = NULL;
 	unsigned int max_fps = 0;
 	struct mtk_drm_private *priv = crtc->dev->dev_private;
+	int en = 0;
 
 	DDPINFO("%s bw=%d, last_hrt_req=%d, overlap=%d\n",
 			__func__, bw, mtk_crtc->qos_ctx->last_hrt_req, frame_weight);
@@ -3108,15 +3173,29 @@ static void mtk_crtc_update_hrt_state(struct drm_crtc *crtc,
 
 		if (mtk_crtc->force_high_enabled > 0) {
 			mtk_drm_set_mmclk(crtc, step_size - 1, __func__);
+			bw = MAX_BW;
 		} else {
 			int en = 1;
 
 			output_comp = mtk_ddp_comp_request_output(mtk_crtc);
-			if (output_comp)
+			if (output_comp) {
+				g_mobile_log = 0;
+				DDPMSG("set MMCLK back, and enable underrun irq\n");
 				mtk_ddp_comp_io_cmd(output_comp, NULL, SET_MMCLK_BY_DATARATE, &en);
+				mtk_ddp_comp_io_cmd(output_comp, NULL, IRQ_UNDERRUN, &en);
+			}
 			atomic_set(&mtk_crtc->force_high_step, 0);
 		}
 	} else {
+		if (mtk_crtc->force_high_enabled != 0) {
+			en = 1;
+			output_comp = mtk_ddp_comp_request_output(mtk_crtc);
+			if (output_comp) {
+				/* enable dsi underrun irq*/
+				DDPMSG("enable underrun irq after force_high_step set to 0\n");
+				mtk_ddp_comp_io_cmd(output_comp, NULL, IRQ_UNDERRUN, &en);
+			}
+		}
 		mtk_crtc->force_high_enabled = 0;
 	}
 
@@ -3178,6 +3257,8 @@ static void mtk_crtc_update_hrt_state(struct drm_crtc *crtc,
 		}
 	}
 
+	// consider emi hrt ratio to avoid unbalanced throughput for emi channel
+	update_bw_by_emi_hrt_ratio(priv, &bw);
 	/* can't access backup slot since top clk off */
 	if (priv->power_state == false)
 		return;
@@ -4112,7 +4193,7 @@ static void mtk_crtc_cmdq_timeout_cb(struct cmdq_cb_data data)
 #endif
 
 	/* CMDQ driver would not trigger aee when timeout. */
-	DDPAEE("%s cmdq timeout, crtc id:%d\n", __func__, drm_crtc_index(crtc));
+	//DDPAEE("%s cmdq timeout, crtc id:%d\n", __func__, drm_crtc_index(crtc));
 }
 
 void mtk_crtc_pkt_create(struct cmdq_pkt **cmdq_handle, struct drm_crtc *crtc,
@@ -5190,6 +5271,31 @@ static void cmdq_pkt_wait_te(struct cmdq_pkt *cmdq_handle,
 	*inst = *inst & ((u64)0xFFFFFFFF << 32);
 	*inst = *inst | CMDQ_REG_SHIFT_ADDR(jump_pa);
 }
+
+static void cmdq_pkt_reset_ovl(struct cmdq_pkt *cmdq_handle,
+		struct mtk_drm_crtc *mtk_crtc)
+{
+	struct mtk_ddp_comp *comp = NULL;
+	int type;
+	int i, j;
+
+	for_each_comp_in_cur_crtc_path(comp, mtk_crtc, i, j) {
+		type = mtk_ddp_comp_get_type(comp->id);
+		if (type != MTK_DISP_OVL)
+			continue;
+		mtk_ddp_comp_reset(comp, cmdq_handle);
+	}
+
+	if (mtk_crtc->is_dual_pipe) {
+		for_each_comp_in_dual_pipe(comp, mtk_crtc, i, j) {
+			type = mtk_ddp_comp_get_type(comp->id);
+			if (type != MTK_DISP_OVL)
+				continue;
+			mtk_ddp_comp_reset(comp, cmdq_handle);
+		}
+	}
+}
+
 #endif
 
 void mtk_crtc_start_trig_loop(struct drm_crtc *crtc)
@@ -8599,6 +8705,7 @@ static void mtk_drm_crtc_atomic_begin(struct drm_crtc *crtc,
 	state->cmdq_handle = mtk_crtc_gce_commit_begin(crtc, old_crtc_state, state, true);
 	CRTC_MMP_MARK(index, atomic_begin, (unsigned long)state->cmdq_handle, 0);
 
+	cmdq_pkt_reset_ovl(state->cmdq_handle, mtk_crtc);
 	/*Msync 2.0: add cmds to cfg thread*/
 	if (!mtk_crtc_is_frame_trigger_mode(crtc) &&
 		msync_is_on(priv, params, crtc_id,
@@ -11303,6 +11410,7 @@ int mtk_drm_crtc_create(struct drm_device *drm_dev,
 		mtk_drm_cwb_init(&mtk_crtc->base);
 
 	mtk_disp_chk_recover_init(&mtk_crtc->base);
+	mi_disp_esd_chk_init(&mtk_crtc->base);
 
 	if (output_comp && mtk_ddp_comp_get_type(output_comp->id) == MTK_DSI)
 		mtk_drm_fake_vsync_init(&mtk_crtc->base);

@@ -77,6 +77,11 @@
 #define CLKBUF_COMMON_H
 #include <mtk_clkbuf_ctl.h>
 
+#ifdef CONFIG_MI_DISP
+#include "mi_disp/mi_disp_feature.h"
+#include "mi_disp/mi_disp_log.h"
+#endif
+
 #if IS_ENABLED(CONFIG_MTK_DEVINFO)
 #include <linux/nvmem-consumer.h>
 #endif
@@ -89,7 +94,7 @@
 #define DRIVER_MAJOR 1
 #define DRIVER_MINOR 0
 
-void disp_dbg_deinit(void);
+//void disp_dbg_deinit(void);
 void disp_dbg_probe(void);
 void disp_dbg_init(struct drm_device *dev);
 
@@ -4343,7 +4348,7 @@ int mtk_drm_get_display_caps_ioctl(struct drm_device *dev, void *data,
 	caps_info->lcm_degree = 180;
 #endif
 
-	caps_info->lcm_color_mode = MTK_DRM_COLOR_MODE_NATIVE;
+	caps_info->lcm_color_mode = MTK_DRM_COLOR_MODE_DISPLAY_P3;
 	if (mtk_drm_helper_get_opt(private->helper_opt, MTK_DRM_OPT_OVL_WCG)) {
 		if (params)
 			caps_info->lcm_color_mode = params->lcm_color_mode;
@@ -5430,7 +5435,7 @@ static void mtk_drm_kms_deinit(struct drm_device *drm)
 	component_unbind_all(drm->dev, drm);
 	drm_mode_config_cleanup(drm);
 
-	disp_dbg_deinit();
+	//disp_dbg_deinit();
 	PanelMaster_Deinit();
 
 	if (private->mml_ctx) {
@@ -6471,6 +6476,73 @@ static bool init_secure_static_path_switch(struct device *dev, struct mtk_drm_pr
 	return false;
 }
 
+static ssize_t lcd_name_show(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf)
+{
+	char *temp = NULL;
+	int ret;
+
+	struct device_node *chosen;
+	unsigned long size = 0;
+
+	chosen = of_find_node_by_path("/chosen");
+	if (chosen) {
+		temp = (char *)of_get_property(chosen, "lcd_name", (int *)&size);
+	}
+	ret = scnprintf(buf, PAGE_SIZE, "panel_name=%s\n", temp);
+
+	return ret;
+}
+
+static ssize_t wp_info_show(struct kobject *kobj,
+				struct kobj_attribute *attr,
+				char *buf)
+{
+	char *temp = NULL;
+	int ret;
+
+	struct device_node *chosen;
+	unsigned long size = 0;
+
+	chosen = of_find_node_by_path("/chosen");
+	if (chosen) {
+		temp = (char *)of_get_property(chosen, "wp_info", (int *)&size);
+	}
+	ret = scnprintf(buf, PAGE_SIZE, "%s\n", temp);
+
+	return ret;
+}
+
+static struct kobj_attribute dev_attr_lcd_name =
+		__ATTR(lcd_name, 0644, lcd_name_show, NULL);
+static struct kobj_attribute dev_attr_wp_info =
+		__ATTR(wp_info, 0644, wp_info_show, NULL);
+
+static struct kobject *lcd_node;
+static int lcd_info_create_sysfs(void)
+{
+	int ret;
+
+	lcd_node = kobject_create_and_add("android_lcd", NULL);
+	if(lcd_node == NULL) {
+		pr_info(" lcd_name_create_sysfs_ failed\n");
+		ret=-ENOMEM;
+		return ret;
+	}
+	ret=sysfs_create_file(lcd_node, &dev_attr_lcd_name.attr);
+	if(ret) {
+		pr_info("%s failed \n", __func__);
+		kobject_del(lcd_node);
+	}
+	ret=sysfs_create_file(lcd_node, &dev_attr_wp_info.attr);
+	if(ret) {
+		pr_info("%s, dev_attr_wp_info \n", __func__);
+		kobject_del(lcd_node);
+	}
+	return 0;
+}
+
 static int mtk_drm_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -6490,6 +6562,8 @@ static int mtk_drm_probe(struct platform_device *pdev)
 	disp_dbg_probe();
 	PanelMaster_probe();
 	DDPINFO("%s+\n", __func__);
+
+	lcd_info_create_sysfs();
 
 	//drm_debug = 0x1F; /* DRIVER messages */
 	private = devm_kzalloc(dev, sizeof(*private), GFP_KERNEL);
@@ -6968,6 +7042,10 @@ static int __init mtk_drm_init(void)
 	int i;
 
 	DDPINFO("%s+\n", __func__);
+
+#ifdef CONFIG_MI_DISP
+	mi_disp_feature_init();
+#endif
 	for (i = 0; i < ARRAY_SIZE(mtk_drm_drivers); i++) {
 		DDPINFO("%s register %s driver\n",
 			__func__, mtk_drm_drivers[i]->driver.name);

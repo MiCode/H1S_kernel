@@ -566,7 +566,7 @@ static int pt_arg_verify(int pt_low_vol, int pt_low_bat, int pt_over_cur)
 static int pt_is_low(int pt_low_vol, int pt_low_bat, int pt_over_cur)
 {
 	int is_low = 0;
-
+/*
 	if (pt_low_bat != BATTERY_PERCENT_LEVEL_0
 			|| pt_low_vol != LOW_BATTERY_LEVEL_0
 			|| pt_over_cur != BATTERY_OC_LEVEL_0) {
@@ -574,7 +574,7 @@ static int pt_is_low(int pt_low_vol, int pt_low_bat, int pt_over_cur)
 		if (pt_strict)
 			is_low = 2;
 	}
-
+*/
 	return is_low;
 }
 
@@ -1901,6 +1901,9 @@ static struct platform_driver flashlight_platform_driver = {
 	},
 };
 
+extern void flashlights_mt6855_init_robe(void);
+extern void flashlights_mt6855_exit_robe(void);
+
 static int __init flashlight_init(void)
 {
 	int ret;
@@ -1931,12 +1934,14 @@ static int __init flashlight_init(void)
 #endif
 
 	pr_debug("Init done\n");
+	flashlights_mt6855_init_robe();
 
 	return 0;
 }
 
 static void __exit flashlight_exit(void)
 {
+	flashlights_mt6855_exit_robe();
 	pr_debug("Exit start\n");
 
 	platform_driver_unregister(&flashlight_platform_driver);

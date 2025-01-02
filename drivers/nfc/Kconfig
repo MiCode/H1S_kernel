@@ -52,6 +52,8 @@ config NFC_PORT100
 source "drivers/nfc/fdp/Kconfig"
 source "drivers/nfc/pn544/Kconfig"
 source "drivers/nfc/pn533/Kconfig"
+source "drivers/nfc/pn560/Kconfig"
+source "drivers/nfc/tmsdrv/Kconfig"
 source "drivers/nfc/microread/Kconfig"
 source "drivers/nfc/nfcmrvl/Kconfig"
 source "drivers/nfc/st21nfca/Kconfig"

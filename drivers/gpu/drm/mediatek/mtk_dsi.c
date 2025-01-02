@@ -208,6 +208,8 @@ struct mtk_dsi {
 	const struct mtk_dsi_driver_data *driver_data;
 };
 
+extern unsigned int screen_state;
+
 static inline struct mtk_dsi *bridge_to_dsi(struct drm_bridge *b)
 {
 	return container_of(b, struct mtk_dsi, bridge);

@@ -129,6 +129,8 @@ struct CRTC_MMP_Events {
 	mmp_event gamma_ioctl;
 	mmp_event gamma_sof;
 	mmp_event bdg_gce_irq;
+	/*dsi underrun irq check*/
+	mmp_event dsi_underrun_irq;
 };
 
 struct DRM_MMP_Events *get_drm_mmp_events(void);

@@ -16,6 +16,12 @@
 
 #define DISABLE_VBAT_THRESHOLD -1
 
+#define DEFAULT_OPEN_SWCHG_IBAT_TH	6000
+#define DEFAULT_CLOSE_SWCHG_IBAT_TH	5600
+#define DEFAULT_SWCHG_AS_AUX_AICR	1200
+#define DEFAULT_SWCHG_AS_AUX_ICHG	2000
+#define DEFAULT_READ_IBAT_COUNT	5
+
 extern int pe50_get_log_level(void);
 #define PE50_DBG(fmt, ...) \
 	do { \
@@ -158,6 +164,12 @@ struct pe50_algo_data {
 	u32 r_bat;
 	u32 r_total;
 	u32 ita_lmt;
+	u32 ita;
+	bool pd_verify_flag;
+	u32 jeita_fcc;
+	u32 state_jeita;
+	u32 cv_jeita;
+	u32 jeita_final_cv;
 	u32 ita_pwr_lmt;
 	u32 cv_lower_bound;
 	u32 err_retry_cnt;
@@ -178,6 +190,8 @@ struct pe50_algo_data {
 	enum pe50_thermal_level tswchg_level;
 	int input_current_limit;
 	int cv_limit;
+	bool swchg_aux_charging_status; /* swchg as aux charging status */
+	bool cp_charge_finish;
 };
 
 /* Setting from dtsi */
@@ -230,6 +244,11 @@ struct pe50_algo_desc {
 	const char **support_ta;	/* supported ta name */
 	u32 support_ta_cnt;		/* supported ta count */
 	bool allow_not_check_ta_status;	/* allow not to check ta status */
+	bool support_swchg_as_aux; /* support swchg as aux charging */
+	u32 open_swchg_ibat_th; /* open swchg charge ibat threshold */
+	u32 close_swchg_ibat_th; /* close swchg charge ibat threshold */
+	u32 swchg_as_aux_aicr;
+	u32 swchg_as_aux_ichg;
 };
 
 struct pe50_algo_info {
@@ -237,6 +256,8 @@ struct pe50_algo_info {
 	struct chg_alg_device *alg;
 	struct pe50_algo_desc *desc;
 	struct pe50_algo_data *data;
+	struct smart_chg *smart_charge;
+	bool cp_stop_flag;
 };
 
 static inline u32 precise_div(u64 dividend, u64 divisor)
@@ -285,6 +306,8 @@ extern int pe50_hal_init_hardware(struct chg_alg_device *alg,
 extern int pe50_hal_enable_sw_vbusovp(struct chg_alg_device *alg, bool en);
 extern int pe50_hal_enable_charging(struct chg_alg_device *alg,
 				    enum chg_idx chgidx, bool en);
+extern int pe50_hal_get_chg_is_enabled(struct chg_alg_device *alg, enum chg_idx chgidx,
+			     bool *en);
 extern int pe50_hal_enable_chip(struct chg_alg_device *alg, enum chg_idx chgidx,
 				bool en);
 extern int pe50_hal_enable_hz(struct chg_alg_device *alg, enum chg_idx chgidx,
@@ -323,4 +346,5 @@ extern int pe50_hal_get_adc_accuracy(struct chg_alg_device *alg,
 				     enum chg_idx chgidx,
 				     enum pe50_adc_channel chan, int *val);
 extern int pe50_hal_init_chip(struct chg_alg_device *alg, enum chg_idx chgidx);
+extern int pe50_hal_enable_cp_adc(struct chg_alg_device *alg, enum chg_idx chgidx, bool en);
 #endif /* __MTK_PE5_H */

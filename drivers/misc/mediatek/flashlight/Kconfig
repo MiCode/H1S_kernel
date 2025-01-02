@@ -11,6 +11,14 @@ config MTK_FLASHLIGHT
 	  If you have any questions about this, say Y here,
 	  only say N if you know exactly what you are doing.
 
+config MTK_FLASHLIGHT_MT6855
+	tristate "Mediatek flashlight mt6855 gpio driver"
+	depends on MTK_FLASHLIGHT
+	help
+	  This is flashlight mt6855 driver for camera.
+	  Say Y here if you want a driver IC with GPIO interface.
+	  Select this only if your board has this IC.
+	  Say M here if you want to compile this driver as a module.
 
 config MTK_V4L2_FLASHLIGHT
 	tristate "Mediatek V4L2 flashlight driver"

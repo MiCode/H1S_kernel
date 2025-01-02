@@ -9,10 +9,10 @@
 #include <dt-bindings/pinctrl/mt6855-pinfunc.h>
 
 &mtk_leds {
-	compatible = "mediatek,i2c-leds";
+	compatible = "mediatek,lcd-backlight";
 
 	backlight {
-		led_mode = <6>;
+		led_mode = <4>;
 		gate_enable = <1>;
 		pwm_config = <0 1 0 0 0>;
 	};

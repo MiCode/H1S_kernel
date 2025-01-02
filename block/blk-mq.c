@@ -353,6 +353,7 @@ static struct request *__blk_mq_alloc_request(struct blk_mq_alloc_data *data)
 	struct elevator_queue *e = q->elevator;
 	u64 alloc_time_ns = 0;
 	unsigned int tag;
+	bool skip = false;
 
 	/* alloc_time includes depth and tag waits */
 	if (blk_queue_rq_alloc_time(q))
@@ -384,7 +385,9 @@ retry:
 	 * case just retry the hctx assignment and tag allocation as CPU hotplug
 	 * should have migrated us to an online CPU by now.
 	 */
-	tag = blk_mq_get_tag(data);
+	trace_android_rvh_internal_blk_mq_alloc_request(&skip, &tag, data);
+	if (!skip)
+		tag = blk_mq_get_tag(data);
 	if (tag == BLK_MQ_NO_TAG) {
 		if (data->flags & BLK_MQ_REQ_NOWAIT)
 			return NULL;
@@ -496,12 +499,17 @@ static void __blk_mq_free_request(struct request *rq)
 	struct blk_mq_ctx *ctx = rq->mq_ctx;
 	struct blk_mq_hw_ctx *hctx = rq->mq_hctx;
 	const int sched_tag = rq->internal_tag;
+	bool skip = false;
 
 	blk_crypto_free_request(rq);
 	blk_pm_mark_last_busy(rq);
 	rq->mq_hctx = NULL;
-	if (rq->tag != BLK_MQ_NO_TAG)
-		blk_mq_put_tag(hctx->tags, ctx, rq->tag);
+
+	trace_android_vh_internal_blk_mq_free_request(&skip, rq, hctx);
+	if (!skip) {
+		if (rq->tag != BLK_MQ_NO_TAG)
+			blk_mq_put_tag(hctx->tags, ctx, rq->tag);
+	}
 	if (sched_tag != BLK_MQ_NO_TAG)
 		blk_mq_put_tag(hctx->sched_tags, ctx, sched_tag);
 	blk_mq_sched_restart(hctx);
@@ -701,6 +709,11 @@ EXPORT_SYMBOL_GPL(blk_mq_complete_request_remote);
  **/
 void blk_mq_complete_request(struct request *rq)
 {
+	bool skip = false;
+
+	trace_android_vh_blk_mq_complete_request(&skip, rq);
+	if (skip)
+		return;
 	if (!blk_mq_complete_request_remote(rq))
 		rq->q->mq_ops->complete(rq);
 }
@@ -827,7 +840,12 @@ void blk_mq_add_to_requeue_list(struct request *rq, bool at_head,
 {
 	struct request_queue *q = rq->q;
 	unsigned long flags;
+	bool skip = false;
 
+	trace_android_vh_blk_mq_add_to_requeue_list(&skip, rq,
+						     kick_requeue_list);
+	if (skip)
+		return;
 	/*
 	 * We abuse this flag that is otherwise used by the I/O scheduler to
 	 * request head insertion from the workqueue.
@@ -1593,7 +1611,13 @@ select_cpu:
 static void __blk_mq_delay_run_hw_queue(struct blk_mq_hw_ctx *hctx, bool async,
 					unsigned long msecs)
 {
+	bool skip = false;
+
 	if (unlikely(blk_mq_hctx_stopped(hctx)))
+		return;
+
+	trace_android_rvh_blk_mq_delay_run_hw_queue(&skip, hctx, async);
+	if (skip)
 		return;
 
 	if (!async && !(hctx->flags & BLK_MQ_F_BLOCKING)) {
@@ -1651,6 +1675,7 @@ void blk_mq_run_hw_queue(struct blk_mq_hw_ctx *hctx, bool async)
 		blk_mq_hctx_has_pending(hctx);
 	hctx_unlock(hctx, srcu_idx);
 
+	trace_android_vh_blk_mq_run_hw_queue(&need_run, hctx);
 	if (need_run)
 		__blk_mq_delay_run_hw_queue(hctx, async, 0);
 }
@@ -1877,8 +1902,13 @@ void __blk_mq_insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
 			     bool at_head)
 {
 	struct blk_mq_ctx *ctx = rq->mq_ctx;
+	bool skip = false;
 
 	lockdep_assert_held(&ctx->lock);
+
+	trace_android_vh_blk_mq_insert_request(&skip, hctx, rq);
+	if (skip)
+		return;
 
 	__blk_mq_insert_req_list(hctx, rq, at_head);
 	blk_mq_hctx_mark_pending(hctx, ctx);
@@ -2419,12 +2449,15 @@ struct blk_mq_tags *blk_mq_alloc_rq_map(struct blk_mq_tag_set *set,
 {
 	struct blk_mq_tags *tags;
 	int node;
+	bool skip = false;
 
 	node = blk_mq_hw_queue_to_node(&set->map[HCTX_TYPE_DEFAULT], hctx_idx);
 	if (node == NUMA_NO_NODE)
 		node = set->numa_node;
 
-	tags = blk_mq_init_tags(nr_tags, reserved_tags, node, flags);
+	trace_android_rvh_blk_mq_alloc_rq_map(&skip, &tags, set, node, flags);
+	if (!skip)
+		tags = blk_mq_init_tags(nr_tags, reserved_tags, node, flags);
 	if (!tags)
 		return NULL;
 
@@ -3362,6 +3395,8 @@ struct request_queue *blk_mq_init_allocated_queue(struct blk_mq_tag_set *set,
 	blk_mq_add_queue_tag_set(set, q);
 	blk_mq_map_swqueue(q);
 
+	trace_android_rvh_blk_mq_init_allocated_queue(q);
+
 	if (elevator_init)
 		elevator_init_mq(q);
 
@@ -3385,6 +3420,7 @@ void blk_mq_exit_queue(struct request_queue *q)
 {
 	struct blk_mq_tag_set *set = q->tag_set;
 
+	trace_android_vh_blk_mq_exit_queue(q);
 	/* Checks hctx->flags & BLK_MQ_F_TAG_QUEUE_SHARED. */
 	blk_mq_exit_hw_queues(q, set, set->nr_hw_queues);
 	/* May clear BLK_MQ_F_TAG_QUEUE_SHARED in hctx->flags. */
@@ -3574,6 +3610,8 @@ int blk_mq_alloc_tag_set(struct blk_mq_tag_set *set)
 	ret = blk_mq_update_queue_map(set);
 	if (ret)
 		goto out_free_mq_map;
+
+	trace_android_vh_blk_mq_alloc_tag_set(set);
 
 	ret = blk_mq_alloc_map_and_requests(set);
 	if (ret)

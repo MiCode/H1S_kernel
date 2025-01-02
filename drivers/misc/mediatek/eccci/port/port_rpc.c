@@ -44,6 +44,8 @@
 #include "port_rpc.h"
 #define MAX_QUEUE_LENGTH 16
 
+#define BOARD_ID0_GPIO 158
+
 static struct gpio_item gpio_mapping_table[] = {
 	{"GPIO_FDD_Band_Support_Detection_1",
 		"GPIO_FDD_BAND_SUPPORT_DETECT_1ST_PIN",},
@@ -72,6 +74,11 @@ static struct gpio_item gpio_mapping_table[] = {
 static int get_md_gpio_val(unsigned int num)
 {
 	return gpio_get_value(num);
+}
+
+void set_md_gpio_direction(int num )
+{
+	gpio_direction_input(num);
 }
 
 static int get_md_adc_val(__attribute__((unused))unsigned int num)
@@ -481,6 +488,9 @@ static void ccci_rpc_get_gpio_adc_v2(struct ccci_rpc_gpio_adc_intput_v2 *input,
 						&md_val);
 				if (num >= 0) {
 					output->gpioPinNum[i] = md_val;
+					if(BOARD_ID0_GPIO == md_val){
+					    set_md_gpio_direction(num);
+					}
 					val = get_md_gpio_val(num);
 					output->gpioPinValue[i] = val;
 				}

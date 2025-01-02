@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2020 MediaTek Inc.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 #ifndef __LINUX_RT5081_H
@@ -131,7 +131,7 @@
 #define RT5081_REG_AUTOIDLE_EN				(1<<3)
 
 /* timeout = (tout*2+1) * 6.4ms */
-#if CONFIG_USB_PD_REV30
+#ifdef CONFIG_USB_PD_REV30
 #define RT5081_REG_IDLE_SET(ck300, ship_dis, auto_idle, tout) \
 	((ck300 << 7) | (ship_dis << 5) |\
 	 (auto_idle << 3) | (tout & 0x07) | RT5081_REG_ENEXTMSG)

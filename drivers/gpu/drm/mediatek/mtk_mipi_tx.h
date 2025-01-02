@@ -17,7 +17,7 @@
 #include <linux/platform_device.h>
 #include <linux/phy/phy.h>
 #include <linux/slab.h>
-
+/*
 struct mtk_mipitx_data {
 	const u32 mppll_preserve;
 	const struct clk_ops *mipi_tx_clk_ops;
@@ -35,7 +35,7 @@ struct mtk_mipi_tx {
 	struct clk_hw pll_hw;
 	struct clk *pll;
 };
-
+*/
 struct mtk_mipi_tx *mtk_mipi_tx_from_clk_hw(struct clk_hw *hw);
 void mtk_mipi_tx_clear_bits(struct mtk_mipi_tx *mipi_tx, u32 offset, u32 bits);
 void mtk_mipi_tx_set_bits(struct mtk_mipi_tx *mipi_tx, u32 offset, u32 bits);

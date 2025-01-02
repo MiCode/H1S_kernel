@@ -7,6 +7,7 @@
 #define PD_POLICY_ENGINE_H_
 
 #include "pd_core.h"
+#include "tcpci_core.h"
 
 /* ---- Policy Engine State ---- */
 
@@ -92,6 +93,12 @@ enum pd_pe_state_machine {
 #define PE_STATE_FLAG_DPM_ACK_IMMEDIATELY		(1<<7)
 
 #define PE_STATE_WAIT_TX_SUCCESS(pd_port)	{\
+	pd_port->pe_data.pe_state_flags2 = \
+	PE_STATE_FLAG_BACK_READY_IF_RECV_GOOD_CRC; }
+
+#define PE_STATE_WAIT_TX_SUCCESS_OR_FAILED(pd_port)	{\
+	pd_port->pe_data.pe_state_flags = \
+	PE_STATE_FLAG_BACK_READY_IF_TX_FAILED; \
 	pd_port->pe_data.pe_state_flags2 = \
 	PE_STATE_FLAG_BACK_READY_IF_RECV_GOOD_CRC; }
 
@@ -190,6 +197,7 @@ enum pd_pe_state {
 #if CONFIG_USB_PD_REV30_PPS_SOURCE
 	PE_SRC_GIVE_PPS_STATUS,
 #endif	/* CONFIG_USB_PD_REV30_PPS_SOURCE */
+	PE_SRC_GET_SINK_CAP_EXT,
 #endif	/* CONFIG_USB_PD_REV30 */
 #endif	/* CONFIG_USB_PD_PE_SOURCE */
 
@@ -234,6 +242,7 @@ enum pd_pe_state {
 #if CONFIG_USB_PD_REV30_PPS_SINK
 	PE_SNK_GET_PPS_STATUS,
 #endif	/* CONFIG_USB_PD_REV30_PPS_SINK */
+	PE_SNK_GIVE_SINK_CAP_EXT,
 #endif	/* CONFIG_USB_PD_REV30 */
 #endif	/* CONFIG_USB_PD_PE_SINK */
 
@@ -256,17 +265,17 @@ enum pd_pe_state {
 /******************* PR_SWAP *******************/
 #if CONFIG_USB_PD_PR_SWAP
 /* PR_SWAP_SRC */
-	PE_PRS_SRC_SNK_EVALUATE_PR_SWAP,
-	PE_PRS_SRC_SNK_ACCEPT_PR_SWAP,
+	PE_PRS_SRC_SNK_EVALUATE_SWAP,
+	PE_PRS_SRC_SNK_ACCEPT_SWAP,
 	PE_PRS_SRC_SNK_TRANSITION_TO_OFF,
 	PE_PRS_SRC_SNK_ASSERT_RD,
 	PE_PRS_SRC_SNK_WAIT_SOURCE_ON,
 	PE_PRS_SRC_SNK_SEND_SWAP,
-	PE_PRS_SRC_SNK_REJECT_PR_SWAP,
+	PE_PRS_SRC_SNK_REJECT_SWAP,
 
 /* PR_SWAP_SNK */
-	PE_PRS_SNK_SRC_EVALUATE_PR_SWAP,
-	PE_PRS_SNK_SRC_ACCEPT_PR_SWAP,
+	PE_PRS_SNK_SRC_EVALUATE_SWAP,
+	PE_PRS_SNK_SRC_ACCEPT_SWAP,
 	PE_PRS_SNK_SRC_TRANSITION_TO_OFF,
 	PE_PRS_SNK_SRC_ASSERT_RP,
 	PE_PRS_SNK_SRC_SOURCE_ON,
@@ -287,6 +296,8 @@ enum pd_pe_state {
 #if CONFIG_USB_PD_REV30_SRC_CAP_EXT_REMOTE
 	PE_DR_SRC_GET_SOURCE_CAP_EXT,
 #endif	/* CONFIG_USB_PD_REV30_SRC_CAP_EXT_REMOTE */
+	PE_DR_SRC_GIVE_SINK_CAP_EXT,
+	PE_DR_SNK_GET_SINK_CAP_EXT,
 #endif	/* CONFIG_USB_PD_REV30 */
 #endif	/* CONFIG_USB_PD_PR_SWAP */
 
@@ -310,10 +321,8 @@ enum pd_pe_state {
 	PE_UFP_VDM_MODE_EXIT,
 	PE_UFP_VDM_ATTENTION_REQUEST,
 
-#if CONFIG_USB_PD_ALT_MODE
 	PE_UFP_VDM_DP_STATUS_UPDATE,
 	PE_UFP_VDM_DP_CONFIGURE,
-#endif/* CONFIG_USB_PD_ALT_MODE */
 
 /******************* DFP_VDM *******************/
 	PE_DFP_UFP_VDM_IDENTITY_REQUEST,
@@ -322,6 +331,12 @@ enum pd_pe_state {
 	PE_DFP_CBL_VDM_IDENTITY_REQUEST,
 	PE_DFP_CBL_VDM_IDENTITY_ACKED,
 	PE_DFP_CBL_VDM_IDENTITY_NAKED,
+	PE_DFP_CBL_VDM_SVIDS_REQUEST,
+	PE_DFP_CBL_VDM_SVIDS_ACKED,
+	PE_DFP_CBL_VDM_SVIDS_NAKED,
+	PE_DFP_CBL_VDM_MODES_REQUEST,
+	PE_DFP_CBL_VDM_MODES_ACKED,
+	PE_DFP_CBL_VDM_MODES_NAKED,
 
 	PE_DFP_VDM_SVIDS_REQUEST,
 	PE_DFP_VDM_SVIDS_ACKED,
@@ -341,7 +356,6 @@ enum pd_pe_state {
 	PE_DFP_CBL_SEND_CABLE_RESET,
 #endif	/* CONFIG_PD_DFP_RESET_CABLE */
 
-#if CONFIG_USB_PD_ALT_MODE_DFP
 	PE_DFP_VDM_DP_STATUS_UPDATE_REQUEST,
 	PE_DFP_VDM_DP_STATUS_UPDATE_ACKED,
 	PE_DFP_VDM_DP_STATUS_UPDATE_NAKED,
@@ -349,7 +363,6 @@ enum pd_pe_state {
 	PE_DFP_VDM_DP_CONFIGURATION_REQUEST,
 	PE_DFP_VDM_DP_CONFIGURATION_ACKED,
 	PE_DFP_VDM_DP_CONFIGURATION_NAKED,
-#endif/* CONFIG_USB_PD_ALT_MODE_DFP */
 
 /******************* UVDM & SVDM *******************/
 
@@ -395,6 +408,8 @@ enum pd_pe_state {
 	PE_GIVE_COUNTRY_INFO,
 #endif	/* CONFIG_USB_PD_REV30_COUNTRY_INFO_LOCAL */
 	PE_VDM_NOT_SUPPORTED,
+	PE_GET_REVISION,
+	PE_GIVE_REVISION,
 #endif /* CONFIG_USB_PD_REV30 */
 
 /******************* Others *******************/
@@ -541,6 +556,10 @@ void pe_src_get_sink_status_exit(
 void pe_src_give_pps_status_entry(
 	struct pd_port *pd_port);
 #endif	/* CONFIG_USB_PD_REV30_PPS_SOURCE */
+void pe_src_get_sink_cap_ext_entry(
+	struct pd_port *pd_port);
+void pe_src_get_sink_cap_ext_exit(
+	struct pd_port *pd_port);
 #endif	/* CONFIG_USB_PD_REV30 */
 #endif	/* CONFIG_USB_PD_PE_SOURCE */
 
@@ -617,6 +636,8 @@ void pe_snk_get_pps_status_entry(
 void pe_snk_get_pps_status_exit(
 	struct pd_port *pd_port);
 #endif	/* CONFIG_USB_PD_REV30_PPS_SINK */
+void pe_snk_give_sink_cap_ext_entry(
+	struct pd_port *pd_port);
 #endif	/* CONFIG_USB_PD_REV30 */
 #endif	/* CONFIG_USB_PD_PE_SINK */
 
@@ -649,9 +670,9 @@ void pe_drs_ufp_dfp_reject_dr_swap_entry(
 /******************* PR_SWAP *******************/
 #if CONFIG_USB_PD_PR_SWAP
 /* PR_SWAP_SRC */
-void pe_prs_src_snk_evaluate_pr_swap_entry(
+void pe_prs_src_snk_evaluate_swap_entry(
 	struct pd_port *pd_port);
-void pe_prs_src_snk_accept_pr_swap_entry(
+void pe_prs_src_snk_accept_swap_entry(
 	struct pd_port *pd_port);
 void pe_prs_src_snk_transition_to_off_entry(
 	struct pd_port *pd_port);
@@ -663,13 +684,13 @@ void pe_prs_src_snk_wait_source_on_exit(
 	struct pd_port *pd_port);
 void pe_prs_src_snk_send_swap_entry(
 	struct pd_port *pd_port);
-void pe_prs_src_snk_reject_pr_swap_entry(
+void pe_prs_src_snk_reject_swap_entry(
 	struct pd_port *pd_port);
 
 /* PR_SWAP_SNK */
-void pe_prs_snk_src_evaluate_pr_swap_entry(
+void pe_prs_snk_src_evaluate_swap_entry(
 	struct pd_port *pd_port);
-void pe_prs_snk_src_accept_pr_swap_entry(
+void pe_prs_snk_src_accept_swap_entry(
 	struct pd_port *pd_port);
 void pe_prs_snk_src_transition_to_off_entry(
 	struct pd_port *pd_port);
@@ -712,6 +733,12 @@ void pe_dr_src_get_source_cap_ext_entry(
 void pe_dr_src_get_source_cap_ext_exit(
 	struct pd_port *pd_port);
 #endif	/* CONFIG_USB_PD_REV30_SRC_CAP_EXT_REMOTE */
+void pe_dr_src_give_sink_cap_ext_entry(
+	struct pd_port *pd_port);
+void pe_dr_snk_get_sink_cap_ext_entry(
+	struct pd_port *pd_port);
+void pe_dr_snk_get_sink_cap_ext_exit(
+	struct pd_port *pd_port);
 #endif	/* CONFIG_USB_PD_REV30 */
 #endif	/* CONFIG_USB_PD_PR_SWAP */
 
@@ -772,12 +799,10 @@ void pe_ufp_vdm_mode_exit_nak_entry(
 void pe_ufp_vdm_attention_request_entry(
 	struct pd_port *pd_port);
 
-#if CONFIG_USB_PD_ALT_MODE
 void pe_ufp_vdm_dp_status_update_entry(
 	struct pd_port *pd_port);
 void pe_ufp_vdm_dp_configure_entry(
 	struct pd_port *pd_port);
-#endif/* CONFIG_USB_PD_ALT_MODE */
 /******************* DFP_VDM *******************/
 void pe_dfp_ufp_vdm_identity_request_entry(
 	struct pd_port *pd_port);
@@ -790,6 +815,18 @@ void pe_dfp_cbl_vdm_identity_request_entry(
 void pe_dfp_cbl_vdm_identity_acked_entry(
 	struct pd_port *pd_port);
 void pe_dfp_cbl_vdm_identity_naked_entry(
+	struct pd_port *pd_port);
+void pe_dfp_cbl_vdm_svids_request_entry(
+	struct pd_port *pd_port);
+void pe_dfp_cbl_vdm_svids_acked_entry(
+	struct pd_port *pd_port);
+void pe_dfp_cbl_vdm_svids_naked_entry(
+	struct pd_port *pd_port);
+void pe_dfp_cbl_vdm_modes_request_entry(
+	struct pd_port *pd_port);
+void pe_dfp_cbl_vdm_modes_acked_entry(
+	struct pd_port *pd_port);
+void pe_dfp_cbl_vdm_modes_naked_entry(
 	struct pd_port *pd_port);
 
 void pe_dfp_vdm_svids_request_entry(
@@ -823,7 +860,6 @@ void pe_dfp_cbl_send_soft_reset_entry(
 void pe_dfp_cbl_send_cable_reset_entry(
 	struct pd_port *pd_port);
 #endif	/* CONFIG_PD_DFP_RESET_CABLE */
-#if CONFIG_USB_PD_ALT_MODE_DFP
 void pe_dfp_vdm_dp_status_update_request_entry(
 	struct pd_port *pd_port);
 void pe_dfp_vdm_dp_status_update_acked_entry(
@@ -837,7 +873,6 @@ void pe_dfp_vdm_dp_configuration_acked_entry(
 	struct pd_port *pd_port);
 void pe_dfp_vdm_dp_configuration_naked_entry(
 	struct pd_port *pd_port);
-#endif/* CONFIG_USB_PD_ALT_MODE_DFP */
 /******************* UVDM & SVDM *******************/
 #if CONFIG_USB_PD_CUSTOM_VDM
 void pe_ufp_uvdm_recv_entry(
@@ -905,6 +940,12 @@ void pe_give_country_info_entry(
 	struct pd_port *pd_port);
 #endif	/* CONFIG_USB_PD_REV30_COUNTRY_INFO_LOCAL */
 void pe_vdm_not_supported_entry(
+	struct pd_port *pd_port);
+void pe_get_revision_entry(
+	struct pd_port *pd_port);
+void pe_get_revision_exit(
+	struct pd_port *pd_port);
+void pe_give_revision_entry(
 	struct pd_port *pd_port);
 #endif /* CONFIG_USB_PD_REV30 */
 /******************* Others *******************/

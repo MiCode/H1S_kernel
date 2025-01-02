@@ -12,6 +12,13 @@
 #include "mtk_charger_algorithm_class.h"
 #include <linux/power_supply.h>
 #include "mtk_smartcharging.h"
+// smart chg
+#include <linux/notifier.h>
+#include "../../gpu/drm/mediatek/mediatek_v2/mtk_disp_notify.h"
+struct chg_screen_monitor {
+	struct notifier_block charger_panel_notifier;
+	int screen_state;
+};
 
 #define CHARGING_INTERVAL 10
 #define CHARGING_FULL_INTERVAL 20
@@ -85,6 +92,7 @@ struct charger_data;
 #define MAX_CHARGE_TEMP_MINUS_X_DEGREE	47
 
 #define MAX_ALG_NO 10
+#define CHARGER_STATE_NUM 18
 
 enum bat_temp_state_enum {
 	BAT_TEMP_LOW = 0,
@@ -107,32 +115,35 @@ struct battery_thermal_protection_data {
 	int max_charge_temp_minus_x_degree;
 };
 
+extern void do_sw_jeita_state_machine(struct mtk_charger *info);
+
 /* sw jeita */
-#define JEITA_TEMP_ABOVE_T4_CV	4240000
-#define JEITA_TEMP_T3_TO_T4_CV	4240000
-#define JEITA_TEMP_T2_TO_T3_CV	4340000
-#define JEITA_TEMP_T1_TO_T2_CV	4240000
-#define JEITA_TEMP_T0_TO_T1_CV	4040000
-#define JEITA_TEMP_BELOW_T0_CV	4040000
-#define TEMP_T4_THRES  50
-#define TEMP_T4_THRES_MINUS_X_DEGREE 47
-#define TEMP_T3_THRES  45
-#define TEMP_T3_THRES_MINUS_X_DEGREE 39
-#define TEMP_T2_THRES  10
-#define TEMP_T2_THRES_PLUS_X_DEGREE 16
-#define TEMP_T1_THRES  0
-#define TEMP_T1_THRES_PLUS_X_DEGREE 6
-#define TEMP_T0_THRES  0
-#define TEMP_T0_THRES_PLUS_X_DEGREE  0
-#define TEMP_NEG_10_THRES 0
+#define JEITA_TEMP_ABOVE_T6_CV	4100000
+#define JEITA_TEMP_T5_TO_T6_CV	4100000
+#define JEITA_TEMP_T4_TO_T5_CV	4500000
+#define JEITA_TEMP_T3_TO_T4_CV	4500000
+#define JEITA_TEMP_T2_TO_T3_CV	4500000
+#define JEITA_TEMP_T1_TO_T2_CV	4500000
+#define JEITA_TEMP_T0_TO_T1_CV	4500000
+#define JEITA_TEMP_BELOW_T0_CV	4500000
+
+#define JEITA_TEMP_T5_TO_T6_CC	2450000
+#define JEITA_TEMP_T4_TO_T5_CC	3600000
+#define JEITA_TEMP_T3_TO_T4_CC	3600000
+#define JEITA_TEMP_T2_TO_T3_CC	3150000
+#define JEITA_TEMP_T1_TO_T2_CC	2500000
+#define JEITA_TEMP_T0_TO_T1_CC	1000000
+#define JEITA_TEMP_BELOW_T0_CC	500000
 
 /*
  * Software JEITA
  * T0: -10 degree Celsius
  * T1: 0 degree Celsius
- * T2: 10 degree Celsius
- * T3: 45 degree Celsius
- * T4: 50 degree Celsius
+ * T2: 5 degree Celsius
+ * T3: 10 degree Celsius
+ * T4: 15 degree Celsius
+ * T5: 45 degree Celsius
+ * T6: 56 degree Celsius
  */
 enum sw_jeita_state_enum {
 	TEMP_BELOW_T0 = 0,
@@ -140,15 +151,68 @@ enum sw_jeita_state_enum {
 	TEMP_T1_TO_T2,
 	TEMP_T2_TO_T3,
 	TEMP_T3_TO_T4,
-	TEMP_ABOVE_T4
+	TEMP_T4_TO_T5,
+	TEMP_T5_TO_T6,
+	TEMP_ABOVE_T6
 };
 
 struct sw_jeita_data {
 	int sm;
 	int pre_sm;
 	int cv;
+	int cc;
 	bool charging;
 	bool error_recovery_flag;
+};
+
+struct battery_info {
+        u32 volt;
+        u32 cycle;
+        u32 iterm;
+        u32 fv;
+        u32 uisoc;
+        u32 rsoc;
+        int temp;
+        int curr;
+        u32 full_cnt;
+        u32 recharge_cnt;
+        u32 thermal_lv;
+        bool charge_full;
+        bool recharge;
+        bool ffc;
+        bool ffc_disable;
+        bool bbc_charge_done;
+	bool bbc_charge_enable;
+};
+
+struct step_chg_data {
+        u32 low_vbat;
+        u32 high_vbat;
+        u32 fcc;
+};
+
+struct nomal_cv_data {
+        u32 bat_cycle;
+        u32 nomal_cv;
+};
+
+struct star_algo_data {
+        u32 size;
+        u32 step;
+        u32 iterm_num;
+        u32 bat_num;
+        u32 bat_id;
+        u32 *cycle;
+        u32 *iterm_cfg;
+        u32 *temp_cfg;
+        u32 nomal_fv;
+        u32 nomal_cv_step;
+        u32 nomal_iterm;
+        u32 fcc;
+        u32 fv;
+        u32 iterm;
+        struct step_chg_data *step_chg_cfg;
+        struct nomal_cv_data *nomal_cv_data;
 };
 
 struct mtk_charger_algorithm {
@@ -176,12 +240,25 @@ struct charger_custom_data {
 	int charging_host_charger_current;
 
 	/* sw jeita */
-	int jeita_temp_above_t4_cv;
+	int jeita_temp_above_t6_cv;
+	int jeita_temp_t5_to_t6_cv;
+	int jeita_temp_t4_to_t5_cv;
 	int jeita_temp_t3_to_t4_cv;
 	int jeita_temp_t2_to_t3_cv;
 	int jeita_temp_t1_to_t2_cv;
 	int jeita_temp_t0_to_t1_cv;
 	int jeita_temp_below_t0_cv;
+
+	int jeita_temp_t5_to_t6_cc;
+	int jeita_temp_t4_to_t5_cc;
+	int jeita_temp_t3_to_t4_cc;
+	int jeita_temp_t2_to_t3_cc;
+	int jeita_temp_t1_to_t2_cc;
+	int jeita_temp_t0_to_t1_cc;
+	int jeita_temp_below_t0_cc;
+
+	int temp_t6_thres;
+	int temp_t5_thres;
 	int temp_t4_thres;
 	int temp_t4_thres_minus_x_degree;
 	int temp_t3_thres;
@@ -230,6 +307,13 @@ enum chg_data_idx_enum {
 	CHGS_SETTING_MAX,
 };
 
+enum blank_flag{
+	NROMAL = 0,
+	BLACK_TO_BRIGHT = 1,
+	BRIGHT = 2,
+	BLACK = 3,
+};
+
 struct mtk_charger {
 	struct platform_device *pdev;
 	struct charger_device *chg1_dev;
@@ -266,7 +350,18 @@ struct mtk_charger {
 	struct notifier_block pd_nb;
 	struct mutex pd_lock;
 	int pd_type;
+        int pd_sink_uV;
+        int pd_sink_uA;
 	bool pd_reset;
+
+	struct tcpc_device *tcpc;
+	struct notifier_block tcpc_rust_det_nb;
+	struct delayed_work hrtime_otg_work;
+	struct alarm rust_det_work_timer;
+	struct delayed_work set_cc_drp_work;
+	bool typec_attach;
+	bool ui_cc_toggle;
+	bool cid_status;
 
 	u32 bootmode;
 	u32 boottype;
@@ -312,8 +407,11 @@ struct mtk_charger {
 	int safety_timer_cmd;
 	bool vbusov_stat;
 	bool is_chg_done;
+        bool ship_mode;
+        int mtbf_current;
 	/* ATM */
 	bool atm_enabled;
+        bool en_floatgnd;
 
 	const char *algorithm_name;
 	struct mtk_charger_algorithm algo;
@@ -335,12 +433,17 @@ struct mtk_charger {
 	bool enable_vbat_mon;
 	bool enable_vbat_mon_bak;
 	int old_cv;
+        u32 old_iterm;
 	bool stop_6pin_re_en;
 	int vbat0_flag;
 
 	/* sw jeita */
 	bool enable_sw_jeita;
 	struct sw_jeita_data sw_jeita;
+
+        struct delayed_work charge_monitor_work;
+        struct star_algo_data star_algo_cfg;
+        struct battery_info bat;
 
 	/* battery thermal protection */
 	struct battery_thermal_protection_data thermal;
@@ -377,6 +480,42 @@ struct mtk_charger {
 	bool force_disable_pp[CHG2_SETTING + 1];
 	bool enable_pp[CHG2_SETTING + 1];
 	struct mutex pp_lock[CHG2_SETTING + 1];
+
+	/* smart charge */
+	int diff_fv_val;
+	int diff_fv_val_save;
+
+	int soc;
+	struct smart_chg *smart_charge;
+	struct power_supply *battery_psy;
+	struct delayed_work xm_charge_work;
+	bool night_charging_flag;
+	bool fv_overvoltage_flag;
+	struct chg_screen_monitor sm;
+	bool first_low_plugin_flag;
+	bool pps_fast_mode;
+	int thermal_board_temp; /* board temp from thermal*/
+	struct notifier_block chg_nb; /* charger notifier */
+	enum blank_flag b_flag;
+
+	bool batt_verify;
+
+	int real_type;
+};
+
+static const int thermal_mitigation_pps[CHARGER_STATE_NUM] = {
+	-1, 7000000,6000000,5400000,5000000,4500000,4000000,3500000,3000000,2600000,
+	    2200000,1500000,1100000,800000,500000,350000
+};
+
+static const int thermal_mitigation_pps_fast[CHARGER_STATE_NUM] = {
+	-1, 8000000,7000000,6500000,6000000,5500000,4000000,3500000,3000000,2600000,
+	    2200000,1500000,1100000,800000,500000,350000
+};
+
+enum charger_notifier_events {
+	/* thermal board temp */
+	 THERMAL_BOARD_TEMP = 0,
 };
 
 static inline int mtk_chg_alg_notify_call(struct mtk_charger *info,
@@ -423,6 +562,18 @@ extern void _wake_up_charger(struct mtk_charger *info);
 
 /* functions for other */
 extern int mtk_chg_enable_vbus_ovp(bool enable);
+extern void smart_batt_set_diff_fv(int val);
+extern int smart_batt_get_diff_fv(void);
+extern void smart_fv_set_diff_fv(int val);
 
+extern struct srcu_notifier_head charger_notifier;
+extern int charger_reg_notifier(struct notifier_block *nb);
+extern int charger_unreg_notifier(struct notifier_block *nb);
+extern int charger_notifier_call_cnain(unsigned long event,int val);
+extern void manual_set_cc_toggle(bool en);
+extern void manual_get_cc_toggle(bool *cc_toggle);
+extern bool manual_get_cid_status(void);
 
+extern int batt_auth_get_ui_soh(u8 *ui_soh_data, int len);
+extern int batt_auth_set_ui_soh(u8 *ui_soh_data, int len, int raw_soh);
 #endif /* __MTK_CHARGER_H */

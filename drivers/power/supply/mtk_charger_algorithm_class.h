@@ -105,6 +105,7 @@ struct chg_alg_notify {
 
 struct chg_limit_setting {
 	int cv;
+        u32 iterm;
 	int input_current_limit1;
 	int input_current_limit2;
 	int input_current_limit_dvchg1;
@@ -134,7 +135,11 @@ struct chg_alg_ops {
 		enum chg_alg_props s, int value);
 	int (*set_current_limit)(struct chg_alg_device *alg_dev,
 		struct chg_limit_setting *setting);
-
+	int (*cp_statemachine_restart)(struct chg_alg_device *alg,
+		bool run_once);
+	int (*thermal_restart)(struct chg_alg_device *alg_dev,
+		bool run_once);
+	int (*cp_charge_finished)(struct chg_alg_device *alg_dev);
 };
 
 #define to_chg_alg_dev(obj) container_of(obj, struct chg_alg_device, dev)
@@ -178,6 +183,7 @@ extern int unregister_chg_alg_notifier(struct chg_alg_device *alg_dev,
 
 extern int chg_alg_init_algo(struct chg_alg_device *alg_dev);
 extern int chg_alg_is_algo_ready(struct chg_alg_device *alg_dev);
+extern int chg_alg_plugout_reset(struct chg_alg_device *alg_dev);
 extern int chg_alg_start_algo(struct chg_alg_device *alg_dev);
 extern int chg_alg_is_algo_running(struct chg_alg_device *alg_dev);
 extern int chg_alg_stop_algo(struct chg_alg_device *alg_dev);
@@ -187,9 +193,14 @@ extern int chg_alg_set_prop(struct chg_alg_device *alg_dev,
 	enum chg_alg_props s, int value);
 extern int chg_alg_set_current_limit(struct chg_alg_device *alg_dev,
 	struct chg_limit_setting *setting);
+extern int chg_alg_thermal_restart(struct chg_alg_device *alg_dev,
+	bool run_once);
+extern int chg_alg_cp_charge_finished(struct chg_alg_device *alg_dev);
 extern int chg_alg_notifier_call(struct chg_alg_device *alg_dev,
 	struct chg_alg_notify *notify);
 extern char *chg_alg_state_to_str(int state);
 extern const char *const
 chg_alg_notify_evt_tostring(enum chg_alg_notifier_events evt);
+extern int chg_alg_cp_statemachine_restart(struct chg_alg_device *alg_dev,
+	bool run_once);
 #endif /* __MTK_CHARGER_ALGORITHM_CLASS_H__ */

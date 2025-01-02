@@ -155,11 +155,11 @@
 			mt6369_vio28: VIO28 {
 				regulator-compatible = "VIO28";
 				regulator-name = "mt6369_vio28";
-				regulator-min-microvolt = <1200000>;
+				regulator-min-microvolt = <3300000>;
 				regulator-max-microvolt = <3500000>;
 				regulator-enable-ramp-delay = <680>;
 				regulator-allowed-modes = <0 2>;
-				regulator-always-on;
+				//regulator-always-on;
 			};
 			mt6369_vfp: VFP {
 				regulator-compatible = "VFP";
@@ -176,6 +176,7 @@
 				regulator-max-microvolt = <3500000>;
 				regulator-enable-ramp-delay = <680>;
 				regulator-allowed-modes = <0 2>;
+                                regulator-always-on;
 			};
 			mt6369_vmch: VMCH {
 				regulator-compatible = "VMCH";

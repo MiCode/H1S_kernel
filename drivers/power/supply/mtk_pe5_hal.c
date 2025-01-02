@@ -306,6 +306,17 @@ int pe50_hal_enable_charging(struct chg_alg_device *alg, enum chg_idx chgidx,
 	return charger_dev_enable(hal->chgdevs[chgtyp], en);
 }
 
+int pe50_hal_get_chg_is_enabled(struct chg_alg_device *alg, enum chg_idx chgidx,
+			     bool *en)
+{
+	int chgtyp = to_chgtyp(chgidx);
+	struct pe50_hal *hal = chg_alg_dev_get_drv_hal_data(alg);
+
+	if (chgtyp < 0)
+		return chgtyp;
+	return charger_dev_is_enabled(hal->chgdevs[chgtyp], en);
+}
+
 int pe50_hal_enable_hz(struct chg_alg_device *alg, enum chg_idx chgidx, bool en)
 {
 	int chgtyp = to_chgtyp(chgidx);
@@ -610,3 +621,14 @@ int pe50_hal_init_chip(struct chg_alg_device *alg, enum chg_idx chgidx)
 		return chgtyp;
 	return charger_dev_init_chip(hal->chgdevs[chgtyp]);
 }
+
+int pe50_hal_enable_cp_adc(struct chg_alg_device *alg, enum chg_idx chgidx, bool en)
+{
+	int chgtyp = to_chgtyp(chgidx);
+	struct pe50_hal *hal = chg_alg_dev_get_drv_hal_data(alg);
+
+	if (chgtyp < 0)
+		return chgtyp;
+	return charger_dev_enable_cp_adc(hal->chgdevs[chgtyp], en);
+}
+

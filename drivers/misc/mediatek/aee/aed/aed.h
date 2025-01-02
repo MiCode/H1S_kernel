@@ -292,4 +292,7 @@ extern void slog(const char *fmt, ...);
 extern int mtk_slog_init(void);
 extern void mtk_slog_exit(void);
 
+#if IS_ENABLED(CONFIG_MTK_LAST_KMSG)
+int last_kmsg_driver_init(void);
+#endif
 #endif

@@ -12,6 +12,8 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/types.h>
+//#include "camera_hw/smartldo_wl2866d/smartldo_wl2866d.h"
+
 
 #ifdef CONFIG_OF
 /* device tree */
@@ -2415,6 +2417,7 @@ static int imgsensor_probe(struct platform_device *pplatform_device)
 	phw->common.pplatform_device = pplatform_device;
 
 	imgsensor_hw_init(phw);
+	//smartldo_i2c_create();
 	imgsensor_i2c_create();
 	imgsensor_proc_init();
 	imgsensor_init_sensor_list();
@@ -2430,6 +2433,7 @@ static int imgsensor_remove(struct platform_device *pplatform_device)
 {
 	struct IMGSENSOR *pimgsensor = &gimgsensor;
 
+	//smartldo_i2c_delete();
 	imgsensor_i2c_delete();
 
 	/* Release char driver */

@@ -472,3 +472,6 @@ config MTK_SCP_AUDIO
 	  that can be used with other platforms
 	  Select Y if you have such device.
 	  If unsure select "N".
+
+config SND_SOC_DSPK_LOL_HP
+	tristate "ASoC support for Mediatek pa scene split"

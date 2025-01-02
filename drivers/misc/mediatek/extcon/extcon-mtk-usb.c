@@ -19,6 +19,7 @@
 #include <linux/usb/role.h>
 #include <linux/workqueue.h>
 #include <linux/proc_fs.h>
+#include <linux/delay.h>
 
 #include "extcon-mtk-usb.h"
 
@@ -193,9 +194,10 @@ static int mtk_usb_extcon_psy_init(struct mtk_extcon_info *extcon)
 	return ret;
 }
 
+#include <charger_class.h>
+static struct charger_device *primary_dvchg;
 #if IS_ENABLED(CONFIG_CHARGER_RT9458)
 /* ADAPT_CHARGER_V1 */
-#include <charger_class.h>
 static struct charger_device *primary_charger;
 
 static int mtk_usb_extcon_set_vbus_v1(struct mtk_extcon_info *extcon, bool is_on)
@@ -236,9 +238,29 @@ static int mtk_usb_extcon_set_vbus_v1(struct mtk_extcon_info *extcon, bool is_on
 		charger_dev_enable_otg(primary_charger, false);
 	}
 #endif
-		return 0;
+	        return 0;
 }
 #endif
+
+static int get_cp_id(struct device *dev)
+{
+	struct power_supply *cp_psy = NULL;
+	int cp_id = 0;
+
+	cp_psy = power_supply_get_by_name("sc-cp-standalone");
+	if (IS_ERR_OR_NULL(cp_psy)) {
+		cp_psy = power_supply_get_by_name("nu2115-standalone");
+		if (IS_ERR_OR_NULL(cp_psy)) {
+			cp_id = 0;
+		}else{
+			cp_id = 2;
+		}
+	} else {
+		cp_id = 1;
+	}
+
+	return cp_id;
+}
 
 static int mtk_usb_extcon_set_vbus(struct mtk_extcon_info *extcon,
 							bool is_on)
@@ -288,6 +310,18 @@ static int mtk_usb_extcon_set_vbus(struct mtk_extcon_info *extcon,
 
 	ret = 0;
 #endif
+        if (!primary_dvchg) {
+		primary_dvchg = get_charger_by_name("primary_dvchg");
+		if (!primary_dvchg) {
+			dev_info(dev, "%s : get primary dvcharger device failed\n", __func__);
+			return -ENODEV;
+		}
+	}
+        if (is_on) {
+		ret |= charger_dev_enable_otg(primary_dvchg, true);
+	} else {
+		ret |= charger_dev_enable_otg(primary_dvchg, false);
+	}
 	return ret;
 }
 
@@ -337,6 +371,7 @@ static int mtk_extcon_tcpc_notifier(struct notifier_block *nb,
 	case TCP_NOTIFY_DR_SWAP:
 		dev_info(dev, "%s dr_swap, new role=%d\n",
 				__func__, noti->swap_state.new_role);
+                DelayforSwap:
 		if (noti->swap_state.new_role == PD_ROLE_UFP &&
 				extcon->c_role != USB_ROLE_DEVICE) {
 			dev_info(dev, "switch role to device\n");
@@ -347,7 +382,11 @@ static int mtk_extcon_tcpc_notifier(struct notifier_block *nb,
 			dev_info(dev, "switch role to host\n");
 			mtk_usb_extcon_set_role(extcon, USB_ROLE_NONE);
 			mtk_usb_extcon_set_role(extcon, USB_ROLE_HOST);
-		}
+		}else {
+                        dev_info(dev, "Delay for swap...\n");
+                        msleep(500);
+                        goto DelayforSwap;
+                }
 		break;
 	}
 
@@ -526,6 +565,7 @@ static int mtk_usb_extcon_probe(struct platform_device *pdev)
 	const char *tcpc_name;
 #endif
 	int ret;
+	int cp_id = 0;
 
 	extcon = devm_kzalloc(&pdev->dev, sizeof(*extcon), GFP_KERNEL);
 	if (!extcon)
@@ -553,6 +593,8 @@ static int mtk_usb_extcon_probe(struct platform_device *pdev)
 		return PTR_ERR(extcon->role_sw);
 	}
 
+	cp_id = get_cp_id(extcon->dev);
+
 	/* initial usb role */
 	if (extcon->role_sw)
 		extcon->c_role = USB_ROLE_NONE;
@@ -568,14 +610,22 @@ static int mtk_usb_extcon_probe(struct platform_device *pdev)
 	if (extcon->vbus) {
 		extcon->vbus_on = regulator_is_enabled(extcon->vbus);
 		dev_info(dev, "vbus is %s\n", extcon->vbus_on ? "on" : "off");
-
+#if 0
 		if (!of_property_read_u32(dev->of_node, "vbus-voltage",
 					&extcon->vbus_vol))
 			dev_info(dev, "vbus-voltage=%d", extcon->vbus_vol);
-
+#endif
 		if (!of_property_read_u32(dev->of_node, "vbus-current",
 					&extcon->vbus_cur))
 			dev_info(dev, "vbus-current=%d", extcon->vbus_cur);
+
+		if(cp_id == 1){
+			extcon->vbus_vol = 5500000;
+			dev_info(dev, "%s: set vbus-voltage to %d for sc8541 \n", __func__, extcon->vbus_vol);
+		}else{
+			extcon->vbus_vol = 5000000;
+			dev_info(dev, "%s: set vbus-voltage to %d for nu2115 \n", __func__, extcon->vbus_vol);
+		}
 	}
 
 	extcon->bypss_typec_sink =

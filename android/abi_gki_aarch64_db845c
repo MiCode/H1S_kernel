@@ -213,7 +213,6 @@
   gpiochip_generic_request
   gpiochip_get_data
   gpiochip_remove
-  gpiod_direction_output
   gpiod_direction_output_raw
   gpiod_set_consumer_name
   gpiod_set_raw_value
@@ -469,10 +468,6 @@
   qcom_smem_state_unregister
   queue_delayed_work_on
   queue_work_on
-  radix_tree_delete
-  radix_tree_insert
-  radix_tree_lookup
-  radix_tree_next_chunk
   ___ratelimit
   rational_best_approximation
   _raw_spin_lock
@@ -526,6 +521,7 @@
   reset_control_reset
   round_jiffies_up
   rpmsg_register_device
+  rpmsg_register_device_override
   rpmsg_send
   rpmsg_unregister_device
   rproc_add
@@ -609,6 +605,7 @@
   strncpy
   strnlen
   strpbrk
+  strscpy
   strscpy_pad
   strsep
   __sw_hweight16
@@ -761,7 +758,6 @@
   skb_dequeue_tail
   skb_realloc_headroom
   strlcat
-  strscpy
   thermal_cooling_device_register
   vzalloc
 
@@ -769,8 +765,8 @@
   pci_clear_master
   pci_disable_device
   pci_disable_msi
+  pcie_capability_clear_and_set_word
   pcie_capability_read_word
-  pcie_capability_write_word
   pci_enable_device
   pci_enable_msi
   pci_iomap
@@ -1090,6 +1086,7 @@
   devfreq_suspend_device
   devm_clk_register
   devm_devfreq_add_device
+  devm_pm_runtime_enable
   devm_regulator_get_exclusive
   dev_pm_opp_find_freq_floor
   dev_pm_opp_get_freq
@@ -1136,9 +1133,12 @@
   drm_atomic_private_obj_fini
   drm_atomic_private_obj_init
   drm_bridge_attach
+  drm_bridge_connector_enable_hpd
+  drm_bridge_connector_init
+  drm_bridge_detect
+  drm_bridge_hpd_notify
   drm_compat_ioctl
   drm_connector_has_possible_encoder
-  drm_connector_init_with_ddc
   drm_connector_list_iter_begin
   drm_connector_list_iter_end
   drm_connector_list_iter_next
@@ -1178,7 +1178,6 @@
   drm_dp_link_rate_to_bw_code
   drm_dp_link_train_channel_eq_delay
   drm_dp_link_train_clock_recovery_delay
-  drm_edid_block_valid
   drm_encoder_cleanup
   drm_encoder_init
   drm_flip_work_cleanup
@@ -1285,7 +1284,6 @@
   generic_file_llseek
   get_pid_task
   get_unused_fd_flags
-  gpiod_direction_input
   gpiod_get_value
   gpiod_set_value
   hdmi_audio_infoframe_pack
@@ -1366,10 +1364,6 @@
 # required by msm_serial.ko
   tty_termios_baud_rate
   tty_termios_encode_baud_rate
-
-# required by ns.ko
-  kernel_bind
-  radix_tree_iter_resume
 
 # required by nvmem_qfprom.ko
   devm_nvmem_register
@@ -1531,6 +1525,7 @@
   srcu_notifier_chain_unregister
 
 # required by qcom_geni_serial.ko
+  devm_krealloc
   dev_pm_clear_wake_irq
   dev_pm_set_dedicated_wake_irq
   oops_in_progress
@@ -1590,10 +1585,16 @@
   autoremove_wake_function
   datagram_poll
   do_wait_intr_irq
+  kernel_bind
   lock_sock_nested
   proto_register
   proto_unregister
+  radix_tree_delete
+  radix_tree_insert
   radix_tree_iter_delete
+  radix_tree_iter_resume
+  radix_tree_lookup
+  radix_tree_next_chunk
   _raw_write_lock_bh
   _raw_write_unlock_bh
   refcount_dec_and_mutex_lock
@@ -1731,6 +1732,9 @@
   of_clk_add_provider
   of_clk_src_simple_get
 
+# required by snd-soc-wsa881x.ko
+  gpiod_direction_output
+
 # required by socinfo.ko
   add_device_randomness
   soc_device_register
@@ -1807,8 +1811,12 @@
   mfd_remove_devices
 
 # preserved by --additions-only
+  drm_connector_init_with_ddc
+  drm_edid_block_valid
+  gpiod_direction_input
   idr_alloc_u32
   of_clk_get_by_name
+  pcie_capability_write_word
   snd_pcm_create_iec958_consumer_hw_params
   snd_soc_get_volsw_sx
   snd_soc_info_volsw_sx

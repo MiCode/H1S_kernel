@@ -109,6 +109,8 @@ static void mt_usb_set_mailbox(struct otg_switch_mtk *otg_sx,
 		mt_usb_host_connect(0);
 		break;
 	case MUSB_ID_FLOAT:
+		mt_usb_set_vbus(otg_sx, 0);
+		mdelay(100);
 		mt_usb_host_disconnect(0);
 		musb->is_ready = false;
 		/* turn off VBUS until do_host_work switch to DEV mode */

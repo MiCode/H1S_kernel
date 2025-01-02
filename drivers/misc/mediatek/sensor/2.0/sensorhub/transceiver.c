@@ -19,6 +19,7 @@
 #include <linux/list.h>
 #include <linux/suspend.h>
 
+#include<linux/notifier.h>
 #include "ready.h"
 #include "sensor_comm.h"
 #include "sensor_list.h"
@@ -64,6 +65,18 @@ struct transceiver_device {
 	atomic_t normal_wp_dropped;
 	atomic_t super_wp_dropped;
 	struct task_struct *task;
+	//start callback
+	struct notifier_block backlight_nb;
+	int backlight_level;
+	struct work_struct backlight_level_work;
+	struct workqueue_struct *backlight_level_workqueue;
+	//end
+	//add mag_current start
+	struct notifier_block current_now_nb;
+	int mag_current_now;
+	struct work_struct mag_current_now_work;
+	struct workqueue_struct *mag_current_now_workqueue;
+        //add mag_current end
 };
 
 static struct transceiver_device transceiver_dev;
@@ -72,6 +85,56 @@ DEFINE_SPINLOCK(transceiver_fifo_lock);
 DECLARE_COMPLETION(transceiver_done);
 DEFINE_KFIFO(transceiver_fifo, uint32_t, 32);
 DEFINE_KFIFO(transceiver_super_fifo, uint32_t, 32);
+extern int backlight_level_register_notifier(struct notifier_block *nb);
+extern int backlight_level_unregister_notifier(struct notifier_block *nb);
+extern int mag_current_now_register_notifier(struct notifier_block *nb);
+extern int mag_current_now_unregister_notifier(struct notifier_block *nb);
+
+//add mag_current start
+static int mag_current_now_notifier_callback(struct notifier_block *self,unsigned long event, void *data)
+{
+	int err = 0;
+	struct transceiver_device *dev = &transceiver_dev;
+	pr_info("%s: battery_curr_now = %d\n", __func__, (int)event);
+	dev->mag_current_now = (int)event;
+	err = queue_work(dev->mag_current_now_workqueue, &dev->mag_current_now_work);
+	if (err < 0) {
+	pr_err("%s is failed!!\n", __func__);
+		return -1;
+	}
+	return 0;
+}
+
+static int sensorhub_register_current(struct transceiver_device *dev)
+{
+	pr_info("%s\n", __func__);
+	memset(&dev->current_now_nb, 0, sizeof(dev->current_now_nb));
+	dev->current_now_nb.notifier_call = mag_current_now_notifier_callback;
+	return mag_current_now_register_notifier(&dev->current_now_nb);
+}
+//add mag_current end
+
+static int backlight_level_notifier_callback(struct notifier_block *self,unsigned long event, void *data)
+{
+	int err = 0;
+	struct transceiver_device *dev = &transceiver_dev;
+	pr_info("%s: level = %d\n", __func__, (int)event);
+	dev->backlight_level = (int)event;
+	err = queue_work(dev->backlight_level_workqueue, &dev->backlight_level_work);
+	if (err < 0) {
+        pr_err("%s is failed!!\n", __func__);
+		return -1;
+	}
+	return 0;
+}
+
+static int sensorhub_register_backlight(struct transceiver_device *dev)
+{
+	pr_info("%s\n", __func__);
+	memset(&dev->backlight_nb, 0, sizeof(dev->backlight_nb));
+	dev->backlight_nb.notifier_call = backlight_level_notifier_callback;
+	return backlight_level_register_notifier(&dev->backlight_nb);
+}
 
 static void transceiver_notify_func(struct sensor_comm_notify *n,
 		void *private_data)
@@ -331,6 +394,12 @@ static int transceiver_translate(struct transceiver_device *dev,
 			dst->word[2] = src->value[2];
 			break;
 		case SENSOR_TYPE_LIGHT:
+		    dst->word[0] = src->value[0];
+			dst->word[1] = src->value[1];
+			dst->word[2] = src->value[2];
+			dst->word[3] = src->value[3];
+			dst->word[4] = src->value[4];
+			break;
 		case SENSOR_TYPE_PRESSURE:
 		case SENSOR_TYPE_PROXIMITY:
 		case SENSOR_TYPE_STEP_COUNTER:
@@ -845,7 +914,38 @@ static int transceiver_shm_super_cfg(struct share_mem_config *cfg,
 	dev->shm_super_reader.buffer_full_detect = false;
 	return share_mem_init(&dev->shm_super_reader, cfg);
 }
-
+static int transceiver_backlight(struct hf_device *hf_dev,int sensor_type, void *data, uint8_t length)
+{
+	return transceiver_comm_with(sensor_type,
+	SENS_COMM_CTRL_BACKLIGHT_CMD, data, length);
+}
+static void backlight_level_work_func(struct work_struct *work)
+{
+	struct transceiver_device *dev = &transceiver_dev;
+	int ret = 0;
+	ret = transceiver_backlight(&dev->hf_dev,5,&dev->backlight_level,sizeof(int32_t));
+	if (ret < 0) {
+		pr_err("%s hoxuesongis failed!!\n", __func__);
+		return;
+	}
+}
+//add mag_current start
+static int transceiver_current_now(struct hf_device *hf_dev,int sensor_type, void *data, uint8_t length)
+{
+	return transceiver_comm_with(sensor_type,
+	SENS_COMM_CTRL_CURRENT_NOW_CMD, data, length);
+}
+static void mag_current_now_work_func(struct work_struct *work)
+{
+	struct transceiver_device *dev = &transceiver_dev;
+	int ret = 0;
+	ret = transceiver_current_now(&dev->hf_dev,2,&dev->mag_current_now,sizeof(int32_t));
+	if (ret < 0) {
+		pr_err("%s failed!!\n", __func__);
+		return;
+	}
+}
+//add mag_current end
 static int __init transceiver_init(void)
 {
 	int ret = 0;
@@ -968,7 +1068,20 @@ static int __init transceiver_init(void)
 		pr_err("host ready init fail %d\n", ret);
 		goto out_ready;
 	}
-
+	ret = sensorhub_register_backlight(dev);
+	if (ret) {
+		pr_err("sensorhub_register_backlight fail = %d\n", ret);
+	}
+	dev->backlight_level_workqueue = create_singlethread_workqueue("sensorhub_backlight_level_sensor");
+	INIT_WORK(&dev->backlight_level_work, backlight_level_work_func);
+	//add mag_current start
+	ret = sensorhub_register_current(dev);
+	if (ret) {
+		pr_err("sensorhub_register_current fail = %d\n", ret);
+	}
+	dev->mag_current_now_workqueue = create_singlethread_workqueue("sensorhub_mag_current_now_sensor");
+	INIT_WORK(&dev->mag_current_now_work, mag_current_now_work_func);
+	//add mag_current end
 	return 0;
 
 out_ready:

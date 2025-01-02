@@ -23,6 +23,8 @@ struct charger_cooler_info {
 
 static struct charger_cooler_info charger_cl_data;
 /* < -1 is unlimit, unit is uA. */
+static struct charger_cooler_info charger_cl_data;
+/* < -1 is unlimit, unit is uA. */
 static const int master_charger_state_to_current_limit[CHARGER_STATE_NUM] = {
 	-1, 2600000, 2200000, 1800000, 1400000, 1000000, 700000, 500000, 0
 };
@@ -67,10 +69,22 @@ static int charger_cooling_set_cur_state(struct thermal_cooling_device *cdev, un
 {
 	struct charger_cooling_device *charger_cdev = cdev->devdata;
 	int ret;
+	union  power_supply_propval thermal_val;
+
+	if (charger_cdev->bat_psy == NULL) {
+		charger_cdev->bat_psy = power_supply_get_by_name("battery");
+		if (charger_cdev->bat_psy == NULL)
+			return -PTR_ERR(charger_cdev->bat_psy);
+	}
 
 	/* Request state should be less than max_state */
 	if (WARN_ON(state > charger_cdev->max_state || !charger_cdev->throttle))
 		return -EINVAL;
+
+	thermal_val.intval = state;
+	ret = power_supply_set_property(charger_cdev->bat_psy, POWER_SUPPLY_PROP_CHARGE_CONTROL_LIMIT, &thermal_val);
+	if (ret < 0)
+		dev_err(charger_cdev->dev, "set charge control limit fail\n");
 
 	if (charger_cdev->target_state == state)
 		return 0;
@@ -276,6 +290,10 @@ static int charger_cooling_probe(struct platform_device *pdev)
 			pr_info("Couldn't get s_chg_psy\n");
 			return -EINVAL;
 		}
+	}
+	charger_cdev->bat_psy = power_supply_get_by_name("battery");
+	if (charger_cdev->bat_psy == NULL || IS_ERR(charger_cdev->bat_psy)) {
+		pr_info("Couldn't get bat_psy\n");
 	}
 
 	ret = sysfs_create_group(kernel_kobj, &charger_cooler_attr_group);

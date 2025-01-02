@@ -833,6 +833,28 @@ config DRM_PANEL_ALPHA_JDI_NT36672E_VDO_144HZ_HFP
 	  resolution and uses 24-bits RGB per pixel. It provides a
 	  MIPI DSI interface to host.
 
+config DRM_DSI_PANEL_O17_38_0C_0A_FHDP_VDO
+	tristate "dsi panel o17 38 0c 0a fhdp vdo panel"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	help
+	  Say Y here if you want to enable support for o17 38 0c 0a fhdp vdo
+	  DPHY vdo mode Full HD Plus 120HZ hfp panel. The panel has a 1080x2400
+	  resolution and uses 24-bits RGB per pixel. It provides a
+	  MIPI DSI interface to host.
+
+config DRM_DSI_PANEL_O17_NULL_FHDP_VDO
+	tristate "dsi panel o17 null fhdp vdo panel"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	help
+	  Say Y here if you want to enable support for o17 null fhdp vdo
+	  DPHY vdo mode Full HD Plus 120HZ hfp panel. The panel has a 1080x2400
+	  resolution and uses 24-bits RGB per pixel. It provides a
+	  MIPI DSI interface to host.
+
 config DRM_PANEL_TRULY_NT35595_CMD
 	tristate "TRULY  FHD+ cmd mode panel"
 	depends on OF

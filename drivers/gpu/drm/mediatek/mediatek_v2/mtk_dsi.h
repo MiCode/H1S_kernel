@@ -24,16 +24,28 @@
 #include "mtk-cmdq-ext.h"
 #endif
 
-enum MTK_CONNECTOR_PROP {
-	CONNECTOR_PROP_PANEL_ID,
-	CONNECTOR_PROP_MAX,
-};
+#ifdef CONFIG_MI_DISP
+#include <uapi/drm/mi_disp.h>
+#include "mi_disp/mi_disp_feature.h"
+#include "mi_disp/mi_dsi_panel.h"
+#include "mi_disp/mi_dsi_display.h"
+#include "mi_disp/mi_panel_ext.h"
+#include "mi_disp/mi_disp_input_handler.h"
+#include "mi_disp/mi_disp_lhbm.h"
+#include "mi_disp/mi_disp_print.h"
+#endif
 
+
+#ifndef CONFIG_MI_DISP
 struct t_condition_wq {
 	wait_queue_head_t wq;
 	atomic_t condition;
 };
-
+#endif
+enum MTK_CONNECTOR_PROP {
+	CONNECTOR_PROP_PANEL_ID,
+	CONNECTOR_PROP_MAX,
+};
 struct mtk_dsi_driver_data {
 	const u32 reg_cmdq0_ofs;
 	const u32 reg_cmdq1_ofs;
@@ -56,6 +68,7 @@ struct mtk_dsi_driver_data {
 		struct mtk_drm_crtc *mtk_crtc, unsigned int en);
 };
 
+#ifndef CONFIG_MI_DISP
 struct mtk_dsi {
 	struct mtk_ddp_comp ddp_comp;
 	struct device *dev;
@@ -128,7 +141,7 @@ struct mtk_dsi {
 	unsigned int prop_val[CONNECTOR_PROP_MAX];
 	bool pending_switch;
 };
-
+#endif
 enum dsi_porch_type;
 
 s32 mtk_dsi_poll_for_idle(struct mtk_dsi *dsi, struct cmdq_pkt *handle);

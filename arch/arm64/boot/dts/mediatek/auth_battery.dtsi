@@ -1,0 +1,44 @@
+&pio {
+    w1_pins: w1_pins {
+        pins_cmd_dat {
+            pinmux = <PINMUX_GPIO25__FUNC_GPIO25>;
+            drive-strength = <7>;
+            output-high;
+        };
+    };
+};
+
+&onewire_gpio {
+    compatible = "xiaomi,onewire_gpio";
+    gpios = <&pio 25 0x00>;
+    pinctrl-names = "default";
+    pinctrl-0 = <&w1_pins>;
+    min-volt = <3300000>;
+    max-volt = <3300000>;
+    vdd-supply = <&mt6369_vfp>;
+    status = "okay";
+};
+
+&maxim_ds28e30 {
+    compatible = "maxim,ds28e30";
+    auth_name = "third_supplier";
+    status = "okay";
+};
+
+&acl_slg {
+    compatible = "acl,slg";
+    auth_name = "main_suppiler";
+    status = "okay";
+};
+
+&st_stick {
+    compatible = "st,stick";
+    auth_name = "second_supplier";
+    status = "okay";
+};
+
+&auth_battery {
+    compatible = "lc,auth-battery";
+    status = "okay";
+    def-supply = <&acl_slg &maxim_ds28e30 &st_stick>;
+};

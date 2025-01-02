@@ -1,0 +1,117 @@
+//Xiaomi star algo cfg
+star_algo_step = <4>;
+star_algo_bat_num = <3>;
+star_algo_iterm_num = <4>;
+star_algo_nomal_cv = <4480>;
+star_algo_nomal_cv_step = <4>;
+star_algo_nomal_cv_cfg = <100 4480
+                        300 4470
+                        800 4460
+                        999 4440>;
+star_algo_nomal_iterm = <300>;
+star_algo_iterm_temp = <300 350 400 450>;
+star_algo_size = <13>;//the number of cycle and cfg
+star_algo_cycle = <100 200 300 400 500 600 700 800 900 1000 1100 1200 1300>;
+star_algo_cfg_0 = <3000 4150 8000
+                        4151 4300 6000
+                        4301 4500 5400
+                        4501 4530 4024>;
+star_algo_cfg_0_bat_0 = <805 906  1057 1208>;
+star_algo_cfg_0_bat_1 = <755 1157 1283 1409>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_0_bat_2 = <1006 1359 1509 1660>;
+
+star_algo_cfg_1 = <3000 4100 8000
+                        4101 4250 6000
+                        4251 4450 5400
+                        4451 4530 4024>;
+star_algo_cfg_1_bat_0 = <906  906  1040 1179>;
+star_algo_cfg_1_bat_1 = <805  1057 1252 1387>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_1_bat_2 = <1157 1359 1485 1632>;
+
+star_algo_cfg_2 = <3000 4100 8000
+                        4101 4250 6000
+                        4251 4450 5400
+                        4451 4530 4024>;
+star_algo_cfg_2_bat_0 = <805  906  1023 1150>;
+star_algo_cfg_2_bat_1 = <705  856  1221 1366>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_2_bat_2 = <1057 1157 1460 1603>;
+
+star_algo_cfg_3 = <3000 4070 8000
+                        4071 4220 6000
+                        4221 4420 5400
+                        4421 4530 4024>;
+star_algo_cfg_3_bat_0 = <755 906  1007 1122>;
+star_algo_cfg_3_bat_1 = <654 856  1190 1343>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_3_bat_2 = <956 1157 1435 1574>;
+
+star_algo_cfg_4 = <3000 4070 8000
+                        4071 4220 6000
+                        4221 4420 5400
+                        4421 4530 4024>;
+star_algo_cfg_4_bat_0 = <755 906  990  1093>;
+star_algo_cfg_4_bat_1 = <604 755  1159 1322>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_4_bat_2 = <856 1107 1411 1546>;
+
+star_algo_cfg_5 = <3000 4070 8000
+                        4071 4220 6000
+                        4221 4420 5400
+                        4421 4530 4024>;
+star_algo_cfg_5_bat_0 = <705 856  973   1064>;
+star_algo_cfg_5_bat_1 = <554 705  1127  1301>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_5_bat_2 = <805 1057 1386  1516>;
+
+star_algo_cfg_6 = <3000 4070 8000
+                        4071 4220 6000
+                        4221 4420 5400
+                        4421 4530 4024>;
+star_algo_cfg_6_bat_0 = <705 805  957   1035>;
+star_algo_cfg_6_bat_1 = <554 654  1096  1279>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_6_bat_2 = <755 1006 1361  1487>;
+
+star_algo_cfg_7 = <3000 4070 8000
+                        4071 4220 6000
+                        4221 4420 5400
+                        4421 4530 4024>;
+star_algo_cfg_7_bat_0 = <654 755  940   1006>;
+star_algo_cfg_7_bat_1 = <503 604  1065  1258>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_7_bat_2 = <704 956  1337  1459>;
+
+star_algo_cfg_8 = <3000 4050 6400
+                        4051 4200 4800
+                        4201 4400 4320
+                        4401 4530 3220>;
+star_algo_cfg_8_bat_0 = <654 755  923   1047>;
+star_algo_cfg_8_bat_1 = <504 604  1034  1288>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_8_bat_2 = <704 956  1312  1499>;
+
+star_algo_cfg_9 = <3000 4050 6400
+                        4051 4200 4800
+                        4201 4400 4320
+                        4401 4530 3220>;
+star_algo_cfg_9_bat_0 = <604 705  906   1087>;
+star_algo_cfg_9_bat_1 = <453 554  1003  1318>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_9_bat_2 = <654 906  1287  1540>;
+
+star_algo_cfg_10 = <3000 4050 6400
+                        4051 4200 4800
+                        4201 4400 4320
+                        4401 4510 3220>;
+star_algo_cfg_10_bat_0 = <705 805  957   1127>;
+star_algo_cfg_10_bat_1 = <554 654  1096  1349>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_10_bat_2 = <755 1006 1361  1580>;
+
+star_algo_cfg_11 = <3000 4050 6400
+                        4051 4200 4800
+                        4201 4400 4320
+                        4401 4510 3220>;
+star_algo_cfg_11_bat_0 = <755 906  1007   1167>;
+star_algo_cfg_11_bat_1 = <654 755  1190   1379>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_11_bat_2 = <805 1157 1435   1620>;
+
+star_algo_cfg_12 = <3000 4050 6400
+                        4051 4200 4800
+                        4201 4400 4320
+                        4401 4500 3220>;
+star_algo_cfg_12_bat_0 = <805 906  1057   1208>;
+star_algo_cfg_12_bat_1 = <755 1157 1283   1409>; //iterm nomal/little warm/warm/hot
+star_algo_cfg_12_bat_2 = <1006 1359 1509  1660>;

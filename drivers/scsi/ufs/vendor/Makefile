@@ -12,3 +12,4 @@ ufs-mediatek-mod-$(CONFIG_UFSSHPB) += ufsshpb.o
 ufs-mediatek-mod-$(CONFIG_UFSTW) += ufstw.o
 ufs-mediatek-mod-$(CONFIG_UFSHID) += ufshid.o
 ufs-mediatek-mod-$(CONFIG_UFSRINGBUF) += ufsringbuf.o
+

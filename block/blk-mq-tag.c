@@ -15,6 +15,8 @@
 #include "blk-mq.h"
 #include "blk-mq-tag.h"
 
+#include <trace/hooks/blk_mq.h>
+
 /*
  * If a previously inactive queue goes active, bump the active user count.
  * We need to do this before try to allocate driver tag, then even if fail
@@ -336,8 +338,13 @@ static void bt_tags_for_each(struct blk_mq_tags *tags, struct sbitmap_queue *bt,
 static void __blk_mq_all_tag_iter(struct blk_mq_tags *tags,
 		busy_tag_iter_fn *fn, void *priv, unsigned int flags)
 {
+	bool skip = false;
+
 	WARN_ON_ONCE(flags & BT_TAG_ITER_RESERVED);
 
+	trace_android_vh_blk_mq_all_tag_iter(&skip, tags, fn, priv);
+	if (skip)
+		return;
 	if (tags->nr_reserved_tags)
 		bt_tags_for_each(tags, tags->breserved_tags, fn, priv,
 				 flags | BT_TAG_ITER_RESERVED);
@@ -438,6 +445,7 @@ void blk_mq_queue_tag_busy_iter(struct request_queue *q, busy_iter_fn *fn,
 {
 	struct blk_mq_hw_ctx *hctx;
 	int i;
+	bool skip = false;
 
 	/*
 	 * __blk_mq_update_nr_hw_queues() updates nr_hw_queues and queue_hw_ctx
@@ -455,6 +463,11 @@ void blk_mq_queue_tag_busy_iter(struct request_queue *q, busy_iter_fn *fn,
 		 * hardware queue, there's nothing to check
 		 */
 		if (!blk_mq_hw_queue_mapped(hctx))
+			continue;
+
+		trace_android_vh_blk_mq_queue_tag_busy_iter(&skip, hctx, fn,
+							    priv);
+		if (skip)
 			continue;
 
 		if (tags->nr_reserved_tags)
@@ -556,6 +569,12 @@ struct blk_mq_tags *blk_mq_init_tags(unsigned int total_tags,
 
 void blk_mq_free_tags(struct blk_mq_tags *tags, unsigned int flags)
 {
+	bool skip = false;
+
+	trace_android_vh_blk_mq_free_tags(&skip, tags);
+	if (skip)
+		return;
+
 	if (!(flags & BLK_MQ_F_TAG_HCTX_SHARED)) {
 		sbitmap_queue_free(tags->bitmap_tags);
 		sbitmap_queue_free(tags->breserved_tags);

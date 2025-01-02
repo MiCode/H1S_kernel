@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2020 MediaTek Inc.
+ * Copyright (c) 2019 MediaTek Inc.
  */
 
 
@@ -38,7 +38,7 @@ static inline bool mtk_check_pe_ready_snk(void)
 	return false;
 }
 
-#if IS_ENABLED(CONFIG_TCPC_CLASS)
+#ifdef CONFIG_TCPC_CLASS
 
 /* tcpc_is_usb_connect
  * return PD_USB_NOT_SUPPORT : not support
@@ -74,7 +74,7 @@ static inline bool mtk_is_pep30_en_unlock(void)
 
 #endif /* CONFIG_TCPC_RT1711H */
 
-#if CONFIG_RT7207_ADAPTER
+#ifdef CONFIG_RT7207_ADAPTER
 enum { /* charge status */
 	RT7207_CC_MODE,
 	RT7207_CV_MODE,

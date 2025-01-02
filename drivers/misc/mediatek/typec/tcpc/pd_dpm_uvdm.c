@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2020 MediaTek Inc.
+ * Copyright (c) 2019 MediaTek Inc.
  */
-
 
 #include "inc/tcpci.h"
 #include "inc/pd_policy_engine.h"
 #include "inc/pd_dpm_core.h"
 #include "pd_dpm_prv.h"
 
-#if CONFIG_USB_PD_RICHTEK_UVDM
+#ifdef CONFIG_USB_PD_RICHTEK_UVDM
 
-#define NEVER 0
 bool richtek_dfp_notify_pe_startup(
 		struct pd_port *pd_port, struct svdm_svid_data *svid_data)
 {
@@ -32,7 +30,7 @@ int richtek_dfp_notify_pe_ready(
 	pd_port->richtek_init_done = true;
 	UVDM_INFO("%s\n", __func__);
 
-#if NEVER
+#ifdef NEVER
 	pd_port->uvdm_cnt = 3;
 	pd_port->uvdm_wait_resp = true;
 

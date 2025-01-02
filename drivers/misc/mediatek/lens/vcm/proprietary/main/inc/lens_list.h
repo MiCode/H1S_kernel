@@ -25,6 +25,20 @@ extern int AK7371AF_PowerDown(struct i2c_client *pstAF_I2Cclient,
 				int *pAF_Opened);
 extern int AK7371AF_GetFileName(unsigned char *pFileName);
 
+#define AW8601xAF_SetI2Cclient AW8601xAF_SetI2Cclient_Main
+#define AW8601xAF_Ioctl AW8601xAF_Ioctl_Main
+#define AW8601xAF_Release AW8601xAF_Release_Main
+#define AW8601xAF_PowerDown AW8601xAF_PowerDown_Main
+#define AW8601xAF_GetFileName AW8601xAF_GetFileName_Main
+extern int AW8601xAF_SetI2Cclient(struct i2c_client *pstAF_I2Cclient,
+				 spinlock_t *pAF_SpinLock, int *pAF_Opened);
+extern long AW8601xAF_Ioctl(struct file *a_pstFile, unsigned int a_u4Command,
+			   unsigned long a_u4Param);
+extern int AW8601xAF_Release(struct inode *a_pstInode, struct file *a_pstFile);
+extern int AW8601xAF_PowerDown(struct i2c_client *pstAF_I2Cclient,
+				int *pAF_Opened);
+extern int AW8601xAF_GetFileName(unsigned char *pFileName);
+
 #define BU6424AF_SetI2Cclient BU6424AF_SetI2Cclient_Main
 #define BU6424AF_Ioctl BU6424AF_Ioctl_Main
 #define BU6424AF_Release BU6424AF_Release_Main
@@ -229,6 +243,22 @@ extern int GT9764AF_Release(struct inode *a_pstInode, struct file *a_pstFile);
 extern int GT9764AF_PowerDown(struct i2c_client *pstAF_I2Cclient,
 				int *pAF_Opened);
 extern int GT9764AF_GetFileName(unsigned char *pFileName);
+
+
+#define GT9764VAF_SetI2Cclient GT9764VAF_SetI2Cclient_Main
+#define GT9764VAF_Ioctl GT9764VAF_Ioctl_Main
+#define GT9764VAF_Release GT9764VAF_Release_Main
+#define GT9764VAF_PowerDown GT9764VAF_PowerDown_Main
+#define GT9764VAF_GetFileName GT9764VAF_GetFileName_Main
+extern int GT9764VAF_SetI2Cclient(struct i2c_client *pstAF_I2Cclient,
+				spinlock_t *pAF_SpinLock, int *pAF_Opened);
+extern long GT9764VAF_Ioctl(struct file *a_pstFile, unsigned int a_u4Command,
+				unsigned long a_u4Param);
+extern int GT9764VAF_Release(struct inode *a_pstInode, struct file *a_pstFile);
+extern int GT9764VAF_PowerDown(struct i2c_client *pstAF_I2Cclient,
+				int *pAF_Opened);
+extern int GT9764VAF_GetFileName(unsigned char *pFileName);
+
 
 #define GT9768AF_SetI2Cclient GT9768AF_SetI2Cclient_Main
 #define GT9768AF_Ioctl GT9768AF_Ioctl_Main

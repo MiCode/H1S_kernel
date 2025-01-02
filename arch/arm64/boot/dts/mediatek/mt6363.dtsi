@@ -69,13 +69,17 @@
 				channel = <AUXADC_VIN2>;
 				pures = <ADC_PURES_OPEN>;
 			};
+			vin3_100k {
+				channel = <AUXADC_VIN3>;
+				pures = <ADC_PURES_100K>;
+			};
 			vin3_open {
 				channel = <AUXADC_VIN3>;
 				pures = <ADC_PURES_OPEN>;
 			};
 			vin4_open {
 				channel = <AUXADC_VIN4>;
-				pures = <ADC_PURES_OPEN>;
+				pures = <ADC_PURES_100K>;
 			};
 			vin5_open {
 				channel = <AUXADC_VIN5>;
@@ -87,7 +91,7 @@
 			};
 			vin7_open {
 				channel = <AUXADC_VIN7>;
-				pures = <ADC_PURES_OPEN>;
+				pures = <ADC_PURES_100K>;
 			};
 		};
 
@@ -333,7 +337,7 @@
 				regulator-max-microvolt = <2100000>;
 				regulator-enable-ramp-delay = <180>;
 				regulator-allowed-modes = <0 2>;
-				regulator-always-on;
+				//regulator-always-on;
 			};
 			mt6363_vrf18: VRF18 {
 				regulator-compatible = "VRF18";

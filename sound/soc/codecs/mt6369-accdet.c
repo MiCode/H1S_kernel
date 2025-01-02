@@ -56,6 +56,15 @@
 #define EINT_PLUG_IN			(1)
 #define EINT_MOISTURE_DETECTED	(2)
 
+#define CONFIG_CUSTOM_HEADSET_FEATURE 1
+#if defined(CONFIG_CUSTOM_HEADSET_FEATURE)
+#define MEDIA_PREVIOUS_SCAN_CODE 257
+#define MEDIA_NEXT_SCAN_CODE 258
+#endif
+#if defined(CONFIG_FACTORY_BUILD)
+#define CONFIG_KERNEL_CUSTOM_FACTORY 1
+#endif
+
 struct mt6369_accdet_data {
 	struct snd_soc_jack jack;
 	struct platform_device *pdev;
@@ -1076,6 +1085,9 @@ static u32 adjust_eint_analog_setting(void)
 			/* enable RG_EINT0CONFIGACCDET */
 			accdet_update_bit(RG_EINT0CONFIGACCDET_ADDR,
 				RG_EINT0CONFIGACCDET_SFT);
+			/*select 500k, use internal resistor */
+			accdet_update_bit(RG_EINT0HIRENB_ADDR,
+				RG_EINT0HIRENB_SFT);
 		} else if (HAS_CAP(accdet->data->caps,
 				ACCDET_PMIC_EINT1)) {
 			/* enable RG_EINT1CONFIGACCDET */
@@ -2898,9 +2910,17 @@ int mt6369_accdet_init(struct snd_soc_component *component,
 	}
 
 	accdet->jack.jack->input_dev->id.bustype = BUS_HOST;
-	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_0, KEY_PLAYPAUSE);
+	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_0, KEY_MEDIA);
+#if defined(CONFIG_CUSTOM_HEADSET_FEATURE)&&!defined(CONFIG_KERNEL_CUSTOM_FACTORY)
+	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_1, MEDIA_NEXT_SCAN_CODE);
+#else
 	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_1, KEY_VOLUMEDOWN);
+#endif
+#if defined(CONFIG_CUSTOM_HEADSET_FEATURE)&&!defined(CONFIG_KERNEL_CUSTOM_FACTORY)
+	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_2, MEDIA_PREVIOUS_SCAN_CODE);
+#else
 	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_2, KEY_VOLUMEUP);
+#endif
 	snd_jack_set_key(accdet->jack.jack, SND_JACK_BTN_3, KEY_VOICECOMMAND);
 
 	snd_soc_component_set_jack(component, &accdet->jack, NULL);

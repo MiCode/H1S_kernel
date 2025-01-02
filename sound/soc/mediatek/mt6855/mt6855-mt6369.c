@@ -20,11 +20,54 @@
 #include "../../codecs/mt6369-accdet.h"
 #endif
 #include "../common/mtk-sp-spk-amp.h"
+#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+#include "../../codecs/sipa_81xx/sipa_aux_dev_if.h"
+enum {
+	AUDIO_SCENE_PLAYBACK = 0,
+	AUDIO_SCENE_VOICE,
+	AUDIO_SCENE_VOIP,
+	AUDIO_SCENE_RECEIVER,
+	AUDIO_SCENE_FACTORY,
+	AUDIO_SCENE_FM,
+	AUDIO_SCENE_NUM
+};
+extern int sipa_multi_channel_power_on_and_set_scene(uint32_t scene, uint8_t pa_idx);
+extern int sipa_multi_channel_power_off(uint8_t pa_idx);
+#endif
+#if IS_ENABLED(CONFIG_LCT_AUDIO_INFO)
+extern int lct_audio_info_create_sysfs(void);
+#endif
+#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+enum fs1xxx_dev_pos_mask{
+	FSM_PA_L1_RCV = 0x0C,
+	FSM_PA_R2_SPK = 0x03
+};
+enum fs1xxx_scene{
+	FSM_SCENE_MUSIC = 0,
+	FSM_SCENE_VOICE = 1,
+	FSM_SCENE_VOIP = 2,
+	FSM_SCENE_RING = 3,
+	FSM_SCENE_LOW_PWR = 4,
+	FSM_SCENE_MMI_ALL = 5,
+	FSM_SCENE_MMI_ALL_BYPASS = 6,
+	FSM_SCENE_TOP_LEFT = 7,
+	FSM_SCENE_TOP_LEFT_BYPASS = 8,
+	FSM_SCENE_BOT_RIGHT = 13,
+	FSM_SCENE_BOT_RIGHT_BYPASS = 14,
+	FSM_SCENE_RCV = 15,
+};
+extern int fsm_amp_set_switch(uint8_t pos_mask, bool on);
+extern int fsm_amp_set_scene(uint8_t pos_mask, int scene);
+#endif
 /*
  * if need additional control for the ext spk amp that is connected
  * after Lineout Buffer / HP Buffer on the codec, put the control in
  * mt6855_mt6369_spk_amp_event()
  */
+ // ALPS05007528 begin
+#if IS_ENABLED(CONFIG_SND_SOC_DSPK_LOL_HP)
+#define EXT_RCV_AMP_W_NAME "Ext_Receiver_Amp"
+#endif
 #define EXT_SPK_AMP_W_NAME "Ext_Speaker_Amp"
 
 static const char *const mt6855_spk_type_str[] = {MTK_SPK_NOT_SMARTPA_STR,
@@ -81,6 +124,71 @@ static int mt6855_spk_i2s_in_type_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+// ALPS05007528 begin
+#if IS_ENABLED(CONFIG_SND_SOC_DSPK_LOL_HP)
+enum {
+	AUDIO_AMP_SCENE_PLAYBACK = 0,
+	AUDIO_AMP_SCENE_RECEIVER,
+	AUDIO_AMP_SCENE_FM,
+	AUDIO_AMP_SCENE_VOICE,
+	AUDIO_AMP_SCENE_VOIP,
+	AUDIO_AMP_SCENE_BYPASS,
+	AUDIO_AMP_SCENE_NUM
+};
+static int rcv_amp_mode;
+static const char *rcv_amp_type_str[] = {"PLAYBACK", "RECEIVER", "FM", "VOICE", "VOIP", "BYPASS"};
+static const struct soc_enum rcv_amp_type_enum =
+	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(rcv_amp_type_str), rcv_amp_type_str);
+
+static int mt6855_mt6369_rcv_amp_mode_get(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	pr_info("%s() = %d\n", __func__, rcv_amp_mode);
+	ucontrol->value.integer.value[0] = rcv_amp_mode;
+	return 0;
+}
+
+static int mt6855_mt6369_rcv_amp_mode_set(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
+
+	if (ucontrol->value.enumerated.item[0] >= e->items)
+		return -EINVAL;
+
+	rcv_amp_mode = ucontrol->value.integer.value[0];
+	pr_info("%s() = %d\n", __func__, rcv_amp_mode);
+	return 0;
+}
+
+static int spk_amp_mode;
+static const char *spk_amp_type_str[] = {"PLAYBACK", "RECEIVER", "FM", "VOICE", "VOIP", "BYPASS"};
+static const struct soc_enum spk_amp_type_enum =
+	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(spk_amp_type_str), spk_amp_type_str);
+
+static int mt6855_mt6369_spk_amp_mode_get(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	pr_info("%s() = %d\n", __func__, spk_amp_mode);
+	ucontrol->value.integer.value[0] = spk_amp_mode;
+	return 0;
+}
+
+static int mt6855_mt6369_spk_amp_mode_set(struct snd_kcontrol *kcontrol,
+				   struct snd_ctl_elem_value *ucontrol)
+{
+	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
+
+	if (ucontrol->value.enumerated.item[0] >= e->items)
+		return -EINVAL;
+
+	spk_amp_mode = ucontrol->value.integer.value[0];
+	pr_info("%s() = %d\n", __func__, spk_amp_mode);
+	return 0;
+}
+#endif
+// ALPS05007528 end
+
 static int mt6855_mt6369_spk_amp_event(struct snd_soc_dapm_widget *w,
 					struct snd_kcontrol *kcontrol,
 					int event)
@@ -93,9 +201,92 @@ static int mt6855_mt6369_spk_amp_event(struct snd_soc_dapm_widget *w,
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
 		/* spk amp on control */
+// ALPS05007528 begin
+#if IS_ENABLED(CONFIG_SND_SOC_DSPK_LOL_HP)
+		if (AUDIO_AMP_SCENE_PLAYBACK == spk_amp_mode) {
+			pr_info("%s(), spk_amp_audio_kplayback()\n", __func__);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_PLAYBACK, 2);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			fsm_amp_set_scene(FSM_PA_R2_SPK, FSM_SCENE_MUSIC);
+			fsm_amp_set_switch(FSM_PA_R2_SPK, 1);
+			#endif
+		} else if (AUDIO_AMP_SCENE_RECEIVER == spk_amp_mode) {
+			pr_info("%s(), spk_amp_audio_kreceiver()\n", __func__);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_RECEIVER, 2);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			fsm_amp_set_scene(FSM_PA_R2_SPK, FSM_SCENE_RCV);
+			fsm_amp_set_switch(FSM_PA_R2_SPK, 1);
+			#endif
+		} else if (AUDIO_AMP_SCENE_FM == spk_amp_mode) {
+			pr_info("%s(), spk_amp_audio_kfm()\n", __func__);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_FM, 2);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			fsm_amp_set_scene(FSM_PA_R2_SPK, FSM_SCENE_LOW_PWR);
+			fsm_amp_set_switch(FSM_PA_R2_SPK, 1);
+			#endif
+		} else if (AUDIO_AMP_SCENE_VOICE == spk_amp_mode) {
+			pr_info("%s(), spk_amp_audio_kvoice()\n", __func__);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_VOICE, 2);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			fsm_amp_set_scene(FSM_PA_R2_SPK, FSM_SCENE_VOICE);
+			fsm_amp_set_switch(FSM_PA_R2_SPK, 1);
+			#endif
+		} else if (AUDIO_AMP_SCENE_VOIP == spk_amp_mode) {
+			pr_info("%s(), spk_amp_audio_kvoip()\n", __func__);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_VOIP, 2);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			fsm_amp_set_scene(FSM_PA_R2_SPK, FSM_SCENE_VOIP);
+			fsm_amp_set_switch(FSM_PA_R2_SPK, 1);
+			#endif
+		} else if (AUDIO_AMP_SCENE_BYPASS == spk_amp_mode) {
+			pr_info("%s(), spk_amp_audio_kbypass()\n", __func__);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_FACTORY, 2);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			fsm_amp_set_scene(FSM_PA_R2_SPK, FSM_SCENE_BOT_RIGHT_BYPASS);
+			fsm_amp_set_switch(FSM_PA_R2_SPK, 1);
+			#endif
+		} else {
+			pr_err("%s(), spk_amp_audio failed to switch on, unknown scene: %d\n", __func__, spk_amp_mode);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			// sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_PLAYBACK, 2);
+			sipa_multi_channel_power_off(2);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			// fsm_amp_set_scene(FSM_PA_R2_SPK, FSM_SCENE_MUSIC);
+			// fsm_amp_set_switch(FSM_PA_R2_SPK, 1);
+			fsm_amp_set_switch(FSM_PA_R2_SPK, 0);
+			#endif
+		}
+#endif
+// ALPS05007528 end
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
 		/* spk amp off control */
+// ALPS05007528 begin
+#if IS_ENABLED(CONFIG_SND_SOC_DSPK_LOL_HP)
+		pr_info("%s(), spk_amp_audio_off()\n", __func__);
+		#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+		sipa_multi_channel_power_off(2);
+		sipa_multi_channel_power_off(1);
+		#endif
+		#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+		fsm_amp_set_switch(FSM_PA_R2_SPK, 0);
+		fsm_amp_set_switch(FSM_PA_L1_RCV, 0);
+		#endif
+#endif
+// ALPS05007528 end
 		break;
 	default:
 		break;
@@ -104,18 +295,143 @@ static int mt6855_mt6369_spk_amp_event(struct snd_soc_dapm_widget *w,
 	return 0;
 };
 
+// ALPS05007528 begin
+#if IS_ENABLED(CONFIG_SND_SOC_DSPK_LOL_HP)
+static int mt6855_mt6369_rcv_amp_event(struct snd_soc_dapm_widget *w,
+				       struct snd_kcontrol *kcontrol,
+				       int event)
+{
+	struct snd_soc_dapm_context *dapm = w->dapm;
+	struct snd_soc_card *card = dapm->card;
+
+	dev_info(card->dev, "%s(), event %d\n", __func__, event);
+
+	switch (event) {
+	case SND_SOC_DAPM_POST_PMU:
+		/* spk amp on control */
+// ALPS05007528 begin
+#if IS_ENABLED(CONFIG_SND_SOC_DSPK_LOL_HP)
+		if (AUDIO_AMP_SCENE_PLAYBACK == rcv_amp_mode) {
+			pr_info("%s(), rcv_amp_audio_kplayback()\n", __func__);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_PLAYBACK, 1);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			fsm_amp_set_scene(FSM_PA_L1_RCV, FSM_SCENE_MUSIC);
+			fsm_amp_set_switch(FSM_PA_L1_RCV, 1);
+			#endif
+		} else if (AUDIO_AMP_SCENE_RECEIVER == rcv_amp_mode) {
+			pr_info("%s(), rcv_amp_audio_kreceiver()\n", __func__);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_RECEIVER, 1);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			fsm_amp_set_scene(FSM_PA_L1_RCV, FSM_SCENE_RCV);
+			fsm_amp_set_switch(FSM_PA_L1_RCV, 1);
+			#endif
+		} else if (AUDIO_AMP_SCENE_FM == rcv_amp_mode) {
+			pr_info("%s(), rcv_amp_audio_kfm()\n", __func__);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_FM, 1);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			fsm_amp_set_scene(FSM_PA_L1_RCV, FSM_SCENE_LOW_PWR);
+			fsm_amp_set_switch(FSM_PA_L1_RCV, 1);
+			#endif
+		} else if (AUDIO_AMP_SCENE_VOICE == rcv_amp_mode) {
+			pr_info("%s(), rcv_amp_audio_kvoice()\n", __func__);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_VOICE, 1);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			fsm_amp_set_scene(FSM_PA_L1_RCV, FSM_SCENE_VOICE);
+			fsm_amp_set_switch(FSM_PA_L1_RCV, 1);
+			#endif
+		} else if (AUDIO_AMP_SCENE_VOIP == rcv_amp_mode) {
+			pr_info("%s(), rcv_amp_audio_kvoip()\n", __func__);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_VOIP, 1);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			fsm_amp_set_scene(FSM_PA_L1_RCV, FSM_SCENE_VOIP);
+			fsm_amp_set_switch(FSM_PA_L1_RCV, 1);
+			#endif
+		} else if (AUDIO_AMP_SCENE_BYPASS == rcv_amp_mode) {
+			pr_info("%s(), rcv_amp_audio_kbypass()\n", __func__);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_FACTORY, 1);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			fsm_amp_set_scene(FSM_PA_L1_RCV, FSM_SCENE_TOP_LEFT_BYPASS);
+			fsm_amp_set_switch(FSM_PA_L1_RCV, 1);
+			#endif
+		} else {
+			pr_err("%s(), rcv_amp_audio failed to switch on, unknown scene: %d\n", __func__, rcv_amp_mode);
+			#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+			// sipa_multi_channel_power_on_and_set_scene(AUDIO_SCENE_PLAYBACK, 1);
+			sipa_multi_channel_power_off(1);
+			#endif
+			#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+			// fsm_amp_set_scene(FSM_PA_L1_RCV, FSM_SCENE_MUSIC);
+			// fsm_amp_set_switch(FSM_PA_L1_RCV, 1);
+			fsm_amp_set_switch(FSM_PA_L1_RCV, 0);
+			#endif
+		}
+#endif
+// ALPS05007528 end
+		break;
+	case SND_SOC_DAPM_PRE_PMD:
+		/* rcv amp off control */
+		pr_info("%s(), rcv_amp_audio_off()\n", __func__);
+		#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+		sipa_multi_channel_power_off(1);
+		#endif
+		#if IS_ENABLED(CONFIG_SND_SOC_FS1XXX)
+		fsm_amp_set_switch(FSM_PA_L1_RCV, 0);
+		#endif
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+};
+#endif
+// ALPS05007528 end
+
 static const struct snd_soc_dapm_widget mt6855_mt6369_widgets[] = {
 	SND_SOC_DAPM_SPK(EXT_SPK_AMP_W_NAME, mt6855_mt6369_spk_amp_event),
+// ALPS05007528 begin
+#if IS_ENABLED(CONFIG_SND_SOC_DSPK_LOL_HP)
+	SND_SOC_DAPM_SPK(EXT_RCV_AMP_W_NAME, mt6855_mt6369_rcv_amp_event),
+#endif
+// ALPS05007528 end
 };
 
 static const struct snd_soc_dapm_route mt6855_mt6369_routes[] = {
 	{EXT_SPK_AMP_W_NAME, NULL, "LINEOUT L"},
 	{EXT_SPK_AMP_W_NAME, NULL, "Headphone L Ext Spk Amp"},
+// ALPS05007528 begin
+#if IS_ENABLED(CONFIG_SND_SOC_DSPK_LOL_HP)
+	{EXT_RCV_AMP_W_NAME, NULL, "Receiver"},
+	{EXT_RCV_AMP_W_NAME, NULL, "Headphone R Ext Spk Amp"},
+#else
 	{EXT_SPK_AMP_W_NAME, NULL, "Headphone R Ext Spk Amp"},
+#endif
+// ALPS05007528 end
 };
 
 static const struct snd_kcontrol_new mt6855_mt6369_controls[] = {
 	SOC_DAPM_PIN_SWITCH(EXT_SPK_AMP_W_NAME),
+// ALPS05007528 begin
+#if IS_ENABLED(CONFIG_SND_SOC_DSPK_LOL_HP)
+	SOC_DAPM_PIN_SWITCH(EXT_RCV_AMP_W_NAME),
+	SOC_ENUM_EXT("RCV_AMP_MODE", rcv_amp_type_enum,
+		     mt6855_mt6369_rcv_amp_mode_get, mt6855_mt6369_rcv_amp_mode_set),
+	SOC_ENUM_EXT("SPK_AMP_MODE", spk_amp_type_enum,
+		     mt6855_mt6369_spk_amp_mode_get, mt6855_mt6369_spk_amp_mode_set),
+#endif
+// ALPS05007528 end
 	SOC_ENUM_EXT("MTK_SPK_TYPE_GET", mt6855_spk_type_enum[0],
 		     mt6855_spk_type_get, NULL),
 	SOC_ENUM_EXT("MTK_SPK_I2S_OUT_TYPE_GET", mt6855_spk_type_enum[1],
@@ -343,6 +659,11 @@ static int mt6855_mt6369_init(struct snd_soc_pcm_runtime *rtd)
 
 	/* disable ext amp connection */
 	snd_soc_dapm_disable_pin(dapm, EXT_SPK_AMP_W_NAME);
+// ALPS05007528 begin
+#if IS_ENABLED(CONFIG_SND_SOC_DSPK_LOL_HP)
+	snd_soc_dapm_disable_pin(dapm, EXT_RCV_AMP_W_NAME);
+#endif
+// ALPS05007528 end
 #if IS_ENABLED(CONFIG_SND_SOC_MT6369_ACCDET)
 	mt6369_accdet_init(codec_component, rtd->card);
 #endif
@@ -1331,6 +1652,9 @@ static int mt6855_mt6369_dev_probe(struct platform_device *pdev)
 	struct device_node *scp_audio_node;
 	int spkProcessEnable = 0;
 #endif
+#if IS_ENABLED(CONFIG_LCT_AUDIO_INFO)
+	lct_audio_info_create_sysfs();
+#endif
 
 	dev_info(&pdev->dev, "%s()\n", __func__);
 
@@ -1405,6 +1729,13 @@ static int mt6855_mt6369_dev_probe(struct platform_device *pdev)
 #endif
 
 	card->dev = &pdev->dev;
+#if IS_ENABLED(CONFIG_SND_SOC_SIPA_81XX)
+	ret = soc_aux_init_only_sia81xx(pdev, card);
+	if (ret){
+		dev_err(&pdev->dev,"%s soc_aux_init_only_sia81xx fail %d\n",
+			 __func__, ret);
+	}
+#endif
 	ret = devm_snd_soc_register_card(&pdev->dev, card);
 	if (ret)
 		dev_err(&pdev->dev, "%s snd_soc_register_card fail %d\n",

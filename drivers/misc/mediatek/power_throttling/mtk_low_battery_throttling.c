@@ -79,6 +79,29 @@ void exec_low_battery_callback(unsigned int thd)
 		low_bat_thl_data->low_bat_thl_level);
 }
 
+void exec_throttle(unsigned int level)
+{
+	unsigned int thd = 0;
+        if (level <= LOW_BATTERY_LEVEL_NUM) {
+                if (level == LOW_BATTERY_LEVEL_0)
+                        thd = low_bat_thl_data->hv_thd_volt;
+                else if (level == LOW_BATTERY_LEVEL_1)
+                        thd = low_bat_thl_data->lv1_thd_volt;
+                else if (level == LOW_BATTERY_LEVEL_2)
+                        thd = low_bat_thl_data->lv2_thd_volt;
+                exec_low_battery_callback(thd);
+		pr_info("[%s] low_battery_level = %d\n", __func__, level);
+        }
+}
+EXPORT_SYMBOL(exec_throttle);
+
+void exec_throttle_level_get(int *level)
+{
+	*level = low_bat_thl_data->low_bat_thl_level;
+	pr_info("[%s] get low_battery_level = %d\n", __func__, low_bat_thl_data->low_bat_thl_level);
+}
+EXPORT_SYMBOL(exec_throttle_level_get);
+
 /*****************************************************************************
  * low battery protect UT
  ******************************************************************************/

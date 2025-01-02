@@ -294,6 +294,19 @@ static void uvcg_video_pump(struct work_struct *work)
 
 		video->encode(req, video, buf);
 
+		/* With usb3 we have more requests. This will decrease the
+		 * interrupt load to a quarter but also catches the corner
+		 * cases, which needs to be handled */
+		if (list_empty(&video->req_free) ||
+		    buf->state == UVC_BUF_STATE_DONE ||
+		    !(video->req_int_count %
+		       DIV_ROUND_UP(video->uvc_num_requests, 4))) {
+			video->req_int_count = 0;
+			req->no_interrupt = 0;
+		} else {
+			req->no_interrupt = 1;
+		}
+
 		/* Queue the USB request */
 		ret = uvcg_video_ep_queue(video, req);
 		spin_unlock_irqrestore(&queue->irqlock, flags);
@@ -305,6 +318,7 @@ static void uvcg_video_pump(struct work_struct *work)
 
 		/* Endpoint now owns the request */
 		req = NULL;
+		video->req_int_count++;
 	}
 
 	if (!req)
@@ -354,6 +368,8 @@ int uvcg_video_enable(struct uvc_video *video, int enable)
 		video->payload_size = 0;
 	} else
 		video->encode = uvc_video_encode_isoc;
+
+	video->req_int_count = 0;
 
 	schedule_work(&video->pump);
 
