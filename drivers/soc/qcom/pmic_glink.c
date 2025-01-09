@@ -407,6 +407,7 @@ static void pmic_glink_rx_callback(struct pmic_glink_dev *pgdev,
 
 	if (!client || !client->msg_cb) {
 		pr_err("No client present for %u\n", hdr->owner);
+		pr_err("pmic_glink_rx_callback ARCH-TF-CHARGER");
 		return;
 	}
 

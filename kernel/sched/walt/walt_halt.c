@@ -22,6 +22,7 @@ enum pause_type {
 struct cpumask __cpu_halt_mask;
 struct cpumask __cpu_partial_halt_mask;
 
+
 /* spin lock to allow calling from non-preemptible context */
 static DEFINE_RAW_SPINLOCK(halt_lock);
 

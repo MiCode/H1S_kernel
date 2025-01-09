@@ -155,6 +155,7 @@ static ssize_t store_boost_freq(struct kobject *kobj,
 	return count;
 }
 
+
 static ssize_t show_cur_freq(struct kobject *kobj,
 				struct attribute *attr, char *buf)
 {
@@ -177,6 +178,7 @@ static ssize_t show_cur_freq(struct kobject *kobj,
 
 	return scnprintf(buf, PAGE_SIZE, "%lu\n", cur_freq);
 }
+
 
 static ssize_t show_available_frequencies(struct kobject *kobj,
 				struct attribute *attr, char *buf)

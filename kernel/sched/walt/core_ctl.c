@@ -21,6 +21,7 @@
 #include "walt.h"
 #include "trace.h"
 
+
 /* mask of all CPUs with a fully pause claim outstanding */
 cpumask_t cpus_paused_by_us = { CPU_BITS_NONE };
 

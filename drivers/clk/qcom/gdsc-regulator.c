@@ -634,7 +634,6 @@ static int gdsc_set_mode(struct regulator_dev *rdev, unsigned int mode)
 		 * is gated by the parent supply enable state in hardware.
 		 */
 		ww_mutex_lock(&parent_rdev->mutex, NULL);
-
 		if (!parent_rdev->use_count) {
 			dev_err(&rdev->dev,
 				"%s cannot change GDSC HW/SW control mode while parent is disabled\n",
@@ -699,7 +698,6 @@ static int gdsc_set_mode(struct regulator_dev *rdev, unsigned int mode)
 		ret = -EINVAL;
 		break;
 	}
-
 done:
 	if (rdev->supply)
 		ww_mutex_unlock(&parent_rdev->mutex);
