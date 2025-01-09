@@ -218,6 +218,7 @@ struct geni_i2c_dev {
 	atomic_t is_xfer_in_progress; /* Used to maintain xfer inprogress status */
 	bool bus_recovery_enable; /* To be enabled by client if needed */
 	bool i2c_test_dev; /* Set this DT flag to enable test bus dump for an SE */
+	bool disable_stretch;
 	bool is_deep_sleep; /* For deep sleep restore the config similar to the probe. */
 };
 
@@ -651,7 +652,7 @@ static int geni_i2c_bus_recovery(struct geni_i2c_dev *gi2c)
 		return 0;
 	}
 
-	I2C_LOG_DBG(gi2c->ipcl, false, gi2c->dev, "%s: start recovery\n",
+	I2C_LOG_ERR(gi2c->ipcl, false, gi2c->dev, "%s: start recovery\n",
 		    __func__);
 	/* BUS_CLEAR */
 	reinit_completion(&gi2c->xfer);
@@ -668,7 +669,7 @@ static int geni_i2c_bus_recovery(struct geni_i2c_dev *gi2c)
 			return ret;
 		}
 	}
-	I2C_LOG_DBG(gi2c->ipcl, false, gi2c->dev,
+	I2C_LOG_ERR(gi2c->ipcl, false, gi2c->dev,
 		    "%s: BUS_CLEAR success\n", __func__);
 
 	/* BUS_STOP */
@@ -686,7 +687,7 @@ static int geni_i2c_bus_recovery(struct geni_i2c_dev *gi2c)
 			return ret;
 		}
 	}
-	I2C_LOG_DBG(gi2c->ipcl, false, gi2c->dev,
+	I2C_LOG_ERR(gi2c->ipcl, false, gi2c->dev,
 		    "%s: success\n", __func__);
 	geni_capture_stop_time(&gi2c->i2c_rsc, gi2c->ipc_log_kpi, __func__,
 			       gi2c->i2c_kpi, start_time, 0, 0);
@@ -1251,6 +1252,10 @@ static struct msm_gpi_tre *setup_go_tre(struct geni_i2c_dev *gi2c,
 
 	if (gi2c->gsi_tx.is_multi_descriptor)
 		gsi_bei = true;
+
+
+	if (gi2c->disable_stretch)
+		stretch = 0;
 
 	go_t->dword[0] = MSM_GPI_I2C_GO_TRE_DWORD0((stretch << 2),
 							   msgs[i].addr, op);
@@ -2008,6 +2013,9 @@ static int geni_i2c_execute_xfer(struct geni_i2c_dev *gi2c,
 						     gi2c->i2c_kpi);
 		reinit_completion(&gi2c->xfer);
 
+		if (gi2c->disable_stretch)
+			stretch = 0;
+
 		m_param |= (stretch ? STOP_STRETCH : 0);
 		m_param |= ((msgs[i].addr & 0x7F) << SLV_ADDR_SHFT);
 
@@ -2523,6 +2531,12 @@ static int geni_i2c_probe(struct platform_device *pdev)
 		dev_info(&pdev->dev, "%s: This is I2C device under test\n", __func__);
 	}
 
+	gi2c->disable_stretch = false;
+	if (of_property_read_bool(pdev->dev.of_node, "qcom,dis-mas-stretch")) {
+		gi2c->disable_stretch = true;
+		dev_info(&pdev->dev, "I2C master stretch is disabled\n");
+	}
+
 	gi2c->i2c_rsc.dev = dev;
 	gi2c->i2c_rsc.wrapper = dev_get_drvdata(dev->parent);
 	gi2c->i2c_rsc.base = gi2c->base;
@@ -2565,7 +2579,7 @@ static int geni_i2c_probe(struct platform_device *pdev)
 	//Strictly only for debug, it's client/slave device decision for an SE.
 	if (of_property_read_bool(pdev->dev.of_node, "qcom,bus-recovery")) {
 		gi2c->bus_recovery_enable  = true;
-		dev_dbg(&pdev->dev, "%s:I2C Bus recovery enabled\n", __func__);
+		dev_err(&pdev->dev, "%s:I2C Bus recovery enabled\n", __func__);
 	}
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));

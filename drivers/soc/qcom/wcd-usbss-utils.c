@@ -7,9 +7,30 @@
 #include <linux/soc/qcom/wcd939x-i2c.h>
 #include "wcd-usbss-priv.h"
 
+#if IS_ENABLED(CONFIG_MIEV)
+#include "miev/mievent.h"
+#endif
+
 #define REG_BYTES 2
 #define VAL_BYTES 1
 #define PAGE_REG_ADDR 0x00
+#define DFX_ID_WCDI2C_FAIL 906005006
+
+static void mievent_upload(int miev_code, char *err_type, int err_value)
+{
+#if (IS_ENABLED(CONFIG_MIEV))
+	if (err_type != NULL) {
+		struct misight_mievent *event = cdev_tevent_alloc(miev_code);
+
+		if (cdev_tevent_add_str(event, "i2cAction", err_type) != -1 &&
+		    cdev_tevent_add_int(event, "i2cErrInfo", err_value) != -1) {
+			cdev_tevent_write(event);
+		}
+		cdev_tevent_destroy(event);
+	}
+#endif
+	return;
+}
 
 static int wcd_usbss_i2c_write_device(struct wcd_usbss_ctxt *ctxt, u16 reg, u8 *value,
 				u32 bytes)
@@ -41,7 +62,8 @@ static int wcd_usbss_i2c_write_device(struct wcd_usbss_ctxt *ctxt, u16 reg, u8 *
 	if (ret != 1) {
 		ret = i2c_transfer(client->adapter, xfer_msg, 1);
 		if (ret != 1) {
-			pr_err("failed to write the device\n");
+			pr_err("failed to write the device [TF-HEADSET]\n");
+			mievent_upload(DFX_ID_WCDI2C_FAIL, "write", ret);
 			goto fail;
 		}
 	}
@@ -85,7 +107,8 @@ static int wcd_usbss_i2c_read_device(struct wcd_usbss_ctxt *ctxt, unsigned short
 		if (ret != 2) {
 			ret = i2c_transfer(client->adapter, xfer_msg, 2);
 			if (ret != 2) {
-				pr_err("failed to read wcd usbss register\n");
+				pr_err("failed to read wcd usbss register [TF-HEADSET]\n");
+				mievent_upload(DFX_ID_WCDI2C_FAIL, "read", ret);
 				return ret;
 			}
 		}

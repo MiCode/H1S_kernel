@@ -629,7 +629,6 @@ static void regulator_debug_print_enabled(struct regulator_dev *rdev)
 	else
 		pr_info("%s[%u]\n", rdev_name(rdev), rdev->use_count);
 
-	/* Print a header if there are consumers. */
 	if (rdev->open_count)
 		pr_info("  %-32s EN    Min_uV   Max_uV  load_uA\n",
 			"Device-Supply");

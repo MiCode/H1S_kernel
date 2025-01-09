@@ -1,7 +1,50 @@
+target_arch_map = {
+    "autogvm" : "autogvm",
+    "autoghgvm" : "autoghgvm",
+    "blair" : "blair",
+    "gen3auto" : "gen3auto",
+    "gen4auto" : "gen4auto",
+    "pineapple" : "pineapple",
+    "pitti" : "pitti",
+    "sdmsteppeauto" : "sdmsteppeauto",
+    "pineapple-allyes": "pineapple-allyes",
+    "pineapple-tuivm": "pineapple-tuivm",
+    "pineapple-oemvm": "pineapple-oemvm",
+    "anorak": "anorak",
+    "niobe-tuivm": "niobe-tuivm",
+     
+    "shennong" : "pineapple",
+    "manet" : "pineapple",
+    "zorn" : "pineapple",
+    "houji" : "pineapple",
+    "aurora" : "pineapple",
+    "ruyi" : "pineapple",
+    "niobe" : "niobe",
+    "goku" : "pineapple",
+    "peridot" : "pineapple",
+    "chenfeng" : "pineapple",
+    "uke" : "pineapple",
+    "muyu" : "pineapple",
+    "amethyst" : "pineapple",
+}
+
 la_targets = [
     # keep sorted
     "anorak",
     "autogvm",
+    "autoghgvm",
+    "shennong",
+    "manet",
+    "zorn",
+    "houji",
+    "aurora",
+    "ruyi",
+    "goku",
+    "peridot",
+    "chenfeng",
+    "uke",
+    "muyu",
+    "amethyst",
     "blair",
     "gen3auto",
     "niobe",
@@ -80,6 +123,9 @@ def get_all_vm_variants():
 
 def get_all_variants():
     return get_all_la_variants() + get_all_le_variants() + get_all_lxc_variants() + get_all_vm_variants()
+
+def get_arch_of_target(target):
+    return target_arch_map[target] 
 
 def get_all_lunch_target_base_target_variants():
     return [(lt, bt, v) for lt, bt in lunch_target_bases.items() for v in la_variants]

@@ -46,5 +46,6 @@ obj-$(CONFIG_XILLYBUS_CLASS)	+= xillybus/
 obj-$(CONFIG_POWERNV_OP_PANEL)	+= powernv-op-panel.o
 obj-$(CONFIG_ADI)		+= adi.o
 obj-$(CONFIG_MSM_RDBG)		+= rdbg.o
+obj-$(CONFIG_XLOGCHAR)      += xlogchar.o
 obj-$(CONFIG_VIRTIO_EAVB)       += virtio_eavb/
 

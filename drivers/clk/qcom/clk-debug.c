@@ -495,6 +495,7 @@ exit:
 DEFINE_DEBUGFS_ATTRIBUTE(clk_measure_fops, clk_debug_measure_get,
 			 clk_debug_measure_set, "%lld\n");
 
+
 void clk_debug_measure_add(struct clk_hw *hw, struct dentry *dentry)
 {
 	debugfs_create_file("clk_measure", 0444, dentry, hw, &clk_measure_fops);
@@ -534,6 +535,7 @@ int clk_debug_measure_register(struct clk_hw *hw)
 	return 0;
 }
 EXPORT_SYMBOL(clk_debug_measure_register);
+
 
 /**
  * map_debug_bases - maps each debug mux based on phandle
@@ -888,7 +890,7 @@ static int clock_debug_print_clock(struct hw_debug_clk *dclk, struct seq_file *s
 /*
  * clock_debug_print_enabled_clocks() - Print names of enabled clocks
  */
-static void clock_debug_print_enabled_clocks(struct seq_file *s)
+void clock_debug_print_enabled_clocks(struct seq_file *s)
 {
 	struct hw_debug_clk *dclk;
 	int cnt = 0;

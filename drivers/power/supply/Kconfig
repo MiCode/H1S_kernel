@@ -878,6 +878,51 @@ config RN5T618_POWER
 	  This driver can also be built as a module. If so, the module will be
 	  called rn5t618_power.
 
+config MI_WIRELESS
+	tristate "mi wirless config"
+	help
+	  Say Y here to enable mi wireless
+
+config MI_PEN_WIRELESS
+	tristate "mi pen wireless config"
+	help
+	  Say Y here to enable mi pen wireless
+
+config MI_N2N3ANTIBURN
+	tristate "mi n2n3antiburn config"
+	help
+	  Say Y here to enable mi n2n3antiburn
+
+config MI_O16U_EUPD
+        tristate "mi O16U_EUPD config"
+        help
+          Say Y here to enable mi o16u eu pd auth
+
+config MI_O11_EMPTY_BATTERY
+	tristate "mi O11_empty_battery config"
+	help
+          Say Y here to enable mi o11 empty battery
+
+config MI_EU_REGION_OPEN_POWER
+	tristate "mi Eu region open power"
+	help
+          Say Y here to enable Eu region open power
+
+config WIRELESS_REVERSE_CLOSE
+	tristate "mi wirless reverse close"
+	help
+	  Say Y here to disable mi wireless reverse charge
+
+config DUAL_FUEL_GAUGE
+	tristate "BQ fuel gauge config"
+	help
+	  Say y here to enable Bq fuel gauge
+
+config MI_ENABLE_DP
+	tristate "enable or disable displayPort config"
+	help
+	  Say Y here to enable create node to support dp function
+
 config BATTERY_ACER_A500
 	tristate "Acer Iconia Tab A500 battery driver"
 	depends on MFD_ACER_A500_EC
@@ -930,6 +975,31 @@ config BATTERY_UG3105
 	  Since Linux does not monitor coulomb-counter changes while the
 	  device is off or suspended, the functionality of this driver is
 	  limited to reporting capacity only.
+
+config MI_DTPT
+	tristate "mi dtpt config"
+	help
+	  Say Y here to enable mi dtpt
+
+config MI_SC760X
+	tristate "mi sc760x config"
+	help
+	  Say Y here to enable mi sc760x
+
+config MI_MULTI_CHG_CFG
+	tristate "MI multi charge config"
+	help
+	  Say y here to support multi charging config in one product
+
+config CHARGER_PARTITION
+	tristate "charger partition"
+	help
+	  Say y here to support charger partition
+
+config HL7603_BOOST
+    tristate "hl7603 boost"
+    help
+      Say y or m here to support hl7603 boost
 
 source "drivers/power/supply/qcom/Kconfig"
 

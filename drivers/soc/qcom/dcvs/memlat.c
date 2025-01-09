@@ -35,6 +35,7 @@
 #include <linux/qcom_scmi_vendor.h>
 #include "trace-dcvs.h"
 
+
 #define MAX_MEMLAT_GRPS	NUM_DCVS_HW_TYPES
 #define FP_NAME		"memlat_fp"
 #define MEMLAT_ALGO_STR 0x4D454D4C4154 /* "MEMLAT" */
@@ -244,6 +245,7 @@ struct memlat_dev_data {
 static struct memlat_dev_data		*memlat_data;
 static DEFINE_PER_CPU(struct cpu_stats *, sampling_stats);
 static DEFINE_MUTEX(memlat_lock);
+
 
 struct qcom_memlat_attr {
 	struct attribute		attr;
@@ -829,6 +831,7 @@ static void calculate_sampling_stats(void)
 	ktime_t now = ktime_get();
 	s64 delta_us, update_us;
 
+
 	update_us = ktime_us_delta(now, memlat_data->last_update_ts);
 	memlat_data->last_update_ts = now;
 
@@ -841,6 +844,7 @@ static void calculate_sampling_stats(void)
 			spin_lock_nested(&stats->ctrs_lock, level);
 		level++;
 	}
+
 
 	for_each_possible_cpu(cpu) {
 		stats = per_cpu(sampling_stats, cpu);
@@ -860,7 +864,6 @@ static void calculate_sampling_stats(void)
 			delta->common_ctrs[i] = stats->curr.common_ctrs[i] -
 						stats->prev.common_ctrs[i];
 		}
-
 		for (grp = 0; grp < MAX_MEMLAT_GRPS; grp++) {
 			memlat_grp = memlat_data->groups[grp];
 			if (!memlat_grp)
@@ -873,7 +876,6 @@ static void calculate_sampling_stats(void)
 					    stats->prev.grp_ctrs[grp][i];
 			}
 		}
-
 		stats->freq_mhz = delta->common_ctrs[CYC_IDX] / delta_us;
 		if (!memlat_data->common_ev_ids[FE_STALL_IDX])
 			stats->fe_stall_pct = 100;
@@ -914,7 +916,6 @@ static void calculate_sampling_stats(void)
 					stats->freq_mhz, stats->be_stall_pct,
 					stats->wb_pct[grp], stats->ipm[grp],
 					stats->fe_stall_pct);
-
 		}
 		memcpy(&stats->prev, &stats->curr, sizeof(stats->curr));
 	}
@@ -1002,6 +1003,7 @@ static void calculate_mon_sampling_freq(struct memlat_mon *mon)
 	}
 
 	mon->cur_freq = max_memfreq;
+
 }
 
 /*
@@ -1058,7 +1060,7 @@ static void update_memlat_fp_vote(int cpu, u32 *fp_freqs)
 		voted_freqs[grp].hw_type = grp;
 	}
 	ret = qcom_dcvs_update_votes(FP_NAME, voted_freqs, commit_mask,
-							DCVS_FAST_PATH);
+			DCVS_FAST_PATH);
 	if (ret < 0)
 		pr_err("error updating qcom dcvs fp: %d\n", ret);
 	spin_unlock(&memlat_data->fp_commit_lock);
@@ -1130,7 +1132,9 @@ static void memlat_jiffies_update_cb(void *unused, void *extra)
 	if (unlikely(!memlat_data->inited))
 		return;
 
+
 	if (delta_ns > ms_to_ktime(memlat_data->sample_ms)) {
+
 		hrtimer_start(&memlat_data->timer, MEMLAT_UPDATE_DELAY,
 						HRTIMER_MODE_REL_PINNED);
 		memlat_data->last_jiffy_ts = now;
@@ -1149,6 +1153,7 @@ static void process_raw_ctrs(struct cpu_stats *stats)
 	struct memlat_group *memlat_grp;
 	u32 event_id;
 	u64 ev_data;
+
 
 	for (i = 0; i < raw_ctrs->num_evs; i++) {
 		event_id = raw_ctrs->event_ids[i];
@@ -1188,7 +1193,11 @@ static void memlat_pmu_idle_cb(struct qcom_pmu_data *data, int cpu, int state)
 		return;
 
 	spin_lock_irqsave(&stats->ctrs_lock, flags);
+
+
 	memcpy(&stats->raw_ctrs, data, sizeof(*data));
+
+
 	process_raw_ctrs(stats);
 	stats->idle_sample = true;
 	spin_unlock_irqrestore(&stats->ctrs_lock, flags);
@@ -1197,6 +1206,7 @@ static void memlat_pmu_idle_cb(struct qcom_pmu_data *data, int cpu, int state)
 static struct qcom_pmu_notif_node memlat_idle_notif = {
 	.idle_cb = memlat_pmu_idle_cb,
 };
+
 
 static void memlat_sched_tick_cb(void *unused, struct rq *rq)
 {
@@ -1213,6 +1223,8 @@ static void memlat_sched_tick_cb(void *unused, struct rq *rq)
 	delta_ns = now - stats->last_sample_ts + HALF_TICK_NS;
 	if (delta_ns < ms_to_ktime(memlat_data->sample_ms))
 		goto out;
+
+
 	stats->sample_ts = now;
 	stats->idle_sample = false;
 	stats->raw_ctrs.num_evs = 0;
@@ -1353,6 +1365,8 @@ static int memlat_sampling_init(void)
 
 	register_trace_android_vh_scheduler_tick(memlat_sched_tick_cb, NULL);
 	register_trace_android_vh_jiffies_update(memlat_jiffies_update_cb, NULL);
+
+
 	qcom_pmu_idle_register(&memlat_idle_notif);
 
 	return 0;

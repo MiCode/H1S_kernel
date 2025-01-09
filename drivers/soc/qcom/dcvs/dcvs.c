@@ -61,6 +61,7 @@ struct qcom_dcvs_data {
 };
 static struct qcom_dcvs_data	*dcvs_data;
 
+
 static u32 get_target_freq(struct dcvs_path *path, u32 freq);
 
 struct qcom_dcvs_attr {
@@ -155,6 +156,7 @@ static ssize_t store_boost_freq(struct kobject *kobj,
 	return count;
 }
 
+
 static ssize_t show_cur_freq(struct kobject *kobj,
 				struct attribute *attr, char *buf)
 {
@@ -177,6 +179,7 @@ static ssize_t show_cur_freq(struct kobject *kobj,
 
 	return scnprintf(buf, PAGE_SIZE, "%lu\n", cur_freq);
 }
+
 
 static ssize_t show_available_frequencies(struct kobject *kobj,
 				struct attribute *attr, char *buf)

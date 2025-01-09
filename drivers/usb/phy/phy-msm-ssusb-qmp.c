@@ -18,6 +18,7 @@
 #include <linux/clk.h>
 #include <linux/extcon.h>
 #include <linux/reset.h>
+#include <linux/debugfs.h>
 
 enum core_ldo_levels {
 	CORE_LEVEL_NONE = 0,
@@ -151,6 +152,12 @@ struct msm_ssphy_qmp {
 	u32			*qmp_phy_init_seq;
 	int			init_seq_len;
 	enum qmp_phy_type	phy_type;
+	bool             usb3_eye;
+	/* debugfs entries */
+	struct dentry       *root;
+	/* USB3 eyetuning cfg */
+	u8         TXMGN_V0;
+	u8         TXDEEMPH_M3P5DB;
 };
 
 static const struct of_device_id msm_usb_id_table[] = {
@@ -548,6 +555,58 @@ static void usb_qmp_powerup_phy(struct msm_ssphy_qmp *phy)
 	mb();
 }
 
+static void msm_usb_write_readback(void __iomem *base, u32 offset,
+					const u32 mask, u32 val)
+{
+	u32 write_val, tmp = readl_relaxed(base + offset);
+	tmp &= ~mask;		/* retain other bits */
+	write_val = tmp | val;
+	writel_relaxed(write_val, base + offset);
+	/* Read back to see if val was written */
+	tmp = readl_relaxed(base + offset);
+	tmp &= mask;		/* clear other bits */
+	if (tmp != val)
+		pr_err("%s: write: %x to QSCRATCH: %x FAILED\n",
+			__func__, val, offset);
+}
+#define PHY_USB3_TUNING_REG_LEN 2		//add dtsi length
+
+static int msm_ssphy_parma_overvide(struct usb_phy *uphy,
+				const struct qmp_reg_val *reg)
+{
+	struct msm_ssphy_qmp *phy = container_of(uphy, struct msm_ssphy_qmp,
+					phy);
+	int i = 0;
+	if(phy->usb3_eye) {
+		//reset reg addr
+		if (phy->TXMGN_V0) {
+			dev_err(uphy->dev, "write TXMGN_V0: %x to offset: %x.\n",phy->TXMGN_V0,
+				reg->offset);
+			if(reg && reg->offset != -1)
+				msm_usb_write_readback(phy->base, reg->offset, 0xFF, phy->TXMGN_V0);
+			else
+				dev_err(uphy->dev, "write TXMGN_V0 fail.\n");
+		}
+		reg++;
+		if (phy->TXDEEMPH_M3P5DB) {
+			dev_err(uphy->dev, "write TXDEEMPH_M3P5DB: %x to offset: %x.\n",
+				phy->TXDEEMPH_M3P5DB, reg->offset);
+			if(reg && reg->offset != -1)
+				msm_usb_write_readback(phy->base, reg->offset, 0xFF, phy->TXDEEMPH_M3P5DB);
+			else
+				dev_err(uphy->dev, "write TXDEEMPH_M3P5DB fail.\n");
+		}
+		reg++;
+		reg -= PHY_USB3_TUNING_REG_LEN;
+		//reset and check
+		for (i = 0; i < PHY_USB3_TUNING_REG_LEN; i++) {
+			dev_err(uphy->dev, "USB3 PHY CFG:%x:0x%02x.\n", reg->offset, (0xFF & (readl_relaxed(phy->base + reg->offset))));
+			reg++;
+		}
+	}
+	return 0;
+}
+
 /* SSPHY Initialization */
 static int msm_ssphy_qmp_init(struct usb_phy *uphy)
 {
@@ -555,7 +614,7 @@ static int msm_ssphy_qmp_init(struct usb_phy *uphy)
 					phy);
 	int ret;
 	unsigned int init_timeout_usec = INIT_MAX_TIME_USEC;
-	const struct qmp_reg_val *reg = NULL;
+	struct qmp_reg_val *reg = NULL;
 
 	dev_dbg(uphy->dev, "Initializing QMP phy\n");
 
@@ -593,7 +652,6 @@ static int msm_ssphy_qmp_init(struct usb_phy *uphy)
 		dev_err(uphy->dev, "Failed the main PHY configuration\n");
 		goto fail;
 	}
-
 	/* perform software reset of PCS/Serdes */
 	writel_relaxed(0x00, phy->base + phy->phy_reg[USB3_PHY_SW_RESET]);
 	/* start PCS/Serdes to operation mode */
@@ -619,7 +677,9 @@ static int msm_ssphy_qmp_init(struct usb_phy *uphy)
 		ret = -EBUSY;
 		goto fail;
 	}
-
+	reg += phy->init_seq_len/2 - PHY_USB3_TUNING_REG_LEN;
+	msm_ssphy_parma_overvide(uphy, reg);
+  
 	return ret;
 fail:
 	phy->in_suspend = true;
@@ -777,12 +837,12 @@ static int msm_ssphy_qmp_set_suspend(struct usb_phy *uphy, int suspend)
 	struct msm_ssphy_qmp *phy = container_of(uphy, struct msm_ssphy_qmp,
 					phy);
 
-	dev_dbg(uphy->dev, "QMP PHY set_suspend for %s called with cable %s\n",
+	dev_info(uphy->dev, "QMP PHY set_suspend for %s called with cable %s\n",
 			(suspend ? "suspend" : "resume"),
 			get_cable_status_str(phy));
 
 	if (phy->in_suspend == suspend) {
-		dev_dbg(uphy->dev, "%s: USB PHY is already %s.\n",
+		dev_info(uphy->dev, "%s: USB PHY is already %s.\n",
 			__func__, (suspend ? "suspended" : "resumed"));
 		return 0;
 	}
@@ -978,6 +1038,13 @@ static void msm_ssphy_qmp_enable_clks(struct msm_ssphy_qmp *phy, bool on)
 
 		phy->clk_enabled = false;
 	}
+}
+
+static void msm_ssphy_create_debugfs(struct msm_ssphy_qmp *phy)
+{
+	phy->root = debugfs_create_dir(dev_name(phy->phy.dev), NULL);
+	debugfs_create_x8("txmgn_v0", 0644, phy->root, &phy->TXMGN_V0);
+	debugfs_create_x8("txdeemph_m3p5db", 0644, phy->root, &phy->TXDEEMPH_M3P5DB);
 }
 
 static int usb3_get_regulators(struct msm_ssphy_qmp  *phy)
@@ -1214,6 +1281,9 @@ static int msm_ssphy_qmp_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, phy);
 
+	phy->usb3_eye = of_property_read_bool(dev->of_node, "usb3,eyegram-tuning");
+	dev_err(dev, "usb3 eye gram:%d,%x\n", phy->usb3_eye,phy->init_seq_len);
+
 	phy->phy.dev			= dev;
 	phy->phy.init			= msm_ssphy_qmp_init;
 	phy->phy.set_suspend		= msm_ssphy_qmp_set_suspend;
@@ -1221,6 +1291,7 @@ static int msm_ssphy_qmp_probe(struct platform_device *pdev)
 	phy->phy.notify_disconnect	= msm_ssphy_qmp_notify_disconnect;
 
 	ret = usb_add_phy_dev(&phy->phy);
+	msm_ssphy_create_debugfs(phy);
 	ret = usb3_get_regulators(phy);
 	if (ret)
 		goto err;
@@ -1235,9 +1306,13 @@ static int msm_ssphy_qmp_remove(struct platform_device *pdev)
 	if (!phy)
 		return 0;
 
+	debugfs_remove_recursive(phy->root);
+
 	usb_remove_phy(&phy->phy);
 	msm_ssphy_qmp_enable_clks(phy, false);
 	msm_ssusb_qmp_ldo_enable(phy, 0);
+	kfree(phy);
+
 	return 0;
 }
 

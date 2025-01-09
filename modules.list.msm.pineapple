@@ -108,3 +108,7 @@ sdhci-msm.ko
 cqhci.ko
 crm.ko
 bcl_pmic5.ko
+sched-penalty.ko
+mi_memory.ko
+ufs_ffu.ko
+dump_display.ko

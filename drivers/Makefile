@@ -189,3 +189,13 @@ obj-$(CONFIG_COUNTER)		+= counter/
 obj-$(CONFIG_MOST)		+= most/
 obj-$(CONFIG_PECI)		+= peci/
 obj-$(CONFIG_HTE)		+= hte/
+obj-y				+= xiaomi/
+obj-$(CONFIG_FM_NTAG_I2C)	+= ntag/
+# MIUI ADD: Power_ProcessFreeze
+obj-$(CONFIG_MIHW)		+= mihw/
+obj-$(CONFIG_MI_RT_MONITOR)	+= sandbox/
+# END Power_ProcessFreeze
+
+# MIUI ADD: Performance_FramePredictBoost
+obj-$(CONFIG_HYPERENHANCE)	+= hyperenhance/
+# END Performance_FramePredictBoost
