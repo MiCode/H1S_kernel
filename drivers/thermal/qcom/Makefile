@@ -29,6 +29,7 @@ obj-$(CONFIG_QTI_THERMAL_LIMITS_DCVS) += msm_lmh_dcvs.o
 obj-$(CONFIG_QTI_THERMALZONE_CONFIG_DEBUG) += thermal_config.o
 obj-${CONFIG_QTI_SDPM_CLOCK_MONITOR} += sdpm_clk.o
 obj-$(CONFIG_QTI_THERMAL_MINIDUMP) += thermal_minidump.o
+obj-$(CONFIG_QTI_THERMAL_VENDOR_HOOK) += qti_thermal_vendor_hooks.o
 obj-$(CONFIG_THERMAL_TSENS_LEGACY)	+= msm-tsens-driver.o
 msm-tsens-driver-y			+= msm-tsens.o tsens2xxx.o tsens-dbg.o
 obj-$(CONFIG_QTI_CX_IPEAK_COOLING_DEVICE) += cx_ipeak_cdev.o

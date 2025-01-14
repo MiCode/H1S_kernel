@@ -88,6 +88,7 @@ struct clk_debug_mux {
 extern const struct clk_ops clk_debug_mux_ops;
 
 int clk_debug_measure_register(struct clk_hw *hw);
+
 int devm_clk_register_debug_mux(struct device *pdev, struct clk_debug_mux *mux);
 void clk_debug_measure_add(struct clk_hw *hw, struct dentry *dentry);
 int map_debug_bases(struct platform_device *pdev, const char *base,
@@ -112,7 +113,7 @@ extern void clk_debug_print_hw(struct clk_hw *hw, struct seq_file *f);
 		if (m)						\
 			seq_printf(m, fmt, ##__VA_ARGS__);	\
 		else						\
-			pr_info(fmt, ##__VA_ARGS__);		\
+			pr_warn(fmt, ##__VA_ARGS__);		\
 	} while (0)
 
 #define clock_debug_output_cont(s, fmt, ...)			\

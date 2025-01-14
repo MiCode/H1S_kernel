@@ -25,6 +25,8 @@
 #endif
 #include "cifs_swn.h"
 
+atomic_t EventCount;
+
 void
 cifs_dump_mem(char *label, void *data, int length)
 {
@@ -665,6 +667,145 @@ static int cifs_stats_proc_open(struct inode *inode, struct file *file)
 	return single_open(file, cifs_stats_proc_show, NULL);
 }
 
+DECLARE_WAIT_QUEUE_HEAD(conn_stat_wait);
+static int cifs_conn_stat_proc_show(struct seq_file *m, void *v)
+{
+	struct TCP_Server_Info *server;
+	struct cifs_ses *ses;
+	struct cifs_tcon *tcon;
+	int tcon_status = 0;
+	int open_file_stat = 0;
+	spin_lock(&cifs_tcp_ses_lock);
+	list_for_each_entry(server, &cifs_tcp_ses_list, tcp_ses_list) {
+		cifs_dbg(FYI, "server=%p\n", server);
+		list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
+			list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
+				cifs_dbg(FYI, "dstaddr=%s, tree_name=%s, tcon_status=%d, open_file_stat=%d, EventCount=%d\n",
+					tcon->ses->ip_addr, tcon->tree_name, tcon->status, list_empty(&tcon->openFileList) ? 1 : 0, atomic_read(&EventCount));
+				spin_lock(&tcon->tc_lock);
+				tcon_status = tcon->status;
+				spin_unlock(&tcon->tc_lock);
+				spin_lock(&tcon->open_file_lock);
+				open_file_stat = list_empty(&tcon->openFileList) ? 1 : 0;
+				spin_unlock(&tcon->open_file_lock);
+				seq_printf(m, "dstaddr=%s, tree_name=%s, tcon_status=%d, open_file_stat=%d, reconn_for_open=%d, reconn_for_idle=%d;",
+					tcon->ses->ip_addr, tcon->tree_name, tcon->status, open_file_stat, tcon->reconn_for_open, tcon->reconn_for_idle);
+			}
+		}
+	}
+	spin_unlock(&cifs_tcp_ses_lock);
+	seq_putc(m, '\n');
+	return 0;
+}
+static ssize_t cifs_conn_stat_proc_write(struct file *file,
+		const char __user *buffer, size_t count, loff_t *ppos)
+{
+	struct TCP_Server_Info *server;
+	struct cifs_ses *ses;
+	struct cifs_tcon *tcon;
+	int open_file_stat = 0;
+	int reconn_for_idle = 0;
+	struct list_head tmp_list;
+	struct tmp_ptr * t_ptr, * tt_ptr;
+	int disconnect_delay;
+	int ret;
+	ret = kstrtoint_from_user(buffer, count, 10, &disconnect_delay);
+	if (ret)
+	{
+		cifs_dbg(FYI, "kstrtoint err\n");
+		return ret;
+	}
+	cifs_dbg(FYI, "disconnect_delay(s)=%d, EventCount=%d\n", disconnect_delay, atomic_read(&EventCount));
+	/*
+	 * The unit of the disconnect_delay variable is seconds. 
+	 * If the value is equal to 0, it indicates that the idle timeout automatic disconnection function is disabled. 
+	 * Otherwise, it indicates the timeout period of the idle timeout automatic disconnection function
+	 */
+	disconnect_work_delay = disconnect_delay;
+	INIT_LIST_HEAD(&tmp_list);
+	spin_lock(&cifs_tcp_ses_lock);
+	list_for_each_entry(server, &cifs_tcp_ses_list, tcp_ses_list) {
+		list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
+			list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
+				spin_lock(&tcon->open_file_lock);
+				open_file_stat = list_empty(&tcon->openFileList) ? 1 : 0;
+				spin_unlock(&tcon->open_file_lock);
+				spin_lock(&tcon->tc_lock);
+				if(tcon->reconn_for_idle)
+				{
+					reconn_for_idle = 1;
+					tcon->reconn_for_open = 1;
+				}
+				spin_unlock(&tcon->tc_lock);
+				cifs_dbg(FYI, "dstaddr=%s, tree_name=%s, open_file_stat=%d, reconn_for_idle=%d, reconn_for_open=%d, tcon->status=%d\n",
+					tcon->ses->ip_addr, tcon->tree_name, open_file_stat, reconn_for_idle, tcon->reconn_for_open, tcon->status);
+			}
+		}
+		if(reconn_for_idle)
+		{
+			cifs_dbg(FYI, "reconn_for_idle\n");
+			reconn_for_idle = 0;
+			t_ptr = kmalloc(sizeof(struct tmp_ptr), GFP_ATOMIC);
+			if(t_ptr)
+			{
+				t_ptr->ptr = (void *)server;
+				list_add_tail(&t_ptr->tmp_ptr_list, &tmp_list);
+			}
+			else
+				cifs_dbg(FYI, "kmalloc fail\n");
+		}
+	}
+	spin_unlock(&cifs_tcp_ses_lock);
+	list_for_each_entry_safe(t_ptr, tt_ptr, &tmp_list, tmp_ptr_list) {
+		server = (struct TCP_Server_Info *)(t_ptr->ptr);
+		cifs_dbg(FYI, "cifs_reconnect\n");
+		cifs_reconnect(server, true);
+		list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
+			list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
+				cifs_dbg(FYI, "tcon->status(after cifs_reconnect)=%d\n", tcon->status);
+			}
+		}
+		list_del(&t_ptr->tmp_ptr_list);
+		kfree(t_ptr);
+	}
+	return count;
+}
+static int cifs_conn_stat_proc_open(struct inode *inode, struct file *file)
+{
+	cifs_dbg(FYI, "comm=%s, pid=%lu, EventCount=%d\n",
+		current->comm, (unsigned long)current->pid, atomic_read(&EventCount));
+	return single_open(file, cifs_conn_stat_proc_show, NULL);
+}
+static __poll_t conn_stat_poll(struct file *file, poll_table *wait)
+{
+	cifs_dbg(FYI, "comm=%s, pid=%lu, EventCount=%d\n",
+		current->comm, (unsigned long)current->pid, atomic_read(&EventCount));
+
+	if(atomic_read(&EventCount))
+	{
+		atomic_dec(&EventCount);
+		return POLLIN;
+	}
+	else
+		poll_wait(file, &conn_stat_wait, wait);
+
+	if(atomic_read(&EventCount))
+	{
+		atomic_dec(&EventCount);
+		return POLLIN;
+	}
+
+	return 0;
+}
+static const struct proc_ops cifs_conn_stat_proc_ops = {
+	.proc_open	= cifs_conn_stat_proc_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_poll      = conn_stat_poll,
+	.proc_release	= single_release,
+	.proc_write	= cifs_conn_stat_proc_write,
+};
+
 static const struct proc_ops cifs_stats_proc_ops = {
 	.proc_open	= cifs_stats_proc_open,
 	.proc_read	= seq_read,
@@ -732,6 +873,8 @@ cifs_proc_init(void)
 
 	proc_create_single("open_files", 0400, proc_fs_cifs,
 			cifs_debug_files_proc_show);
+
+	proc_create("ConnStat", 0660, proc_fs_cifs, &cifs_conn_stat_proc_ops);
 
 	proc_create("Stats", 0644, proc_fs_cifs, &cifs_stats_proc_ops);
 	proc_create("cifsFYI", 0644, proc_fs_cifs, &cifsFYI_proc_ops);

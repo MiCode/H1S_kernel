@@ -62,8 +62,8 @@ extern int cifsFYI;
 #define cifs_dbg_func(ratefunc, type, fmt, ...)				\
 do {									\
 	if ((type) & FYI && cifsFYI & CIFS_INFO) {			\
-		pr_debug_ ## ratefunc("%s: " fmt,			\
-				      __FILE__, ##__VA_ARGS__);		\
+		pr_err_ ## ratefunc("%s:%i: " fmt,			\
+				      __FILE__, __LINE__, ##__VA_ARGS__);		\
 	} else if ((type) & VFS) {					\
 		pr_err_ ## ratefunc("VFS: " fmt, ##__VA_ARGS__);	\
 	} else if ((type) & NOISY && (NOISY != 0)) {			\
@@ -83,8 +83,8 @@ do {									\
 do {									\
 	spin_lock(&server->srv_lock);					\
 	if ((type) & FYI && cifsFYI & CIFS_INFO) {			\
-		pr_debug_ ## ratefunc("%s: \\\\%s " fmt,		\
-				      __FILE__, server->hostname,	\
+		pr_err_ ## ratefunc("%s:%i: \\\\%s " fmt,		\
+				      __FILE__, __LINE__, server->hostname,	\
 				      ##__VA_ARGS__);			\
 	} else if ((type) & VFS) {					\
 		pr_err_ ## ratefunc("VFS: \\\\%s " fmt,			\
@@ -111,8 +111,8 @@ do {									\
 	if (tcon && tcon->tree_name)					\
 		tn = tcon->tree_name;					\
 	if ((type) & FYI && cifsFYI & CIFS_INFO) {			\
-		pr_debug_ ## ratefunc("%s: %s "	fmt,			\
-				      __FILE__, tn, ##__VA_ARGS__);	\
+		pr_err_ ## ratefunc("%s:%i: %s "	fmt,			\
+				      __FILE__, __LINE__, tn, ##__VA_ARGS__);	\
 	} else if ((type) & VFS) {					\
 		pr_err_ ## ratefunc("VFS: %s " fmt, tn, ##__VA_ARGS__);	\
 	} else if ((type) & NOISY && (NOISY != 0)) {			\

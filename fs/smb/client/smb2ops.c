@@ -232,9 +232,11 @@ smb2_wait_mtu_credits(struct TCP_Server_Info *server, unsigned int size,
 		if (server->credits <= 0) {
 			spin_unlock(&server->req_lock);
 			cifs_num_waiters_inc(server);
+			cifs_dbg(FYI, "before wait, num_waiters=%d, jiffies=%lu\n", (server->num_waiters).counter, jiffies);
 			rc = wait_event_killable(server->request_q,
 				has_credits(server, &server->credits, 1));
 			cifs_num_waiters_dec(server);
+			cifs_dbg(FYI, "after wait, num_waiters=%d, jiffies=%lu\n", (server->num_waiters).counter, jiffies);
 			if (rc)
 				return rc;
 			spin_lock(&server->req_lock);
@@ -4744,7 +4746,10 @@ handle_read_data(struct TCP_Server_Info *server, struct mid_q_entry *mid,
 	if (server->ops->is_session_expired &&
 	    server->ops->is_session_expired(buf)) {
 		if (!is_offloaded)
+		{
+			cifs_dbg(FYI, "is_session_expired, msec=%u\n", jiffies_to_msecs(jiffies));
 			cifs_reconnect(server, true);
+		}
 		return -1;
 	}
 

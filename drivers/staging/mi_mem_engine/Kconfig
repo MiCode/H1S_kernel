@@ -1,0 +1,5 @@
+config MI_MEM_ENGINE
+    tristate "MI_MEM_ENGINE tracing mem alloc "
+	default n
+    help
+      UX task alloc page frist.

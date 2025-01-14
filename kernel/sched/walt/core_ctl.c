@@ -21,6 +21,8 @@
 #include "walt.h"
 #include "trace.h"
 
+
+
 /* mask of all CPUs with a fully pause claim outstanding */
 cpumask_t cpus_paused_by_us = { CPU_BITS_NONE };
 
@@ -32,6 +34,7 @@ cpumask_t cpus_for_sbt_pause = { CPU_BITS_NONE };
 
 struct cluster_data {
 	bool			inited;
+
 	unsigned int		min_cpus;
 	unsigned int		min_partial_cpus;
 	unsigned int		max_cpus;
@@ -103,6 +106,7 @@ static unsigned int get_assist_active_cpu_count(const struct cluster_data *clust
 static unsigned int active_cpu_count_from_mask(const cpumask_t *cpus);
 static void __ref do_core_ctl(void);
 
+
 cpumask_t part_haltable_cpus = { CPU_BITS_NONE };
 /* ========================= sysfs interface =========================== */
 
@@ -115,6 +119,7 @@ static ssize_t store_min_cpus(struct cluster_data *state,
 		return -EINVAL;
 
 	state->min_cpus = min(val, state->num_cpus);
+
 	sysfs_param_changed(state);
 
 	return count;
@@ -1790,6 +1795,7 @@ static int cluster_init(const struct cpumask *mask)
 	cluster->first_cpu = first_cpu;
 	cluster->min_cpus = 1;
 	cluster->min_partial_cpus = 0;
+
 	cluster->max_cpus = cluster->num_cpus;
 	cluster->need_cpus = cluster->num_cpus;
 	cluster->offline_delay_ms = 100;

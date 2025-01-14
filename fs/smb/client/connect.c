@@ -50,6 +50,7 @@
 #endif
 #include "fs_context.h"
 #include "cifs_swn.h"
+#include "smb2status.h"
 
 extern mempool_t *cifs_req_poolp;
 extern bool disable_legacy_dialects;
@@ -186,6 +187,55 @@ static void cifs_resolve_server(struct work_struct *work)
 }
 
 /*
+ * This function interface can only be used if there is only one tcon in a server
+ */
+int reconn_mode(struct TCP_Server_Info *server)
+{
+        struct cifs_ses *ses;
+        struct cifs_tcon *tcon;
+        int open_file_stat = 0;
+        int reconn_for_open = 0;
+        int reconn_for_busy_err = 0;
+        int reconn_for_idle_err = 0;
+        int reconn_stat = 0;
+
+        spin_lock(&cifs_tcp_ses_lock);
+
+        list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
+                list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
+
+                        spin_lock(&tcon->open_file_lock);
+                        open_file_stat = list_empty(&tcon->openFileList) ? 1 : 0;
+                        reconn_for_busy_err = !open_file_stat;
+                        reconn_for_idle_err = open_file_stat && (!tcon->reconn_for_idle);
+                        spin_unlock(&tcon->open_file_lock);
+
+                        spin_lock(&tcon->tc_lock);
+                        reconn_for_open = tcon->reconn_for_open;
+                        spin_unlock(&tcon->tc_lock);
+
+                        cifs_dbg(FYI, "dstaddr=%s, tree_name=%s, tcon_status=%d, reconn_for_open=%d, reconn_for_busy_err=%d, reconn_for_idle_err=%d, reconn_for_idle=%d\n",
+                                tcon->ses->ip_addr, tcon->tree_name, tcon->status, reconn_for_open, reconn_for_busy_err, reconn_for_idle_err, tcon->reconn_for_idle);
+
+/*
+ * reconn_for_open : reconn for cifs_conn_stat_proc_write
+ * reconn_for_busy_err : reconn for !list_empty(&tcon->openFileList)
+ * reconn_for_idle_err : reconn for list_empty(&tcon->openFileList) && !tcon->reconn_for_idle
+ */
+                        if(reconn_for_open || reconn_for_busy_err || reconn_for_idle_err)
+                        {
+                                reconn_stat = 1;
+                                cifs_dbg(FYI, "reconn_stat=%d\n", reconn_stat);
+                        }
+
+                }
+        }
+
+        spin_unlock(&cifs_tcp_ses_lock);
+
+        return reconn_stat;
+}
+/*
  * Update the tcpStatus for the server.
  * This is used to signal the cifsd thread to call cifs_reconnect
  * ONLY cifsd thread should call cifs_reconnect. For any other
@@ -237,6 +287,8 @@ cifs_signal_cifsd_for_reconnect(struct TCP_Server_Info *server,
  * @server needs to be previously set to CifsNeedReconnect.
  * @mark_smb_session: whether even sessions need to be marked
  */
+extern wait_queue_head_t conn_stat_wait;
+
 void
 cifs_mark_tcp_ses_conns_for_reconnect(struct TCP_Server_Info *server,
 				      bool mark_smb_session)
@@ -244,6 +296,12 @@ cifs_mark_tcp_ses_conns_for_reconnect(struct TCP_Server_Info *server,
 	struct TCP_Server_Info *pserver;
 	struct cifs_ses *ses, *nses;
 	struct cifs_tcon *tcon;
+	int open_file_stat = 0;
+	int reconn_for_open = 0;
+	int reconn_for_busy_err = 0;
+	int reconn_for_idle_err = 0;
+	int tcon_stat_change = 0;
+	int old_status = 0;
 
 	/*
 	 * before reconnecting the tcp session, mark the smb session (uid) and the tid bad so they
@@ -287,16 +345,47 @@ cifs_mark_tcp_ses_conns_for_reconnect(struct TCP_Server_Info *server,
 		spin_unlock(&ses->ses_lock);
 
 		list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
-			tcon->need_reconnect = true;
+			spin_lock(&tcon->open_file_lock);
+			open_file_stat = list_empty(&tcon->openFileList) ? 1 : 0;
+			reconn_for_busy_err = !open_file_stat;
+			reconn_for_idle_err = open_file_stat && (!tcon->reconn_for_idle);
+			spin_unlock(&tcon->open_file_lock);
+
 			spin_lock(&tcon->tc_lock);
+			reconn_for_open = tcon->reconn_for_open;
+			tcon->need_reconnect = true;
 			tcon->status = TID_NEED_RECON;
+			tcon_stat_change = tcon->status != tcon->old_status;
+			if(tcon_stat_change)
+			{
+				old_status = tcon->old_status;
+				tcon->old_status = tcon->status;
+			}
 			spin_unlock(&tcon->tc_lock);
+
+			if(tcon_stat_change)
+			{
+				cifs_dbg(FYI, "%s : %d -> %d, wakeup conn_stat_wait, EventCount=%d, tcon->ipc=%d\n", tcon->tree_name, old_status, tcon->status, atomic_read(&EventCount), tcon->ipc);
+
+				atomic_inc(&EventCount);
+
+				wake_up_interruptible(&conn_stat_wait);
+			}
+
+			cifs_dbg(FYI, "TID_NEED_RECON, dstaddr=%s, tree_name=%s, tcon_status=%d, reconn_for_open=%d, reconn_for_busy_err=%d, reconn_for_idle_err=%d, reconn_for_idle=%d\n",
+                                        tcon->ses->ip_addr, tcon->tree_name, tcon->status, reconn_for_open, reconn_for_busy_err, reconn_for_idle_err, tcon->reconn_for_idle);
 		}
 		if (ses->tcon_ipc) {
-			ses->tcon_ipc->need_reconnect = true;
 			spin_lock(&ses->tcon_ipc->tc_lock);
+			ses->tcon_ipc->need_reconnect = true;
 			ses->tcon_ipc->status = TID_NEED_RECON;
+			tcon_stat_change = ses->tcon_ipc->status != ses->tcon_ipc->old_status;
+			if(tcon_stat_change)
+			{
+				ses->tcon_ipc->old_status = ses->tcon_ipc->status;
+			}
 			spin_unlock(&ses->tcon_ipc->tc_lock);
+
 		}
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
@@ -360,6 +449,8 @@ cifs_abort_connection(struct TCP_Server_Info *server)
 
 static bool cifs_tcp_ses_needs_reconnect(struct TCP_Server_Info *server, int num_targets)
 {
+	int reconn_stat = reconn_mode(server);
+
 	spin_lock(&server->srv_lock);
 	server->nr_targets = num_targets;
 	if (server->tcpStatus == CifsExiting) {
@@ -372,12 +463,30 @@ static bool cifs_tcp_ses_needs_reconnect(struct TCP_Server_Info *server, int num
 	cifs_dbg(FYI, "Mark tcp session as need reconnect\n");
 	trace_smb3_reconnect(server->CurrentMid, server->conn_id,
 			     server->hostname);
+
+	if(!reconn_stat)
+	{
+		cifs_dbg(FYI, "not need reconn for idle\n");
+
+		server->tcpStatus = CifsNeedReconnect;
+		spin_unlock(&server->srv_lock);
+
+		cifs_mark_tcp_ses_conns_for_reconnect(server, 1);
+
+		return false;
+	}
+
 	server->tcpStatus = CifsNeedReconnect;
 
 	spin_unlock(&server->srv_lock);
+
+	cifs_dbg(FYI, "need reconn\n");
+
 	return true;
 }
-
+int tcpSesReconnectCountMax = 10;
+int tcpSocketReconnectCountMax = 10;
+int tcpSesReconnectInterval = 0;
 /*
  * cifs tcp session reconnection
  *
@@ -403,7 +512,12 @@ static int __cifs_reconnect(struct TCP_Server_Info *server,
 
 	cifs_abort_connection(server);
 
+	atomic_set(&tcpSesReconnectCount, 0);
+	atomic_set(&tcpSocketReconnectCount, 0);
+
 	do {
+		cifs_dbg(FYI, "try reconn\n");
+
 		try_to_freeze();
 		cifs_server_lock(server);
 
@@ -420,6 +534,7 @@ static int __cifs_reconnect(struct TCP_Server_Info *server,
 		if (rc) {
 			cifs_server_unlock(server);
 			cifs_dbg(FYI, "%s: reconnect error %d\n", __func__, rc);
+			atomic_inc(&tcpSocketReconnectCount);
 			msleep(3000);
 		} else {
 			atomic_inc(&tcpSesReconnectCount);
@@ -430,9 +545,24 @@ static int __cifs_reconnect(struct TCP_Server_Info *server,
 			spin_unlock(&server->srv_lock);
 			cifs_swn_reset_server_dstaddr(server);
 			cifs_server_unlock(server);
-			mod_delayed_work(cifsiod_wq, &server->reconnect, 0);
+			mod_delayed_work(cifsiod_wq, &server->reconnect, (tcpSesReconnectInterval * HZ));
+		}
+
+		if((tcpSesReconnectCount.counter > tcpSesReconnectCountMax) || (tcpSocketReconnectCount.counter > tcpSocketReconnectCountMax))
+		{
+			cifs_dbg(FYI, "reconn fail after %d or %d trys\n", tcpSesReconnectCount.counter, tcpSocketReconnectCount.counter);
+
+			atomic_set(&tcpSocketReconnectCount, 0);
+			atomic_set(&tcpSesReconnectCount, 0);
+
+			//wake_up_interruptible(&conn_stat_wait);
 		}
 	} while (server->tcpStatus == CifsNeedReconnect);
+
+	cifs_dbg(FYI, "try conn, tcpStatus=%d\n", server->tcpStatus);
+
+	atomic_set(&tcpSesReconnectCount, 0);
+	atomic_set(&tcpSocketReconnectCount, 0);
 
 	spin_lock(&server->srv_lock);
 	if (server->tcpStatus == CifsNeedNegotiate)
@@ -599,7 +729,30 @@ int cifs_reconnect(struct TCP_Server_Info *server, bool mark_smb_session)
 #else
 int cifs_reconnect(struct TCP_Server_Info *server, bool mark_smb_session)
 {
-	return __cifs_reconnect(server, mark_smb_session);
+	int ret = 0;
+
+	spin_lock(&server->srv_lock);
+	if(server->connecting_stat)
+	{
+		spin_unlock(&server->srv_lock);
+		cifs_dbg(FYI, "connecting_stat is 1, return\n");
+		return ret;
+	}
+	else
+	{
+		server->connecting_stat = 1;
+		smp_mb();
+		spin_unlock(&server->srv_lock);
+	}
+
+	ret = __cifs_reconnect(server, mark_smb_session);
+
+	spin_lock(&server->srv_lock);
+	server->connecting_stat = 0;
+	smp_mb();
+	spin_unlock(&server->srv_lock);
+
+	return ret;
 }
 #endif
 
@@ -620,10 +773,14 @@ cifs_echo_request(struct work_struct *work)
 	    server->tcpStatus == CifsNew ||
 	    (server->ops->can_echo && !server->ops->can_echo(server)) ||
 	    time_before(jiffies, server->lstrp + server->echo_interval - HZ))
+	{
+		cifs_dbg(FYI, "requeue_echo, mesc=%u, tcpStatus=%d\n", jiffies_to_msecs(jiffies), server->tcpStatus);
 		goto requeue_echo;
+	}
 
 	rc = server->ops->echo ? server->ops->echo(server) : -ENOSYS;
 	cifs_server_dbg(FYI, "send echo request: rc = %d\n", rc);
+	cifs_server_dbg(FYI, "send echo request: rc = %d, mesc=%u\n", rc, jiffies_to_msecs(jiffies));
 
 	/* Check witness registrations */
 	cifs_swn_check();
@@ -631,7 +788,135 @@ cifs_echo_request(struct work_struct *work)
 requeue_echo:
 	queue_delayed_work(cifsiod_wq, &server->echo, server->echo_interval);
 }
+DECLARE_WAIT_QUEUE_HEAD(request_q_num_waiters_wq);
+void cifs_disconnect(struct work_struct *work)
+{
+	struct cifs_ses * ses;
+	struct cifs_tcon * tcon;
+	int rc = 0;
+	int old_tcpStatus = CifsGood;
+	int disconn_by_cancel = 0;
+	int open_file_stat = 0;
+	struct TCP_Server_Info * server = container_of(work, struct TCP_Server_Info, disconnect.work);
 
+	cifs_dbg(FYI, "in\n");
+
+	spin_lock(&server->srv_lock);
+
+	cifs_dbg(FYI, "connecting_stat=%d, tcpStatus=%d\n", server->connecting_stat, server->tcpStatus);
+
+	if(server->tcpStatus != CifsGood)
+	{
+		spin_unlock(&server->srv_lock);
+		goto out;
+	}
+	else if(server->connecting_stat)
+	{
+		spin_unlock(&server->srv_lock);
+                disconn_by_cancel = 1;
+        }
+        else
+        {
+		server->connecting_stat = 1;
+		smp_mb();
+		spin_unlock(&server->srv_lock);
+        }
+
+	if(!disconn_by_cancel)
+	{
+		cifs_dbg(FYI, "mark reconn_for_idle\n");
+
+		spin_lock(&cifs_tcp_ses_lock);
+		list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
+		        list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
+
+				spin_lock(&tcon->tc_lock);
+				tcon->reconn_for_idle = 1;
+				spin_unlock(&tcon->tc_lock);
+			}
+		}
+		spin_unlock(&cifs_tcp_ses_lock);
+
+		cifs_dbg(FYI, "mark CifsNeedReconnect, mesc=%u\n", jiffies_to_msecs(jiffies));
+		spin_lock(&server->srv_lock);
+		old_tcpStatus = server->tcpStatus;
+		server->tcpStatus = CifsNeedReconnect;
+		spin_unlock(&server->srv_lock);
+
+		cifs_dbg(FYI, "before wait, num_waiters=%d, in_send=%d, in_recv=%d, msec=%u\n", 
+			atomic_read(&server->num_waiters), atomic_read(&server->in_send), atomic_read(&server->in_recv), jiffies_to_msecs(jiffies));
+		rc = wait_event_killable_timeout(request_q_num_waiters_wq, 
+			atomic_read(&server->num_waiters) == 0 && atomic_read(&server->in_send) == 0 && atomic_read(&server->in_recv) == 0, 
+			msecs_to_jiffies(10000));// > 7s(sk_rcvtimeo)
+		cifs_dbg(FYI, "after wait, num_waiters=%d, in_send=%d, in_recv=%d, msec=%u\n", 
+			atomic_read(&server->num_waiters), atomic_read(&server->in_send), atomic_read(&server->in_recv), jiffies_to_msecs(jiffies));
+		if((!rc) || (rc == -ERESTARTSYS))
+		{
+			cifs_dbg(FYI, "rc=%d(%s), Cancel cifs_disconnect, mesc=%u\n", 
+				rc, rc ? "-ERESTARTSYS" : "timeout and num_waiters != 0", jiffies_to_msecs(jiffies));
+			spin_lock(&server->srv_lock);
+			server->tcpStatus = old_tcpStatus;
+			spin_unlock(&server->srv_lock);
+
+			spin_lock(&cifs_tcp_ses_lock);
+			list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
+			        list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
+
+					spin_lock(&tcon->tc_lock);
+					tcon->reconn_for_idle = 0;
+					spin_unlock(&tcon->tc_lock);
+				}
+			}
+			spin_unlock(&cifs_tcp_ses_lock);
+
+			disconn_by_cancel = 1;
+		}
+		else
+		{
+			cifs_dbg(FYI, "cifs_abort_connection\n");
+			cifs_abort_connection(server);
+
+			cifs_dbg(FYI, "mark for reconnect\n");
+			cifs_mark_tcp_ses_conns_for_reconnect(server, 1);
+		}
+
+		spin_lock(&server->srv_lock);
+		server->connecting_stat = 0;
+		smp_mb();
+		spin_unlock(&server->srv_lock);
+	}
+
+	cifs_dbg(FYI, "out, disconn_by_cancel=%d\n", disconn_by_cancel);
+
+	if(disconn_by_cancel)
+	{
+		spin_lock(&cifs_tcp_ses_lock);
+		list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
+		        list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
+
+				spin_lock(&tcon->tc_lock);
+				open_file_stat = list_empty(&tcon->openFileList) ? 1 : 0;
+				spin_unlock(&tcon->tc_lock);
+			}
+		}
+		spin_unlock(&cifs_tcp_ses_lock);
+
+		cifs_dbg(FYI, "out, open_file_stat=%d\n", open_file_stat);
+
+		if(open_file_stat)
+		{
+			if(disconnect_work_delay)
+			{
+				spin_lock(&server->srv_lock);
+				server->stat = 0;
+				spin_unlock(&server->srv_lock);
+				queue_delayed_work(cifsiod_wq, &server->disconnect, msecs_to_jiffies(disconnect_work_delay * 1000));
+			}
+		}
+	}
+out:
+	cifs_dbg(FYI, "out\n");
+}
 static bool
 allocate_buffers(struct TCP_Server_Info *server)
 {
@@ -716,11 +1001,17 @@ cifs_readv_from_socket(struct TCP_Server_Info *server, struct msghdr *smb_msg)
 	int length = 0;
 	int total_read;
 
+        struct cifs_ses * ses;
+        struct cifs_tcon * tcon;
+	int reconn_for_idle = 0;
+	int sock_available = 0;
+
 	for (total_read = 0; msg_data_left(smb_msg); total_read += length) {
 		try_to_freeze();
 
 		/* reconnect if no credits and no requests in flight */
 		if (zero_credits(server)) {
+			cifs_dbg(FYI, "zero_credits, msec=%u\n", jiffies_to_msecs(jiffies));
 			cifs_reconnect(server, false);
 			return -ECONNABORTED;
 		}
@@ -730,7 +1021,22 @@ cifs_readv_from_socket(struct TCP_Server_Info *server, struct msghdr *smb_msg)
 		if (cifs_rdma_enabled(server) && server->smbd_conn)
 			length = smbd_recv(server->smbd_conn, smb_msg);
 		else
-			length = sock_recvmsg(server->ssocket, smb_msg, 0);
+		{
+			spin_lock(&server->srv_lock);
+			sock_available = ((server->tcpStatus != CifsNeedReconnect) && (server->tcpStatus != CifsExiting));
+			if(sock_available)
+				cifs_in_recv_inc(server);//disable cifs_disconnect
+			spin_unlock(&server->srv_lock);
+			if(sock_available)
+			{
+				cifs_dbg(FYI, "before ssocket=%p, msec=%u\n", server->ssocket, jiffies_to_msecs(jiffies));
+				length = sock_recvmsg(server->ssocket, smb_msg, 0);
+				cifs_in_recv_dec(server);
+				cifs_dbg(FYI, "after ssocket=%p, msec=%u, length=%d\n", server->ssocket, jiffies_to_msecs(jiffies), length);
+			}
+			else
+				length = -EAGAIN;
+		}
 
 		spin_lock(&server->srv_lock);
 		if (server->tcpStatus == CifsExiting) {
@@ -740,8 +1046,30 @@ cifs_readv_from_socket(struct TCP_Server_Info *server, struct msghdr *smb_msg)
 
 		if (server->tcpStatus == CifsNeedReconnect) {
 			spin_unlock(&server->srv_lock);
-			cifs_reconnect(server, false);
-			return -ECONNABORTED;
+
+			spin_lock(&cifs_tcp_ses_lock);
+			list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
+			        list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
+
+					spin_lock(&tcon->tc_lock);
+					if(tcon->reconn_for_idle == 1)
+						reconn_for_idle = 1;
+					spin_unlock(&tcon->tc_lock);
+				}
+			}
+			spin_unlock(&cifs_tcp_ses_lock);
+
+			cifs_dbg(FYI, "reconn_for_idle=%d\n", reconn_for_idle);
+
+			if(reconn_for_idle)
+			{
+				return -ECONNABORTED;
+			}
+			else
+			{
+				cifs_reconnect(server, false);
+				return -ECONNABORTED;
+			}
 		}
 		spin_unlock(&server->srv_lock);
 
@@ -1106,6 +1434,7 @@ cifs_handle_standard(struct TCP_Server_Info *server, struct mid_q_entry *mid)
 
 	if (server->ops->is_session_expired &&
 	    server->ops->is_session_expired(buf)) {
+		cifs_dbg(FYI, "is_session_expired, msec=%u\n", jiffies_to_msecs(jiffies));
 		cifs_reconnect(server, true);
 		return -1;
 	}
@@ -1164,6 +1493,10 @@ cifs_demultiplex_thread(void *p)
 	char *bufs[MAX_COMPOUND];
 	unsigned int noreclaim_flag, num_io_timeout = 0;
 	bool pending_reconnect = false;
+	int cifs_stat = 0;
+	struct cifs_ses * ses;
+	struct cifs_tcon * tcon;
+	int open_file_stat = 0;
 
 	noreclaim_flag = memalloc_noreclaim_save();
 	cifs_dbg(FYI, "Demultiplex PID: %d\n", task_pid_nr(current));
@@ -1180,6 +1513,46 @@ cifs_demultiplex_thread(void *p)
 
 		if (!allocate_buffers(server))
 			continue;
+
+		spin_lock(&server->srv_lock);
+		cifs_stat = server->stat;
+		spin_unlock(&server->srv_lock);
+		cifs_dbg(FYI, "cifsd cifs_stat=%d\n", cifs_stat);
+		if(cifs_stat)
+		{
+			cancel_delayed_work_sync(&server->disconnect);
+
+			spin_lock(&cifs_tcp_ses_lock);
+			list_for_each_entry(ses, &server->smb_ses_list, smb_ses_list) {
+			        list_for_each_entry(tcon, &ses->tcon_list, tcon_list) {
+
+					spin_lock(&tcon->tc_lock);
+					open_file_stat = list_empty(&tcon->openFileList) ? 1 : 0;
+					spin_unlock(&tcon->tc_lock);
+				}
+			}
+			spin_unlock(&cifs_tcp_ses_lock);
+
+			cifs_dbg(FYI, "cifsd open_file_stat=%d\n", open_file_stat);
+
+			if(open_file_stat)
+			{
+				if(disconnect_work_delay)
+				{
+					spin_lock(&server->srv_lock);
+					server->stat = 0;
+					spin_unlock(&server->srv_lock);
+
+					queue_delayed_work(cifsiod_wq, &server->disconnect, msecs_to_jiffies(disconnect_work_delay * 1000));
+				}
+			}
+		}
+
+		if(atomic_read(&EventCount))
+		{
+			cifs_dbg(FYI, "cifsd EventCount=%d\n", atomic_read(&EventCount));
+			wake_up_interruptible(&conn_stat_wait);
+		}
 
 		server->large_buf = false;
 		buf = server->smallbuf;
@@ -1315,7 +1688,7 @@ next_pdu:
 			buf = server->smallbuf;
 			goto next_pdu;
 		}
-
+		cifs_dbg(FYI, "pending_reconnect=%d, num_io_timeout=%u(MAX_STATUS_IO_TIMEOUT:%u)\n", pending_reconnect, num_io_timeout, MAX_STATUS_IO_TIMEOUT);
 		/* do this reconnect at the very end after processing all MIDs */
 		if (pending_reconnect)
 			cifs_reconnect(server, true);
@@ -1640,6 +2013,12 @@ cifs_put_tcp_session(struct TCP_Server_Info *server, int from_reconnect)
 	cancel_delayed_work_sync(&server->echo);
 	cancel_delayed_work_sync(&server->resolve);
 
+	cifs_dbg(FYI, "cifs_put_tcp_session\n");
+	spin_lock(&server->srv_lock);
+	server->stat = 0;
+	spin_unlock(&server->srv_lock);
+	cancel_delayed_work_sync(&server->disconnect);
+
 	if (from_reconnect)
 		/*
 		 * Avoid deadlock here: reconnect work calls
@@ -1687,7 +2066,7 @@ cifs_get_tcp_session(struct smb3_fs_context *ctx,
 		rc = -ENOMEM;
 		goto out_err;
 	}
-
+	atomic_set(&tcp_ses->in_recv, 0);
 	tcp_ses->hostname = kstrdup(ctx->server_hostname, GFP_KERNEL);
 	if (!tcp_ses->hostname) {
 		rc = -ENOMEM;
@@ -1737,6 +2116,12 @@ cifs_get_tcp_session(struct smb3_fs_context *ctx,
 	INIT_LIST_HEAD(&tcp_ses->smb_ses_list);
 	INIT_DELAYED_WORK(&tcp_ses->echo, cifs_echo_request);
 	INIT_DELAYED_WORK(&tcp_ses->resolve, cifs_resolve_server);
+	INIT_DELAYED_WORK(&tcp_ses->disconnect, cifs_disconnect);
+
+	tcp_ses->connecting_stat = 0;
+	tcp_ses->stat = 0;
+	smp_mb();
+
 	INIT_DELAYED_WORK(&tcp_ses->reconnect, smb2_reconnect_server);
 	mutex_init(&tcp_ses->reconnect_mutex);
 #ifdef CONFIG_CIFS_DFS_UPCALL
@@ -1910,6 +2295,7 @@ cifs_setup_ipc(struct cifs_ses *ses, struct smb3_fs_context *ctx)
 	bool seal = false;
 	struct TCP_Server_Info *server = ses->server;
 
+	int tcon_stat_change = 0;
 	/*
 	 * If the mount request that resulted in the creation of the
 	 * session requires encryption, force IPC to be encrypted too.
@@ -1949,6 +2335,16 @@ cifs_setup_ipc(struct cifs_ses *ses, struct smb3_fs_context *ctx)
 
 	spin_lock(&tcon->tc_lock);
 	tcon->status = TID_GOOD;
+
+	tcon->reconn_for_idle = 0;
+	tcon->reconn_for_open = 0;
+
+	tcon_stat_change = tcon->status != tcon->old_status;
+
+ 	if(tcon_stat_change)
+	{
+		tcon->old_status = tcon->status;
+	}
 	spin_unlock(&tcon->tc_lock);
 	ses->tcon_ipc = tcon;
 out:
@@ -2693,6 +3089,9 @@ cifs_get_tcon(struct cifs_ses *ses, struct smb3_fs_context *ctx)
 	INIT_LIST_HEAD(&tcon->pending_opens);
 	tcon->status = TID_GOOD;
 
+	tcon->reconn_for_idle = 0;
+	tcon->reconn_for_open = 0;
+
 	INIT_DELAYED_WORK(&tcon->query_interfaces,
 			  smb2_query_server_interfaces);
 	if (ses->server->dialect >= SMB30_PROT_ID &&
@@ -2705,6 +3104,31 @@ cifs_get_tcon(struct cifs_ses *ses, struct smb3_fs_context *ctx)
 	spin_lock(&cifs_tcp_ses_lock);
 	list_add(&tcon->tcon_list, &ses->tcon_list);
 	spin_unlock(&cifs_tcp_ses_lock);
+
+	if(tcon->status != tcon->old_status)
+	{
+		cifs_dbg(FYI, "%s : %d -> %d, wake conn_stat_wait, EventCount=%d, tcon->ipc=%d\n", tcon->tree_name, tcon->old_status, tcon->status, atomic_read(&EventCount), tcon->ipc);
+
+		tcon->old_status = tcon->status;
+
+		if(tcon->ipc == 0)
+		{
+			if(list_empty(&tcon->openFileList))
+			{
+				cifs_dbg(FYI, "queue disconnect work, tcon->ipc=%d\n", tcon->ipc);
+				if(disconnect_work_delay)
+				{
+					spin_lock(&ses->server->srv_lock);
+					ses->server->stat = 0;
+					spin_unlock(&ses->server->srv_lock);
+					queue_delayed_work(cifsiod_wq, &ses->server->disconnect, msecs_to_jiffies(disconnect_work_delay * 1000));
+				}
+			}
+
+			atomic_inc(&EventCount);
+			wake_up_interruptible(&conn_stat_wait);
+		}
+	}
 
 	return tcon;
 
@@ -4797,6 +5221,9 @@ int cifs_tree_connect(const unsigned int xid, struct cifs_tcon *tcon, const stru
 	int rc;
 	const struct smb_version_operations *ops = tcon->ses->server->ops;
 
+ 	int tcon_stat_change = 0;
+	int old_status = 0;
+
 	/* only send once per connect */
 	spin_lock(&tcon->tc_lock);
 	if (tcon->ses->ses_status != SES_GOOD ||
@@ -4816,10 +5243,50 @@ int cifs_tree_connect(const unsigned int xid, struct cifs_tcon *tcon, const stru
 		spin_unlock(&tcon->tc_lock);
 	} else {
 		spin_lock(&tcon->tc_lock);
+
 		if (tcon->status == TID_IN_TCON)
+		{
 			tcon->status = TID_GOOD;
+
+			tcon->reconn_for_idle = 0;
+			tcon->reconn_for_open = 0;
+
+			if(tcon->ipc == 0)
+			{
+				if(list_empty(&tcon->openFileList))
+				{
+					cifs_dbg(FYI, "queue disconnect work, tcon->ipc=%d\n", tcon->ipc);
+					if(disconnect_work_delay)
+					{
+						spin_lock(&tcon->ses->server->srv_lock);
+						tcon->ses->server->stat = 0;
+						spin_unlock(&tcon->ses->server->srv_lock);
+						queue_delayed_work(cifsiod_wq, &tcon->ses->server->disconnect, msecs_to_jiffies(disconnect_work_delay * 1000));
+					}
+				}
+			}
+
+			tcon_stat_change = tcon->status != tcon->old_status;
+		}
+
 		tcon->need_reconnect = false;
+		if(tcon_stat_change)
+		{
+			old_status = tcon->old_status;
+			tcon->old_status = tcon->status;
+		}
 		spin_unlock(&tcon->tc_lock);
+
+		if(tcon_stat_change)
+		{
+			cifs_dbg(FYI, "%s : %d -> %d, wake conn_stat_wait, EventCount=%d, tcon->ipc=%d\n", tcon->tree_name, old_status, tcon->status, atomic_read(&EventCount), tcon->ipc);
+
+			if(tcon->ipc == 0)
+			{
+				atomic_inc(&EventCount);
+				wake_up_interruptible(&conn_stat_wait);
+			}
+		}
 	}
 
 	return rc;

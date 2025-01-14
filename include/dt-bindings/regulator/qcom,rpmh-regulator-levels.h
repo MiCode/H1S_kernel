@@ -33,6 +33,7 @@
 #define RPMH_REGULATOR_LEVEL_SUPER_TURBO	464
 #define RPMH_REGULATOR_LEVEL_SUPER_TURBO_NO_CPR	480
 #define RPMH_REGULATOR_LEVEL_MAX		65535
+#define RPMH_REGULATOR_CONSUMER_LEVEL_MAX	3300000
 
 /*
  * These set constants may be used as the value for qcom,set of an RPMh

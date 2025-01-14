@@ -2463,6 +2463,8 @@ map_smb2_to_linux_error(char *buf, bool log_err)
 			sizeof(struct status_to_posix_error); i++) {
 		if (smb2_error_map_table[i].smb2_status == smb2err) {
 			rc = smb2_error_map_table[i].posix_error;
+			cifs_dbg(FYI, "smb2err = 0x%08x\n", __le32_to_cpu(smb2err));
+
 			break;
 		}
 	}

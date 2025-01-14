@@ -22,6 +22,8 @@ enum pause_type {
 struct cpumask __cpu_halt_mask;
 struct cpumask __cpu_partial_halt_mask;
 
+
+
 /* spin lock to allow calling from non-preemptible context */
 static DEFINE_RAW_SPINLOCK(halt_lock);
 
@@ -721,6 +723,7 @@ void walt_halt_init(void)
 	}
 
 	sched_setscheduler_nocheck(walt_drain_thread, SCHED_FIFO, &param);
+
 
 	register_trace_android_rvh_get_nohz_timer_target(android_rvh_get_nohz_timer_target, NULL);
 	register_trace_android_rvh_set_cpus_allowed_by_task(

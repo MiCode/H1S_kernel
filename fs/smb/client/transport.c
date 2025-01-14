@@ -302,6 +302,17 @@ __smb_send_rqst(struct TCP_Server_Info *server, int num_rqst,
 	struct msghdr smb_msg = {};
 	__be32 rfc1002_marker;
 
+	int command = le16_to_cpu(((struct smb2_hdr *)((rqst->rq_iov[0]).iov_base))->Command);
+	cifs_dbg(FYI, "__smb_send_rqst, %d(SMB2_ECHO: %d)\n", command, le16_to_cpu(SMB2_ECHO));
+
+	if(command != SMB2_ECHO)
+	{
+		cifs_dbg(FYI, "__smb_send_rqst, not SMB2_ECHO\n");
+		spin_lock(&server->srv_lock);
+		server->stat = 1;
+		spin_unlock(&server->srv_lock);
+	}
+
 	cifs_in_send_inc(server);
 	if (cifs_rdma_enabled(server)) {
 		/* return -EAGAIN when connecting or reconnecting */
@@ -558,9 +569,11 @@ wait_for_free_credits(struct TCP_Server_Info *server, const int num_credits,
 			spin_unlock(&server->req_lock);
 
 			cifs_num_waiters_inc(server);
+			cifs_dbg(FYI, "before wait, num_waiters=%d, jiffies=%lu\n", (server->num_waiters).counter, jiffies);
 			rc = wait_event_killable_timeout(server->request_q,
 				has_credits(server, credits, num_credits), t);
 			cifs_num_waiters_dec(server);
+			cifs_dbg(FYI, "after wait, num_waiters=%d, jiffies=%lu\n", (server->num_waiters).counter, jiffies);
 			if (!rc) {
 				spin_lock(&server->req_lock);
 				scredits = *credits;
@@ -597,12 +610,14 @@ wait_for_free_credits(struct TCP_Server_Info *server, const int num_credits,
 				spin_unlock(&server->req_lock);
 
 				cifs_num_waiters_inc(server);
+				cifs_dbg(FYI, "before wait, num_waiters=%d, jiffies=%lu\n", (server->num_waiters).counter, jiffies);
 				rc = wait_event_killable_timeout(
 					server->request_q,
 					has_credits(server, credits,
 						    MAX_COMPOUND + 1),
 					t);
 				cifs_num_waiters_dec(server);
+				cifs_dbg(FYI, "after wait, num_waiters=%d, jiffies=%lu\n", (server->num_waiters).counter, jiffies);
 				if (!rc) {
 					spin_lock(&server->req_lock);
 					scredits = *credits;
@@ -1708,6 +1723,7 @@ cifs_readv_receive(struct TCP_Server_Info *server, struct mid_q_entry *mid)
 
 	if (server->ops->is_session_expired &&
 	    server->ops->is_session_expired(buf)) {
+		cifs_dbg(FYI, "is_session_expired, msec=%u\n", jiffies_to_msecs(jiffies));
 		cifs_reconnect(server, true);
 		return -1;
 	}

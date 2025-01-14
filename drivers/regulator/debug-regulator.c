@@ -718,7 +718,6 @@ static int __init regulator_debug_init(void)
 		pr_err("%s: unable to create regulator debug_suspend debugfs directory, ret=%d\n",
 			__func__, ret);
 	}
-
 	return 0;
 }
 module_init(regulator_debug_init);

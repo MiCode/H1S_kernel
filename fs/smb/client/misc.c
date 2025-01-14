@@ -134,6 +134,9 @@ tconInfoAlloc(void)
 	spin_lock_init(&ret_buf->stat_lock);
 	atomic_set(&ret_buf->num_local_opens, 0);
 	atomic_set(&ret_buf->num_remote_opens, 0);
+	ret_buf->old_status = TID_NEW;
+	ret_buf->reconn_for_idle = 0;
+	ret_buf->reconn_for_open = 0;
 
 	return ret_buf;
 }
@@ -1394,6 +1397,8 @@ int cifs_wait_for_server_reconnect(struct TCP_Server_Info *server, bool retry)
 	int timeout = 10;
 	int rc;
 
+	int flag = 0;
+
 	spin_lock(&server->srv_lock);
 	if (server->tcpStatus != CifsNeedReconnect) {
 		spin_unlock(&server->srv_lock);
@@ -1411,9 +1416,21 @@ int cifs_wait_for_server_reconnect(struct TCP_Server_Info *server, bool retry)
 	 * process is killed or server comes back on-line.
 	 */
 	do {
+		if(server->tcpStatus == CifsNeedReconnect)
+		{
+			flag = 1;
+			cifs_dbg(FYI, "before wait comm=%s, pid=%lu, retry=%d, timeout=%d\n", current->comm, (unsigned long)current->pid, retry, timeout);
+		}
+
 		rc = wait_event_interruptible_timeout(server->response_q,
 						      (server->tcpStatus != CifsNeedReconnect),
 						      timeout * HZ);
+		if(flag == 1)
+		{
+			flag = 0;
+			cifs_dbg(FYI, "after wait comm=%s, pid=%lu, retry=%d, timeout=%d\n", current->comm, (unsigned long)current->pid, retry, timeout);
+		}
+
 		if (rc < 0) {
 			cifs_dbg(FYI, "%s: aborting reconnect due to received signal\n",
 				 __func__);

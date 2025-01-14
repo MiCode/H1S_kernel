@@ -3937,6 +3937,8 @@ void smb2_reconnect_server(struct work_struct *work)
 	}
 
 	tcon->status = TID_GOOD;
+	tcon->reconn_for_idle = 0;
+	tcon->reconn_for_open = 0;
 	tcon->retry = false;
 	tcon->need_reconnect = false;
 

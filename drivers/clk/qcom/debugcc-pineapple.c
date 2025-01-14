@@ -1040,6 +1040,7 @@ static int clk_debug_pineapple_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+
 	dev_info(&pdev->dev, "Registered debug measure clocks\n");
 
 	return ret;

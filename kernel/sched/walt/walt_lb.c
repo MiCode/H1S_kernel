@@ -9,6 +9,8 @@
 #include "walt.h"
 #include "trace.h"
 
+
+
 static inline unsigned long walt_lb_cpu_util(int cpu)
 {
 	struct walt_rq *wrq = &per_cpu(walt_rq, cpu);
@@ -242,6 +244,7 @@ static inline bool _walt_can_migrate_task(struct task_struct *p, int dst_cpu,
 	if (wrq->push_task == p)
 		return false;
 
+
 	if (to_lower) {
 		if (wts->iowaited)
 			return false;
@@ -271,6 +274,7 @@ static inline bool need_active_lb(struct task_struct *p, int dst_cpu,
 				  int src_cpu)
 {
 	struct walt_task_struct *wts = (struct walt_task_struct *) p->android_vendor_data1;
+
 
 	if (cpu_rq(src_cpu)->active_balance)
 		return false;
@@ -761,6 +765,7 @@ static bool walt_balance_rt(struct rq *this_rq)
 	if (sched_rt_runnable(this_rq))
 		return false;
 
+
 	/* check if any CPU has a pushable RT task */
 	for_each_possible_cpu(i) {
 		struct rq *rq = cpu_rq(i);
@@ -899,6 +904,7 @@ static void walt_newidle_balance(struct rq *this_rq,
 
 	help_min_cap = should_help_min_cap(this_cpu);
 	raw_spin_unlock(&this_rq->__lock);
+
 
 	/*
 	 * careful, we dropped the lock, and has to be acquired
@@ -1109,6 +1115,7 @@ void walt_lb_init(void)
 	register_trace_android_rvh_can_migrate_task(walt_can_migrate_task, NULL);
 	register_trace_android_rvh_find_busiest_queue(walt_find_busiest_queue, NULL);
 	register_trace_android_rvh_sched_newidle_balance(walt_sched_newidle_balance, NULL);
+
 
 	for_each_cpu(cpu, cpu_possible_mask) {
 		call_single_data_t *csd;

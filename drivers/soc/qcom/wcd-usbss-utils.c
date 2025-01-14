@@ -41,7 +41,7 @@ static int wcd_usbss_i2c_write_device(struct wcd_usbss_ctxt *ctxt, u16 reg, u8 *
 	if (ret != 1) {
 		ret = i2c_transfer(client->adapter, xfer_msg, 1);
 		if (ret != 1) {
-			pr_err("failed to write the device\n");
+			pr_err("failed to write the device [TF-HEADSET]\n");
 			goto fail;
 		}
 	}
@@ -85,7 +85,7 @@ static int wcd_usbss_i2c_read_device(struct wcd_usbss_ctxt *ctxt, unsigned short
 		if (ret != 2) {
 			ret = i2c_transfer(client->adapter, xfer_msg, 2);
 			if (ret != 2) {
-				pr_err("failed to read wcd usbss register\n");
+				pr_err("failed to read wcd usbss register [TF-HEADSET]\n");
 				return ret;
 			}
 		}

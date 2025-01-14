@@ -32,10 +32,11 @@ load(":dpm_image.bzl", "define_dpm_image")
 load(":image_opts.bzl", "boot_image_opts")
 load(":target_variants.bzl", "la_variants")
 load(":modules.bzl", "COMMON_GKI_MODULES_LIST")
-load(":modules_unprotected.bzl", "get_unprotected_vendor_modules_list")
+load(":merge_list_files.bzl", "merge_list_files")
 
 def _define_build_config(
         msm_target,
+        msm_arch,
         target,
         variant,
         boot_image_opts = boot_image_opts(),
@@ -45,7 +46,7 @@ def _define_build_config(
     Creates a `kernel_build_config` for input to a `kernel_build` rule.
 
     Args:
-      msm_target: name of target platform (e.g. "kalama")
+      msm_arch: architecture of target platform (e.g. "pineapple")
       variant: variant of kernel to build (e.g. "gki")
     """
 
@@ -60,7 +61,8 @@ def _define_build_config(
         content = [
             'KERNEL_DIR="msm-kernel"',
             "VARIANTS=({})".format(" ".join(la_variants)),
-            "MSM_ARCH={}".format(msm_target.replace("-", "_")),
+            "MSM_TARGET={}".format(msm_target.replace("-", "_")),
+            "MSM_ARCH={}".format(msm_arch.replace("-", "_")),
             "VARIANT={}".format(variant.replace("-", "_")),
             "ABL_SRC=bootable/bootloader/edk2",
             "BOOT_IMAGE_HEADER_VERSION={}".format(boot_image_opts.boot_image_header_version),
@@ -117,7 +119,6 @@ def _define_build_config(
 
 def _define_kernel_build(
         target,
-        msm_target,
         base_kernel,
         in_tree_module_list,
         dtb_list,
@@ -145,14 +146,10 @@ def _define_kernel_build(
     if dtbo_list:
         out_list += dtbo_list
 
-    common_gki_mod_list = [] + COMMON_GKI_MODULES_LIST
-    for mod in get_unprotected_vendor_modules_list(msm_target):
-        common_gki_mod_list.remove(mod)
-
     kernel_build(
         name = target,
         module_outs = in_tree_module_list,
-        module_implicit_outs = common_gki_mod_list,
+        module_implicit_outs = COMMON_GKI_MODULES_LIST,
         outs = out_list,
         build_config = ":{}_build_config".format(target),
         dtstree = dtstree,
@@ -194,6 +191,7 @@ def _define_kernel_build(
 def _define_image_build(
         target,
         msm_target,
+        msm_arch,
         base_kernel,
         build_boot = True,
         build_dtbo = False,
@@ -213,7 +211,8 @@ def _define_image_build(
 
     Args:
       target: name of main Bazel target (e.g. `kalama_gki`)
-      msm_target: name of target platform (e.g. "kalama")
+      msm_target: name of target platform (e.g. "pineapple")
+      msm_arch: architecture of target platform (e.g. "pineapple")
       base_kernel: kernel_build base kernel
       build_boot: whether to build a boot image
       build_dtbo: whether to build a dtbo image
@@ -240,6 +239,24 @@ def _define_image_build(
         """.format(mod_list = " ".join(in_tree_module_list)),
     )
 
+    # Regenerate the follow  list
+    #   modules.list.msm.{}
+    #   modules.systemdlkm_blocklist.msm.{}
+    #   modules.vendor_blocklist.msm.{}
+    prefixes = [
+        "modules.list.msm",
+        "modules.systemdlkm_blocklist.msm",
+        "modules.vendor_blocklist.msm",
+    ]
+    modules_list_name = {}
+    for prefix in prefixes:
+        modules_list_name[prefix] = "{prefix}.{target}_generated".format(prefix = prefix, target = target)
+        files = [ prefix + ".{}".format(msm_target) ] if msm_target == msm_arch else [
+            prefix + ".{}".format(msm_arch),
+            prefix + ".{}".format(msm_target),
+        ]
+        merge_list_files( name = modules_list_name[prefix], files = files )
+
     kernel_images(
         name = "{}_images".format(target),
         kernel_modules_install = ":{}_modules_install".format(target),
@@ -252,20 +269,20 @@ def _define_image_build(
         build_vendor_kernel_boot = build_vendor_kernel_boot,
         build_vendor_dlkm = build_vendor_dlkm,
         build_system_dlkm = build_system_dlkm,
-        modules_list = "modules.list.msm.{}".format(msm_target),
+        modules_list = ":{}".format(modules_list_name["modules.list.msm"]),
         system_dlkm_modules_list = "android/gki_system_dlkm_modules",
         vendor_dlkm_modules_list = ":{}_vendor_dlkm_modules_list_generated".format(target),
-        system_dlkm_modules_blocklist = "modules.systemdlkm_blocklist.msm.{}".format(msm_target),
-        vendor_dlkm_modules_blocklist = "modules.vendor_blocklist.msm.{}".format(msm_target),
+        system_dlkm_modules_blocklist = "modules.systemdlkm_blocklist.msm.{}".format(msm_arch),
+        vendor_dlkm_modules_blocklist = ":{}".format(modules_list_name["modules.vendor_blocklist.msm"]),
         dtbo_srcs = [":{}/".format(target) + d for d in dtbo_list] if dtbo_list else None,
         vendor_ramdisk_binaries = vendor_ramdisk_binaries,
         gki_ramdisk_prebuilt_binary = gki_ramdisk_prebuilt_binary,
         boot_image_outs = boot_image_outs,
         deps = [
-            "modules.list.msm.{}".format(msm_target),
-            "modules.vendor_blocklist.msm.{}".format(msm_target),
-            "modules.systemdlkm_blocklist.msm.{}".format(msm_target),
             "android/gki_system_dlkm_modules",
+            ":{}".format(modules_list_name["modules.list.msm"]),
+            "modules.vendor_blocklist.msm.{}".format(msm_arch),
+            ":{}".format(modules_list_name["modules.vendor_blocklist.msm"]),
         ],
     )
 
@@ -365,10 +382,6 @@ def _define_kernel_dist(
         ":{}_system_dlkm_module_blocklist".format(target),
     ])
 
-    vendor_unprotected_dlkm = " ".join(get_unprotected_vendor_modules_list(msm_target))
-    if vendor_unprotected_dlkm:
-        msm_dist_targets.extend(["{}_vendor_dlkm_module_unprotectedlist".format(target)])
-
     msm_dist_targets.append("{}_avb_sign_boot_image".format(target))
 
     if dpm_overlay:
@@ -436,6 +449,7 @@ def _define_uapi_library(target):
 
 def define_msm_la(
         msm_target,
+        msm_arch,
         variant,
         in_tree_module_list,
         kmi_enforced = True,
@@ -476,24 +490,14 @@ def define_msm_la(
     vendor_ramdisk_binaries = get_vendor_ramdisk_binaries(target)
     gki_ramdisk_prebuilt_binary = get_gki_ramdisk_prebuilt_binary()
     build_config_fragments = get_build_config_fragments(msm_target)
-    vendor_dlkm_module_unprotected_list = get_unprotected_vendor_modules_list(msm_target)
 
     # Can't enable dpm_overlay if no overlays are listed
     if len(dtbo_list) == 0 and dpm_overlay:
         dpm_overlay = False
 
-    vendor_unprotected_dlkm = " ".join(vendor_dlkm_module_unprotected_list)
-    if vendor_unprotected_dlkm:
-        write_file(
-            name = "{}_vendor_dlkm_module_unprotectedlist".format(target),
-            out = "{}/vendor_dlkm.modules.unprotectedlist".format(target),
-            content = [vendor_unprotected_dlkm, ""],
-        )
-
-    in_tree_module_list += vendor_dlkm_module_unprotected_list
-
     _define_build_config(
         msm_target,
+        msm_arch,
         target,
         variant,
         boot_image_opts = boot_image_opts,
@@ -502,7 +506,6 @@ def define_msm_la(
 
     _define_kernel_build(
         target,
-        msm_target,
         base_kernel,
         in_tree_module_list,
         dtb_list,
@@ -515,6 +518,7 @@ def define_msm_la(
     _define_image_build(
         target,
         msm_target,
+        msm_arch,
         base_kernel,
         # When building a GKI target, we take the kernel and boot.img directly from
         # common, so no need to build here.

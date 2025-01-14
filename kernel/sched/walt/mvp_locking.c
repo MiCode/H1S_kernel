@@ -7,6 +7,8 @@
 #include "../../locking/mutex.h"
 #include "walt.h"
 
+
+
 static void android_vh_alter_mutex_list_add(void *unused, struct mutex *lock,
 				struct mutex_waiter *waiter, struct list_head *list,
 				bool *already_on_list)
@@ -17,6 +19,8 @@ static void android_vh_alter_mutex_list_add(void *unused, struct mutex *lock,
 	struct mutex_waiter *n = NULL;
 	struct list_head *head = list;
 	struct walt_task_struct *wts;
+
+
 
 	if (unlikely(walt_disabled))
 		return;

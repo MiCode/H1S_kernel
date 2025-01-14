@@ -30,3 +30,7 @@ obj-$(CONFIG_PI433)		+= pi433/
 obj-$(CONFIG_XIL_AXIS_FIFO)	+= axis-fifo/
 obj-$(CONFIG_FIELDBUS_DEV)     += fieldbus/
 obj-$(CONFIG_QLGE)		+= qlge/
+
+# MIUI ADD: Performance_UnfairMem
+obj-$(CONFIG_MI_MEM_ENGINE)        += mi_mem_engine/
+# END Performance_UnfairMem

@@ -28,6 +28,19 @@
 #include "../common/smb2pdu.h"
 #include "smb2pdu.h"
 
+#include <linux/jiffies.h>
+struct tmp_ptr {
+	struct list_head tmp_ptr_list;
+	void * ptr;
+};
+extern int tcpSesReconnectInterval;
+extern atomic_t tcpSocketReconnectCount;
+extern atomic_t EventCount;
+extern int tcpSocketReconnectCountMax;
+extern int tcpSesReconnectCountMax;
+extern int disconnect_work_delay;
+extern wait_queue_head_t request_q_num_waiters_wq;
+
 #define SMB_PATH_MAX 260
 #define CIFS_PORT 445
 #define RFC1001_PORT 139
@@ -691,12 +704,21 @@ struct TCP_Server_Info {
 	struct smbd_connection *smbd_conn;
 	struct delayed_work	echo; /* echo ping workqueue job */
 	struct delayed_work	resolve; /* dns resolution workqueue job */
+	struct delayed_work	disconnect;
+	/* 1: busy; 0: idle; */
+	int stat;
+	/* 1: is reconnecting or is disconnecting; 0: idle */
+	int connecting_stat;
+
 	char	*smallbuf;	/* pointer to current "small" buffer */
 	char	*bigbuf;	/* pointer to current "big" buffer */
 	/* Total size of this PDU. Only valid from cifs_demultiplex_thread */
 	unsigned int pdu_size;
 	unsigned int total_read; /* total amount of data read in this pass */
 	atomic_t in_send; /* requests trying to send */
+
+	atomic_t in_recv; /* requests trying to recv */
+
 	atomic_t num_waiters;   /* blocked waiting to get in sendrecv */
 #ifdef CONFIG_CIFS_STATS2
 	atomic_t num_cmds[NUMBER_OF_SMB2_COMMANDS]; /* total requests by cmd */
@@ -1114,6 +1136,10 @@ struct cifs_fattr {
  * session
  */
 struct cifs_tcon {
+	int reconn_for_open;
+	int reconn_for_idle;
+	int old_status;
+
 	struct list_head tcon_list;
 	int tc_count;
 	struct list_head rlist; /* reconnect list */
@@ -1674,7 +1700,34 @@ static inline void cifs_in_send_inc(struct TCP_Server_Info *server)
 
 static inline void cifs_in_send_dec(struct TCP_Server_Info *server)
 {
+	int wake_flag = 0;
+
 	atomic_dec(&server->in_send);
+
+	spin_lock(&server->srv_lock);
+	wake_flag = ((atomic_read(&server->in_recv) == 0) && (atomic_read(&server->in_send) == 0) && (atomic_read(&server->num_waiters)));
+	spin_unlock(&server->srv_lock);
+	if(wake_flag)
+		wake_up_all(&request_q_num_waiters_wq);
+}
+
+static inline void cifs_in_recv_inc(struct TCP_Server_Info *server)
+{
+	atomic_inc(&server->in_recv);
+}
+
+static inline void cifs_in_recv_dec(struct TCP_Server_Info *server)
+{
+	int wake_flag = 0;
+
+	atomic_dec(&server->in_recv);
+
+	spin_lock(&server->srv_lock);
+	wake_flag = ((atomic_read(&server->in_recv) == 0) && (atomic_read(&server->in_send) == 0) && (atomic_read(&server->num_waiters)));
+	spin_unlock(&server->srv_lock);
+
+	if(wake_flag)
+		wake_up_all(&request_q_num_waiters_wq);
 }
 
 static inline void cifs_num_waiters_inc(struct TCP_Server_Info *server)
@@ -1684,7 +1737,16 @@ static inline void cifs_num_waiters_inc(struct TCP_Server_Info *server)
 
 static inline void cifs_num_waiters_dec(struct TCP_Server_Info *server)
 {
+	int wake_flag = 0;
+
 	atomic_dec(&server->num_waiters);
+
+	spin_lock(&server->srv_lock);
+	wake_flag = ((atomic_read(&server->in_recv) == 0) && (atomic_read(&server->in_send) == 0) && (atomic_read(&server->num_waiters)));
+	spin_unlock(&server->srv_lock);
+
+	if(wake_flag)
+		wake_up_all(&request_q_num_waiters_wq);
 }
 
 #ifdef CONFIG_CIFS_STATS2

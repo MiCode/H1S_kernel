@@ -1125,6 +1125,14 @@ static int qcom_stats_suspend(struct device *dev)
 	int i;
 	u32 stats_id = 0;
 
+	struct qcom_stats_cx_vote_info vote_info[MAX_DRV];
+	memset(vote_info, 0, (int)sizeof(struct qcom_stats_cx_vote_info)*MAX_DRV);
+	cx_stats_get_ss_vote_info(MAX_DRV, vote_info);
+
+	for(i = 0; i < MAX_DRV; i++){
+		pr_err("owen DRV: %d, vote: %d ", i, vote_info[i].level);
+	}
+
 	if (!subsystem_stats_debug_on)
 		return 0;
 

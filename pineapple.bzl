@@ -3,10 +3,10 @@ load(":msm_kernel_la.bzl", "define_msm_la")
 load(":image_opts.bzl", "boot_image_opts")
 
 target_name = "pineapple"
+target_arch = "pineapple"
 
-def define_pineapple():
-    _pineapple_in_tree_modules = [
-        # keep sorted
+target_arch_in_tree_modules = [
+    # keep sorted
         "arch/arm64/gunyah/gh_arm_drv.ko",
         "drivers/base/regmap/qti-regmap-debugfs.ko",
         "drivers/bus/mhi/devices/mhi_dev_satellite.ko",
@@ -91,7 +91,6 @@ def define_pineapple():
         "drivers/iommu/qcom_iommu_util.ko",
         "drivers/irqchip/msm_show_resume_irq.ko",
         "drivers/irqchip/qcom-pdc.ko",
-        "drivers/leds/leds-qpnp-vibrator-ldo.ko",
         "drivers/leds/leds-qti-flash.ko",
         "drivers/leds/leds-qti-tri-led.ko",
         "drivers/mailbox/msm_qmp.ko",
@@ -125,6 +124,7 @@ def define_pineapple():
         "drivers/regulator/debug-regulator.ko",
         "drivers/regulator/proxy-consumer.ko",
         "drivers/regulator/qcom_pm8008-regulator.ko",
+        "drivers/regulator/wl2866d.ko",
         "drivers/regulator/qpnp-amoled-regulator.ko",
         "drivers/regulator/qpnp-lcdb-regulator.ko",
         "drivers/regulator/qti-fixed-regulator.ko",
@@ -240,6 +240,7 @@ def define_pineapple():
         "drivers/thermal/qcom/qti_devfreq_cdev.ko",
         "drivers/thermal/qcom/qti_qmi_cdev.ko",
         "drivers/thermal/qcom/qti_qmi_sensor_v2.ko",
+        "drivers/thermal/qcom/qti_thermal_vendor_hooks.ko",
         "drivers/thermal/qcom/qti_userspace_cdev.ko",
         "drivers/thermal/qcom/thermal_config.ko",
         "drivers/thermal/qcom/thermal_minidump.ko",
@@ -277,6 +278,7 @@ def define_pineapple():
         "drivers/virt/gunyah/gunyah_loader.ko",
         "drivers/virt/gunyah/gunyah_qcom.ko",
         "kernel/msm_sysstats.ko",
+        "kernel/sched/walt/sched-penalty.ko",
         "kernel/sched/walt/sched-walt.ko",
         "kernel/trace/qcom_ipc_logging.ko",
         "lib/crc-itu-t.ko",
@@ -288,11 +290,10 @@ def define_pineapple():
         "net/wireless/cfg80211.ko",
         "sound/soc/codecs/snd-soc-hdmi-codec.ko",
         "sound/usb/snd-usb-audio-qmi.ko",
-    ]
+]
 
-    _pineapple_consolidate_in_tree_modules = _pineapple_in_tree_modules + [
-        # keep sorted
-        "drivers/cpuidle/governors/qcom_simple_lpm.ko",
+target_arch_consolidate_in_tree_modules = [
+    # keep sorted
         "drivers/hwtracing/coresight/coresight-etm4x.ko",
         "drivers/misc/lkdtm/lkdtm.ko",
         "drivers/usb/misc/ehset.ko",
@@ -302,18 +303,26 @@ def define_pineapple():
         "kernel/torture.ko",
         "lib/atomic64_test.ko",
         "lib/test_user_copy.ko",
-    ]
+]
 
-    kernel_vendor_cmdline_extras = [
+target_arch_kernel_vendor_cmdline_extras = [
         # do not sort
         "console=ttyMSM0,115200n8",
         "qcom_geni_serial.con_enabled=1",
         "bootconfig",
-    ]
+]
+target_arch_board_kernel_cmdline_extras = []
 
+target_arch_board_bootconfig_extras = []
+
+def define_pineapple():
+
+    _pineapple_in_tree_modules = target_arch_in_tree_modules
+    _pineapple_consolidate_in_tree_modules = target_arch_in_tree_modules + target_arch_consolidate_in_tree_modules
+    kernel_vendor_cmdline_extras = list(target_arch_kernel_vendor_cmdline_extras)
+    board_kernel_cmdline_extras = list(target_arch_board_kernel_cmdline_extras)
+    board_bootconfig_extras = list(target_arch_board_bootconfig_extras)
     for variant in la_variants:
-        board_kernel_cmdline_extras = []
-        board_bootconfig_extras = []
 
         if variant == "consolidate":
             mod_list = _pineapple_consolidate_in_tree_modules
@@ -325,6 +334,7 @@ def define_pineapple():
 
         define_msm_la(
             msm_target = target_name,
+            msm_arch = target_arch,
             variant = variant,
             in_tree_module_list = mod_list,
             boot_image_opts = boot_image_opts(

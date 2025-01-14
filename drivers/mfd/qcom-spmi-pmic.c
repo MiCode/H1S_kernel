@@ -260,6 +260,7 @@ static const struct regmap_config spmi_regmap_can_sleep_config = {
 	.fast_io	= false,
 };
 
+
 static int pmic_spmi_probe(struct spmi_device *sdev)
 {
 	struct device_node *root = sdev->dev.of_node;

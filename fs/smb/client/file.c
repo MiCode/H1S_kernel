@@ -317,6 +317,7 @@ cifs_down_write(struct rw_semaphore *sem)
 
 static void cifsFileInfo_put_work(struct work_struct *work);
 
+int disconnect_work_delay = 60;
 struct cifsFileInfo *cifs_new_fileinfo(struct cifs_fid *fid, struct file *file,
 				       struct tcon_link *tlink, __u32 oplock,
 				       const char *symlink_target)
@@ -328,6 +329,8 @@ struct cifsFileInfo *cifs_new_fileinfo(struct cifs_fid *fid, struct file *file,
 	struct cifs_fid_locks *fdlocks;
 	struct cifs_tcon *tcon = tlink_tcon(tlink);
 	struct TCP_Server_Info *server = tcon->ses->server;
+
+	int open_file_stat = 0;
 
 	cfile = kzalloc(sizeof(struct cifsFileInfo), GFP_KERNEL);
 	if (cfile == NULL)
@@ -346,6 +349,16 @@ struct cifsFileInfo *cifs_new_fileinfo(struct cifs_fid *fid, struct file *file,
 			kfree(cfile);
 			return NULL;
 		}
+	}
+
+	spin_lock(&tcon->open_file_lock);
+	open_file_stat = list_empty(&tcon->openFileList);
+	spin_unlock(&tcon->open_file_lock);
+
+	if(open_file_stat)
+	{
+		cifs_dbg(FYI, "cancel disconnect work\n");
+		cancel_delayed_work_sync(&server->disconnect);
 	}
 
 	INIT_LIST_HEAD(&fdlocks->locks);
@@ -493,6 +506,7 @@ void _cifsFileInfo_put(struct cifsFileInfo *cifs_file,
 	struct cifs_fid fid = {};
 	struct cifs_pending_open open;
 	bool oplock_break_cancelled;
+	int open_file_stat = 0;
 
 	spin_lock(&tcon->open_file_lock);
 	spin_lock(&cifsi->open_file_lock);
@@ -514,6 +528,9 @@ void _cifsFileInfo_put(struct cifsFileInfo *cifs_file,
 	/* remove it from the lists */
 	list_del(&cifs_file->flist);
 	list_del(&cifs_file->tlist);
+
+	open_file_stat = list_empty(&tcon->openFileList);
+
 	atomic_dec(&tcon->num_local_opens);
 
 	if (list_empty(&cifsi->openFileList)) {
@@ -531,6 +548,14 @@ void _cifsFileInfo_put(struct cifsFileInfo *cifs_file,
 
 	spin_unlock(&cifsi->open_file_lock);
 	spin_unlock(&tcon->open_file_lock);
+
+
+	if(open_file_stat)
+	{
+		cifs_dbg(FYI, "queue disconnect work, tcon->ipc=%d\n", tcon->ipc);
+		if(disconnect_work_delay)
+			queue_delayed_work(cifsiod_wq, &tcon->ses->server->disconnect, msecs_to_jiffies(disconnect_work_delay * 1000));
+	}
 
 	oplock_break_cancelled = wait_oplock_handler ?
 		cancel_work_sync(&cifs_file->oplock_break) : false;

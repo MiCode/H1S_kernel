@@ -88,6 +88,8 @@ atomic_t tcpSesAllocCount;
 atomic_t tcpSesReconnectCount;
 atomic_t tconInfoReconnectCount;
 
+atomic_t tcpSocketReconnectCount;
+
 atomic_t mid_count;
 atomic_t buf_alloc_count;
 atomic_t small_buf_alloc_count;
@@ -1793,6 +1795,11 @@ init_cifs(void)
 	atomic_set(&tcpSesNextId, 0);
 	atomic_set(&tcpSesAllocCount, 0);
 	atomic_set(&tcpSesReconnectCount, 0);
+
+	atomic_set(&tcpSocketReconnectCount, 0);
+
+	atomic_set(&EventCount, 0);
+
 	atomic_set(&tconInfoReconnectCount, 0);
 
 	atomic_set(&buf_alloc_count, 0);

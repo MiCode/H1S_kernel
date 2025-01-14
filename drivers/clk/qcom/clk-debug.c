@@ -13,6 +13,7 @@
 #include <linux/bitops.h>
 #include <linux/clk/qcom.h>
 #include <linux/mfd/syscon.h>
+
 #include <trace/events/power.h>
 
 #define CREATE_TRACE_POINTS
@@ -23,6 +24,7 @@
 #include "gdsc-debug.h"
 
 static struct clk_hw *measure;
+
 static bool debug_suspend;
 static bool debug_suspend_atomic;
 static bool qcom_clk_debug_inited;
@@ -494,6 +496,8 @@ exit:
 
 DEFINE_DEBUGFS_ATTRIBUTE(clk_measure_fops, clk_debug_measure_get,
 			 clk_debug_measure_set, "%lld\n");
+
+
 
 void clk_debug_measure_add(struct clk_hw *hw, struct dentry *dentry)
 {

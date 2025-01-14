@@ -2535,7 +2535,6 @@ static struct platform_driver pineapple_pinctrl_driver = {
 	.driver = {
 		.name = "pineapple-pinctrl",
 		.of_match_table = pineapple_pinctrl_of_match,
-		.pm = &noirq_msm_pinctrl_dev_pm_ops,
 	},
 	.probe = pineapple_pinctrl_probe,
 	.remove = msm_pinctrl_remove,

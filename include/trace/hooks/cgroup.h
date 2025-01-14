@@ -7,6 +7,7 @@
 #define _TRACE_HOOK_CGROUP_H
 #include <trace/hooks/vendor_hooks.h>
 
+
 struct task_struct;
 struct cgroup_taskset;
 struct cgroup_subsys;

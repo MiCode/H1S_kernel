@@ -26,6 +26,8 @@
 #include "bwmon.h"
 #include "trace-dcvs.h"
 
+
+
 static LIST_HEAD(hwmon_list);
 static DEFINE_SPINLOCK(list_lock);
 static DEFINE_SPINLOCK(sample_irq_lock);
@@ -330,6 +332,8 @@ static BWMON_ATTR_RW(ab_scale);
 show_list_attr(mbps_zones, NUM_MBPS_ZONES);
 store_list_attr(mbps_zones, NUM_MBPS_ZONES, 0U, UINT_MAX);
 static BWMON_ATTR_RW(mbps_zones);
+
+
 
 static struct attribute *bwmon_attrs[] = {
 	&min_freq.attr,
@@ -743,6 +747,7 @@ static bool bwmon_update_cur_freq(struct hwmon_node *node)
 	new_freq.ib = min(new_freq.ib, node->max_freq);
 	primary_mbps = KHZ_TO_MBPS(new_freq.ib, hw->dcvs_width);
 
+
 	if (new_freq.ib != node->cur_freqs[0].ib ||
 			new_freq.ab != node->cur_freqs[0].ab) {
 		node->cur_freqs[0].ib = new_freq.ib;
@@ -774,11 +779,15 @@ static void bwmon_jiffies_update_cb(void *unused, void *extra)
 	ktime_t now = ktime_get();
 	s64 delta_ns;
 
+
+
 	spin_lock_irqsave(&list_lock, flags);
 	list_for_each_entry(node, &hwmon_list, list) {
 		hw = node->hw;
 		if (!hw->is_active)
 			continue;
+
+
 		delta_ns = now - hw->last_update_ts + HALF_TICK_NS;
 		if (delta_ns > ms_to_ktime(hw->node->window_ms)) {
 			queue_work(bwmon_wq, &hw->work);
@@ -787,6 +796,7 @@ static void bwmon_jiffies_update_cb(void *unused, void *extra)
 	}
 	spin_unlock_irqrestore(&list_lock, flags);
 }
+
 
 static void bwmon_monitor_work(struct work_struct *work)
 {
@@ -1990,6 +2000,8 @@ static int qcom_bwmon_driver_probe(struct platform_device *pdev)
 		}
 		register_trace_android_vh_jiffies_update(
 						bwmon_jiffies_update_cb, NULL);
+
+
 	}
 	mutex_unlock(&bwmon_lock);
 	ret = start_monitor(&m->hw);

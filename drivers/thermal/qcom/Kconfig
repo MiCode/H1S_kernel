@@ -64,6 +64,15 @@ config QTI_CPU_PAUSE_COOLING_DEVICE
 	   a CPU will be used when the CPU frequency mitigation
 	   is not good enough to achieve the necessary cooling.
 
+config QTI_THERMAL_VENDOR_HOOK
+	tristate "QTI thermal vendor hook driver"
+	depends on THERMAL
+	help
+	   This is a placeholder driver for all thermal vendor hook register.
+	   It registers for thermal cooling device stats vendor hook and
+	   disables cooling stats for different thermal cooling devices
+	   selectively.
+
 config QTI_BCL_PMIC5
 	tristate "BCL driver for BCL peripherals in PMIC5"
 	depends on SPMI && THERMAL
